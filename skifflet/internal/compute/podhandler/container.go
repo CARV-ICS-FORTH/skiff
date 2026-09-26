@@ -15,6 +15,7 @@
 package podhandler
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,50 +30,93 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	mounter "k8s.io/utils/mount"
 )
 
 // ResolveContainerEnvironment resolves the final container environment by:
 // 1. Starting with cluster/service-derived variables (lower precedence)
-// 2. Applying container-specific environment variables (higher precedence)
-// 3. Resolving deferred runtime FieldRefs (status.podIP, status.hostIP, metadata.name, metadata.namespace, metadata.uid)
+// 2. Applying container-specific environment variables from EnvFrom (ConfigMaps/Secrets)
+// 3. Applying container-specific environment variables (higher precedence)
+// 4. Resolving deferred runtime FieldRefs (status.podIP, status.hostIP, metadata.name, metadata.namespace, metadata.uid)
 func ResolveContainerEnvironment(pod *corev1.Pod, container *corev1.Container, serviceEnvs []corev1.EnvVar) []corev1.EnvVar {
 	envMap := make(map[string]string)
 	var order []string
 
-	// 1. Lower precedence: service-derived environment variables
-	for _, envVar := range serviceEnvs {
-		if _, exists := envMap[envVar.Name]; !exists {
-			order = append(order, envVar.Name)
+	addOrUpdate := func(name, value string) {
+		if _, exists := envMap[name]; !exists {
+			order = append(order, name)
 		}
-		envMap[envVar.Name] = envVar.Value
+		envMap[name] = value
 	}
 
-	// 2. Higher precedence: container.Env (user-specified, envFrom, etc.)
+	// 1. Lower precedence: service-derived environment variables
+	for _, envVar := range serviceEnvs {
+		addOrUpdate(envVar.Name, envVar.Value)
+	}
+
+	// 2. Middle precedence: container.EnvFrom (ConfigMaps and Secrets)
+	if compute.K8SClientset != nil {
+		ctx := context.Background()
+		for _, envFrom := range container.EnvFrom {
+			if envFrom.ConfigMapRef != nil {
+				cm, err := compute.K8SClientset.CoreV1().ConfigMaps(pod.Namespace).Get(ctx, envFrom.ConfigMapRef.Name, metav1.GetOptions{})
+				if err == nil && cm != nil {
+					for k, v := range cm.Data {
+						key := envFrom.Prefix + k
+						if len(validation.IsCIdentifier(key)) == 0 {
+							addOrUpdate(key, v)
+						}
+					}
+				}
+			} else if envFrom.SecretRef != nil {
+				sec, err := compute.K8SClientset.CoreV1().Secrets(pod.Namespace).Get(ctx, envFrom.SecretRef.Name, metav1.GetOptions{})
+				if err == nil && sec != nil {
+					for k, v := range sec.Data {
+						key := envFrom.Prefix + k
+						if len(validation.IsCIdentifier(key)) == 0 {
+							addOrUpdate(key, string(v))
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Higher precedence: container.Env (user-specified, explicit overrides, ValueFrom, etc.)
 	for _, envVar := range container.Env {
 		val := envVar.Value
-		// Deferred FieldRef resolution
-		if envVar.ValueFrom != nil && envVar.ValueFrom.FieldRef != nil {
-			switch envVar.ValueFrom.FieldRef.FieldPath {
-			case "status.podIP":
-				val = pod.Status.PodIP
-			case "status.hostIP":
-				val = pod.Status.HostIP
-			case "metadata.name":
-				val = pod.Name
-			case "metadata.namespace":
-				val = pod.Namespace
-			case "metadata.uid":
-				val = string(pod.UID)
+		// Deferred FieldRef and ValueFrom resolution
+		if envVar.ValueFrom != nil {
+			if envVar.ValueFrom.FieldRef != nil {
+				switch envVar.ValueFrom.FieldRef.FieldPath {
+				case "status.podIP":
+					val = pod.Status.PodIP
+				case "status.hostIP":
+					val = pod.Status.HostIP
+				case "metadata.name":
+					val = pod.Name
+				case "metadata.namespace":
+					val = pod.Namespace
+				case "metadata.uid":
+					val = string(pod.UID)
+				}
+			} else if envVar.ValueFrom.ConfigMapKeyRef != nil && compute.K8SClientset != nil {
+				cm, err := compute.K8SClientset.CoreV1().ConfigMaps(pod.Namespace).Get(context.Background(), envVar.ValueFrom.ConfigMapKeyRef.Name, metav1.GetOptions{})
+				if err == nil && cm != nil {
+					val = cm.Data[envVar.ValueFrom.ConfigMapKeyRef.Key]
+				}
+			} else if envVar.ValueFrom.SecretKeyRef != nil && compute.K8SClientset != nil {
+				sec, err := compute.K8SClientset.CoreV1().Secrets(pod.Namespace).Get(context.Background(), envVar.ValueFrom.SecretKeyRef.Name, metav1.GetOptions{})
+				if err == nil && sec != nil {
+					val = string(sec.Data[envVar.ValueFrom.SecretKeyRef.Key])
+				}
 			}
 		} else if val == ".status.podIP" { // legacy skifflet convention
 			val = pod.Status.PodIP
 		}
 
-		if _, exists := envMap[envVar.Name]; !exists {
-			order = append(order, envVar.Name)
-		}
-		envMap[envVar.Name] = val
+		addOrUpdate(envVar.Name, val)
 	}
 
 	resolved := make([]corev1.EnvVar, len(order))
@@ -103,6 +147,9 @@ func (h *PodHandler) buildContainer(container *corev1.Container, containerStatus
 	 *---------------------------------------------------*/
 	var b strings.Builder
 	for _, envVar := range resolvedEnvs {
+		if len(validation.IsCIdentifier(envVar.Name)) != 0 {
+			continue
+		}
 		fmt.Fprintf(&b, "%s=%s\n", envVar.Name, EscapeSingleQuote(envVar.Value))
 	}
 
@@ -194,8 +241,14 @@ func (h *PodHandler) buildContainer(container *corev1.Container, containerStatus
 	 *---------------------------------------------------*/
 	containerPath := h.podDirectory.Container(container.Name)
 
+	hostname := h.Pod.GetName()
+	if h.Pod.Spec.Hostname != "" {
+		hostname = h.Pod.Spec.Hostname
+	}
+
 	c := Container{
 		InstanceName:  containerID,
+		Hostname:      hostname,
 		RunAsUser:     uid,
 		RunAsGroup:    gid,
 		ImageFilePath: img.Filepath,
@@ -220,6 +273,10 @@ func (h *PodHandler) buildContainer(container *corev1.Container, containerStatus
 
 // SetContainerRunning marks the container status as running.
 func SetContainerRunning(containerStatus *corev1.ContainerStatus, pid int, startTime uint64) {
+	if containerStatus.State.Terminated != nil {
+		containerStatus.LastTerminationState = containerStatus.State
+		containerStatus.RestartCount++
+	}
 	containerStatus.ContainerID = runtime.FormatProcessJobID(pid, startTime)
 	containerStatus.State.Waiting = nil
 	containerStatus.State.Running = &corev1.ContainerStateRunning{
@@ -249,13 +306,6 @@ func SetContainerTerminated(containerStatus *corev1.ContainerStatus, exitCode in
 		startedAt = prevState.Running.StartedAt
 	} else if prevState.Terminated != nil {
 		startedAt = prevState.Terminated.StartedAt
-	}
-
-	if prevState.Terminated == nil {
-		containerStatus.LastTerminationState = prevState
-		if exitCode != 0 {
-			containerStatus.RestartCount++
-		}
 	}
 
 	containerStatus.Ready = false

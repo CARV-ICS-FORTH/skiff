@@ -43,7 +43,9 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 		}
 	case corev1.PodSucceeded, corev1.PodFailed:
 		/*-- If on final states, there is nothing else to do --*/
-		return
+		if pod.Spec.RestartPolicy != corev1.RestartPolicyAlways {
+			return
+		}
 	}
 
 	/*-- Initialization of virtual environment  --*/
@@ -114,8 +116,8 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 	}
 
 	phaseTransitionSequence := []transition{
-		{ /*-- FAILED: at least one job has failed --*/
-			expression: state.NumFailedJobs() > 0,
+		{ /*-- FAILED: at least one job has failed and will not be restarted --*/
+			expression: state.NumFailedJobs() > 0 && pod.Spec.RestartPolicy == corev1.RestartPolicyNever,
 			change: func(status *corev1.PodStatus) {
 				status.Phase = corev1.PodFailed
 				status.Reason = "ContainerFailed"
@@ -126,7 +128,7 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 		},
 
 		{ /*-- SUCCESS: all jobs are successfully completed --*/
-			expression: state.NumSuccessfulJobs() == totalJobs,
+			expression: pod.Spec.RestartPolicy != corev1.RestartPolicyAlways && state.NumSuccessfulJobs() == totalJobs,
 			change: func(status *corev1.PodStatus) {
 				status.Phase = corev1.PodSucceeded
 				status.Reason = "Completed"
@@ -136,8 +138,8 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 			},
 		},
 
-		{ /*-- RUNNING: all jobs are running or successfully completed --*/
-			expression: state.NumRunningJobs()+state.NumSuccessfulJobs() == totalJobs && state.NumRunningJobs() > 0,
+		{ /*-- RUNNING: jobs are running or restarting --*/
+			expression: (state.NumRunningJobs() > 0) || (pod.Spec.RestartPolicy == corev1.RestartPolicyAlways) || (pod.Spec.RestartPolicy == corev1.RestartPolicyOnFailure && state.NumSuccessfulJobs() < totalJobs),
 			change: func(status *corev1.PodStatus) {
 				status.Phase = corev1.PodRunning
 				status.Reason = "Running"
@@ -152,7 +154,7 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 				conditionStatus := corev1.ConditionFalse
 				reason := "ContainersUnready"
 				message := "at least one container is not ready"
-				if allReady {
+				if allReady && len(status.ContainerStatuses) > 0 {
 					conditionStatus = corev1.ConditionTrue
 					reason = "ContainersReady"
 					message = "all containers are ready"

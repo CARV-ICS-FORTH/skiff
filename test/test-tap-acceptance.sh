@@ -51,6 +51,13 @@ probe echo-controller udp "$controller_service" "$controller_gateway"
 probe echo-node udp "$node_service" "$node_gateway"
 
 echo "Cluster DNS and authorized API Service via IP and DNS name"
+kubectl -n kube-system wait --for=condition=Ready pod -l k8s-app=kube-dns --timeout=60s >/dev/null 2>&1 || true
+for i in $(seq 1 30); do
+    if kubectl -n "$namespace" exec client-controller -- python3 -c 'import socket; socket.gethostbyname("kubernetes.default.svc.cluster.local")' >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
 for pod in client-controller client-node; do
     kubectl -n "$namespace" exec "$pod" -- python3 /srv/client.py dns
     kubectl -n "$namespace" exec "$pod" -- python3 /srv/client.py api 10.43.0.1

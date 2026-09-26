@@ -207,15 +207,16 @@ func TestGetContainerLogs_OptionsAndErrors(t *testing.T) {
 		t.Fatalf("expected NotFound for missing container, got: %v", err)
 	}
 
-	// 3. Tail 0 returns 0 bytes
+	// 3. Tail 0 returns all lines
 	rc, err := vk.GetContainerLogs(context.Background(), "default", "log-pod", "app", vkapi.ContainerLogOpts{Tail: 0})
 	if err != nil {
 		t.Fatalf("unexpected error with Tail 0: %v", err)
 	}
 	defer rc.Close()
 	data, _ := io.ReadAll(rc)
-	if len(data) != 0 {
-		t.Fatalf("expected 0 bytes for Tail 0, got %d bytes: %q", len(data), string(data))
+	expectedAll := "line1\nline2\nline3\nline4\n"
+	if string(data) != expectedAll {
+		t.Fatalf("expected %q for Tail 0, got %q", expectedAll, string(data))
 	}
 
 	// 4. Tail 2 returns last 2 lines

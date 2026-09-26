@@ -1,0 +1,214 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tap-acceptance
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: echo-server
+  namespace: tap-acceptance
+data:
+  server.py: |
+    import json, os, socket, threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            data = json.dumps({"source": self.client_address[0], "host": socket.gethostname(), "path": self.path}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        def do_POST(self):
+            import hashlib
+            size = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(size)
+            data = json.dumps({"source": self.client_address[0], "size": len(body), "sha256": hashlib.sha256(body).hexdigest()}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        def log_message(self, *args): pass
+    def udp():
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("0.0.0.0", 8081))
+        while True:
+            data, peer = sock.recvfrom(65535)
+            sock.sendto(json.dumps({"source": peer[0], "payload": data.decode()}).encode(), peer)
+    threading.Thread(target=udp, daemon=True).start()
+    HTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+  client.py: |
+    import hashlib, json, os, socket, ssl, struct, sys, urllib.request
+    mode = sys.argv[1]
+    if mode == "http":
+        target, expected = sys.argv[2:4]
+        response = json.load(urllib.request.urlopen("http://%s:8080/acceptance" % target, timeout=5))
+        assert response["source"] == expected, response
+        print(json.dumps(response))
+    elif mode == "udp":
+        target, expected = sys.argv[2:4]
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(5)
+        sock.sendto(b"acceptance", (target, 8081))
+        response = json.loads(sock.recvfrom(4096)[0])
+        assert response == {"source": expected, "payload": "acceptance"}, response
+        print(json.dumps(response))
+    elif mode == "large":
+        target, expected = sys.argv[2:4]
+        payload = os.urandom(1024 * 1024)
+        request = urllib.request.Request("http://%s:8080/large" % target, data=payload)
+        response = json.load(urllib.request.urlopen(request, timeout=15))
+        assert response == {"source": expected, "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}, response
+        print(json.dumps(response))
+    elif mode == "dns":
+        assert socket.gethostbyname("kubernetes.default.svc.cluster.local") == "10.43.0.1"
+        name = b"".join(bytes([len(label)]) + label.encode() for label in "kubernetes.default.svc.cluster.local".split(".")) + b"\0"
+        query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + name + b"\x00\x01\x00\x01"
+        with socket.create_connection(("10.43.0.10", 53), timeout=5) as sock:
+            sock.sendall(struct.pack("!H", len(query)) + query)
+            length = struct.unpack("!H", sock.recv(2))[0]
+            result = sock.recv(length)
+        assert b"\x0a\x2b\x00\x01" in result, result
+        print("cluster DNS UDP and TCP passed; resolver:", open("/etc/resolv.conf").read())
+    elif mode == "api":
+        target = sys.argv[2]
+        token = open("/var/run/secrets/kubernetes.io/serviceaccount/token").read()
+        ca = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+        request = urllib.request.Request("https://%s/api/v1/namespaces/tap-acceptance/pods/client-controller" % target,
+                                         headers={"Authorization": "Bearer " + token})
+        response = json.load(urllib.request.urlopen(request, context=ssl.create_default_context(cafile=ca), timeout=5))
+        assert response["metadata"]["name"] == "client-controller", response
+        print("authorized API request passed via", target)
+    elif mode == "unknown":
+        target = sys.argv[2]
+        sock = socket.socket()
+        sock.settimeout(3)
+        try:
+            sock.connect((target, 8080))
+            raise AssertionError("unknown PodIP unexpectedly connected")
+        except (OSError, socket.timeout):
+            print("unknown PodIP failed within 3 seconds")
+    else:
+        raise SystemExit("unknown mode " + mode)
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-controller
+  namespace: tap-acceptance
+spec:
+  nodeSelector: {kubernetes.io/hostname: controller}
+  containers:
+  - name: client
+    image: python:3.9-slim
+    command: ["python3", "-c", "import time; time.sleep(86400)"]
+    volumeMounts: [{name: code, mountPath: /srv}]
+  volumes:
+  - name: code
+    configMap: {name: echo-server}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-node
+  namespace: tap-acceptance
+spec:
+  nodeSelector: {kubernetes.io/hostname: node}
+  containers:
+  - name: client
+    image: python:3.9-slim
+    command: ["python3", "-c", "import time; time.sleep(86400)"]
+    volumeMounts: [{name: code, mountPath: /srv}]
+  volumes:
+  - name: code
+    configMap: {name: echo-server}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: echo-controller
+  namespace: tap-acceptance
+  labels: {app: tap-echo, placement: controller}
+spec:
+  nodeSelector: {kubernetes.io/hostname: controller}
+  containers:
+  - name: server
+    image: python:3.9-slim
+    command: ["python3", "-u", "/srv/server.py"]
+    readinessProbe:
+      httpGet: {path: /ready, port: 8080}
+      periodSeconds: 2
+    ports: [{containerPort: 8080}, {containerPort: 8081, protocol: UDP}]
+    volumeMounts: [{name: code, mountPath: /srv}]
+  volumes:
+  - name: code
+    configMap: {name: echo-server}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: echo-node
+  namespace: tap-acceptance
+  labels: {app: tap-echo, placement: node}
+spec:
+  nodeSelector: {kubernetes.io/hostname: node}
+  containers:
+  - name: server
+    image: python:3.9-slim
+    command: ["python3", "-u", "/srv/server.py"]
+    readinessProbe:
+      httpGet: {path: /ready, port: 8080}
+      periodSeconds: 2
+    ports: [{containerPort: 8080}, {containerPort: 8081, protocol: UDP}]
+    volumeMounts: [{name: code, mountPath: /srv}]
+  volumes:
+  - name: code
+    configMap: {name: echo-server}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-controller
+  namespace: tap-acceptance
+spec:
+  selector: {app: tap-echo, placement: controller}
+  ports:
+  - {name: tcp, port: 8080, targetPort: 8080}
+  - {name: udp, port: 8081, targetPort: 8081, protocol: UDP}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: tap-acceptance
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: default-pod-reader
+  namespace: tap-acceptance
+subjects:
+- kind: ServiceAccount
+  name: default
+  namespace: tap-acceptance
+roleRef:
+  kind: Role
+  name: pod-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-node
+  namespace: tap-acceptance
+spec:
+  selector: {app: tap-echo, placement: node}
+  ports:
+  - {name: tcp, port: 8080, targetPort: 8080}
+  - {name: udp, port: 8081, targetPort: 8081, protocol: UDP}

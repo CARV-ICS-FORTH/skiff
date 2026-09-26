@@ -10,8 +10,17 @@ CIDR_PREFIX=$(echo "$CIDR" | awk -F. '{print $1"."$2"."$3}')
 DNS_ADDR="$CIDR_PREFIX.3"
 NS_ADDR="$CIDR_PREFIX.100"
 
-# Detect Host IP (first non-loopback)
-HOST_IP_DETECTED=$(ip route get 1 | awk '{print $7; exit}')
+# Detect Host IP
+HOST_IP_DETECTED=""
+if [ -n "${CONTROLLER_IP:-}" ]; then
+    HOST_IP_DETECTED=$(ip route get "$CONTROLLER_IP" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}' || true)
+fi
+if [ -z "${HOST_IP_DETECTED:-}" ]; then
+    HOST_IP_DETECTED=$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}' || true)
+fi
+if [ -z "${HOST_IP_DETECTED:-}" ]; then
+    HOST_IP_DETECTED=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+fi
 
 SOCAT_PID_6443=""
 SOCAT_PID_10250=""
@@ -72,7 +81,7 @@ echo "  CIDR: $CIDR"
 echo "  Host IP: $HOST_IP_DETECTED"
 
 # Determine image source
-if [ "${SKIFF_DEV:-0}" = "1" ]; then
+if [ "${SKIFF_DEV:-1}" = "1" ]; then
     echo "  Development mode: using local image"
     IMAGE_DIR="$HOME/.skiff/images"
     IMAGE_SIF="$IMAGE_DIR/skiff-bubble.sif"
@@ -87,7 +96,6 @@ else
     BUBBLE_IMAGE="docker://docker.io/chazapis/skiff-bubble:latest"
 fi
 
-# Pass IPs as env variables - pure image execution without host binary overrides
 apptainer instance run \
 	--fakeroot \
 	--no-mount home \

@@ -282,8 +282,8 @@ func (l *PodLifecycle) SetContainerRunning(name string, cmd *exec.Cmd, pid int, 
 		return nil
 	})
 
-	l.syncStatusesLocked()
 	l.recomputePhaseLocked()
+	l.syncStatusesLocked()
 	snapshot := l.publishedPod.DeepCopy()
 	l.mu.Unlock()
 
@@ -322,8 +322,8 @@ func (l *PodLifecycle) SetContainerReady(name string, ready bool) {
 		return
 	}
 	cr.Status.Ready = ready
-	l.syncStatusesLocked()
 	l.recomputePhaseLocked()
+	l.syncStatusesLocked()
 	snapshot := l.publishedPod.DeepCopy()
 	l.mu.Unlock()
 
@@ -515,8 +515,8 @@ func (l *PodLifecycle) HandleContainerExit(name string, exitCode int, waitErr er
 		ContainerID: cr.Status.ContainerID,
 	}
 
-	l.syncStatusesLocked()
 	l.recomputePhaseLocked()
+	l.syncStatusesLocked()
 
 	// Check if all containers have completed and no restart is due
 	allFinished := true
@@ -584,10 +584,14 @@ func (l *PodLifecycle) syncStatusesLocked() {
 			}
 			cond.LastTransitionTime = metav1.Now()
 		case corev1.PodReady:
-			if allReady && l.publishedPod.Status.Phase == corev1.PodRunning {
+			if allReady && (l.publishedPod.Status.Phase == corev1.PodRunning || l.publishedPod.Status.Phase == corev1.PodSucceeded) {
 				cond.Status = corev1.ConditionTrue
+				cond.Reason = "ContainersReady"
+				cond.Message = "all containers are ready"
 			} else {
 				cond.Status = corev1.ConditionFalse
+				cond.Reason = "ContainersUnready"
+				cond.Message = "at least one container is not ready"
 			}
 			cond.LastTransitionTime = metav1.Now()
 		}

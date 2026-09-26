@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=skiff-cluster
 #SBATCH --output=%x-%j.out
-#SBATCH --nodes=1
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1500M
 
@@ -21,7 +21,10 @@ if [ "$NUM_NODES" -eq 0 ]; then
 fi
 
 CONTROLLER_NODE=${NODES[0]}
-CONTROLLER_IP=$(srun --nodes=1 -w "$CONTROLLER_NODE" ip route get 1 | awk '{print $7; exit}')
+CONTROLLER_IP=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash -c "getent ahostsv4 ${CONTROLLER_NODE}.local 2>/dev/null | awk '{print \$1; exit}'" || true)
+if [ -z "$CONTROLLER_IP" ]; then
+    CONTROLLER_IP=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash -c "ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(\$i==\"src\") print \$(i+1); exit}'" || true)
+fi
 
 echo "Cluster Setup:"
 echo "  Controller Node: $CONTROLLER_NODE ($CONTROLLER_IP)"
@@ -78,7 +81,7 @@ echo "Pre-processing images..."
 IMAGE_DIR="$HOME/.skiff/images"
 mkdir -p "$IMAGE_DIR"
 
-if [ "${SKIFF_DEV:-0}" = "1" ]; then
+if [ "${SKIFF_DEV:-1}" = "1" ]; then
     echo "Development mode: ensuring local .tar image is converted to .sif..."
     IMAGE_TAR="$IMAGE_DIR/skiff-bubble.tar"
     IMAGE_SIF="$IMAGE_DIR/skiff-bubble.sif"
@@ -131,7 +134,8 @@ trap cleanup_slurm EXIT INT TERM
 echo "Starting Controller on $CONTROLLER_NODE..."
 (
     export SKIFF_ROLE="controller"
-    export SKIFF_DEV=${SKIFF_DEV:-0}
+    export SKIFF_DEV=${SKIFF_DEV:-1}
+    export CONTROLLER_IP="$CONTROLLER_IP"
     srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" 1
 ) &
 BG_PIDS+=($!)
@@ -158,7 +162,8 @@ for ((i=1; i<NUM_NODES; i++)); do
     
     (
         export SKIFF_ROLE="node"
-        export SKIFF_DEV=${SKIFF_DEV:-0}
+        export SKIFF_DEV=${SKIFF_DEV:-1}
+        export CONTROLLER_IP="$CONTROLLER_IP"
         srun --nodes=1 -w "$NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" "$BUBBLE_ID"
     ) &
     BG_PIDS+=($!)

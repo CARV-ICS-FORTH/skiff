@@ -267,6 +267,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 			SyncPodsFromKubernetesRateLimiter:    rateLimiter(),
 			DeletePodsFromKubernetesRateLimiter:  rateLimiter(),
 			SyncPodStatusFromProviderRateLimiter: rateLimiter(),
+			SkipDownwardAPIResolution:            true,
 		})
 		if err != nil {
 			return err
@@ -327,6 +328,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 			virtualNode,
 			compute.K8SClientset.CoreV1().Nodes(),
 			node.WithNodeEnableLeaseV1(compute.K8SClientset.CoordinationV1().Leases(corev1.NamespaceNodeLease), 0),
+			node.WithNodeStatusUpdateInterval(10*time.Second),
 			node.WithNodeStatusUpdateErrorHandler(func(ctx context.Context, err error) error {
 				if !k8serrors.IsNotFound(err) {
 					return err
@@ -367,6 +369,37 @@ func runRootCommand(ctx context.Context, c Opts) error {
 		}
 
 		DefaultLogger.Info("Node Controller is Ready")
+
+		// Monitor Plaid daemon liveness and update Node condition
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			wasReady := true
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					conn, err := net.DialTimeout("unix", "/run/plaid/plaidd.sock", time.Second)
+					isPlaidAlive := err == nil
+					if conn != nil {
+						_ = conn.Close()
+					}
+
+					if !isPlaidAlive && wasReady {
+						wasReady = false
+						setNodeNotReady(virtualNode)
+						_ = np.UpdateStatus(ctx, virtualNode)
+						DefaultLogger.Info("Plaid daemon unreachable, marked node NotReady")
+					} else if isPlaidAlive && !wasReady {
+						wasReady = true
+						setNodeReady(virtualNode)
+						_ = np.UpdateStatus(ctx, virtualNode)
+						DefaultLogger.Info("Plaid daemon reachable, marked node Ready")
+					}
+				}
+			}
+		}()
 
 		DefaultLogger.Info("... Skifflet is successfully initialized and waiting for jobs....")
 

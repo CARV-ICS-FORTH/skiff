@@ -17,6 +17,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"skifflet/internal/compute"
@@ -39,8 +41,10 @@ import (
 	vkapi "github.com/virtual-kubelet/virtual-kubelet/node/api"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	statsv1alpha1 "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
+	utilexec "k8s.io/utils/exec"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -73,8 +77,9 @@ type VirtualK8S struct {
 
 	updatedPod func(*corev1.Pod)
 
-	pods sync.Map // map[client.ObjectKey]*corev1.Pod
-	lock *InstanceLock
+	pods        sync.Map // map[client.ObjectKey]*corev1.Pod
+	cancelFuncs sync.Map // map[client.ObjectKey]context.CancelFunc
+	lock        *InstanceLock
 }
 
 // NewVirtualK8S reads a kubeconfig file and sets up a client to interact
@@ -109,6 +114,25 @@ func NewVirtualK8S(config InitConfig) (*VirtualK8S, error) {
 	 *---------------------------------------------------*/
 	_ = compute.Skiff.WalkPodDirectories(func(podpath endpoint.PodPath) error {
 		logger.Info("Cleaning up leftover pod directory", "path", podpath)
+		pidsPath := filepath.Join(podpath.JobDir(), "pids.json")
+		if data, err := os.ReadFile(pidsPath); err == nil {
+			var pids struct {
+				PausePID      int   `json:"pause_pid"`
+				ContainerPIDs []int `json:"container_pids"`
+			}
+			if err := json.Unmarshal(data, &pids); err == nil {
+				for _, pid := range pids.ContainerPIDs {
+					if pid > 1 && !runtime.IsProcessDead(pid) {
+						_ = syscall.Kill(-pid, syscall.SIGKILL)
+						_ = syscall.Kill(pid, syscall.SIGKILL)
+					}
+				}
+				if pids.PausePID > 1 && !runtime.IsProcessDead(pids.PausePID) {
+					_ = syscall.Kill(-pids.PausePID, syscall.SIGKILL)
+					_ = syscall.Kill(pids.PausePID, syscall.SIGKILL)
+				}
+			}
+		}
 		_ = os.RemoveAll(podpath.String())
 		namespaceDir := filepath.Dir(podpath.String())
 		if empty, _ := endpoint.IsEmpty(namespaceDir); empty {
@@ -141,6 +165,8 @@ func (v *VirtualK8S) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	// Registering a separate PodLifecycle here would expose its stale, Pending
 	// snapshot through GetPod and hide the live container IDs from exec.
 	v.pods.Store(podKey, pod)
+	podCtx, podCancel := context.WithCancel(context.Background())
+	v.cancelFuncs.Store(podKey, podCancel)
 
 	go func() {
 		defer func() {
@@ -151,7 +177,7 @@ func (v *VirtualK8S) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 			}
 		}()
 
-		PodHandler.CreatePod(context.Background(), pod, func(p *corev1.Pod) {
+		PodHandler.CreatePod(podCtx, pod, func(p *corev1.Pod) {
 			v.saveAndNotifyPod("podhandler", p)
 		})
 
@@ -181,9 +207,16 @@ func (v *VirtualK8S) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	val, ok := v.pods.Load(podKey)
 	if !ok {
-		return errdefs.NotFoundf("object not found")
+		logger.Info("Pod not found in UpdatePod, creating as new pod", "uid", pod.UID)
+		return v.CreatePod(ctx, pod)
 	}
 	localPod := val.(*corev1.Pod)
+
+	if localPod.UID != pod.UID {
+		logger.Info("Pod UID changed in UpdatePod, replacing old pod instance", "oldUID", localPod.UID, "newUID", pod.UID)
+		_ = v.DeletePod(ctx, localPod)
+		return v.CreatePod(ctx, pod)
+	}
 
 	localVersion, errLocal := strconv.ParseUint(localPod.ResourceVersion, 10, 64)
 	newVersion, errNew := strconv.ParseUint(pod.ResourceVersion, 10, 64)
@@ -245,6 +278,10 @@ func (v *VirtualK8S) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	if pl != nil {
 		pl.Terminate(gracePeriod)
 		PodHandler.GlobalRegistry.Delete(pl.UID())
+	}
+
+	if cancelVal, ok := v.cancelFuncs.LoadAndDelete(podKey); ok {
+		cancelVal.(context.CancelFunc)()
 	}
 
 	v.pods.Delete(podKey)
@@ -380,10 +417,15 @@ func (v *VirtualK8S) saveAndNotifyPod(source string, pod *corev1.Pod) {
 	}
 
 	podKey := client.ObjectKeyFromObject(pod)
+	if _, ok := v.pods.Load(podKey); !ok {
+		// Pod is not in local cache (was deleted); do not resurrect into v.pods
+		return
+	}
+
 	v.pods.Store(podKey, pod)
 
 	if v.updatedPod != nil {
-		v.updatedPod(pod)
+		v.updatedPod(pod.DeepCopy())
 		v.Logger.Info(" * K8s status is synchronized",
 			"source", source,
 			"version", pod.ResourceVersion,
@@ -407,11 +449,24 @@ func (v *VirtualK8S) reconcileNonTerminalPods() {
 		PodHandler.UpdateStatusFromRuntime(pod)
 
 		changed := oldStatus.Phase != pod.Status.Phase ||
+			!apiequality.Semantic.DeepEqual(oldStatus.Conditions, pod.Status.Conditions) ||
 			!apiequality.Semantic.DeepEqual(oldStatus.ContainerStatuses, pod.Status.ContainerStatuses) ||
 			!apiequality.Semantic.DeepEqual(oldStatus.InitContainerStatuses, pod.Status.InitContainerStatuses)
 
 		if changed {
 			v.saveAndNotifyPod("reconciler", pod)
+		}
+
+		if compute.K8SClientset != nil {
+			if apiPod, err := compute.K8SClientset.CoreV1().Pods(pod.Namespace).Get(context.Background(), pod.Name, metav1.GetOptions{}); err == nil {
+				if !apiequality.Semantic.DeepEqual(apiPod.Status.Conditions, pod.Status.Conditions) || apiPod.Status.Phase != pod.Status.Phase {
+					apiPodCopy := apiPod.DeepCopy()
+					apiPodCopy.Status = *pod.Status.DeepCopy()
+					if _, err := compute.K8SClientset.CoreV1().Pods(pod.Namespace).UpdateStatus(context.Background(), apiPodCopy, metav1.UpdateOptions{}); err == nil {
+						v.Logger.Info("Reconciled out-of-sync pod status on API server", "pod", key)
+					}
+				}
+			}
 		}
 		return true
 	})
@@ -597,9 +652,7 @@ func (v *VirtualK8S) GetContainerLogs(ctx context.Context, namespace, podName, c
 	logfilePath := podDir.Container(containerName).LogsPath()
 
 	var initialBytes []byte
-	if opts.Tail == 0 && !opts.Follow {
-		return io.NopCloser(bytes.NewReader([]byte{})), nil
-	} else if opts.Tail > 0 {
+	if opts.Tail > 0 {
 		logs, err := container.GetTailLog(logfilePath, opts.Tail)
 		if err == nil {
 			var buf bytes.Buffer
@@ -608,7 +661,7 @@ func (v *VirtualK8S) GetContainerLogs(ctx context.Context, namespace, podName, c
 			}
 			initialBytes = buf.Bytes()
 		}
-	} else if opts.Tail < 0 && !opts.Follow {
+	} else if !opts.Follow {
 		data, err := os.ReadFile(logfilePath)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
@@ -683,5 +736,14 @@ func (v *VirtualK8S) RunInContainer(ctx context.Context, namespace, podName, con
 		execCmd.Stderr = attach.Stderr()
 	}
 
-	return execCmd.Run()
+	if err := execCmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return utilexec.CodeExitError{
+				Err:  exitErr,
+				Code: exitErr.ExitCode(),
+			}
+		}
+		return err
+	}
+	return nil
 }

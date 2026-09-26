@@ -21,7 +21,7 @@ BUILD_TIME := $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 BIN_DIR = bin
 export GOFLAGS ?= -buildvcs=false
 
-.PHONY: all build build-skifflet build-plaid binaries-linux-amd64 binaries-linux-arm64 vet test clean builder images publish-images develop fmt fmt-check check-shell
+.PHONY: all build build-skifflet build-plaid binaries-linux-amd64 binaries-linux-arm64 vet test clean builder images publish-images develop e2e-images fmt fmt-check check-shell
 
 all: build
 
@@ -119,14 +119,8 @@ develop:
 
 	@echo "Generating deployment manifest..."
 	@TAR_SHA=$$(sha256sum /tmp/skiff-images/skiff-bubble.tar 2>/dev/null | awk '{print $$1}' || shasum -a 256 /tmp/skiff-images/skiff-bubble.tar | awk '{print $$1}'); \
-	cat <<EOF > /tmp/skiff-images/manifest.json \
-	{\
-	  "version": "$(VERSION)",\
-	  "git_commit": "$(GIT_COMMIT)",\
-	  "build_time": "$(BUILD_TIME)",\
-	  "tar_sha256": "$$TAR_SHA"\
-	}\
-	EOF
+	printf '{\n  "version": "%s",\n  "git_commit": "%s",\n  "build_time": "%s",\n  "tar_sha256": "%s"\n}\n' \
+		"$(VERSION)" "$(GIT_COMMIT)" "$(BUILD_TIME)" "$$TAR_SHA" > /tmp/skiff-images/manifest.json
 
 	@echo "Copying image and manifest to Vagrant VMs..."
 	cd test/vagrant && vagrant ssh controller -c "mkdir -p ~/.skiff/images && rm -f ~/.skiff/images/skiff-bubble.sif"
@@ -146,10 +140,56 @@ develop:
 	done
 	cd test/vagrant && vagrant ssh controller -c "chmod +x ~/skiff/scripts/*.sh ~/skiff/test/*.sh"
 
+	@echo "Copying e2e test suite to controller..."
+	cd test/vagrant && vagrant ssh controller -c "mkdir -p ~/skiff/test/e2e/network ~/skiff/test/e2e/lib ~/skiff/test/e2e/images/fixture"
+	for f in test/e2e/network/*; do \
+		(cd test/vagrant && vagrant upload ../../$$f /home/vagrant/skiff/test/e2e/network/$$(basename $$f) controller); \
+	done
+	for f in test/e2e/lib/*.sh; do \
+		(cd test/vagrant && vagrant upload ../../$$f /home/vagrant/skiff/test/e2e/lib/$$(basename $$f) controller); \
+	done
+	for f in test/e2e/case-*.sh test/e2e/run-all.sh; do \
+		(cd test/vagrant && vagrant upload ../../$$f /home/vagrant/skiff/test/e2e/$$(basename $$f) controller); \
+	done
+	cd test/vagrant && vagrant ssh controller -c "chmod +x ~/skiff/test/e2e/*.sh ~/skiff/test/e2e/lib/*.sh ~/skiff/test/e2e/network/*.sh"
+
 	@echo "Development image and deployment manifest deployed successfully!"
 	@echo "Set SKIFF_DEV=1 in scripts/skiff.slurm to use local image."
+	@echo "Run 'make e2e-images' to also build and deploy the e2e fixture image."
+
+e2e-images:
+	@echo "Building e2e fixture image (Version: $(VERSION))..."
+
+	docker build \
+		-t skiff-e2e-fixture:$(GIT_COMMIT_SHORT) \
+		-t skiff-e2e-fixture:latest \
+		-f test/e2e/images/fixture/Dockerfile test/e2e/images/fixture
+
+	@echo "Exporting fixture image to tar..."
+	@mkdir -p /tmp/skiff-images
+	docker save -o /tmp/skiff-images/skiff-e2e-fixture.tar skiff-e2e-fixture:$(GIT_COMMIT_SHORT)
+
+	@echo "Uploading fixture tar to controller VM..."
+	cd test/vagrant && vagrant ssh controller -c "mkdir -p ~/.skiff/images"
+	cd test/vagrant && vagrant upload /tmp/skiff-images/skiff-e2e-fixture.tar /home/vagrant/.skiff/images/skiff-e2e-fixture.tar controller
+
+	@echo "Converting fixture tar to SIF on controller VM..."
+	cd test/vagrant && vagrant ssh controller -c \
+		"apptainer build --force ~/.skiff/images/skiff-e2e-fixture.sif docker-archive:///home/vagrant/.skiff/images/skiff-e2e-fixture.tar"
+
+	@echo "Writing fixture image tag to test/e2e/lib/fixture.sh..."
+	@sed -i.bak \
+		's|^FIXTURE_IMAGE_TAG=.*|FIXTURE_IMAGE_TAG="$(GIT_COMMIT_SHORT)"|' \
+		test/e2e/lib/fixture.sh && rm -f test/e2e/lib/fixture.sh.bak
+	@sed -i.bak \
+		's|^FIXTURE_IMAGE=.*|FIXTURE_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture.sif"|' \
+		test/e2e/lib/fixture.sh && rm -f test/e2e/lib/fixture.sh.bak
+
+	@echo "e2e fixture image deployed. Tag: $(GIT_COMMIT_SHORT)"
+	@echo "Re-run 'make develop' to sync the updated lib/fixture.sh to the VMs."
 
 clean:
 	$(MAKE) -C skifflet clean
 	$(MAKE) -C plaid clean
 	rm -rf $(BIN_DIR) /tmp/skiff-images
+

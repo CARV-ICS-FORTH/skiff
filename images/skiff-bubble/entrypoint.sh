@@ -6,7 +6,7 @@ mkdir -p /var/log /tmp/.skiff/.apptainer/tmp /root/.skiff/.apptainer/cache
 exec > >(tee -a /var/log/entrypoint.log) 2>&1
 
 # Default values if not provided
-HOST_IP=${HOST_IP:-$(ip route get 1 | awk '{print $7; exit}')}
+HOST_IP=${HOST_IP:-$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}' || echo "127.0.0.1")}
 SKIFF_ROLE=${SKIFF_ROLE:-controller}
 PLAID_UPLINK=${PLAID_UPLINK:-tap0}
 : "${PLAID_UPLINK_ADDRESS:?outer slirp guest address is required}"
@@ -59,6 +59,8 @@ if [ "$SKIFF_ROLE" = "controller" ]; then
       --service-cidr 10.43.0.0/16 \
       --cluster-domain cluster.local \
       --kube-controller-manager-arg=allocate-node-cidrs=true \
+      --kube-controller-manager-arg=node-monitor-grace-period=10s \
+      --kube-controller-manager-arg=node-monitor-period=2s \
       --disable-agent \
       --disable servicelb \
       --disable traefik \
@@ -102,48 +104,7 @@ if [ "$SKIFF_ROLE" = "controller" ]; then
     chmod 600 /var/lib/skiff/kubeconfig.tmp
     mv /var/lib/skiff/kubeconfig.tmp /var/lib/skiff/kubeconfig
 
-    # Make CoreDNS inherit the bubble resolver instead of the cluster DNS service IP.
-    echo "Configuring CoreDNS to use the bubble resolver..."
-    COREDNS_WAIT=0
-    COREDNS_TIMEOUT=120
-    while [ "$COREDNS_WAIT" -lt "$COREDNS_TIMEOUT" ] && ! k3s kubectl -n kube-system get deployment coredns >/dev/null 2>&1; do
-      sleep 1
-      COREDNS_WAIT=$((COREDNS_WAIT + 1))
-    done
-    if ! k3s kubectl -n kube-system get deployment coredns >/dev/null 2>&1; then
-      echo "ERROR: Timed out waiting for CoreDNS deployment" >&2
-    fi
-
-    while [ "$COREDNS_WAIT" -lt "$COREDNS_TIMEOUT" ] && ! k3s kubectl -n kube-system get configmap coredns >/dev/null 2>&1; do
-      sleep 1
-      COREDNS_WAIT=$((COREDNS_WAIT + 1))
-    done
-    if ! k3s kubectl -n kube-system get configmap coredns >/dev/null 2>&1; then
-      echo "ERROR: Timed out waiting for CoreDNS configmap" >&2
-    fi
-
-    if k3s kubectl -n kube-system get deployment coredns >/dev/null 2>&1 && k3s kubectl -n kube-system get configmap coredns >/dev/null 2>&1; then
-      k3s kubectl -n kube-system patch deployment coredns --type=merge -p '{"spec":{"template":{"spec":{"dnsPolicy":"Default"}}}}'
-      CURRENT_COREFILE="$(k3s kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}')"
-      UPDATED_COREFILE="$(printf '%s\n' "$CURRENT_COREFILE" | sed -E 's#forward \. (/etc/resolv\.conf|([0-9]{1,3}\.){3}[0-9]{1,3})#forward . /etc/resolv.conf#g')"
-      if [ -n "$UPDATED_COREFILE" ] && [ "$CURRENT_COREFILE" != "$UPDATED_COREFILE" ]; then
-        cat <<EOF | k3s kubectl apply -f -
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: coredns
-  namespace: kube-system
-data:
-  Corefile: |
-$(printf '%s\n' "$UPDATED_COREFILE" | sed 's/^/    /')
-EOF
-      fi
-      k3s kubectl -n kube-system rollout restart deployment coredns
-    else
-      echo "Skipping CoreDNS reconfiguration due to missing deployment or configmap" >&2
-    fi
-
-    # Start background CSR signing loop on controller node
+    # Start background CSR signing loop on controller node IMMEDIATELY
     echo "Starting kubelet CSR signing loop..."
     (
         while true; do
@@ -154,6 +115,13 @@ EOF
                 crt_file="${cert_dir}/kubelet.crt"
                 cnf_file="${cert_dir}/kubelet.cnf"
                 
+                # If crt_file exists, check if it was signed by current CA
+                if [ -f "$crt_file" ]; then
+                    if ! openssl verify -CAfile /var/lib/rancher/k3s/server/tls/server-ca.crt "$crt_file" >/dev/null 2>&1; then
+                        rm -f "$crt_file"
+                    fi
+                fi
+
                 if [ ! -f "$crt_file" ]; then
                     if [ -f "/var/lib/rancher/k3s/server/tls/server-ca.key" ] && [ -f "/var/lib/rancher/k3s/server/tls/server-ca.crt" ]; then
                         echo "Signing kubelet CSR in ${cert_dir}..."
@@ -168,6 +136,7 @@ EOF
                           -in "$csr_file" -out "${crt_file}.tmp" $EXT_ARGS; then
                             chmod 600 "${crt_file}.tmp"
                             mv "${crt_file}.tmp" "$crt_file"
+                            echo "Successfully signed kubelet cert in ${cert_dir}"
                         else
                             echo "ERROR: Failed to sign kubelet CSR in ${cert_dir}" >&2
                             rm -f "${crt_file}.tmp"
@@ -179,6 +148,37 @@ EOF
         done
     ) &
     CSR_SIGN_PID=$!
+
+    # Make CoreDNS inherit the bubble resolver instead of the cluster DNS service IP (async in background).
+    (
+        echo "Configuring CoreDNS to use the bubble resolver in background..."
+        COREDNS_WAIT=0
+        COREDNS_TIMEOUT=180
+        while [ "$COREDNS_WAIT" -lt "$COREDNS_TIMEOUT" ]; do
+            if k3s kubectl -n kube-system get deployment coredns >/dev/null 2>&1 && k3s kubectl -n kube-system get configmap coredns >/dev/null 2>&1; then
+                k3s kubectl -n kube-system patch deployment coredns --type=merge -p '{"spec":{"template":{"spec":{"dnsPolicy":"Default"}}}}'
+                CURRENT_COREFILE="$(k3s kubectl -n kube-system get configmap coredns -o jsonpath='{.data.Corefile}')"
+                UPDATED_COREFILE="$(printf '%s\n' "$CURRENT_COREFILE" | sed -E 's#forward \. (/etc/resolv\.conf|([0-9]{1,3}\.){3}[0-9]{1,3})#forward . /etc/resolv.conf#g')"
+                if [ -n "$UPDATED_COREFILE" ] && [ "$CURRENT_COREFILE" != "$UPDATED_COREFILE" ]; then
+                    cat <<EOF | k3s kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+data:
+  Corefile: |
+$(printf '%s\n' "$UPDATED_COREFILE" | sed 's/^/    /')
+EOF
+                fi
+                k3s kubectl -n kube-system rollout restart deployment coredns
+                echo "CoreDNS configured with bubble resolver successfully"
+                break
+            fi
+            sleep 2
+            COREDNS_WAIT=$((COREDNS_WAIT + 2))
+        done
+    ) &
 fi
 
 # Wait for kubeconfig and server-ca, ensuring server-ca matches kubeconfig's cluster CA
@@ -264,38 +264,43 @@ while ! k3s kubectl get service -n kube-system kube-dns >/dev/null 2>&1; do
     DNS_WAIT=$((DNS_WAIT + 1))
 done
 
-echo "Starting skifflet..."
-# Using --apptainer=plaidtainer to use our networking wrapper
-PAUSE_IMAGE_OPT=()
-if [ -n "${PAUSE_IMAGE:-}" ]; then
-    PAUSE_IMAGE_OPT=(--pause-image="${PAUSE_IMAGE}")
-fi
+start_skifflet() {
+    echo "Starting skifflet..."
+    PAUSE_IMAGE_OPT=()
+    if [ -n "${PAUSE_IMAGE:-}" ]; then
+        PAUSE_IMAGE_OPT=(--pause-image="${PAUSE_IMAGE}")
+    fi
 
-KUBECONFIG=/var/lib/skiff/kubeconfig \
-APISERVER_KEY_LOCATION="${NODE_CERT_DIR}/kubelet.key" \
-APISERVER_CERT_LOCATION="${NODE_CERT_DIR}/kubelet.crt" \
-VKUBELET_ADDRESS="${HOST_IP}" \
-skifflet \
-  --apptainer=plaidtainer \
-  --nodename="$(hostname)" \
-  --disable-taint=true \
-  "${PAUSE_IMAGE_OPT[@]}" \
-  >> /var/log/skifflet.log 2>&1 &
-SKIFFLET_PID=$!
+    KUBECONFIG=/var/lib/skiff/kubeconfig \
+    APISERVER_KEY_LOCATION="${NODE_CERT_DIR}/kubelet.key" \
+    APISERVER_CERT_LOCATION="${NODE_CERT_DIR}/kubelet.crt" \
+    VKUBELET_ADDRESS="${HOST_IP}" \
+    skifflet \
+      --apptainer=plaidtainer \
+      --nodename="$(hostname)" \
+      --disable-taint=true \
+      "${PAUSE_IMAGE_OPT[@]}" \
+      >> /var/log/skifflet.log 2>&1 &
+    SKIFFLET_PID=$!
+}
+start_skifflet
 
-echo "Starting plaidd..."
-mkdir -p /run/plaid
-plaidd \
-  --kubeconfig=/var/lib/skiff/kubeconfig \
-  --node-name="$(hostname)" \
-  --cluster-cidr=10.244.0.0/16 \
-  --service-cidr=10.43.0.0/16 \
-  --gateway-mode=tap \
-  --uplink="$PLAID_UPLINK" \
-  --uplink-address="$PLAID_UPLINK_ADDRESS" \
-  --resolver=10.43.0.10 \
-  >> /var/log/plaidd.log 2>&1 &
-PLAIDD_PID=$!
+start_plaidd() {
+    echo "Starting plaidd..."
+    mkdir -p /run/plaid
+    plaidd \
+      --kubeconfig=/var/lib/skiff/kubeconfig \
+      --node-name="$(hostname)" \
+      --cluster-cidr=10.244.0.0/16 \
+      --service-cidr=10.43.0.0/16 \
+      --gateway-mode=tap \
+      --uplink="$PLAID_UPLINK" \
+      --uplink-address="$PLAID_UPLINK_ADDRESS" \
+      --resolver=10.43.0.10 \
+      >> /var/log/plaidd.log 2>&1 &
+    PLAIDD_PID=$!
+}
+start_plaidd
 
 # skifflet registers the Node first; Plaid then receives its /24 and creates plaid0.
 PLAID_WAIT=0
@@ -308,18 +313,21 @@ while ! plaidctl status >/dev/null 2>&1; do
     PLAID_WAIT=$((PLAID_WAIT + 1))
 done
 
-echo "Starting kube-proxy..."
-kube-proxy \
-  --kubeconfig /var/lib/skiff/kubeconfig \
-  --proxy-mode iptables \
-  --cluster-cidr 10.244.0.0/16 \
-  --masquerade-all=true \
-  --hostname-override "$(hostname)" \
-  --conntrack-max-per-core=0 \
-  --conntrack-tcp-timeout-established=0 \
-  --conntrack-tcp-timeout-close-wait=0 \
-  >> /var/log/kube-proxy.log 2>&1 &
-KUBE_PROXY_PID=$!
+start_kube_proxy() {
+    echo "Starting kube-proxy..."
+    kube-proxy \
+      --kubeconfig /var/lib/skiff/kubeconfig \
+      --proxy-mode iptables \
+      --cluster-cidr 10.244.0.0/16 \
+      --masquerade-all=true \
+      --hostname-override "$(hostname)" \
+      --conntrack-max-per-core=0 \
+      --conntrack-tcp-timeout-established=0 \
+      --conntrack-tcp-timeout-close-wait=0 \
+      >> /var/log/kube-proxy.log 2>&1 &
+    KUBE_PROXY_PID=$!
+}
+start_kube_proxy
 
 # Both the API Service and cluster DNS must work before the bubble reports
 # startup success. Neither check is needed for the direct API bootstrap above.
@@ -376,16 +384,18 @@ while true; do
         fi
     fi
     if ! kill -0 "$SKIFFLET_PID" 2>/dev/null; then
-        echo "FATAL: skifflet (PID $SKIFFLET_PID) exited unexpectedly!" >&2
-        exit 1
+        echo "WARNING: skifflet (PID $SKIFFLET_PID) exited! Restarting skifflet in 12s..." >&2
+        sleep 12
+        start_skifflet
     fi
     if ! kill -0 "$PLAIDD_PID" 2>/dev/null; then
-        echo "FATAL: plaidd (PID $PLAIDD_PID) exited unexpectedly!" >&2
-        exit 1
+        echo "WARNING: plaidd (PID $PLAIDD_PID) exited! Restarting plaidd in 5s..." >&2
+        sleep 5
+        start_plaidd
     fi
     if ! kill -0 "$KUBE_PROXY_PID" 2>/dev/null; then
-        echo "FATAL: kube-proxy (PID $KUBE_PROXY_PID) exited unexpectedly!" >&2
-        exit 1
+        echo "WARNING: kube-proxy (PID $KUBE_PROXY_PID) exited! Restarting kube-proxy..." >&2
+        start_kube_proxy
     fi
     sleep 2
 done

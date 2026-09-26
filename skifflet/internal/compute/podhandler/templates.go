@@ -53,6 +53,7 @@ func strval(v interface{}) string {
 // Container holds definition and execution metadata for a container within a Pod.
 type Container struct {
 	InstanceName  string
+	Hostname      string
 	RunAsUser     int64
 	RunAsGroup    int64
 	ImageFilePath string
@@ -69,11 +70,18 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath) []
 	args := []string{
 		"--host-networking",
 		c.ExecutionMode,
+		"--pid",
+		"--no-init",
 		"--nv",
 		"--cleanenv",
+		"--no-eval",
 		"--writable-tmpfs",
 		"--no-mount", "home,bind-paths",
 		"--unsquash",
+	}
+
+	if c.Hostname != "" {
+		args = append(args, "--hostname", c.Hostname)
 	}
 
 	if pausePID > 0 {

@@ -3,6 +3,8 @@ package podhandler
 import (
 	"os"
 	"path/filepath"
+	goruntime "runtime"
+	"strings"
 	"testing"
 
 	"skifflet/internal/compute"
@@ -56,12 +58,18 @@ func TestDeletePod_CleanRemoval(t *testing.T) {
 }
 
 func TestGetPodIPFromNetns_Fallback(t *testing.T) {
-	// For a non-existent PID, should fallback cleanly without hanging
-	ip, err := GetPodIPFromNetns(999999)
-	if err != nil {
-		t.Fatalf("unexpected error from fallback: %v", err)
-	}
-	if ip == "" {
-		t.Errorf("expected non-empty IP from fallback")
+	if goruntime.GOOS == "linux" {
+		_, err := GetPodIPFromNetns(999999)
+		if err == nil {
+			t.Fatalf("expected error on Linux for non-existent PID")
+		}
+	} else {
+		ip, err := GetPodIPFromNetns(999999)
+		if err != nil {
+			t.Fatalf("unexpected error from fallback: %v", err)
+		}
+		if ip == "" || strings.HasPrefix(ip, "127.") {
+			t.Errorf("expected non-empty non-loopback IP from fallback, got %q", ip)
+		}
 	}
 }
