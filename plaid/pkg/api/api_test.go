@@ -216,10 +216,61 @@ func TestFDLeakPrevention(t *testing.T) {
 		t.Fatalf("Send unexpected FD request failed: %v", err)
 	}
 
-	// 2. Test Socket Lock prevents second server instance
+	// 2. Test Socket Lock prevents second server instance and Close() does NOT remove original socket
 	srv2 := NewServer(sockPath, nil, nil, nil)
 	if err := srv2.Start(ctx); err == nil {
 		srv2.Close()
 		t.Fatalf("Expected error when starting second server with same socket lock, got nil")
+	}
+	// Simulate srv2 cleanup on failure: srv2.Close() must NOT remove srv's socket
+	_ = srv2.Close()
+	if _, err := os.Stat(sockPath); err != nil {
+		t.Fatalf("Failed srv2.Close() wrongfully removed srv's socket file: %v", err)
+	}
+}
+
+type mockFailingHandler struct {
+	mockHandlers
+}
+
+func (m *mockFailingHandler) HandleAddEndpoint(req *Request, tapFD int) error {
+	// Handler closes the file descriptor when returning an error, as plaidd does
+	_ = os.NewFile(uintptr(tapFD), "test-tap").Close()
+	return fmt.Errorf("invalid endpoint configuration error")
+}
+
+func TestAddEndpointErr_FD(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sockPath := filepath.Join(t.TempDir(), "e.sock")
+	failingHandler := &mockFailingHandler{}
+
+	srv := NewServer(sockPath, failingHandler, failingHandler, failingHandler)
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+	defer srv.Close()
+
+	rPipe, wPipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer wPipe.Close()
+
+	client := NewClient(sockPath)
+	err = client.AddEndpoint(&Request{
+		PodID: "test-fail-pod",
+	}, int(rPipe.Fd()))
+	_ = rPipe.Close()
+
+	if err == nil {
+		t.Fatalf("Expected AddEndpointWithFD to fail, got nil")
+	}
+
+	// Server must remain alive and responsive after error
+	status, err := client.GetStatus()
+	if err != nil || !status.Success {
+		t.Fatalf("Server unresponsive after endpoint addition error: %v", err)
 	}
 }

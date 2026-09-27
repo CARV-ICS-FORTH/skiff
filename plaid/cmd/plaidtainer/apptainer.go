@@ -291,8 +291,116 @@ func runCommand(bin string, args []string) int {
 	return 0
 }
 
+// findContainerPID locates the live payload process beneath an Apptainer launcher.
+func findContainerPID(parentPID int) int {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		entries, err := os.ReadDir("/proc")
+		if err == nil {
+			parentOf := make(map[int]int)
+			pgrpOf := make(map[int]int)
+			var pids []int
+			for _, entry := range entries {
+				pid, err := strconv.Atoi(entry.Name())
+				if err != nil || pid <= 0 {
+					continue
+				}
+				pids = append(pids, pid)
+				if statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+					idx := strings.LastIndex(string(statData), ")")
+					if idx != -1 && idx+2 < len(statData) {
+						statFields := strings.Fields(string(statData[idx+2:]))
+						if len(statFields) >= 2 {
+							if ppid, _ := strconv.Atoi(statFields[1]); ppid > 0 {
+								parentOf[pid] = ppid
+							}
+						}
+						if len(statFields) >= 3 {
+							if pgrp, _ := strconv.Atoi(statFields[2]); pgrp > 0 {
+								pgrpOf[pid] = pgrp
+							}
+						}
+					}
+				}
+			}
+
+			isDescendant := func(pid int) bool {
+				if pid == parentPID {
+					return false
+				}
+				if pgrp, ok := pgrpOf[pid]; ok && pgrp == parentPID {
+					return true
+				}
+				curr := pid
+				for {
+					ppid, ok := parentOf[curr]
+					if !ok || ppid <= 1 {
+						return false
+					}
+					if ppid == parentPID {
+						return true
+					}
+					curr = ppid
+				}
+			}
+
+			// Priority 1: A descendant whose comm is pause
+			for _, pid := range pids {
+				if isDescendant(pid) {
+					comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+					cStr := strings.TrimSpace(string(comm))
+					if cStr == "pause" {
+						return pid
+					}
+				}
+			}
+
+			// Priority 2: Any descendant whose network namespace differs from host /proc/1/ns/net
+			hostNetns, _ := os.Readlink("/proc/1/ns/net")
+			if hostNetns != "" {
+				for _, pid := range pids {
+					if isDescendant(pid) {
+						ns, _ := os.Readlink(fmt.Sprintf("/proc/%d/ns/net", pid))
+						if ns != "" && ns != hostNetns {
+							comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+							cStr := strings.TrimSpace(string(comm))
+							if !strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "plaidtainer") {
+								return pid
+							}
+						}
+					}
+				}
+			}
+
+			// Priority 3: Any non-fuse descendant whose comm is not starter/apptainer/plaidtainer
+			for _, pid := range pids {
+				if isDescendant(pid) {
+					comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+					cStr := strings.TrimSpace(string(comm))
+					if !strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "apptainer") && !strings.Contains(cStr, "plaidtainer") {
+						return pid
+					}
+				}
+			}
+		}
+
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return parentPID
+}
+
 // runCommandWithCleanup runs a command with bounded signal trapping and cleanup callback.
 func runCommandWithCleanup(bin string, args []string, cleanup func()) int {
+	return runCommandWithCleanupAndReadiness(bin, args, cleanup, "", "", "", "")
+}
+
+// runCommandWithCleanupAndReadiness runs a command with bounded signal trapping, cleanup callback,
+// and optional post-launch readiness handshake file generation recording actual container netns and PID.
+func runCommandWithCleanupAndReadiness(bin string, args []string, cleanup func(), readinessFile string, containerID, ipStr, gwStr string) int {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -308,6 +416,16 @@ func runCommandWithCleanup(bin string, args []string, cleanup func()) int {
 		}
 		fmt.Fprintf(os.Stderr, "Error starting %s: %v\n", bin, err)
 		return 1
+	}
+
+	if readinessFile != "" {
+		go func() {
+			cpid := findContainerPID(cmd.Process.Pid)
+			netnsPath := fmt.Sprintf("/proc/%d/ns/net", cpid)
+			readinessData := fmt.Sprintf(`{"pause_pid":%d,"netns_path":"%s","endpoint_id":"%s","ip":"%s","gateway":"%s"}`+"\n",
+				cpid, netnsPath, containerID, ipStr, gwStr)
+			_ = os.WriteFile(readinessFile, []byte(readinessData), 0644)
+		}()
 	}
 
 	done := make(chan error, 1)

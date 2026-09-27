@@ -8,17 +8,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"plaid/pkg/api"
 )
 
 type testAPIHandler struct {
+	mu        sync.Mutex
 	endpoints map[string]*api.Request
 }
 
 func (h *testAPIHandler) HandleAddEndpoint(req *api.Request, tapFD int) error {
+	h.mu.Lock()
 	h.endpoints[req.PodID] = req
+	h.mu.Unlock()
 	if tapFD >= 0 {
 		_ = os.NewFile(uintptr(tapFD), "tap").Close()
 	}
@@ -26,8 +30,10 @@ func (h *testAPIHandler) HandleAddEndpoint(req *api.Request, tapFD int) error {
 }
 
 func (h *testAPIHandler) HandleRemoveEndpoint(req *api.Request) error {
+	h.mu.Lock()
 	delete(h.endpoints, req.PodID)
 	delete(h.endpoints, req.ContainerID)
+	h.mu.Unlock()
 	return nil
 }
 
@@ -39,9 +45,25 @@ func (h *testAPIHandler) HandleRemoveRoute(req *api.Request) error {
 	return nil
 }
 
+func (h *testAPIHandler) SetEndpoint(key string, req *api.Request) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.endpoints[key] = req
+}
+
+func (h *testAPIHandler) HasEndpoint(key string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, ok := h.endpoints[key]
+	return ok
+}
+
 func (h *testAPIHandler) HandleGetStatus() (*api.Response, error) {
+	h.mu.Lock()
+	cnt := len(h.endpoints)
+	h.mu.Unlock()
 	return &api.Response{
-		EndpointsCount: len(h.endpoints),
+		EndpointsCount: cnt,
 	}, nil
 }
 
@@ -81,11 +103,11 @@ func TestCNIPlugin(t *testing.T) {
 	}
 
 	// 2. Test DEL when endpoint is pre-registered under containerID but K8S_POD_NAME is different
-	handler.endpoints["cont-123"] = &api.Request{
+	handler.SetEndpoint("cont-123", &api.Request{
 		PodID:       "cont-123",
 		ContainerID: "cont-123",
 		PodName:     "test-pod",
-	}
+	})
 
 	delConf := fmt.Sprintf(`{
 		"cniVersion": "0.4.0",
@@ -108,7 +130,7 @@ func TestCNIPlugin(t *testing.T) {
 	}
 
 	// Verify the endpoint was removed under its canonical containerID!
-	if _, exists := handler.endpoints["cont-123"]; exists {
+	if handler.HasEndpoint("cont-123") {
 		t.Fatalf("CNI DEL failed to remove endpoint with canonical containerID cont-123 when K8S_POD_NAME was different")
 	}
 

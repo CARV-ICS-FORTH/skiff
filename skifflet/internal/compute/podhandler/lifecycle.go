@@ -165,6 +165,16 @@ func (l *PodLifecycle) GetPodStatus() *corev1.PodStatus {
 	return l.publishedPod.Status.DeepCopy()
 }
 
+// Publish updates the published snapshot of the pod from an authoritative source.
+func (l *PodLifecycle) Publish(snapshot *corev1.Pod) {
+	if snapshot == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.publishedPod = snapshot.DeepCopy()
+}
+
 // UpdateFromAPI updates the desired spec without overwriting local runtime state.
 func (l *PodLifecycle) UpdateFromAPI(newPod *corev1.Pod) {
 	l.mu.Lock()

@@ -384,18 +384,16 @@ while true; do
         fi
     fi
     if ! kill -0 "$SKIFFLET_PID" 2>/dev/null; then
-        echo "WARNING: skifflet (PID $SKIFFLET_PID) exited! Restarting skifflet in 12s..." >&2
-        sleep 12
-        start_skifflet
+        echo "FATAL: skifflet (PID $SKIFFLET_PID) exited unexpectedly!" >&2
+        exit 1
     fi
     if ! kill -0 "$PLAIDD_PID" 2>/dev/null; then
-        echo "WARNING: plaidd (PID $PLAIDD_PID) exited! Restarting plaidd in 5s..." >&2
-        sleep 5
-        start_plaidd
+        echo "FATAL: plaidd (PID $PLAIDD_PID) exited unexpectedly!" >&2
+        exit 1
     fi
     if ! kill -0 "$KUBE_PROXY_PID" 2>/dev/null; then
-        echo "WARNING: kube-proxy (PID $KUBE_PROXY_PID) exited! Restarting kube-proxy..." >&2
-        start_kube_proxy
+        echo "FATAL: kube-proxy (PID $KUBE_PROXY_PID) exited unexpectedly!" >&2
+        exit 1
     fi
     sleep 2
 done

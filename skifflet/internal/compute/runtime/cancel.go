@@ -104,9 +104,9 @@ func GetProcessStartTime(pid int) (uint64, error) {
 	return startTime, nil
 }
 
-// verifyProcessIdentity checks whether a process with the given PID matches the recorded process identity.
+// VerifyProcessIdentity checks whether a process with the given PID matches the recorded process identity.
 // If /proc is present and recordedStartTime > 0, it verifies that current start time matches recordedStartTime.
-func verifyProcessIdentity(pid int, recordedStartTime uint64) bool {
+func VerifyProcessIdentity(pid int, recordedStartTime uint64) bool {
 	if pid <= 1 {
 		return false
 	}
@@ -126,6 +126,10 @@ func verifyProcessIdentity(pid int, recordedStartTime uint64) bool {
 	}
 
 	return true
+}
+
+func verifyProcessIdentity(pid int, recordedStartTime uint64) bool {
+	return VerifyProcessIdentity(pid, recordedStartTime)
 }
 
 // KillProcessByPID terminates a process by its PID using syscall.Kill with a default timeout of 35 seconds.
@@ -204,21 +208,9 @@ func KillPodProcessesWithTimeout(primaryPIDStr string, secondaryPIDStrs []string
 	}
 
 	/*
-		Send SIGTERM using syscall.Kill to the primary process and all secondary processes,
-		and allow them to close gracefully.
+		Phase 1: Send SIGTERM to all secondary (application) processes first,
+		allowing them to perform graceful shutdown while pod network/sandbox remains intact.
 	*/
-	_ = syscall.Kill(-primaryPID, syscall.SIGTERM)
-	if err := syscall.Kill(primaryPID, syscall.SIGTERM); err != nil {
-		// If the process does not exist (ESRCH), consider it as already terminated.
-		if errors.Is(err, syscall.ESRCH) {
-			sweepSecondaryPIDs(secondaryPIDs)
-			return "", ErrInvalidJob
-		}
-
-		sweepSecondaryPIDs(secondaryPIDs)
-		return "", fmt.Errorf("could not kill process '%d': %w", primaryPID, err)
-	}
-
 	for _, sec := range secondaryPIDs {
 		if sec.pid > 1 && verifyProcessIdentity(sec.pid, sec.startTime) {
 			_ = syscall.Kill(-sec.pid, syscall.SIGTERM)
@@ -226,6 +218,59 @@ func KillPodProcessesWithTimeout(primaryPIDStr string, secondaryPIDStrs []string
 		}
 	}
 
+	allSecondaryDead := func() bool {
+		for _, sec := range secondaryPIDs {
+			if !isProcessDead(sec.pid) {
+				return false
+			}
+		}
+		return true
+	}
+
+	appDeadline := time.Now().Add(timeout)
+	fastUntil := time.Now().Add(1 * time.Second)
+
+	for !allSecondaryDead() && time.Now().Before(appDeadline) {
+		pollInterval := 50 * time.Millisecond
+		if time.Now().After(fastUntil) {
+			pollInterval = 250 * time.Millisecond
+		}
+		time.Sleep(pollInterval)
+	}
+
+	// Escalate SIGKILL to any surviving secondary containers with start time revalidation
+	for _, sec := range secondaryPIDs {
+		if sec.pid > 1 && !isProcessDead(sec.pid) && verifyProcessIdentity(sec.pid, sec.startTime) {
+			_ = syscall.Kill(-sec.pid, syscall.SIGKILL)
+			_ = syscall.Kill(sec.pid, syscall.SIGKILL)
+		}
+	}
+
+	/*
+		Phase 2: Now that application containers have finished (or been SIGKILLed),
+		terminate the primary (pause) container to release the network sandbox.
+	*/
+	_ = syscall.Kill(-primaryPID, syscall.SIGTERM)
+	if err := syscall.Kill(primaryPID, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return "", ErrInvalidJob
+		}
+		return "", fmt.Errorf("could not kill pause process '%d': %w", primaryPID, err)
+	}
+
+	pauseDeadline := time.Now().Add(5 * time.Second)
+	for !isProcessDead(primaryPID) && time.Now().Before(pauseDeadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !isProcessDead(primaryPID) && verifyProcessIdentity(primaryPID, primaryStartTime) {
+		_ = syscall.Kill(-primaryPID, syscall.SIGKILL)
+		if err := syscall.Kill(primaryPID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return "", fmt.Errorf("could not SIGKILL process '%d': %w", primaryPID, err)
+		}
+	}
+
+	killDeadline := time.Now().Add(5 * time.Second)
 	allProcessesDead := func() bool {
 		if !isProcessDead(primaryPID) {
 			return false
@@ -238,43 +283,6 @@ func KillPodProcessesWithTimeout(primaryPIDStr string, secondaryPIDStrs []string
 		return true
 	}
 
-	deadline := time.Now().Add(timeout)
-	fastUntil := time.Now().Add(1 * time.Second)
-
-	for {
-		if allProcessesDead() {
-			return "", nil
-		}
-
-		if time.Now().After(deadline) {
-			break
-		}
-
-		pollInterval := 50 * time.Millisecond
-		if time.Now().After(fastUntil) {
-			pollInterval = 250 * time.Millisecond
-		}
-		time.Sleep(pollInterval)
-	}
-
-	// Timeout reached: revalidate identities before escalating to SIGKILL
-	if verifyProcessIdentity(primaryPID, primaryStartTime) {
-		_ = syscall.Kill(-primaryPID, syscall.SIGKILL)
-		if err := syscall.Kill(primaryPID, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			return "", fmt.Errorf("could not SIGKILL process '%d': %w", primaryPID, err)
-		}
-	}
-
-	// Escalate SIGKILL to secondary container process groups (-pgid) and PIDs with start time revalidation
-	for _, sec := range secondaryPIDs {
-		if sec.pid > 1 && verifyProcessIdentity(sec.pid, sec.startTime) {
-			_ = syscall.Kill(-sec.pid, syscall.SIGKILL)
-			_ = syscall.Kill(sec.pid, syscall.SIGKILL)
-		}
-	}
-
-	killDeadline := time.Now().Add(5 * time.Second)
-
 	for {
 		if allProcessesDead() {
 			return "", nil
@@ -284,6 +292,6 @@ func KillPodProcessesWithTimeout(primaryPIDStr string, secondaryPIDStrs []string
 			return "", fmt.Errorf("process '%d' did not exit after SIGKILL", primaryPID)
 		}
 
-		time.Sleep(250 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 }

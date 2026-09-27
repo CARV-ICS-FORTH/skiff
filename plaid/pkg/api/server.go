@@ -219,11 +219,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	switch req.Action {
 	case ActionAddEndpoint:
 		if s.epHandler != nil {
+			// Ownership of tapFD is transferred to epHandler (which wraps it into os.File)
+			claimed = true
 			err = s.epHandler.HandleAddEndpoint(&req, tapFD)
 			if err != nil {
 				resp = Response{Success: false, Error: err.Error()}
 			} else {
-				claimed = true
 				resp = Response{Success: true}
 			}
 		} else {
@@ -334,12 +335,12 @@ func (s *Server) Close() error {
 
 		if s.listener != nil {
 			err = s.listener.Close()
+			_ = os.Remove(s.socketPath)
 		}
-		_ = os.Remove(s.socketPath)
 		if s.lockFile != nil {
 			_ = unix.Flock(int(s.lockFile.Fd()), unix.LOCK_UN)
 			_ = s.lockFile.Close()
-			_ = os.Remove(s.socketPath + ".lock")
+			// Retain stable .lock file; do not remove to avoid contender inode races.
 		}
 	})
 	return err

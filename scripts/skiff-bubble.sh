@@ -47,6 +47,16 @@ start_socat_relays() {
     echo "Started kubelet socat relay on ${HOST_IP_DETECTED}:10250/tcp"
 }
 
+EXIT_CODE=0
+handle_term() {
+    EXIT_CODE=143
+    exit $EXIT_CODE
+}
+handle_int() {
+    EXIT_CODE=130
+    exit $EXIT_CODE
+}
+
 cleanup() {
     trap - EXIT INT TERM
     echo "Cleaning up Bubble $NAME..."
@@ -65,9 +75,12 @@ cleanup() {
     fi
     apptainer instance stop "$NAME" 2>/dev/null || true
     rm -f "$SLIRP_SOCK" 2>/dev/null || true
+    exit "${EXIT_CODE:-0}"
 }
 
-trap cleanup EXIT INT TERM
+trap handle_term TERM
+trap handle_int INT
+trap cleanup EXIT
 
 mkdir -p "$HOME/.skiff"
 mkdir -p "$HOME/.skiff/.apptainer/tmp"
@@ -158,7 +171,7 @@ send_slirp_command() {
     local resp=""
     while [ "$wait_time" -lt "$max_wait" ]; do
         if [ -S "$SLIRP_SOCK" ]; then
-            resp=$(printf '%s' "$cmd" | nc -U "$SLIRP_SOCK" 2>/dev/null || true)
+            resp=$(printf '%s' "$cmd" | nc -w 2 -U "$SLIRP_SOCK" 2>/dev/null || true)
             if echo "$resp" | grep -q '"return"'; then
                 return 0
             fi
@@ -175,21 +188,37 @@ send_slirp_command() {
 }
 
 echo "Configuring slirp4netns host forwarding..."
-send_slirp_command "$FWD_JSON_VXLAN" "VXLAN (UDP 8472)"
-send_slirp_command "$FWD_JSON_KUBELET" "Kubelet (TCP 10250)"
+send_slirp_command "$FWD_JSON_VXLAN" "VXLAN (UDP 8472)" || exit 1
+send_slirp_command "$FWD_JSON_KUBELET" "Kubelet (TCP 10250)" || exit 1
 if [ "$SKIFF_ROLE" = "controller" ]; then
-    send_slirp_command "$FWD_JSON_K3S" "K3s (TCP 6443)"
+    send_slirp_command "$FWD_JSON_K3S" "K3s (TCP 6443)" || exit 1
 fi
 
 start_socat_relays
 
 echo "Bubble $NAME started successfully."
 
-# Supervise both slirp and container instance
-while kill -0 "$SLIRP_PID" 2>/dev/null; do
+# Supervise slirp, container instance, and socat relays continuously
+while true; do
+    if ! kill -0 "$SLIRP_PID" 2>/dev/null; then
+        echo "ERROR: slirp4netns (PID $SLIRP_PID) terminated unexpectedly!" >&2
+        EXIT_CODE=1
+        exit 1
+    fi
     if ! apptainer instance list 2>/dev/null | grep -q "\b$NAME\b"; then
-        echo "Apptainer instance $NAME terminated."
-        break
+        echo "ERROR: Apptainer instance $NAME terminated unexpectedly!" >&2
+        EXIT_CODE=1
+        exit 1
+    fi
+    if [[ -n ${SOCAT_PID_6443:-} ]] && ! kill -0 "$SOCAT_PID_6443" 2>/dev/null; then
+        echo "ERROR: Socat relay 6443 (PID $SOCAT_PID_6443) terminated unexpectedly!" >&2
+        EXIT_CODE=1
+        exit 1
+    fi
+    if [[ -n ${SOCAT_PID_10250:-} ]] && ! kill -0 "$SOCAT_PID_10250" 2>/dev/null; then
+        echo "ERROR: Socat relay 10250 (PID $SOCAT_PID_10250) terminated unexpectedly!" >&2
+        EXIT_CODE=1
+        exit 1
     fi
     sleep 2
 done

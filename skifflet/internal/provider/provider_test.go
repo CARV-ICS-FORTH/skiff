@@ -276,3 +276,198 @@ func TestProvider_UnsupportedOperations(t *testing.T) {
 		t.Fatalf("expected NotFound for RunInContainer on missing pod, got: %v", err)
 	}
 }
+
+func TestProvider_UIDIsolation_RaceFree(t *testing.T) {
+	podKey := client.ObjectKey{Namespace: "default", Name: "race-uid-pod"}
+
+	pod1 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: podKey.Namespace,
+			Name:      podKey.Name,
+			UID:       "uid-generation-1",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "c1", Image: "alpine"}},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	pod2 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: podKey.Namespace,
+			Name:      podKey.Name,
+			UID:       "uid-generation-2",
+		},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "c1", Image: "alpine"}},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodPending},
+	}
+
+	var notifiedUIDs []string
+	vk := &VirtualK8S{
+		updatedPod: func(p *corev1.Pod) {
+			notifiedUIDs = append(notifiedUIDs, string(p.UID))
+		},
+	}
+
+	// Register pod2 as the current active UID
+	vk.activeUIDs.Store(podKey, pod2.UID)
+	vk.pods.Store(podKey, pod2.DeepCopy())
+
+	// Stale callbacks from superseded pod1 must be rejected
+	vk.saveAndNotifyPod("old_pod_callback", pod1)
+
+	current, err := vk.GetPod(context.Background(), podKey.Namespace, podKey.Name)
+	if err != nil {
+		t.Fatalf("GetPod failed: %v", err)
+	}
+	if current.UID != pod2.UID {
+		t.Fatalf("stale callback superseded active pod UID: got %s, expected %s", current.UID, pod2.UID)
+	}
+
+	// Stale deletion targeting superseded pod1 must be ignored
+	err = vk.DeletePod(context.Background(), pod1)
+	if err != nil {
+		t.Fatalf("DeletePod with old UID returned error: %v", err)
+	}
+
+	// Active pod2 must still exist
+	current, err = vk.GetPod(context.Background(), podKey.Namespace, podKey.Name)
+	if err != nil {
+		t.Fatalf("active pod was deleted by stale DeletePod: %v", err)
+	}
+	if current.UID != pod2.UID {
+		t.Fatalf("active pod changed after stale DeletePod: got %s, expected %s", current.UID, pod2.UID)
+	}
+}
+
+func TestFollowLogReader_CloseUnblocksRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "test.log")
+	if err := os.WriteFile(logPath, []byte("hello\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := newFollowLogReader(context.Background(), logPath, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Read initial data
+	buf := make([]byte, 64)
+	n, err := reader.Read(buf)
+	if err != nil || n == 0 {
+		t.Fatalf("expected to read initial bytes, got n=%d, err=%v", n, err)
+	}
+
+	// Now reader is at EOF and will wait. Call Close() in background and verify it unblocks Read().
+	readDone := make(chan struct{})
+	var readErr error
+	go func() {
+		_, readErr = reader.Read(buf)
+		close(readDone)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	if err := reader.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	select {
+	case <-readDone:
+		if readErr != io.EOF {
+			t.Fatalf("expected io.EOF after Close(), got %v", readErr)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("reader.Read() did not unblock after Close()")
+	}
+}
+
+func TestFollowLogReader_DelayedFileReopen(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "delayed.log")
+
+	// Create reader BEFORE file exists
+	reader, err := newFollowLogReader(context.Background(), logPath, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	readDone := make(chan string)
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, err := reader.Read(buf)
+			if n > 0 {
+				readDone <- string(buf[:n])
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	if err := os.WriteFile(logPath, []byte("delayed line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case data := <-readDone:
+		if data != "delayed line\n" {
+			t.Fatalf("expected 'delayed line\\n', got %q", data)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("reader did not read delayed file after creation")
+	}
+}
+
+func TestFollowLogReader_PreservesHistoryWithoutTail(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "history.log")
+	if err := os.WriteFile(logPath, []byte("line 1\nline 2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	reader, err := newFollowLogReader(context.Background(), logPath, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+
+	buf := make([]byte, 128)
+	n, err := reader.Read(buf)
+	if err != nil {
+		t.Fatalf("failed to read initial history: %v", err)
+	}
+	if string(buf[:n]) != "line 1\nline 2\n" {
+		t.Fatalf("expected 'line 1\\nline 2\\n', got %q", string(buf[:n]))
+	}
+
+	// Now append a new line
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("line 3\n")
+	_ = f.Close()
+
+	n2, err := reader.Read(buf)
+	if err != nil {
+		t.Fatalf("failed to read appended line: %v", err)
+	}
+	if string(buf[:n2]) != "line 3\n" {
+		t.Fatalf("expected 'line 3\\n', got %q", string(buf[:n2]))
+	}
+}
+
+func TestGetContainerLogs_RejectsPrevious(t *testing.T) {
+	vk := &VirtualK8S{}
+	_, err := vk.GetContainerLogs(context.Background(), "default", "pod-x", "container-y", vkapi.ContainerLogOpts{Previous: true})
+	if err == nil || !errdefs.IsInvalidInput(err) {
+		t.Fatalf("expected InvalidInput error when Previous=true, got %v", err)
+	}
+}

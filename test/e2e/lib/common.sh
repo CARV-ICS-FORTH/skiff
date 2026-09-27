@@ -46,6 +46,11 @@ e2e_die() {
     exit 1
 }
 
+e2e_skip() {
+    echo -e "${_YEL}[SKIP]${_NC} [E2E-${E2E_CASE:-??}] $*" >&2
+    exit 77
+}
+
 E2E_FAILED=0
 
 # ---------------------------------------------------------------------------
@@ -142,21 +147,34 @@ E2E_POLL_INTERVAL="${E2E_POLL_INTERVAL:-2}"
 e2e_wait_condition() {
     local deadline="$1" desc="$2"
     shift 2
-    local elapsed=0
-    while ! eval "$@" >/dev/null 2>&1; do
+    local start_time now elapsed
+    start_time=$(date +%s)
+    local op_timeout="${E2E_OP_TIMEOUT:-10}"
+    while true; do
+        local ok=1
+        if command -v timeout >/dev/null 2>&1; then
+            timeout "$op_timeout" bash -c "$*" >/dev/null 2>&1 || ok=0
+        else
+            eval "$@" >/dev/null 2>&1 || ok=0
+        fi
+        if [ "$ok" -eq 1 ]; then
+            return 0
+        fi
+        now=$(date +%s)
+        elapsed=$((now - start_time))
         if [ "$elapsed" -ge "$deadline" ]; then
             e2e_fail "Timed out after ${deadline}s waiting for: ${desc}"
             return 1
         fi
         sleep "$E2E_POLL_INTERVAL"
-        elapsed=$((elapsed + E2E_POLL_INTERVAL))
     done
 }
 
 # e2e_wait_pod_phase NS POD PHASE DEADLINE
 e2e_wait_pod_phase() {
     local ns="$1" pod="$2" want="$3" deadline="$4"
-    local elapsed=0 got
+    local start_time now elapsed got
+    start_time=$(date +%s)
     while true; do
         got=$(e2e_kubectl get pod "$pod" -n "$ns" \
             -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
@@ -168,12 +186,13 @@ e2e_wait_pod_phase() {
                 return 1
             fi
         fi
+        now=$(date +%s)
+        elapsed=$((now - start_time))
         if [ "$elapsed" -ge "$deadline" ]; then
             e2e_fail "Pod ${ns}/${pod}: timed out after ${deadline}s in phase '${got}' (want '${want}')"
             return 1
         fi
         sleep "$E2E_POLL_INTERVAL"
-        elapsed=$((elapsed + E2E_POLL_INTERVAL))
     done
 }
 
@@ -188,40 +207,43 @@ e2e_wait_pod_ready() {
 # e2e_wait_job_complete NS JOB DEADLINE
 e2e_wait_job_complete() {
     local ns="$1" job="$2" deadline="$3"
-    local elapsed=0 succeeded
+    local start_time now elapsed succeeded failed
+    start_time=$(date +%s)
     e2e_log "Waiting for job ${ns}/${job} to complete (${deadline}s)..."
     while true; do
         succeeded=$(e2e_kubectl get job "$job" -n "$ns" \
             -o jsonpath='{.status.succeeded}' 2>/dev/null || echo "0")
         [ "${succeeded:-0}" -ge 1 ] && return 0
         # Check for failure
-        local failed
         failed=$(e2e_kubectl get job "$job" -n "$ns" \
             -o jsonpath='{.status.failed}' 2>/dev/null || echo "0")
         if [ "${failed:-0}" -ge 1 ]; then
             e2e_fail "Job ${ns}/${job} has failed pods"
             return 1
         fi
+        now=$(date +%s)
+        elapsed=$((now - start_time))
         if [ "$elapsed" -ge "$deadline" ]; then
             e2e_fail "Job ${ns}/${job}: timed out after ${deadline}s"
             return 1
         fi
         sleep "$E2E_POLL_INTERVAL"
-        elapsed=$((elapsed + E2E_POLL_INTERVAL))
     done
 }
 
 # e2e_wait_pod_gone NS POD DEADLINE
 e2e_wait_pod_gone() {
     local ns="$1" pod="$2" deadline="$3"
-    local elapsed=0
+    local start_time now elapsed
+    start_time=$(date +%s)
     while e2e_kubectl get pod "$pod" -n "$ns" >/dev/null 2>&1; do
+        now=$(date +%s)
+        elapsed=$((now - start_time))
         if [ "$elapsed" -ge "$deadline" ]; then
             e2e_fail "Pod ${ns}/${pod} still exists after ${deadline}s"
             return 1
         fi
         sleep "$E2E_POLL_INTERVAL"
-        elapsed=$((elapsed + E2E_POLL_INTERVAL))
     done
 }
 
@@ -298,10 +320,13 @@ e2e_cleanup_run() {
 # Default trap: run cleanup stack and preserve on failure.
 _e2e_on_exit() {
     local rc=$?
-    if [ "$rc" -ne 0 ] || [ "${E2E_FAILED:-0}" -ne 0 ]; then
+    if [ "$rc" -eq 77 ]; then
+        e2e_log "Case ${E2E_CASE} skipped (rc=77)"
+    elif [ "$rc" -ne 0 ] || [ "${E2E_FAILED:-0}" -ne 0 ]; then
         e2e_log "Case ${E2E_CASE} exiting with failure (rc=${rc}, E2E_FAILED=${E2E_FAILED:-0})"
     fi
     e2e_cleanup_run
+    exit "$rc"
 }
 trap '_e2e_on_exit' EXIT
 

@@ -334,6 +334,14 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 		startErr = err
 		return fmt.Errorf("failed to initialize runtime dir: %w", err)
 	}
+
+	// Acquire API socket lock and start listener before mutating network state or binding overlay ports.
+	// This guarantees that a duplicate daemon fails immediately without disturbing an existing live daemon.
+	if err := d.apiServer.Start(ctx); err != nil {
+		startErr = err
+		return fmt.Errorf("failed to start API server: %w", err)
+	}
+
 	if d.cfg.GatewayMode == "tap" {
 		_, nodeNet, _ := net.ParseCIDR(d.cfg.NodeCIDR)
 		_, clusterNet, _ := net.ParseCIDR(d.cfg.ClusterCIDR)
@@ -364,11 +372,6 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 				fmt.Fprintf(os.Stderr, "Warning: failed to start slirp4netns: %v\n", err)
 			}
 		}()
-	}
-
-	if err := d.apiServer.Start(ctx); err != nil {
-		startErr = err
-		return fmt.Errorf("failed to start API server: %w", err)
 	}
 
 	if d.k8sCtrl != nil {

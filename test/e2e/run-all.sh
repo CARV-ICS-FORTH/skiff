@@ -28,7 +28,7 @@ NETWORK_DIR="$E2E_DIR/network"
 ONLY_CASE=""
 export NO_TEARDOWN=0
 NETWORK_ONLY=0
-export SKIFF_RECOVERY_POLICY="${SKIFF_RECOVERY_POLICY:-adopt}"
+export SKIFF_RECOVERY_POLICY="${SKIFF_RECOVERY_POLICY:-fail-the-job}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -76,11 +76,14 @@ record() {
 run_script() {
     local label="$1"
     shift
-    local start end duration result
+    local start end duration result rc=0
     start=$(date +%s)
     e2e_log "Running ${label}: $*"
-    if "$@" >> "${E2E_LOGDIR}/${label}.log" 2>&1; then
+    "$@" >> "${E2E_LOGDIR}/${label}.log" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
         result=PASS
+    elif [ "$rc" -eq 77 ]; then
+        result=SKIP
     else
         result=FAIL
     fi
@@ -88,7 +91,13 @@ run_script() {
     duration=$((end - start))
     record "$label" "$result" "$duration"
     local colour
-    [ "$result" = "PASS" ] && colour='\033[0;32m' || colour='\033[0;31m'
+    if [ "$result" = "PASS" ]; then
+        colour='\033[0;32m'
+    elif [ "$result" = "SKIP" ]; then
+        colour='\033[1;33m'
+    else
+        colour='\033[0;31m'
+    fi
     echo -e "  ${colour}${result}\033[0m  ${label}  (${duration}s)" >&2
 }
 
@@ -99,16 +108,21 @@ DEFERRED_TEARDOWN=""
 
 _run_deferred() {
     if [ -n "$DEFERRED_TEARDOWN" ]; then
+        local teardown_cmd="$DEFERRED_TEARDOWN"
+        DEFERRED_TEARDOWN="" # Run once
         if [ "${NO_TEARDOWN:-0}" -eq 1 ]; then
             e2e_log "Skipping deferred case-01 teardown (--no-teardown requested)"
             record "E2E-01-teardown" "SKIP" "0"
             return 0
         fi
         e2e_log "Running deferred case-01 teardown..."
-        local start end duration result
+        local start end duration result rc=0
         start=$(date +%s)
-        if bash -c "$DEFERRED_TEARDOWN" >> "${E2E_LOGDIR}/teardown.log" 2>&1; then
+        bash -c "$teardown_cmd" >> "${E2E_LOGDIR}/teardown.log" 2>&1 || rc=$?
+        if [ "$rc" -eq 0 ]; then
             result=PASS
+        elif [ "$rc" -eq 77 ]; then
+            result=SKIP
         else
             result=FAIL
             OVERALL=1
@@ -133,72 +147,44 @@ e2e_record_versions 2>/dev/null || true
 echo ""
 
 # ---------------------------------------------------------------------------
-# NETWORKING TESTS (Plaid & TAP Gateway Acceptance)
+# Test Execution Functions
 # ---------------------------------------------------------------------------
-echo "--- NETWORKING ACCEPTANCE TESTS ---------------------------------------"
+run_networking_tests() {
+    echo "--- NETWORKING ACCEPTANCE TESTS ---------------------------------------"
+    e2e_require_nodes 2
 
-e2e_require_nodes 2
+    # NET-1: Plaid integration (standalone daemon + CNI, requires root)
+    run_script "NET-1-plaid-integration" sudo "$NETWORK_DIR/test-plaid-integration.sh"
 
-# NET-1: Plaid integration (standalone daemon + CNI, requires root)
-run_script "NET-1-plaid-integration" sudo "$NETWORK_DIR/test-plaid-integration.sh"
+    # NET-2: Plaid all (privileged + unprivileged; calls sub-scripts internally)
+    run_script "NET-2-plaid-all" "$NETWORK_DIR/test-plaid-all.sh"
 
-# NET-2: Plaid all (privileged + unprivileged; calls sub-scripts internally)
-run_script "NET-2-plaid-all" "$NETWORK_DIR/test-plaid-all.sh"
+    # NET-3: TAP acceptance (direct PodIP, ClusterIP, DNS, API Service)
+    e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s \
+        >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
+    run_script "NET-3-tap-acceptance" "$NETWORK_DIR/test-tap-acceptance.sh"
 
-# NET-3: TAP acceptance (direct PodIP, ClusterIP, DNS, API Service)
-e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s \
-    >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
-run_script "NET-3-tap-acceptance" "$NETWORK_DIR/test-tap-acceptance.sh"
+    # NET-4: TAP webhook (admission webhook local + remote backend)
+    run_script "NET-4-tap-webhook" "$NETWORK_DIR/test-tap-webhook.sh"
 
-# NET-4: TAP webhook (admission webhook local + remote backend)
-run_script "NET-4-tap-webhook" "$NETWORK_DIR/test-tap-webhook.sh"
+    # Clean up TAP namespace after NET-3/4
+    e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s \
+        >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
+    e2e_kubectl delete namespace tap-webhook --ignore-not-found --timeout=60s \
+        >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
+    echo ""
+}
 
-# Clean up TAP namespace after NET-3/4
-e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s \
-    >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
-e2e_kubectl delete namespace tap-webhook --ignore-not-found --timeout=60s \
-    >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
-
-echo ""
-
-if [ "$NETWORK_ONLY" -eq 1 ]; then
-    e2e_log "Networking tests only mode; stopping here."
-    # Print summary below
-fi
-
-# ---------------------------------------------------------------------------
-# E2E CASES
-# ---------------------------------------------------------------------------
-if [ "$NETWORK_ONLY" -eq 0 ]; then
-    echo "--- E2E CASES ---------------------------------------------------------"
-
-    run_case() {
-        local n="$1" name="$2"
-        if [ -n "$ONLY_CASE" ] && [ "$ONLY_CASE" != "$n" ]; then
-            return 0
-        fi
-        run_script "E2E-${n}" "$E2E_DIR/case-${n}-${name}.sh"
-    }
-
-    # Case 01 is special: its teardown is deferred.
-    if [ -z "$ONLY_CASE" ] || [ "$ONLY_CASE" = "01" ]; then
-        e2e_log "Running E2E-01 (startup)..."
-        start01=$(date +%s)
-        if E2E_CASE="01" bash "$E2E_DIR/case-01-startup.sh" \
-                >> "${E2E_LOGDIR}/E2E-01.log" 2>&1; then
-            result01=PASS
-            # Extract the deferred teardown command exported by case-01
-            # (case-01 writes it to $E2E_LOGDIR/case-01-teardown.sh)
-            DEFERRED_TEARDOWN="bash ${E2E_LOGDIR}/case-01-teardown.sh"
-        else
-            result01=FAIL
-            OVERALL=1
-        fi
-        end01=$(date +%s)
-        record "E2E-01" "$result01" "$((end01 - start01))"
-        echo -e "  $([ "$result01" = PASS ] && echo '\033[0;32m' || echo '\033[0;31m')${result01}\033[0m  E2E-01  ($((end01 - start01))s)" >&2
+run_case() {
+    local n="$1" name="$2"
+    if [ -n "$ONLY_CASE" ] && [ "$ONLY_CASE" != "$n" ]; then
+        return 0
     fi
+    run_script "E2E-${n}" "$E2E_DIR/case-${n}-${name}.sh"
+}
 
+run_workload_cases() {
+    echo "--- E2E CASES ---------------------------------------------------------"
     run_case "02" "init-shared-net"
     run_case "03" "direct-pod-net"
     run_case "04" "dns-clusterip-readiness"
@@ -208,7 +194,73 @@ if [ "$NETWORK_ONLY" -eq 0 ]; then
     run_case "08" "graceful-delete"
     run_case "09" "daemon-recovery"
     run_case "10" "image-failure"
+    run_case "11" "harness-selfcheck"
+    run_case "12" "daemon-collision"
+}
+
+run_startup_case() {
+    e2e_log "Running E2E-01 (startup)..."
+    DEFERRED_TEARDOWN="bash ${E2E_LOGDIR}/case-01-teardown.sh"
+    start01=$(date +%s)
+    local result01 rc01=0
+    if E2E_CASE="01" bash "$E2E_DIR/case-01-startup.sh" >> "${E2E_LOGDIR}/E2E-01.log" 2>&1; then
+        result01=PASS
+    else
+        result01=FAIL
+        OVERALL=1
+    fi
+    end01=$(date +%s)
+    record "E2E-01" "$result01" "$((end01 - start01))"
+    echo -e "  $([ "$result01" = PASS ] && echo '\033[0;32m' || echo '\033[0;31m')${result01}\033[0m  E2E-01  ($((end01 - start01))s)" >&2
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch based on options
+# ---------------------------------------------------------------------------
+if [ -n "$ONLY_CASE" ]; then
+    # Targeted single-case execution
+    if [ "$ONLY_CASE" = "01" ]; then
+        run_startup_case
+    else
+        e2e_require_nodes 2
+        case "$ONLY_CASE" in
+            02) run_case "02" "init-shared-net" ;;
+            03) run_case "03" "direct-pod-net" ;;
+            04) run_case "04" "dns-clusterip-readiness" ;;
+            05) run_case "05" "args-env-volumes" ;;
+            06) run_case "06" "logs-exec-portforward" ;;
+            07) run_case "07" "restart-policy" ;;
+            08) run_case "08" "graceful-delete" ;;
+            09) run_case "09" "daemon-recovery" ;;
+            10) run_case "10" "image-failure" ;;
+            11) run_case "11" "harness-selfcheck" ;;
+            12) run_case "12" "daemon-collision" ;;
+            *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
+        esac
+    fi
+elif [ "$NETWORK_ONLY" -eq 1 ]; then
+    run_networking_tests
+else
+    # Full aggregate run
+    if [ -z "${SKIFF_JOB_ID:-}" ]; then
+        # Fresh cluster mode: run E2E-01 first to submit job and bootstrap cluster
+        run_startup_case
+        if [ "${RESULTS[E2E-01]:-FAIL}" = "PASS" ]; then
+            run_networking_tests
+            run_workload_cases
+        else
+            e2e_fail "E2E-01 failed; aborting subsequent cases"
+        fi
+    else
+        # Attach mode: cluster is already running
+        e2e_require_nodes 2
+        run_networking_tests
+        run_workload_cases
+    fi
 fi
+
+# Execute deferred teardown explicitly before summary and results.json
+_run_deferred
 
 # ---------------------------------------------------------------------------
 # Summary
@@ -225,6 +277,7 @@ for label in \
     "NET-3-tap-acceptance" "NET-4-tap-webhook" \
     "E2E-01" "E2E-02" "E2E-03" "E2E-04" "E2E-05" \
     "E2E-06" "E2E-07" "E2E-08" "E2E-09" "E2E-10" \
+    "E2E-11" "E2E-12" \
     "E2E-01-teardown"; do
     result="${RESULTS[$label]:-SKIP}"
     dur="${DURATIONS[$label]:-}"

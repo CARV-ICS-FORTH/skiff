@@ -39,7 +39,7 @@ import (
 // 2. Applying container-specific environment variables from EnvFrom (ConfigMaps/Secrets)
 // 3. Applying container-specific environment variables (higher precedence)
 // 4. Resolving deferred runtime FieldRefs (status.podIP, status.hostIP, metadata.name, metadata.namespace, metadata.uid)
-func ResolveContainerEnvironment(pod *corev1.Pod, container *corev1.Container, serviceEnvs []corev1.EnvVar) []corev1.EnvVar {
+func ResolveContainerEnvironment(pod *corev1.Pod, container *corev1.Container, serviceEnvs []corev1.EnvVar) ([]corev1.EnvVar, error) {
 	envMap := make(map[string]string)
 	var order []string
 
@@ -56,12 +56,17 @@ func ResolveContainerEnvironment(pod *corev1.Pod, container *corev1.Container, s
 	}
 
 	// 2. Middle precedence: container.EnvFrom (ConfigMaps and Secrets)
-	if compute.K8SClientset != nil {
-		ctx := context.Background()
-		for _, envFrom := range container.EnvFrom {
-			if envFrom.ConfigMapRef != nil {
+	ctx := context.Background()
+	for _, envFrom := range container.EnvFrom {
+		if envFrom.ConfigMapRef != nil {
+			optional := envFrom.ConfigMapRef.Optional != nil && *envFrom.ConfigMapRef.Optional
+			if compute.K8SClientset != nil {
 				cm, err := compute.K8SClientset.CoreV1().ConfigMaps(pod.Namespace).Get(ctx, envFrom.ConfigMapRef.Name, metav1.GetOptions{})
-				if err == nil && cm != nil {
+				if err != nil {
+					if !optional {
+						return nil, fmt.Errorf("configmap %q not found: %w", envFrom.ConfigMapRef.Name, err)
+					}
+				} else if cm != nil {
 					for k, v := range cm.Data {
 						key := envFrom.Prefix + k
 						if len(validation.IsCIdentifier(key)) == 0 {
@@ -69,9 +74,18 @@ func ResolveContainerEnvironment(pod *corev1.Pod, container *corev1.Container, s
 						}
 					}
 				}
-			} else if envFrom.SecretRef != nil {
+			} else if !optional {
+				return nil, fmt.Errorf("k8s clientset unavailable to resolve configmap %q", envFrom.ConfigMapRef.Name)
+			}
+		} else if envFrom.SecretRef != nil {
+			optional := envFrom.SecretRef.Optional != nil && *envFrom.SecretRef.Optional
+			if compute.K8SClientset != nil {
 				sec, err := compute.K8SClientset.CoreV1().Secrets(pod.Namespace).Get(ctx, envFrom.SecretRef.Name, metav1.GetOptions{})
-				if err == nil && sec != nil {
+				if err != nil {
+					if !optional {
+						return nil, fmt.Errorf("secret %q not found: %w", envFrom.SecretRef.Name, err)
+					}
+				} else if sec != nil {
 					for k, v := range sec.Data {
 						key := envFrom.Prefix + k
 						if len(validation.IsCIdentifier(key)) == 0 {
@@ -79,6 +93,8 @@ func ResolveContainerEnvironment(pod *corev1.Pod, container *corev1.Container, s
 						}
 					}
 				}
+			} else if !optional {
+				return nil, fmt.Errorf("k8s clientset unavailable to resolve secret %q", envFrom.SecretRef.Name)
 			}
 		}
 	}
@@ -101,15 +117,43 @@ func ResolveContainerEnvironment(pod *corev1.Pod, container *corev1.Container, s
 				case "metadata.uid":
 					val = string(pod.UID)
 				}
-			} else if envVar.ValueFrom.ConfigMapKeyRef != nil && compute.K8SClientset != nil {
-				cm, err := compute.K8SClientset.CoreV1().ConfigMaps(pod.Namespace).Get(context.Background(), envVar.ValueFrom.ConfigMapKeyRef.Name, metav1.GetOptions{})
-				if err == nil && cm != nil {
-					val = cm.Data[envVar.ValueFrom.ConfigMapKeyRef.Key]
+			} else if envVar.ValueFrom.ConfigMapKeyRef != nil {
+				ref := envVar.ValueFrom.ConfigMapKeyRef
+				optional := ref.Optional != nil && *ref.Optional
+				if compute.K8SClientset != nil {
+					cm, err := compute.K8SClientset.CoreV1().ConfigMaps(pod.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+					if err != nil {
+						if !optional {
+							return nil, fmt.Errorf("configmap %q not found: %w", ref.Name, err)
+						}
+					} else if cm != nil {
+						if v, ok := cm.Data[ref.Key]; ok {
+							val = v
+						} else if !optional {
+							return nil, fmt.Errorf("key %q not found in configmap %q", ref.Key, ref.Name)
+						}
+					}
+				} else if !optional {
+					return nil, fmt.Errorf("k8s clientset unavailable to resolve configmap %q", ref.Name)
 				}
-			} else if envVar.ValueFrom.SecretKeyRef != nil && compute.K8SClientset != nil {
-				sec, err := compute.K8SClientset.CoreV1().Secrets(pod.Namespace).Get(context.Background(), envVar.ValueFrom.SecretKeyRef.Name, metav1.GetOptions{})
-				if err == nil && sec != nil {
-					val = string(sec.Data[envVar.ValueFrom.SecretKeyRef.Key])
+			} else if envVar.ValueFrom.SecretKeyRef != nil {
+				ref := envVar.ValueFrom.SecretKeyRef
+				optional := ref.Optional != nil && *ref.Optional
+				if compute.K8SClientset != nil {
+					sec, err := compute.K8SClientset.CoreV1().Secrets(pod.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+					if err != nil {
+						if !optional {
+							return nil, fmt.Errorf("secret %q not found: %w", ref.Name, err)
+						}
+					} else if sec != nil {
+						if v, ok := sec.Data[ref.Key]; ok {
+							val = string(v)
+						} else if !optional {
+							return nil, fmt.Errorf("key %q not found in secret %q", ref.Key, ref.Name)
+						}
+					}
+				} else if !optional {
+					return nil, fmt.Errorf("k8s clientset unavailable to resolve secret %q", ref.Name)
 				}
 			}
 		} else if val == ".status.podIP" { // legacy skifflet convention
@@ -126,7 +170,19 @@ func ResolveContainerEnvironment(pod *corev1.Pod, container *corev1.Container, s
 			Value: envMap[name],
 		}
 	}
-	return resolved
+	return resolved, nil
+}
+
+func findVolume(pod *corev1.Pod, name string) *corev1.Volume {
+	if pod == nil {
+		return nil
+	}
+	for i := range pod.Spec.Volumes {
+		if pod.Spec.Volumes[i].Name == name {
+			return &pod.Spec.Volumes[i]
+		}
+	}
+	return nil
 }
 
 // buildContainer replicates the container preparation behavior.
@@ -140,7 +196,10 @@ func (h *PodHandler) buildContainer(container *corev1.Container, containerStatus
 	/*---------------------------------------------------
 	 * Resolve Container Environment Pipeline
 	 *---------------------------------------------------*/
-	resolvedEnvs := ResolveContainerEnvironment(h.Pod, container, h.podEnvVariables)
+	resolvedEnvs, err := ResolveContainerEnvironment(h.Pod, container, h.podEnvVariables)
+	if err != nil {
+		return Container{}, fmt.Errorf("failed to resolve container environment: %w", err)
+	}
 
 	/*---------------------------------------------------
 	 * Generate Environment Variables File
@@ -188,8 +247,10 @@ func (h *PodHandler) buildContainer(container *corev1.Container, containerStatus
 			}
 
 			if !subPathFileExists {
-				// If subpath ends with a slash or has no extension, create dir placeholder safely
-				if strings.HasSuffix(subPath, "/") || filepath.Ext(subPath) == "" {
+				vol := findVolume(h.Pod, mount.Name)
+				isEmptyDir := vol != nil && vol.VolumeSource.EmptyDir != nil
+
+				if isEmptyDir || strings.HasSuffix(subPath, "/") {
 					if err := hostutil.SafeMakeDir(subPath, hostPath, endpoint.PodGlobalDirectoryPermissions); err != nil {
 						return Container{}, fmt.Errorf("failed to create dir placeholder. subpath:'%s': %w", subPathFile, err)
 					}
@@ -218,13 +279,25 @@ func (h *PodHandler) buildContainer(container *corev1.Container, containerStatus
 	/*---------------------------------------------------
 	 * Prepare Container Image
 	 *---------------------------------------------------*/
-	var img *image.Image
-	var err error
+	pullPolicy := container.ImagePullPolicy
+	if pullPolicy == "" {
+		if strings.HasSuffix(container.Image, ":latest") || !strings.Contains(container.Image, ":") {
+			pullPolicy = corev1.PullAlways
+		} else {
+			pullPolicy = corev1.PullIfNotPresent
+		}
+	}
 
-	if container.ImagePullPolicy == corev1.PullNever {
+	var pullCtx context.Context = context.Background()
+	if h.lifecycle != nil {
+		pullCtx = h.lifecycle.Context()
+	}
+
+	var img *image.Image
+	if pullPolicy == corev1.PullNever {
 		img, err = image.ResolveLocal(compute.Skiff.ImageDir(), container.Image)
 	} else {
-		img, err = image.Pull(compute.Skiff.ImageDir(), image.Docker, container.Image)
+		img, err = image.PullWithPolicy(pullCtx, compute.Skiff.ImageDir(), image.Docker, container.Image, pullPolicy)
 	}
 
 	if err != nil {

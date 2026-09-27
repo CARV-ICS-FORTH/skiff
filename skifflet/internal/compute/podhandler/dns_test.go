@@ -108,6 +108,10 @@ func TestPrepareDNS(t *testing.T) {
 }
 
 func TestHasNameserver(t *testing.T) {
-	if hasNameserver("search svc.cluster.local\noptions ndots:5\n") { t.Fatal("resolver without a nameserver must be rejected") }
-	if !hasNameserver("search svc.cluster.local\nnameserver 10.0.2.3\n") { t.Fatal("usable outer resolver was rejected") }
+	if hasNameserver("search svc.cluster.local\noptions ndots:5\n") {
+		t.Fatal("resolver without a nameserver must be rejected")
+	}
+	if !hasNameserver("search svc.cluster.local\nnameserver 10.0.2.3\n") {
+		t.Fatal("usable outer resolver was rejected")
+	}
 }

@@ -50,7 +50,16 @@ e2e_kubectl logs e2e06-pod -n $NS --follow > "$TMP_LOG" 2>&1 &
 FOLLOW_PID=$!
 e2e_wait_condition 20 "log-line-4 in follow" "grep 'log-line-4' $TMP_LOG"
 kill $FOLLOW_PID || true
-e2e_assert_contains "log-line-4 found" "$(cat "$TMP_LOG")" "log-line-4"
+e2e_wait_condition 5 "follow process exited" "! kill -0 $FOLLOW_PID 2>/dev/null" || true
+
+FOLLOW_CONTENT=$(cat "$TMP_LOG")
+e2e_assert_contains "follow contains initial line-1" "$FOLLOW_CONTENT" "log-line-1"
+e2e_assert_contains "follow contains initial line-2" "$FOLLOW_CONTENT" "log-line-2"
+e2e_assert_contains "follow contains streamed line-4" "$FOLLOW_CONTENT" "log-line-4"
+
+# Verify rejection of unsupported --previous option
+PREV_ERR=$(e2e_kubectl logs e2e06-pod -n $NS --previous 2>&1 || true)
+e2e_assert_contains "reject previous option" "$PREV_ERR" "previous"
 
 OUT=$(e2e_kubectl exec e2e06-pod -n $NS -- cat /workdir/marker.txt)
 e2e_assert_eq "exec cat marker" "$OUT" "e2e06-marker"

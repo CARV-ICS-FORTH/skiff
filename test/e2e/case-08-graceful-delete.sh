@@ -78,7 +78,7 @@ spec:
   containers:
   - name: app
     image: ${FIXTURE_IMAGE}
-    command: ["sh", "-c", "echo iter-${i}-new && sleep 5 && exit 0"]
+    command: ["sh", "-c", "echo iter-${i}-old && sleep 5 && exit 0"]
 EOF
 
     e2e_wait_condition 15 "init container Running" "test -n \"\$(e2e_kubectl get pod e2e08-replace -n $NS -o jsonpath='{.status.initContainerStatuses[0].state.running}')\""
@@ -102,25 +102,27 @@ spec:
   containers:
   - name: app
     image: ${FIXTURE_IMAGE}
-    command: ["sh", "-c", "echo iter-${i}-new && exit 0"]
+    command: ["sh", "-c", "echo iter-${i}-replacement && exit 0"]
 EOF
             break
         fi
         sleep 0.5
     done
 
-    e2e_wait_condition 10 "new pod UID" "test \"\$(e2e_kubectl get pod e2e08-replace -n $NS -o jsonpath='{.metadata.uid}' 2>/dev/null)\" != \"$UID_OLD\""
+    e2e_wait_condition 10 "new pod UID non-empty and changed" "test -n \"\$(e2e_kubectl get pod e2e08-replace -n $NS -o jsonpath='{.metadata.uid}' 2>/dev/null)\" && test \"\$(e2e_kubectl get pod e2e08-replace -n $NS -o jsonpath='{.metadata.uid}' 2>/dev/null)\" != \"$UID_OLD\""
 
-    UID_NEW=$(e2e_kubectl get pod e2e08-replace -n "$NS" -o jsonpath='{.metadata.uid}')
-    e2e_assert_ne "iteration ${i} UID" "$UID_NEW" "$UID_OLD"
+    UID_NEW=$(e2e_kubectl get pod e2e08-replace -n "$NS" -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
+    e2e_assert_nonempty "iteration ${i} replacement UID" "$UID_NEW"
+    e2e_assert_ne "iteration ${i} UID differs" "$UID_NEW" "$UID_OLD"
 
     e2e_wait_pod_phase "$NS" "e2e08-replace" "Succeeded" 60
 
     LOGS=$(e2e_kubectl logs e2e08-replace -n "$NS")
-    e2e_assert_contains "iteration ${i} output" "$LOGS" "iter-${i}-new"
+    e2e_assert_contains "iteration ${i} output" "$LOGS" "iter-${i}-replacement"
 
-    runtime_verify_gone "$NS" "e2e08-replace" 30
+    runtime_record_pod "$NS" "e2e08-replace"
     e2e_kubectl delete pod e2e08-replace -n "$NS"
+    runtime_verify_gone "$NS" "e2e08-replace" 30
     e2e_wait_pod_gone "$NS" "e2e08-replace" 30
 done
 

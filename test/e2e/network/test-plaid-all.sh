@@ -87,7 +87,7 @@ fi
 
 if ! plaidctl status &>/dev/null; then
     warn "Host plaidd daemon is not running on /run/plaid/plaidd.sock (cluster plaidd runs inside Slurm bubbles; skipping host-level standalone tests)"
-    exit 0
+    exit 77
 fi
 pass "Plaid daemon is active and responsive"
 
@@ -136,7 +136,11 @@ if [ -f "${UNPRIVILEGED_TEST}" ]; then
         pass "Part 2: Unprivileged workflows passed completely"
         STATUS_UNPRIVILEGED_A="PASS"
         STATUS_UNPRIVILEGED_B="PASS"
-        STATUS_OVERLAY=$(cat /tmp/plaid_overlay_status.txt 2>/dev/null || echo "PASS")
+        STATUS_OVERLAY=$(cat /tmp/plaid_overlay_status.txt 2>/dev/null || echo "FAIL")
+        if [ "$STATUS_OVERLAY" != "PASS" ]; then
+            fail "Overlay test failed: status=${STATUS_OVERLAY}"
+            OVERALL_STATUS=1
+        fi
     else
         fail "Part 2: Unprivileged workflows failed"
         STATUS_UNPRIVILEGED_A="FAIL"

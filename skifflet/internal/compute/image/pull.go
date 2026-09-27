@@ -144,18 +144,34 @@ func PullWithPolicy(ctx context.Context, imageDir string, transport Transport, i
 
 	img := &Image{Filepath: imageDir + ParseImageName(imageName)}
 
-	// 1. Process-local synchronization
+	// 1. Process-local synchronization (cancellable)
 	lock := getPullLock(img.Filepath)
-	lock.Lock()
+	for !lock.TryLock() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 	defer lock.Unlock()
 
-	// 2. Inter-process / multi-node flock synchronization on shared NFS
+	// 2. Inter-process / multi-node flock synchronization on shared NFS (cancellable)
 	flockPath := img.Filepath + ".flock"
 	flockFile, flockErr := os.OpenFile(flockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if flockErr == nil {
 		defer flockFile.Close()
-		_ = syscall.Flock(int(flockFile.Fd()), syscall.LOCK_EX)
-		defer syscall.Flock(int(flockFile.Fd()), syscall.LOCK_UN)
+		for {
+			err := syscall.Flock(int(flockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+			if err == nil {
+				defer syscall.Flock(int(flockFile.Fd()), syscall.LOCK_UN)
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
 	}
 
 	// Re-check after acquiring locks
@@ -359,7 +375,17 @@ func CleanupAbandonedTempFiles(imageDir string, maxAge time.Duration) error {
 				continue // active or recent file, do not remove
 			}
 
-			// Verify file is not actively locked
+			// Verify file is not actively locked directly or via base image .flock
+			baseFlockPath := strings.Split(path, ".tmp-")[0] + ".flock"
+			if baseFlock, err := os.OpenFile(baseFlockPath, os.O_RDWR, 0); err == nil {
+				if flockErr := syscall.Flock(int(baseFlock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); flockErr != nil {
+					_ = baseFlock.Close()
+					continue // base image is actively being downloaded
+				}
+				_ = syscall.Flock(int(baseFlock.Fd()), syscall.LOCK_UN)
+				_ = baseFlock.Close()
+			}
+
 			f, err := os.OpenFile(path, os.O_RDWR, 0)
 			if err == nil {
 				if flockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); flockErr != nil {

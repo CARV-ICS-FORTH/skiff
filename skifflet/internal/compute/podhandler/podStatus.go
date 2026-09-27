@@ -115,20 +115,18 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 		change     func(status *corev1.PodStatus)
 	}
 
+	allContainersCompleted := (state.NumFailedJobs()+state.NumSuccessfulJobs() == totalJobs) && state.NumRunningJobs() == 0 && state.NumPendingJobs() == 0
+	hasEverStarted := false
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.RestartCount > 0 || cs.State.Running != nil || cs.State.Terminated != nil {
+			hasEverStarted = true
+			break
+		}
+	}
+
 	phaseTransitionSequence := []transition{
-		{ /*-- FAILED: at least one job has failed and will not be restarted --*/
-			expression: state.NumFailedJobs() > 0 && pod.Spec.RestartPolicy == corev1.RestartPolicyNever,
-			change: func(status *corev1.PodStatus) {
-				status.Phase = corev1.PodFailed
-				status.Reason = "ContainerFailed"
-				status.Message = fmt.Sprintf("Failed containers: %s", state.ListFailedJobs())
-
-				setTerminationConditions(pod)
-			},
-		},
-
 		{ /*-- SUCCESS: all jobs are successfully completed --*/
-			expression: pod.Spec.RestartPolicy != corev1.RestartPolicyAlways && state.NumSuccessfulJobs() == totalJobs,
+			expression: pod.Spec.RestartPolicy != corev1.RestartPolicyAlways && state.NumSuccessfulJobs() == totalJobs && allContainersCompleted,
 			change: func(status *corev1.PodStatus) {
 				status.Phase = corev1.PodSucceeded
 				status.Reason = "Completed"
@@ -138,8 +136,19 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 			},
 		},
 
-		{ /*-- RUNNING: jobs are running or restarting --*/
-			expression: (state.NumRunningJobs() > 0) || (pod.Spec.RestartPolicy == corev1.RestartPolicyAlways) || (pod.Spec.RestartPolicy == corev1.RestartPolicyOnFailure && state.NumSuccessfulJobs() < totalJobs),
+		{ /*-- FAILED: all jobs completed and at least one has failed for RestartPolicyNever --*/
+			expression: allContainersCompleted && state.NumFailedJobs() > 0 && pod.Spec.RestartPolicy == corev1.RestartPolicyNever,
+			change: func(status *corev1.PodStatus) {
+				status.Phase = corev1.PodFailed
+				status.Reason = "ContainerFailed"
+				status.Message = fmt.Sprintf("Failed containers: %s", state.ListFailedJobs())
+
+				setTerminationConditions(pod)
+			},
+		},
+
+		{ /*-- RUNNING: at least one job is actively running, or previously started and restarting under Always/OnFailure --*/
+			expression: state.NumRunningJobs() > 0 || (hasEverStarted && state.NumPendingJobs() > 0 && (pod.Spec.RestartPolicy == corev1.RestartPolicyAlways || (pod.Spec.RestartPolicy == corev1.RestartPolicyOnFailure && state.NumSuccessfulJobs() < totalJobs))),
 			change: func(status *corev1.PodStatus) {
 				status.Phase = corev1.PodRunning
 				status.Reason = "Running"

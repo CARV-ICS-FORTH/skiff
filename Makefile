@@ -3,16 +3,18 @@
 REGISTRY ?= docker.io/chazapis
 
 BASE_VERSION ?= $(shell cat VERSION 2>/dev/null || echo "0.1.0")
-GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
-GIT_COMMIT_SHORT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-GIT_TAG := $(shell git describe --tags --exact-match 2>/dev/null || echo "")
+GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
+GIT_COMMIT_SHORT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+GIT_TAG ?= $(shell git describe --tags --exact-match 2>/dev/null || echo "")
 
+ifeq ($(VERSION),)
 ifeq ($(GIT_TAG),$(BASE_VERSION))
     VERSION := $(BASE_VERSION)
 else ifeq ($(GIT_TAG),v$(BASE_VERSION))
     VERSION := $(BASE_VERSION)
 else
-    VERSION := $(BASE_VERSION)+$(GIT_COMMIT_SHORT)
+    VERSION := $(BASE_VERSION)-$(GIT_COMMIT_SHORT)
+endif
 endif
 
 BUILD_TIME := $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
@@ -21,7 +23,7 @@ BUILD_TIME := $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 BIN_DIR = bin
 export GOFLAGS ?= -buildvcs=false
 
-.PHONY: all build build-skifflet build-plaid binaries-linux-amd64 binaries-linux-arm64 vet test clean builder images publish-images develop e2e-images fmt fmt-check check-shell
+.PHONY: all build build-skifflet build-plaid binaries-linux-amd64 binaries-linux-arm64 vet test test-race clean builder images publish-images develop e2e-images fmt fmt-check check-shell
 
 all: build
 
@@ -63,6 +65,12 @@ test:
 	@echo "Running plaid tests..."
 	$(MAKE) -C plaid test
 
+test-race:
+	@echo "Running skifflet tests with race detector..."
+	$(MAKE) -C skifflet test-race
+	@echo "Running plaid tests with race detector..."
+	$(MAKE) -C plaid test-race
+
 fmt:
 	@echo "Formatting Go source files..."
 	gofmt -w skifflet plaid
@@ -84,17 +92,23 @@ builder:
 		-f images/skiff-builder/Dockerfile images/skiff-builder
 
 images:
-	@echo "Building skiff-bubble image locally..."
+	@echo "Building skiff-bubble image locally (Version: $(VERSION))..."
 	docker build \
 		--build-arg REGISTRY=$(REGISTRY) \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg GIT_COMMIT="$(GIT_COMMIT)" \
+		--build-arg BUILD_TIME="$(BUILD_TIME)" \
 		-t $(REGISTRY)/skiff-bubble:$(VERSION) \
 		-t $(REGISTRY)/skiff-bubble:latest \
 		-f images/skiff-bubble/Dockerfile .
 
 publish-images:
-	@echo "Building and pushing multi-arch skiff-bubble release image..."
+	@echo "Building and pushing multi-arch skiff-bubble release image (Version: $(VERSION))..."
 	docker buildx build --platform linux/amd64,linux/arm64 \
 		--build-arg REGISTRY=$(REGISTRY) \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg GIT_COMMIT="$(GIT_COMMIT)" \
+		--build-arg BUILD_TIME="$(BUILD_TIME)" \
 		-t $(REGISTRY)/skiff-bubble:$(VERSION) \
 		-t $(REGISTRY)/skiff-bubble:latest \
 		--push \
@@ -110,6 +124,9 @@ develop:
 
 	# Build skiff-bubble locally
 	docker build --build-arg REGISTRY=$(REGISTRY) \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg GIT_COMMIT="$(GIT_COMMIT)" \
+		--build-arg BUILD_TIME="$(BUILD_TIME)" \
 		-t $(REGISTRY)/skiff-bubble:latest \
 		-f images/skiff-bubble/Dockerfile .
 
@@ -118,7 +135,13 @@ develop:
 	docker save -o /tmp/skiff-images/skiff-bubble.tar $(REGISTRY)/skiff-bubble:latest
 
 	@echo "Generating deployment manifest..."
-	@TAR_SHA=$$(sha256sum /tmp/skiff-images/skiff-bubble.tar 2>/dev/null | awk '{print $$1}' || shasum -a 256 /tmp/skiff-images/skiff-bubble.tar | awk '{print $$1}'); \
+	@if command -v sha256sum >/dev/null 2>&1; then \
+		TAR_SHA=$$(sha256sum /tmp/skiff-images/skiff-bubble.tar | awk '{print $$1}'); \
+	elif command -v shasum >/dev/null 2>&1; then \
+		TAR_SHA=$$(shasum -a 256 /tmp/skiff-images/skiff-bubble.tar | awk '{print $$1}'); \
+	else \
+		echo "Error: neither sha256sum nor shasum found" >&2; exit 1; \
+	fi; \
 	printf '{\n  "version": "%s",\n  "git_commit": "%s",\n  "build_time": "%s",\n  "tar_sha256": "%s"\n}\n' \
 		"$(VERSION)" "$(GIT_COMMIT)" "$(BUILD_TIME)" "$$TAR_SHA" > /tmp/skiff-images/manifest.json
 
@@ -177,13 +200,10 @@ e2e-images:
 	cd test/vagrant && vagrant ssh controller -c \
 		"apptainer build --force ~/.skiff/images/skiff-e2e-fixture.sif docker-archive:///home/vagrant/.skiff/images/skiff-e2e-fixture.tar"
 
-	@echo "Writing fixture image tag to test/e2e/lib/fixture.sh..."
-	@sed -i.bak \
-		's|^FIXTURE_IMAGE_TAG=.*|FIXTURE_IMAGE_TAG="$(GIT_COMMIT_SHORT)"|' \
-		test/e2e/lib/fixture.sh && rm -f test/e2e/lib/fixture.sh.bak
-	@sed -i.bak \
-		's|^FIXTURE_IMAGE=.*|FIXTURE_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture.sif"|' \
-		test/e2e/lib/fixture.sh && rm -f test/e2e/lib/fixture.sh.bak
+	@echo "Writing fixture env file..."
+	@printf 'export FIXTURE_IMAGE_TAG="%s"\nexport FIXTURE_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture.sif"\n' \
+		"$(GIT_COMMIT_SHORT)" > /tmp/skiff-images/fixture.env
+	cd test/vagrant && vagrant upload /tmp/skiff-images/fixture.env /home/vagrant/.skiff/fixture.env controller
 
 	@echo "e2e fixture image deployed. Tag: $(GIT_COMMIT_SHORT)"
 	@echo "Re-run 'make develop' to sync the updated lib/fixture.sh to the VMs."

@@ -38,7 +38,10 @@ func TestResolveContainerEnvironment_FieldRefAndCIdentifier(t *testing.T) {
 		{Name: "OVERRIDE_VAR", Value: "service-loses"},
 	}
 
-	resolved := ResolveContainerEnvironment(pod, container, serviceEnvs)
+	resolved, err := ResolveContainerEnvironment(pod, container, serviceEnvs)
+	if err != nil {
+		t.Fatalf("unexpected error resolving env: %v", err)
+	}
 
 	resMap := make(map[string]string)
 	for _, e := range resolved {
@@ -65,5 +68,33 @@ func TestResolveContainerEnvironment_FieldRefAndCIdentifier(t *testing.T) {
 	}
 	if resMap["KUBERNETES_SERVICE_HOST"] != "10.43.0.1" {
 		t.Fatalf("expected KUBERNETES_SERVICE_HOST=10.43.0.1, got %q", resMap["KUBERNETES_SERVICE_HOST"])
+	}
+}
+
+func TestResolveContainerEnvironment_MissingNonOptional(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-pod", Namespace: "default"},
+	}
+
+	isOptional := false
+	container := &corev1.Container{
+		Name: "test-container",
+		Env: []corev1.EnvVar{
+			{
+				Name: "REQUIRED_CONFIG",
+				ValueFrom: &corev1.EnvVarSource{
+					ConfigMapKeyRef: &corev1.ConfigMapKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: "missing-cm"},
+						Key:                  "key",
+						Optional:             &isOptional,
+					},
+				},
+			},
+		},
+	}
+
+	_, err := ResolveContainerEnvironment(pod, container, nil)
+	if err == nil {
+		t.Fatalf("expected error resolving missing non-optional configmap, got nil")
 	}
 }

@@ -341,6 +341,10 @@ func handleExec(apptainerBin string, globalOpts PlaidOptions, args []string) {
 		os.Exit(1)
 	}
 
+	// Pre-flight validation: verify resolver before allocating IPAM leases
+	_, _, preDNS := resolveNetworkParams(status, opts.IP, opts.Gateway, opts.DNS)
+	requireResolver(preDNS)
+
 	containerID := randomID("plaidtainer-exec")
 	ipStr := opts.IP
 	dynamicallyAllocated := false
@@ -358,7 +362,6 @@ func handleExec(apptainerBin string, globalOpts PlaidOptions, args []string) {
 	}
 
 	_, gwStr, dnsStr := resolveNetworkParams(status, ipStr, opts.Gateway, opts.DNS)
-	requireResolver(dnsStr)
 	hostPlaidBin := findHostPlaidBinary()
 
 	cleanupDone := false
@@ -413,13 +416,7 @@ func handleExec(apptainerBin string, globalOpts PlaidOptions, args []string) {
 	apptainerArgs = append(apptainerArgs, execArgs...)
 	apptainerArgs = append(apptainerArgs, cmdArgs...)
 
-	if opts.ReadinessFile != "" {
-		readinessData := fmt.Sprintf(`{"pause_pid":%d,"netns_path":"/proc/%d/ns/net","endpoint_id":"%s","ip":"%s","gateway":"%s"}`+"\n",
-			os.Getpid(), os.Getpid(), containerID, ipStr, gwStr)
-		_ = os.WriteFile(opts.ReadinessFile, []byte(readinessData), 0644)
-	}
-
-	code := runCommandWithCleanup(apptainerBin, apptainerArgs, cleanup)
+	code := runCommandWithCleanupAndReadiness(apptainerBin, apptainerArgs, cleanup, opts.ReadinessFile, containerID, ipStr, gwStr)
 	os.Exit(code)
 }
 
@@ -460,6 +457,10 @@ func handleRun(apptainerBin string, globalOpts PlaidOptions, args []string) {
 		os.Exit(1)
 	}
 
+	// Pre-flight validation: verify resolver before allocating IPAM leases
+	_, _, preDNS := resolveNetworkParams(status, opts.IP, opts.Gateway, opts.DNS)
+	requireResolver(preDNS)
+
 	containerID := randomID("plaidtainer-run")
 	ipStr := opts.IP
 	dynamicallyAllocated := false
@@ -477,7 +478,6 @@ func handleRun(apptainerBin string, globalOpts PlaidOptions, args []string) {
 	}
 
 	_, gwStr, dnsStr := resolveNetworkParams(status, ipStr, opts.Gateway, opts.DNS)
-	requireResolver(dnsStr)
 	hostPlaidBin := findHostPlaidBinary()
 
 	cleanupDone := false
@@ -581,6 +581,10 @@ func handleShell(apptainerBin string, globalOpts PlaidOptions, args []string) {
 		os.Exit(1)
 	}
 
+	// Pre-flight validation: verify resolver before allocating IPAM leases
+	_, _, preDNS := resolveNetworkParams(status, opts.IP, opts.Gateway, opts.DNS)
+	requireResolver(preDNS)
+
 	containerID := randomID("plaidtainer-shell")
 	ipStr := opts.IP
 	dynamicallyAllocated := false
@@ -598,7 +602,6 @@ func handleShell(apptainerBin string, globalOpts PlaidOptions, args []string) {
 	}
 
 	_, gwStr, dnsStr := resolveNetworkParams(status, ipStr, opts.Gateway, opts.DNS)
-	requireResolver(dnsStr)
 	hostPlaidBin := findHostPlaidBinary()
 
 	cleanupDone := false

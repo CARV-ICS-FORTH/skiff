@@ -7,10 +7,12 @@
 # Build and deploy with:   make e2e-images   (then make develop to sync scripts)
 # The SIF is placed on both VMs at ~/.skiff/images/skiff-e2e-fixture.sif
 # by the e2e-images target, which also stamps FIXTURE_IMAGE_TAG below.
-# ---------------------------------------------------------------------------
-FIXTURE_IMAGE_TAG="3b2c5f4"
-# Skifflet inside the bubble resolves local SIF files starting with /:
-FIXTURE_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture.sif"
+if [ -f "${HOME}/.skiff/fixture.env" ]; then
+    # shellcheck source=/dev/null
+    . "${HOME}/.skiff/fixture.env"
+fi
+FIXTURE_IMAGE_TAG="${FIXTURE_IMAGE_TAG:-3b2c5f4}"
+FIXTURE_IMAGE="${FIXTURE_IMAGE:-/var/lib/skiff/images/skiff-e2e-fixture.sif}"
 FIXTURE_REGISTRY="${FIXTURE_REGISTRY:-/var/lib/skiff/images}"
 
 

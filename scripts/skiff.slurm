@@ -114,6 +114,16 @@ fi
 
 BG_PIDS=()
 
+SLURM_EXIT_CODE=0
+handle_term() {
+    SLURM_EXIT_CODE=143
+    exit $SLURM_EXIT_CODE
+}
+handle_int() {
+    SLURM_EXIT_CODE=130
+    exit $SLURM_EXIT_CODE
+}
+
 cleanup_slurm() {
     trap - EXIT INT TERM
     echo "Shutting down Skiff cluster (Job ID: ${SLURM_JOB_ID:-})..."
@@ -127,8 +137,11 @@ cleanup_slurm() {
     rm -rf "$HOME/.skiff/kubeconfig" "$HOME/.skiff/tls" "$HOME/.skiff/.certs" "$HOME/.skiff"/slirp-*.sock 2>/dev/null || true
     wait 2>/dev/null || true
     echo "Cluster cleanup complete."
+    exit "${SLURM_EXIT_CODE:-0}"
 }
-trap cleanup_slurm EXIT INT TERM
+trap handle_term TERM
+trap handle_int INT
+trap cleanup_slurm EXIT
 
 # Start Controller Bubble
 echo "Starting Controller on $CONTROLLER_NODE..."
@@ -176,12 +189,14 @@ echo "Cluster nodes started. Supervising job steps..."
 while true; do
     for pid in "${BG_PIDS[@]}"; do
         if ! kill -0 "$pid" 2>/dev/null; then
-            wait "$pid"
+            wait "$pid" 2>/dev/null
             EXIT_CODE=$?
-            if [ "$EXIT_CODE" -ne 0 ]; then
-                echo "ERROR: A Skiff bubble process (PID $pid) terminated unexpectedly with exit code $EXIT_CODE!" >&2
-                exit "$EXIT_CODE"
+            echo "ERROR: A Skiff bubble process (PID $pid) terminated unexpectedly with exit code $EXIT_CODE!" >&2
+            if [ "$EXIT_CODE" -eq 0 ]; then
+                EXIT_CODE=1
             fi
+            SLURM_EXIT_CODE="$EXIT_CODE"
+            exit "$EXIT_CODE"
         fi
     done
     sleep 2

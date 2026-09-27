@@ -11,9 +11,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// watchReadinessProbe checks the live PodIP from the bubble. The legacy pod
-// launcher owns these statuses; the separate PodLifecycle probe loop does not.
-func watchReadinessProbe(ctx context.Context, pod *corev1.Pod, status *corev1.ContainerStatus, probe *corev1.Probe, notify func(*corev1.Pod)) {
+// watchReadinessProbe checks the live PodIP from the bubble and reports readiness changes via onReadyChange.
+func watchReadinessProbe(ctx context.Context, podIP string, containerID string, probe *corev1.Probe, onReadyChange func(ready bool)) {
 	go func() {
 		if delay := time.Duration(probe.InitialDelaySeconds) * time.Second; delay > 0 {
 			select {
@@ -41,28 +40,24 @@ func watchReadinessProbe(ctx context.Context, pod *corev1.Pod, status *corev1.Co
 		successes, failures := 0, 0
 		ticker := time.NewTicker(period)
 		defer ticker.Stop()
+		isReady := false
 		for {
-			if status.State.Running == nil {
-				return
-			}
-			if evaluateReadinessProbe(probe, pod.Status.PodIP, status.ContainerID, timeout) {
+			if evaluateReadinessProbe(probe, podIP, containerID, timeout) {
 				successes++
 				failures = 0
-				if successes >= successThreshold && !status.Ready {
-					status.Ready = true
-					UpdateStatusFromRuntime(pod)
-					if notify != nil {
-						notify(pod)
+				if successes >= successThreshold && !isReady {
+					isReady = true
+					if onReadyChange != nil {
+						onReadyChange(true)
 					}
 				}
 			} else {
 				failures++
 				successes = 0
-				if failures >= failureThreshold && status.Ready {
-					status.Ready = false
-					UpdateStatusFromRuntime(pod)
-					if notify != nil {
-						notify(pod)
+				if failures >= failureThreshold && isReady {
+					isReady = false
+					if onReadyChange != nil {
+						onReadyChange(false)
 					}
 				}
 			}

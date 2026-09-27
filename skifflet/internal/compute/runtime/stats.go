@@ -19,6 +19,7 @@ import (
 	"bufio"
 	"context"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -32,10 +33,14 @@ import (
 
 // TotalResources derives truthful capacity bounded by Slurm allocations, cgroups, and CPU affinity.
 func TotalResources() corev1.ResourceList {
-	cpuCount := getEffectiveCPUCount()
-	cpuQuantity := resource.NewQuantity(int64(cpuCount), resource.DecimalSI)
+	cpuMillis := getEffectiveCPUMillis()
+	cpuQuantity := resource.NewMilliQuantity(cpuMillis, resource.DecimalSI)
 
-	memBytes := getEffectiveMemoryBytes(cpuCount)
+	cores := cpuMillis / 1000
+	if cores <= 0 {
+		cores = 1
+	}
+	memBytes := getEffectiveMemoryBytes(cores)
 	memQuantity := resource.NewQuantity(int64(memBytes), resource.BinarySI)
 
 	storagePath := "/"
@@ -100,75 +105,188 @@ func HasGPUAllocation() bool {
 	return getEffectiveGPUCount() > 0
 }
 
-func getEffectiveCPUCount() int64 {
-	// 1. Check Slurm environment
-	if val := os.Getenv("SLURM_CPUS_ON_NODE"); val != "" {
-		if c, err := strconv.ParseInt(val, 10, 64); err == nil && c > 0 {
-			return c
-		}
-	}
-	if val := os.Getenv("SLURM_JOB_CPUS_PER_NODE"); val != "" {
-		// Handle formats like "4", "4(x2)"
-		parts := strings.Split(val, "(")
-		if c, err := strconv.ParseInt(parts[0], 10, 64); err == nil && c > 0 {
-			return c
-		}
-	}
-
-	// 2. Check cgroup cpu quota (cgroup v2: /sys/fs/cgroup/cpu.max)
-	if data, err := os.ReadFile("/sys/fs/cgroup/cpu.max"); err == nil {
-		fields := strings.Fields(string(data))
-		if len(fields) >= 2 && fields[0] != "max" {
-			quota, errQ := strconv.ParseInt(fields[0], 10, 64)
-			period, errP := strconv.ParseInt(fields[1], 10, 64)
-			if errQ == nil && errP == nil && period > 0 {
-				cpus := quota / period
-				if cpus > 0 {
-					return cpus
+func resolveCgroupPath(controller, filename string) string {
+	// 1. Try hierarchical path from /proc/self/cgroup
+	if data, err := os.ReadFile("/proc/self/cgroup"); err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			parts := strings.SplitN(line, ":", 3)
+			if len(parts) == 3 {
+				cgroupPath := strings.TrimSpace(parts[2])
+				if cgroupPath == "" || cgroupPath == "/" {
+					continue
+				}
+				// cgroup v2
+				if parts[0] == "0" && parts[1] == "" {
+					cand := filepath.Join("/sys/fs/cgroup", cgroupPath, filename)
+					if _, err := os.Stat(cand); err == nil {
+						return cand
+					}
+				}
+				// cgroup v1
+				controllers := strings.Split(parts[1], ",")
+				for _, c := range controllers {
+					if c == controller {
+						cand := filepath.Join("/sys/fs/cgroup", controller, cgroupPath, filename)
+						if _, err := os.Stat(cand); err == nil {
+							return cand
+						}
+					}
 				}
 			}
 		}
 	}
 
-	// 3. Fallback to CPU affinity via runtime.NumCPU()
-	cpus := int64(runtime.NumCPU())
-	if cpus > 0 {
-		return cpus
+	// 2. Default root paths
+	candV2 := filepath.Join("/sys/fs/cgroup", filename)
+	if _, err := os.Stat(candV2); err == nil {
+		return candV2
 	}
-	return 1
+	candV1 := filepath.Join("/sys/fs/cgroup", controller, filename)
+	if _, err := os.Stat(candV1); err == nil {
+		return candV1
+	}
+
+	return ""
 }
 
-func getEffectiveMemoryBytes(cpuCount int64) uint64 {
-	// 1. Check Slurm environment
-	if val := os.Getenv("SLURM_MEM_PER_NODE"); val != "" {
-		if m, err := strconv.ParseUint(val, 10, 64); err == nil && m > 0 {
-			return m * 1024 * 1024 // Slurm reports in MB
-		}
-	}
-	if val := os.Getenv("SLURM_MEM_PER_CPU"); val != "" {
-		if m, err := strconv.ParseUint(val, 10, 64); err == nil && m > 0 {
-			return m * uint64(cpuCount) * 1024 * 1024
-		}
-	}
+func getEffectiveCPUMillis() int64 {
+	var slurmMilli int64
 
-	// 2. Check cgroup memory limit (cgroup v2: /sys/fs/cgroup/memory.max)
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		str := strings.TrimSpace(string(data))
-		if str != "max" {
-			if limit, err := strconv.ParseUint(str, 10, 64); err == nil && limit > 0 && limit < (1<<62) {
-				return limit
+	// 1. Check Slurm environment
+	if val := os.Getenv("SLURM_CPUS_ON_NODE"); val != "" {
+		if c, err := strconv.ParseInt(val, 10, 64); err == nil && c > 0 {
+			slurmMilli = c * 1000
+		}
+	}
+	if slurmMilli == 0 {
+		if val := os.Getenv("SLURM_JOB_CPUS_PER_NODE"); val != "" {
+			parts := strings.Split(val, "(")
+			if c, err := strconv.ParseInt(parts[0], 10, 64); err == nil && c > 0 {
+				slurmMilli = c * 1000
 			}
 		}
 	}
-	// Check cgroup v1: /sys/fs/cgroup/memory/memory.limit_in_bytes
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
-		str := strings.TrimSpace(string(data))
-		if limit, err := strconv.ParseUint(str, 10, 64); err == nil && limit > 0 && limit < (1<<62) {
-			return limit
+
+	// 2. Check cgroup cpu quota
+	var cgroupMilli int64
+	// cgroup v2
+	if cgroupPath := resolveCgroupPath("cpu", "cpu.max"); cgroupPath != "" {
+		if data, err := os.ReadFile(cgroupPath); err == nil {
+			fields := strings.Fields(string(data))
+			if len(fields) >= 2 && fields[0] != "max" {
+				quota, errQ := strconv.ParseInt(fields[0], 10, 64)
+				period, errP := strconv.ParseInt(fields[1], 10, 64)
+				if errQ == nil && errP == nil && period > 0 {
+					cgroupMilli = (quota * 1000) / period
+					if cgroupMilli <= 0 {
+						cgroupMilli = 1
+					}
+				}
+			}
+		}
+	}
+	// cgroup v1 fallback
+	if cgroupMilli == 0 {
+		quotaPath := resolveCgroupPath("cpu", "cpu.cfs_quota_us")
+		periodPath := resolveCgroupPath("cpu", "cpu.cfs_period_us")
+		if quotaPath != "" && periodPath != "" {
+			dataQ, errQ := os.ReadFile(quotaPath)
+			dataP, errP := os.ReadFile(periodPath)
+			if errQ == nil && errP == nil {
+				quota, qErr := strconv.ParseInt(strings.TrimSpace(string(dataQ)), 10, 64)
+				period, pErr := strconv.ParseInt(strings.TrimSpace(string(dataP)), 10, 64)
+				if qErr == nil && pErr == nil && quota > 0 && period > 0 {
+					cgroupMilli = (quota * 1000) / period
+					if cgroupMilli <= 0 {
+						cgroupMilli = 1
+					}
+				}
+			}
 		}
 	}
 
-	// 3. Fallback to /proc/meminfo
+	// 3. Selection logic: if both present, take tighter bound (minimum)
+	if slurmMilli > 0 && cgroupMilli > 0 {
+		if cgroupMilli < slurmMilli {
+			return cgroupMilli
+		}
+		return slurmMilli
+	}
+	if slurmMilli > 0 {
+		return slurmMilli
+	}
+	if cgroupMilli > 0 {
+		return cgroupMilli
+	}
+
+	// 4. Fallback to CPU affinity via runtime.NumCPU()
+	cpus := int64(runtime.NumCPU())
+	if cpus > 0 {
+		return cpus * 1000
+	}
+	return 1000
+}
+
+func getEffectiveCPUCount() int64 {
+	return getEffectiveCPUMillis() / 1000
+}
+
+func getEffectiveMemoryBytes(cpuCount int64) uint64 {
+	var slurmBytes uint64
+
+	// 1. Check Slurm environment
+	if val := os.Getenv("SLURM_MEM_PER_NODE"); val != "" {
+		if m, err := strconv.ParseUint(val, 10, 64); err == nil && m > 0 {
+			slurmBytes = m * 1024 * 1024 // Slurm reports in MB
+		}
+	}
+	if slurmBytes == 0 {
+		if val := os.Getenv("SLURM_MEM_PER_CPU"); val != "" {
+			if m, err := strconv.ParseUint(val, 10, 64); err == nil && m > 0 {
+				slurmBytes = m * uint64(cpuCount) * 1024 * 1024
+			}
+		}
+	}
+
+	// 2. Check cgroup memory limit (cgroup v2: memory.max; cgroup v1: memory.limit_in_bytes)
+	var cgroupBytes uint64
+	if memMaxPath := resolveCgroupPath("memory", "memory.max"); memMaxPath != "" {
+		if data, err := os.ReadFile(memMaxPath); err == nil {
+			str := strings.TrimSpace(string(data))
+			if str != "max" {
+				if limit, err := strconv.ParseUint(str, 10, 64); err == nil && limit > 0 && limit < (1<<62) {
+					cgroupBytes = limit
+				}
+			}
+		}
+	}
+	if cgroupBytes == 0 {
+		if memV1Path := resolveCgroupPath("memory", "memory.limit_in_bytes"); memV1Path != "" {
+			if data, err := os.ReadFile(memV1Path); err == nil {
+				str := strings.TrimSpace(string(data))
+				if limit, err := strconv.ParseUint(str, 10, 64); err == nil && limit > 0 && limit < (1<<62) {
+					cgroupBytes = limit
+				}
+			}
+		}
+	}
+
+	// 3. Selection logic: if both present, take tighter bound (minimum)
+	if slurmBytes > 0 && cgroupBytes > 0 {
+		if cgroupBytes < slurmBytes {
+			return cgroupBytes
+		}
+		return slurmBytes
+	}
+	if slurmBytes > 0 {
+		return slurmBytes
+	}
+	if cgroupBytes > 0 {
+		return cgroupBytes
+	}
+
+	// 4. Fallback to /proc/meminfo
 	return getHostTotalMemoryBytes()
 }
 
@@ -209,7 +327,7 @@ func getEffectiveStorageBytes(path string) uint64 {
 
 func getEffectiveGPUCount() int {
 	for _, env := range []string{"CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES", "SLURM_STEP_GPUS"} {
-		if val := strings.TrimSpace(os.Getenv(env)); val != "" && val != "none" && val != "void" {
+		if val := strings.TrimSpace(os.Getenv(env)); val != "" && val != "none" && val != "void" && val != "NoDevFiles" {
 			parts := strings.Split(val, ",")
 			count := 0
 			for _, p := range parts {

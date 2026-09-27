@@ -47,16 +47,17 @@ runtime_plaidctl() {
 
 # ---------------------------------------------------------------------------
 # Runtime identity store
-# Keyed by "<ns>/<pod>"; values are colon-separated fields:
-#   uid:node:endpoint_id:pid_hint
+# Keyed by "<ns>/<pod>"; values are pipe-separated fields:
+#   uid|node|node_ip|pod_ip|pause_pid|pause_start|netns_inode|endpoint_id|pod_dir
 # ---------------------------------------------------------------------------
-declare -A _RT_IDENTITY   # ns/pod → uid:node:endpoint_id:pid_hint
+declare -A _RT_IDENTITY
 
 # runtime_record_pod NS POD
-# Records UID, node placement, and Plaid endpoint ID for later cleanup checks.
+# Records explicit UID, node placement, IP, pause PID + start time, netns inode,
+# Plaid endpoint ID, and pod directory path for strict post-deletion cleanup checks.
 runtime_record_pod() {
     local ns="$1" pod="$2"
-    local uid node endpoint_id pid_hint
+    local uid node pod_ip pause_pid pause_start netns_inode endpoint_id pod_dir node_ip
 
     uid=$(e2e_kubectl get pod "$pod" -n "$ns" \
         -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
@@ -68,30 +69,74 @@ runtime_record_pod() {
         return 1
     fi
 
-    # Try to get Plaid endpoint ID for this pod UID via plaidctl on the node.
+    node_ip=$(runtime_node_ip "$node" 2>/dev/null || echo "")
+    if [ -z "$node_ip" ]; then
+        e2e_fail "runtime_record_pod: cannot resolve IP for node ${node}"
+        return 1
+    fi
+
+    # Verify node reachability via SSH
+    if ! runtime_ssh_node "$node_ip" "true" 2>/dev/null; then
+        e2e_fail "runtime_record_pod: node ${node} (${node_ip}) is unreachable via SSH"
+        return 1
+    fi
+
+    pod_ip=$(e2e_kubectl get pod "$pod" -n "$ns" \
+        -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
+
+    # Retrieve pause-pid annotation (format: <pid>_<startTime>)
+    pause_pid=""
+    pause_start=""
+    local pause_job
+    pause_job=$(e2e_kubectl get pod "$pod" -n "$ns" \
+        -o jsonpath='{.metadata.annotations.skiff\.io/pause-pid}' 2>/dev/null || echo "")
+    if [ -n "$pause_job" ]; then
+        pause_pid="${pause_job%%_*}"
+        pause_start="${pause_job#*_}"
+    fi
+
+    pod_dir="/tmp/.skiff/.pods/${ns}/${pod}_${uid}"
+
+    # If pause_pid was not in annotations, check readiness.json or pids.json in pod_dir
+    if [ -z "$pause_pid" ]; then
+        pause_pid=$(runtime_ssh_node "$node_ip" \
+            "if [ -f '${pod_dir}/readiness.json' ]; then \
+                 grep -o '\"pause_pid\":[0-9]*' '${pod_dir}/readiness.json' | cut -d: -f2; \
+             elif [ -f '${pod_dir}/pids.json' ]; then \
+                 grep -o '\"PausePID\":[0-9]*' '${pod_dir}/pids.json' | cut -d: -f2; \
+             fi" 2>/dev/null || echo "")
+    fi
+
+    # Record netns inode
+    netns_inode=""
+    if [ -n "$pause_pid" ]; then
+        netns_inode=$(runtime_ssh_node "$node_ip" \
+            "stat -L -c %i /proc/${pause_pid}/ns/net 2>/dev/null || readlink /proc/${pause_pid}/ns/net 2>/dev/null || true" 2>/dev/null || echo "")
+        netns_inode="${netns_inode//[^0-9]/}"
+    fi
+
+    # Record Plaid endpoint ID
     endpoint_id=""
-    if [ -n "$node" ]; then
-        endpoint_id=$(runtime_plaidctl "$node" status 2>/dev/null | grep -i "${uid}" | awk '{print $1}' || echo "")
+    if [ -n "$pod_ip" ]; then
+        endpoint_id=$(runtime_plaidctl "$node" status 2>/dev/null | grep -F "$pod_ip" | awk '{print $2}' | tr -d '()' || echo "")
+    fi
+    if [ -z "$endpoint_id" ] && [ -n "$uid" ]; then
+        endpoint_id=$(runtime_plaidctl "$node" status 2>/dev/null | grep -i "${uid}" | awk '{print $2}' | tr -d '()' || echo "")
     fi
 
-    # Record approximate PID range via process listing (best-effort).
-    pid_hint=""
-    if node_ip=$(runtime_node_ip "$node") && [ -n "$node_ip" ]; then
-        pid_hint=$(runtime_ssh_node "$node_ip" \
-            "pgrep -f '${uid}' 2>/dev/null | head -1" 2>/dev/null || echo "") || true
-    fi
-
-    _RT_IDENTITY["${ns}/${pod}"]="${uid}:${node}:${endpoint_id}:${pid_hint}"
-    e2e_log "Recorded runtime identity for ${ns}/${pod}: uid=${uid} node=${node} endpoint=${endpoint_id:-none} pid_hint=${pid_hint:-none}"
+    _RT_IDENTITY["${ns}/${pod}"]="${uid}|${node}|${node_ip}|${pod_ip}|${pause_pid}|${pause_start}|${netns_inode}|${endpoint_id}|${pod_dir}"
+    e2e_log "Recorded runtime identity for ${ns}/${pod}: uid=${uid} node=${node} ip=${pod_ip:-none} pid=${pause_pid:-none} inode=${netns_inode:-none} ep=${endpoint_id:-none} dir=${pod_dir}"
 }
 
 # ---------------------------------------------------------------------------
 # runtime_verify_gone NS POD DEADLINE
 # After deletion, polls until all runtime-owned identities for the pod are gone.
 # Checks:
-#   1. No process on the node whose cmdline contains the pod UID
-#   2. No Plaid endpoint with the recorded endpoint ID
-#   3. No network namespace path matching the UID
+#   1. No process matching pause PID + start time, nor matching UID / pod_dir
+#   2. No network namespace matching recorded inode
+#   3. No Plaid endpoint with the recorded endpoint ID or IP
+#   4. No pod directory lingering at /tmp/.skiff/.pods/...
+#   5. No IPAM lease file lingering
 # ---------------------------------------------------------------------------
 runtime_verify_gone() {
     local ns="$1" pod="$2" deadline="${3:-60}"
@@ -99,57 +144,110 @@ runtime_verify_gone() {
     local identity="${_RT_IDENTITY[$key]:-}"
 
     if [ -z "$identity" ]; then
-        e2e_log "runtime_verify_gone: no recorded identity for ${key}; skipping runtime check"
-        return 0
+        e2e_fail "runtime_verify_gone: no recorded identity for ${key}; cannot verify gone"
+        return 1
     fi
 
-    local uid node endpoint_id pid_hint
-    IFS=':' read -r uid node endpoint_id pid_hint <<< "$identity"
+    local uid node node_ip pod_ip pause_pid pause_start netns_inode endpoint_id pod_dir
+    IFS='|' read -r uid node node_ip pod_ip pause_pid pause_start netns_inode endpoint_id pod_dir <<< "$identity"
 
-    local node_ip
-    node_ip=$(runtime_node_ip "$node" 2>/dev/null || echo "")
+    if [ -z "$node_ip" ]; then
+        node_ip=$(runtime_node_ip "$node" 2>/dev/null || echo "")
+    fi
     if [ -z "$node_ip" ]; then
         e2e_fail "runtime_verify_gone: cannot resolve IP for node ${node}"
         return 1
     fi
 
-    local elapsed=0
+    # Verify node reachability via SSH - must NOT treat unreachable node as gone!
+    if ! runtime_ssh_node "$node_ip" "true" 2>/dev/null; then
+        e2e_fail "runtime_verify_gone: node ${node} (${node_ip}) is unreachable via SSH"
+        return 1
+    fi
+
+    local start_time now elapsed
+    start_time=$(date +%s)
 
     e2e_log "Verifying runtime cleanup for UID ${uid} on node ${node} (${node_ip})..."
 
     while true; do
         local all_gone=1
+        local lingering=()
 
-        # 1. No process matching the pod UID
-        local pids
-        pids=$(runtime_ssh_node "$node_ip" \
-            "ps -eo pid,args 2>/dev/null | grep -F '${uid}' | grep -v grep | wc -l" 2>/dev/null || echo "0") || true
-        pids="${pids//[^0-9]/}"
-        if [ "${pids:-0}" -gt 0 ]; then
-            all_gone=0
-            e2e_log "  Waiting: ${pids} process(es) still match UID ${uid}"
-        fi
-
-        # 2. No Plaid endpoint with the recorded ID (if we have one)
-        if [ -n "$endpoint_id" ]; then
-            local ep_present
-            ep_present=$(runtime_plaidctl "$node" status 2>/dev/null | grep -c "${endpoint_id}" || echo "0")
-            ep_present="${ep_present//[^0-9]/}"
-            if [ "${ep_present:-0}" -gt 0 ]; then
+        # 1. Process check
+        if [ -n "$pause_pid" ]; then
+            local pid_alive
+            pid_alive=$(runtime_ssh_node "$node_ip" \
+                "if [ -d /proc/${pause_pid} ]; then \
+                     cur_start=\$(awk '{print \$22}' /proc/${pause_pid}/stat 2>/dev/null || echo ''); \
+                     if [ -z '${pause_start}' ] || [ \"\$cur_start\" = '${pause_start}' ]; then echo 1; else echo 0; fi; \
+                 else echo 0; fi" 2>/dev/null || echo "ERR")
+            if [ "$pid_alive" != "0" ]; then
                 all_gone=0
-                e2e_log "  Waiting: Plaid endpoint ${endpoint_id} still present"
+                lingering+=("pause_pid=${pause_pid} (status=${pid_alive})")
             fi
         fi
 
-        # 3. No network namespace path referencing the UID
-        local ns_present
-        ns_present=$(runtime_ssh_node "$node_ip" \
-            "find /run /proc/*/ns -maxdepth 2 -name '*${uid}*' 2>/dev/null | wc -l" \
-            2>/dev/null || echo "0") || true
-        ns_present="${ns_present//[^0-9]/}"
-        if [ "${ns_present:-0}" -gt 0 ]; then
+        # Also check any processes with UID or pod_dir in cmdline
+        local uid_pids
+        uid_pids=$(runtime_ssh_node "$node_ip" \
+            "ps -eo pid,args 2>/dev/null | grep -E '(${uid}|${pod_dir})' | grep -v grep | wc -l" 2>/dev/null || echo "ERR")
+        uid_pids="${uid_pids//[^0-9]/}"
+        if [ "${uid_pids:-0}" -gt 0 ]; then
             all_gone=0
-            e2e_log "  Waiting: ${ns_present} netns path(s) still reference UID ${uid}"
+            lingering+=("processes_matching_uid=${uid_pids}")
+        fi
+
+        # 2. Netns inode check
+        if [ -n "$netns_inode" ]; then
+            local inode_count
+            inode_count=$(runtime_ssh_node "$node_ip" \
+                "find -L /proc/[0-9]*/ns/net -maxdepth 1 -inum '${netns_inode}' 2>/dev/null | wc -l" 2>/dev/null || echo "ERR")
+            inode_count="${inode_count//[^0-9]/}"
+            if [ "${inode_count:-0}" -gt 0 ]; then
+                all_gone=0
+                lingering+=("netns_inode=${netns_inode} (${inode_count} refs)")
+            fi
+        fi
+
+        # 3. Plaid endpoint check
+        local ep_query=""
+        if [ -n "$endpoint_id" ]; then
+            ep_query="$endpoint_id"
+        elif [ -n "$pod_ip" ]; then
+            ep_query="$pod_ip"
+        fi
+        if [ -n "$ep_query" ]; then
+            local ep_present
+            ep_present=$(runtime_plaidctl "$node" status 2>/dev/null | grep -c -F "${ep_query}" 2>/dev/null || echo "ERR")
+            ep_present="${ep_present//[^0-9]/}"
+            if [ "${ep_present:-0}" -gt 0 ]; then
+                all_gone=0
+                lingering+=("plaid_endpoint=${ep_query}")
+            fi
+        fi
+
+        # 4. Pod directory check
+        if [ -n "$pod_dir" ]; then
+            local dir_present
+            dir_present=$(runtime_ssh_node "$node_ip" \
+                "if [ -d '${pod_dir}' ]; then echo 1; else echo 0; fi" 2>/dev/null || echo "ERR")
+            if [ "$dir_present" != "0" ]; then
+                all_gone=0
+                lingering+=("pod_dir=${pod_dir}")
+            fi
+        fi
+
+        # 5. IPAM lease check
+        if [ -n "$pod_ip" ]; then
+            local lease_present
+            lease_present=$(runtime_ssh_node "$node_ip" \
+                "find /run/plaid/ipam /tmp/plaid/ipam /var/lib/cni -name '${pod_ip}' 2>/dev/null | wc -l" 2>/dev/null || echo "ERR")
+            lease_present="${lease_present//[^0-9]/}"
+            if [ "${lease_present:-0}" -gt 0 ]; then
+                all_gone=0
+                lingering+=("ipam_lease=${pod_ip}")
+            fi
         fi
 
         if [ "$all_gone" -eq 1 ]; then
@@ -157,13 +255,14 @@ runtime_verify_gone() {
             return 0
         fi
 
+        now=$(date +%s)
+        elapsed=$((now - start_time))
         if [ "$elapsed" -ge "$deadline" ]; then
-            e2e_fail "runtime_verify_gone: timed out after ${deadline}s; UID ${uid} still has live resources on ${node}"
+            e2e_fail "runtime_verify_gone: timed out after ${deadline}s; lingering on ${node}: ${lingering[*]:-unknown}"
             return 1
         fi
 
         sleep "$E2E_POLL_INTERVAL"
-        elapsed=$((elapsed + E2E_POLL_INTERVAL))
     done
 }
 

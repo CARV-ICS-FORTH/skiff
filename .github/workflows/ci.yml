@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, master, develop, 'release/**' ]
+    branches: [ main, master, develop, plaid, plaid-dev, 'release/**' ]
   pull_request:
-    branches: [ main, master, develop, 'release/**' ]
+    branches: [ main, master, develop, plaid, plaid-dev, 'release/**' ]
 
 jobs:
   ci:
@@ -36,6 +36,9 @@ jobs:
 
       - name: Run tests
         run: make test
+
+      - name: Run tests with race detector
+        run: make test-race
 
       - name: Build binaries (linux/amd64)
         run: make binaries-linux-amd64

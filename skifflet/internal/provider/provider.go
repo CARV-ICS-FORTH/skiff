@@ -42,6 +42,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	statsv1alpha1 "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	utilexec "k8s.io/utils/exec"
@@ -77,6 +78,7 @@ type VirtualK8S struct {
 
 	updatedPod func(*corev1.Pod)
 
+	activeUIDs  sync.Map // map[client.ObjectKey]types.UID
 	pods        sync.Map // map[client.ObjectKey]*corev1.Pod
 	cancelFuncs sync.Map // map[client.ObjectKey]context.CancelFunc
 	lock        *InstanceLock
@@ -117,17 +119,20 @@ func NewVirtualK8S(config InitConfig) (*VirtualK8S, error) {
 		pidsPath := filepath.Join(podpath.JobDir(), "pids.json")
 		if data, err := os.ReadFile(pidsPath); err == nil {
 			var pids struct {
-				PausePID      int   `json:"pause_pid"`
-				ContainerPIDs []int `json:"container_pids"`
+				PausePID            int            `json:"pause_pid"`
+				PauseStartTime      uint64         `json:"pause_start_time"`
+				ContainerPIDs       []int          `json:"container_pids"`
+				ContainerStartTimes map[int]uint64 `json:"container_start_times"`
 			}
 			if err := json.Unmarshal(data, &pids); err == nil {
 				for _, pid := range pids.ContainerPIDs {
-					if pid > 1 && !runtime.IsProcessDead(pid) {
+					st := pids.ContainerStartTimes[pid]
+					if pid > 1 && runtime.VerifyProcessIdentity(pid, st) && !runtime.IsProcessDead(pid) {
 						_ = syscall.Kill(-pid, syscall.SIGKILL)
 						_ = syscall.Kill(pid, syscall.SIGKILL)
 					}
 				}
-				if pids.PausePID > 1 && !runtime.IsProcessDead(pids.PausePID) {
+				if pids.PausePID > 1 && runtime.VerifyProcessIdentity(pids.PausePID, pids.PauseStartTime) && !runtime.IsProcessDead(pids.PausePID) {
 					_ = syscall.Kill(-pids.PausePID, syscall.SIGKILL)
 					_ = syscall.Kill(pids.PausePID, syscall.SIGKILL)
 				}
@@ -151,7 +156,7 @@ func NewVirtualK8S(config InitConfig) (*VirtualK8S, error) {
 // CreatePod takes a Kubernetes Pod and deploys it within the provider.
 func (v *VirtualK8S) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	podKey := client.ObjectKeyFromObject(pod)
-	logger := v.Logger.WithValues("obj", podKey)
+	logger := v.Logger.WithValues("obj", podKey, "uid", pod.GetUID())
 
 	logger.Info("[K8s] -> CreatePod")
 
@@ -161,10 +166,15 @@ func (v *VirtualK8S) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	pod.Status.HostIP = v.InitConfig.InternalIP
 
-	// CreatePod below owns the running containers and publishes their status.
-	// Registering a separate PodLifecycle here would expose its stale, Pending
-	// snapshot through GetPod and hide the live container IDs from exec.
-	v.pods.Store(podKey, pod)
+	// Cancel previous generation context if exists for this podKey
+	if oldCancel, ok := v.cancelFuncs.LoadAndDelete(podKey); ok {
+		oldCancel.(context.CancelFunc)()
+	}
+
+	uid := pod.GetUID()
+	v.activeUIDs.Store(podKey, uid)
+	v.pods.Store(podKey, pod.DeepCopy())
+
 	podCtx, podCancel := context.WithCancel(context.Background())
 	v.cancelFuncs.Store(podKey, podCancel)
 
@@ -190,7 +200,7 @@ func (v *VirtualK8S) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 // UpdatePod takes a Kubernetes Pod and updates it within the provider.
 func (v *VirtualK8S) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	podKey := client.ObjectKeyFromObject(pod)
-	logger := v.Logger.WithValues("obj", podKey)
+	logger := v.Logger.WithValues("obj", podKey, "uid", pod.GetUID())
 
 	logger.Info("[K8s] -> UpdatePod",
 		"version", pod.GetResourceVersion(),
@@ -199,7 +209,11 @@ func (v *VirtualK8S) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 
 	defer logger.Info("[K8s] <- UpdatePod")
 
-	if pl := PodHandler.GlobalRegistry.GetByKey(podKey); pl != nil {
+	if pl := PodHandler.GlobalRegistry.Get(pod.GetUID()); pl != nil {
+		pl.UpdateFromAPI(pod)
+		v.pods.Store(podKey, pl.GetPod())
+		return nil
+	} else if pl := PodHandler.GlobalRegistry.GetByKey(podKey); pl != nil {
 		pl.UpdateFromAPI(pod)
 		v.pods.Store(podKey, pl.GetPod())
 		return nil
@@ -238,7 +252,7 @@ func (v *VirtualK8S) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 		return nil
 	}
 
-	v.pods.Store(podKey, pod)
+	v.pods.Store(podKey, pod.DeepCopy())
 
 	return nil
 }
@@ -246,7 +260,7 @@ func (v *VirtualK8S) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (v *VirtualK8S) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	podKey := client.ObjectKeyFromObject(pod)
-	logger := v.Logger.WithValues("obj", podKey)
+	logger := v.Logger.WithValues("obj", podKey, "uid", pod.GetUID())
 
 	logger.Info("[K8s] -> DeletePod")
 
@@ -255,8 +269,21 @@ func (v *VirtualK8S) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		return nil
 	}
 
+	// UID verification: check if this DeletePod call is targeting a superseded UID
+	if activeUIDVal, ok := v.activeUIDs.Load(podKey); ok {
+		if activeUID, ok := activeUIDVal.(types.UID); ok && activeUID != "" && pod.GetUID() != "" {
+			if activeUID != pod.GetUID() {
+				logger.Info("[K8s] <- DeletePod (SKIPPED - stale UID deletion)", "activeUID", activeUID, "targetUID", pod.GetUID())
+				return nil
+			}
+		}
+	}
+
 	var localPod *corev1.Pod
-	pl := PodHandler.GlobalRegistry.GetByKey(podKey)
+	pl := PodHandler.GlobalRegistry.Get(pod.GetUID())
+	if pl == nil {
+		pl = PodHandler.GlobalRegistry.GetByKey(podKey)
+	}
 	if pl != nil {
 		localPod = pl.GetPod()
 	} else if val, ok := v.pods.Load(podKey); ok {
@@ -267,6 +294,12 @@ func (v *VirtualK8S) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 
 	if !isPodOwnedByNode(localPod, v.NodeName) {
 		logger.Info("[K8s] <- DeletePod (SKIPPED - local pod owned by another node)", "podNode", localPod.Spec.NodeName, "ownNode", v.NodeName)
+		return nil
+	}
+
+	// Double-check UID against localPod if present
+	if localPod.GetUID() != "" && pod.GetUID() != "" && localPod.GetUID() != pod.GetUID() {
+		logger.Info("[K8s] <- DeletePod (SKIPPED - local pod UID mismatch)", "localUID", localPod.GetUID(), "targetUID", pod.GetUID())
 		return nil
 	}
 
@@ -284,6 +317,7 @@ func (v *VirtualK8S) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 		cancelVal.(context.CancelFunc)()
 	}
 
+	v.activeUIDs.Delete(podKey)
 	v.pods.Delete(podKey)
 	_ = PodHandler.DeletePod(podKey, localPod)
 	RemoveJournalRecord(compute.Skiff.String(), localPod.GetUID())
@@ -417,12 +451,31 @@ func (v *VirtualK8S) saveAndNotifyPod(source string, pod *corev1.Pod) {
 	}
 
 	podKey := client.ObjectKeyFromObject(pod)
-	if _, ok := v.pods.Load(podKey); !ok {
-		// Pod is not in local cache (was deleted); do not resurrect into v.pods
-		return
+	uid := pod.GetUID()
+
+	// UID validation: discard callbacks from superseded UIDs
+	if activeUIDVal, ok := v.activeUIDs.Load(podKey); ok {
+		if activeUID, ok := activeUIDVal.(types.UID); ok && activeUID != "" && uid != "" {
+			if activeUID != uid {
+				v.Logger.Info("Discard callback from superseded pod UID", "key", podKey, "callbackUID", uid, "activeUID", activeUID)
+				return
+			}
+		}
+	} else {
+		// Fallback for tests or callers populating v.pods directly
+		if val, exists := v.pods.Load(podKey); exists {
+			existing := val.(*corev1.Pod)
+			if existing.GetUID() != "" && uid != "" && existing.GetUID() != uid {
+				v.Logger.Info("Discard callback from superseded pod UID", "key", podKey, "callbackUID", uid, "activeUID", existing.GetUID())
+				return
+			}
+		} else {
+			// Pod is not in local cache (was deleted); do not resurrect into v.pods
+			return
+		}
 	}
 
-	v.pods.Store(podKey, pod)
+	v.pods.Store(podKey, pod.DeepCopy())
 
 	if v.updatedPod != nil {
 		v.updatedPod(pod.DeepCopy())
@@ -436,6 +489,7 @@ func (v *VirtualK8S) saveAndNotifyPod(source string, pod *corev1.Pod) {
 
 func (v *VirtualK8S) reconcileNonTerminalPods() {
 	v.pods.Range(func(key, val interface{}) bool {
+		podKey := key.(client.ObjectKey)
 		pod := val.(*corev1.Pod)
 		if !isPodOwnedByNode(pod, v.NodeName) {
 			return true
@@ -443,6 +497,15 @@ func (v *VirtualK8S) reconcileNonTerminalPods() {
 
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 			return true
+		}
+
+		// Verify UID is still active for this podKey
+		if activeUIDVal, ok := v.activeUIDs.Load(podKey); ok {
+			if activeUID, ok := activeUIDVal.(types.UID); ok && activeUID != "" && pod.GetUID() != "" {
+				if activeUID != pod.GetUID() {
+					return true
+				}
+			}
 		}
 
 		oldStatus := pod.Status.DeepCopy()
@@ -459,12 +522,17 @@ func (v *VirtualK8S) reconcileNonTerminalPods() {
 
 		if compute.K8SClientset != nil {
 			if apiPod, err := compute.K8SClientset.CoreV1().Pods(pod.Namespace).Get(context.Background(), pod.Name, metav1.GetOptions{}); err == nil {
-				if !apiequality.Semantic.DeepEqual(apiPod.Status.Conditions, pod.Status.Conditions) || apiPod.Status.Phase != pod.Status.Phase {
-					apiPodCopy := apiPod.DeepCopy()
-					apiPodCopy.Status = *pod.Status.DeepCopy()
-					if _, err := compute.K8SClientset.CoreV1().Pods(pod.Namespace).UpdateStatus(context.Background(), apiPodCopy, metav1.UpdateOptions{}); err == nil {
-						v.Logger.Info("Reconciled out-of-sync pod status on API server", "pod", key)
+				// Require matching UID before pushing status to API server!
+				if apiPod.GetUID() == pod.GetUID() {
+					if !apiequality.Semantic.DeepEqual(apiPod.Status.Conditions, pod.Status.Conditions) || apiPod.Status.Phase != pod.Status.Phase {
+						apiPodCopy := apiPod.DeepCopy()
+						apiPodCopy.Status = *pod.Status.DeepCopy()
+						if _, err := compute.K8SClientset.CoreV1().Pods(pod.Namespace).UpdateStatus(context.Background(), apiPodCopy, metav1.UpdateOptions{}); err == nil {
+							v.Logger.Info("Reconciled out-of-sync pod status on API server", "pod", key)
+						}
 					}
+				} else {
+					v.Logger.Info("Skipping API server status reconcile: pod UID mismatch", "pod", key, "localUID", pod.GetUID(), "apiUID", apiPod.GetUID())
 				}
 			}
 		}
@@ -518,15 +586,17 @@ func (v *VirtualK8S) GetStatsSummary(context.Context) (*statsv1alpha1.Summary, e
 }
 
 type followLogReader struct {
-	ctx     context.Context
-	file    *os.File
-	initial *bytes.Reader
-	offset  int64
-	closed  bool
-	mu      sync.Mutex
+	ctx      context.Context
+	filePath string
+	file     *os.File
+	initial  *bytes.Reader
+	offset   int64
+	closeCh  chan struct{}
+	once     sync.Once
+	mu       sync.Mutex
 }
 
-func newFollowLogReader(ctx context.Context, filePath string, initialBytes []byte) (*followLogReader, error) {
+func newFollowLogReader(ctx context.Context, filePath string, initialBytes []byte, startAtEnd bool) (*followLogReader, error) {
 	f, err := os.Open(filePath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -538,70 +608,90 @@ func newFollowLogReader(ctx context.Context, filePath string, initialBytes []byt
 	}
 
 	var offset int64
-	if f != nil {
+	if f != nil && startAtEnd {
 		offset, _ = f.Seek(0, io.SeekEnd)
 	}
 
 	return &followLogReader{
-		ctx:     ctx,
-		file:    f,
-		initial: initReader,
-		offset:  offset,
+		ctx:      ctx,
+		filePath: filePath,
+		file:     f,
+		initial:  initReader,
+		offset:   offset,
+		closeCh:  make(chan struct{}),
 	}, nil
 }
 
 func (r *followLogReader) Read(p []byte) (int, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.closed {
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	case <-r.closeCh:
 		return 0, io.EOF
+	default:
 	}
 
 	if r.initial != nil && r.initial.Len() > 0 {
 		return r.initial.Read(p)
 	}
 
-	if r.file == nil {
-		select {
-		case <-r.ctx.Done():
-			return 0, r.ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-			return 0, nil
-		}
-	}
-
 	for {
-		if r.ctx.Err() != nil {
-			return 0, r.ctx.Err()
-		}
-
-		n, err := r.file.Read(p)
-		if n > 0 {
-			r.offset += int64(n)
-			return n, nil
-		}
-		if err != nil && !errors.Is(err, io.EOF) {
-			return 0, err
-		}
-
-		// At EOF: wait for new data or cancellation
 		select {
 		case <-r.ctx.Done():
 			return 0, r.ctx.Err()
+		case <-r.closeCh:
+			return 0, io.EOF
+		default:
+		}
+
+		r.mu.Lock()
+		if r.file == nil {
+			if f, err := os.Open(r.filePath); err == nil {
+				r.file = f
+				if r.offset > 0 {
+					_, _ = r.file.Seek(r.offset, io.SeekStart)
+				}
+			}
+		}
+		f := r.file
+		r.mu.Unlock()
+
+		if f != nil {
+			n, err := f.Read(p)
+			if n > 0 {
+				r.mu.Lock()
+				r.offset += int64(n)
+				r.mu.Unlock()
+				return n, nil
+			}
+			if err != nil && !errors.Is(err, io.EOF) {
+				return 0, err
+			}
+		}
+
+		// At EOF or file absent: wait 100ms or until cancelled/closed without holding any mutex
+		select {
+		case <-r.ctx.Done():
+			return 0, r.ctx.Err()
+		case <-r.closeCh:
+			return 0, io.EOF
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
 
 func (r *followLogReader) Close() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.closed = true
-	if r.file != nil {
-		return r.file.Close()
-	}
-	return nil
+	var closeErr error
+	r.once.Do(func() {
+		close(r.closeCh)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.file != nil {
+			closeErr = r.file.Close()
+			r.file = nil
+		}
+	})
+	return closeErr
 }
 
 // GetContainerLogs retrieves the logs of a container by name from the provider.
@@ -611,6 +701,10 @@ func (v *VirtualK8S) GetContainerLogs(ctx context.Context, namespace, podName, c
 
 	logger.Info("[K8s] -> GetContainerLogs")
 	defer logger.Info("[K8s] <- GetContainerLogs")
+
+	if opts.Previous {
+		return nil, errdefs.InvalidInputf("previous terminated container logs are not supported")
+	}
 
 	// Validate pod existence
 	pl := PodHandler.GlobalRegistry.GetByKey(podKey)
@@ -652,6 +746,7 @@ func (v *VirtualK8S) GetContainerLogs(ctx context.Context, namespace, podName, c
 	logfilePath := podDir.Container(containerName).LogsPath()
 
 	var initialBytes []byte
+	startAtEnd := false
 	if opts.Tail > 0 {
 		logs, err := container.GetTailLog(logfilePath, opts.Tail)
 		if err == nil {
@@ -661,6 +756,7 @@ func (v *VirtualK8S) GetContainerLogs(ctx context.Context, namespace, podName, c
 			}
 			initialBytes = buf.Bytes()
 		}
+		startAtEnd = true
 	} else if !opts.Follow {
 		data, err := os.ReadFile(logfilePath)
 		if err != nil {
@@ -673,7 +769,7 @@ func (v *VirtualK8S) GetContainerLogs(ctx context.Context, namespace, podName, c
 	}
 
 	if opts.Follow {
-		return newFollowLogReader(ctx, logfilePath, initialBytes)
+		return newFollowLogReader(ctx, logfilePath, initialBytes, startAtEnd)
 	}
 
 	return io.NopCloser(bytes.NewReader(initialBytes)), nil
