@@ -20,7 +20,7 @@ NODE_A_IP=$(runtime_node_ip "$NODE_A")
 
 # 2. Attempt to start a second plaidd instance against the same socket path
 e2e_log "Attempting to start conflicting second plaidd on ${NODE_A}..."
-SECOND_CMD="inst=\$(apptainer instance list 2>/dev/null | awk 'NR>1 {print \$1; exit}'); if [ -n \"\$inst\" ]; then apptainer exec instance://\$inst plaidd --socket /run/plaid/plaidd.sock --node-cidr 10.244.1.0/24; else plaidd --socket /run/plaid/plaidd.sock --node-cidr 10.244.1.0/24; fi"
+SECOND_CMD="inst=\$(apptainer instance list 2>/dev/null | awk 'NR>1 {print \$1; exit}'); if [ -n \"\$inst\" ]; then apptainer exec instance://\$inst plaidd --api-socket /run/plaid/plaidd.sock --node-cidr 10.244.1.0/24; else plaidd --api-socket /run/plaid/plaidd.sock --node-cidr 10.244.1.0/24; fi"
 
 SECOND_RC=0
 OUTPUT=$(runtime_ssh_node "$NODE_A_IP" "$SECOND_CMD" 2>&1) || SECOND_RC=$?

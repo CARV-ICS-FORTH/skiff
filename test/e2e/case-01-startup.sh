@@ -67,9 +67,11 @@ if [ -z "\$TARGET_JOB" ]; then
     TARGET_JOB=\$(squeue -u \$(whoami) -h -o "%i" | head -n1 || true)
 fi
 
-if [ "\${NO_TEARDOWN:-0}" != "1" ] && [ -n "\$TARGET_JOB" ]; then
-    e2e_log "Canceling job \$TARGET_JOB"
-    scancel "\$TARGET_JOB"
+if [ "\${NO_TEARDOWN:-0}" != "1" ]; then
+    if [ -n "\$TARGET_JOB" ]; then
+        e2e_log "Canceling job \$TARGET_JOB"
+        scancel "\$TARGET_JOB" 2>/dev/null || true
+    fi
     wait_clean
     
     REPO_ROOT="\${SKIFF_ARTIFACT_DIR:-\$(git rev-parse --show-toplevel 2>/dev/null || echo ".")}"
@@ -100,7 +102,7 @@ if [ -z "${SKIFF_JOB_ID:-}" ]; then
         REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
     fi
     e2e_log "Submitting skiff.slurm from ${REPO_ROOT}/scripts/skiff.slurm"
-    SKIFF_JOB_ID=$(sbatch --parsable "${REPO_ROOT}/scripts/skiff.slurm")
+    SKIFF_JOB_ID=$(sbatch --parsable "${REPO_ROOT}/scripts/skiff.slurm" | cut -d';' -f1)
     export SKIFF_JOB_ID
     e2e_log "Submitted Skiff cluster job: ${SKIFF_JOB_ID}"
 fi

@@ -127,6 +127,27 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "endpoint":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: plaidctl endpoint <del|remove> <endpoint-id>")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "del", "remove":
+			if len(args) < 3 {
+				fmt.Fprintln(os.Stderr, "Usage: plaidctl endpoint del <endpoint-id>")
+				os.Exit(1)
+			}
+			if err := client.RemoveEndpoint(args[2], args[2]); err != nil {
+				fmt.Fprintf(os.Stderr, "Error removing endpoint: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Endpoint removed: %s\n", args[2])
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown endpoint command: %s\n", args[1])
+			os.Exit(1)
+		}
+
 	default:
 		printUsage()
 		os.Exit(1)
@@ -142,6 +163,7 @@ Usage:
 Commands:
   version                                         Display version information
   status                                          Display daemon status & endpoints
+  endpoint del <endpoint-id>                      Remove a container endpoint
   route add <subnet> <remote-host> [vni] [port]   Add a cross-host overlay route
   route del <subnet>                              Remove an overlay route
   filter list                                     List active packet filter rules

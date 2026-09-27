@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"skifflet/internal/compute"
+	"skifflet/internal/compute/podhandler"
 	"skifflet/internal/compute/runtime"
 )
 
@@ -144,7 +145,12 @@ func ReconcileSurvivingWorkloads(skiffDir string) error {
 			_ = syscall.Kill(rec.PausePID, syscall.SIGKILL)
 		}
 
-		// 3. Remove journal record
+		// 3. Remove Plaid endpoint if recorded
+		if rec.EndpointID != "" {
+			_ = podhandler.RemovePlaidEndpoint(rec.EndpointID)
+		}
+
+		// 4. Remove journal record
 		_ = os.Remove(path)
 	}
 

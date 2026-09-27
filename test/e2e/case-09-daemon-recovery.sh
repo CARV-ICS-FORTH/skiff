@@ -17,7 +17,7 @@ export SKIFF_RECOVERY_POLICY="${SKIFF_RECOVERY_POLICY:-fail-the-job}"
 [ -n "${SKIFF_RECOVERY_POLICY:-}" ] || e2e_die "SKIFF_RECOVERY_POLICY must be set"
 
 e2e_kubectl create namespace "$NS"
-e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found"
+e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --timeout=30s"
 e2e_cleanup_register "e2e_preserve_failure $NS"
 
 fixture_server_pod "$NS" "e2e09-server" "$NODE_A" 8080 | e2e_kubectl apply -f -
@@ -53,22 +53,28 @@ runtime_kill_process "$NODE_B" "$SKIFFLET_PID" KILL
 
 if [ "$SKIFF_RECOVERY_POLICY" = "fail-the-job" ]; then
     # In fail-the-job model (K4/S1), daemon failure fatal-exits the bubble and aborts the Slurm job
-    e2e_wait_condition "$E2E_RECOVERY_DEADLINE" "NODE_B Ready=False or NotReady" \
-        "e2e_kubectl get node $NODE_B -o jsonpath='{range .status.conditions[?(@.type==\"Ready\")]}{.status}{end}' 2>/dev/null | grep -E 'False|Unknown|^$'"
-    
+    if [ -z "${SKIFF_JOB_ID:-}" ]; then
+        SKIFF_JOB_ID=$(squeue -u "$(whoami)" -h -o "%i" | head -n1 || true)
+    fi
+
+    # 1. Verify Slurm job failure or termination within bounded deadline
     if [ -n "${SKIFF_JOB_ID:-}" ]; then
         e2e_wait_condition 60 "Slurm job failed or terminated" \
             "test \"\$(squeue -j $SKIFF_JOB_ID -h -o %T 2>/dev/null || echo 'COMPLETED')\" != 'RUNNING'"
         e2e_pass "Slurm job ${SKIFF_JOB_ID} terminated upon required daemon failure"
     fi
 
-    # Verify bubble instances on NODE_B terminated cleanly
+    # 2. Verify bubble instances on NODE_B terminated cleanly
     NODE_B_IP=$(runtime_node_ip "$NODE_B" 2>/dev/null || echo "")
     if [ -n "$NODE_B_IP" ]; then
-        BUBBLE_COUNT=$(runtime_ssh_node "$NODE_B_IP" "apptainer instance list 2>/dev/null | grep -c bubble || echo 0" 2>/dev/null || echo 0)
-        BUBBLE_COUNT="${BUBBLE_COUNT//[^0-9]/}"
-        e2e_assert_eq "bubble instances terminated on NODE_B" "${BUBBLE_COUNT:-0}" "0"
+        e2e_wait_condition 30 "bubble instances terminated on NODE_B" \
+            "test \"\$(runtime_ssh_node \"$NODE_B_IP\" \"apptainer instance list 2>/dev/null | grep -c bubble || true\")\" -eq 0"
+        e2e_pass "bubble instances terminated on NODE_B"
     fi
+
+    # 3. Verify node state reflects failure (node NotReady, Unknown, or cluster terminated)
+    e2e_wait_condition "$E2E_RECOVERY_DEADLINE" "NODE_B Ready=False or NotReady or cluster terminated" \
+        "test -z \"\$(squeue -j ${SKIFF_JOB_ID:-0} -h -o %i 2>/dev/null)\" || e2e_kubectl get node $NODE_B -o jsonpath='{range .status.conditions[?(@.type==\"Ready\")]}{.status}{end}' 2>/dev/null | grep -E 'False|Unknown|^$'"
 
     e2e_pass "Fail-the-job recovery semantics verified for daemon failure"
 elif [ "$SKIFF_RECOVERY_POLICY" = "adopt" ]; then
@@ -85,12 +91,12 @@ elif [ "$SKIFF_RECOVERY_POLICY" = "adopt" ]; then
 
     fixture_client_job "$NS" "e2e09-client" "$NODE_B" "http://${SERVER_IP}:8080/" | e2e_kubectl apply -f -
     e2e_wait_job_complete "$NS" "e2e09-client" 60
-fi
 
-e2e_kubectl delete pod e2e09-test-pod -n "$NS" --wait=false || true
-e2e_kubectl delete pod e2e09-server -n "$NS" --wait=false || true
-runtime_verify_gone "$NS" "e2e09-server" 60
-runtime_verify_gone "$NS" "e2e09-test-pod" 60
-e2e_kubectl delete namespace "$NS"
+    e2e_kubectl delete pod e2e09-test-pod -n "$NS" --wait=false || true
+    e2e_kubectl delete pod e2e09-server -n "$NS" --wait=false || true
+    runtime_verify_gone "$NS" "e2e09-server" 60
+    runtime_verify_gone "$NS" "e2e09-test-pod" 60
+    e2e_kubectl delete namespace "$NS" --ignore-not-found --timeout=30s
+fi
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

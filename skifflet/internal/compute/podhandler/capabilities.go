@@ -37,23 +37,23 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 				unsupported = append(unsupported, fmt.Sprintf("%s.Lifecycle.PreStop", prefix))
 			}
 		}
-		if c.StartupProbe != nil {
-			unsupported = append(unsupported, fmt.Sprintf("%s.StartupProbe", prefix))
-		}
-		if c.LivenessProbe != nil {
-			unsupported = append(unsupported, fmt.Sprintf("%s.LivenessProbe", prefix))
-		}
-		if c.ReadinessProbe != nil {
-			if c.ReadinessProbe.GRPC != nil {
-				unsupported = append(unsupported, fmt.Sprintf("%s.ReadinessProbe.GRPC", prefix))
+		validateProbe := func(probeName string, p *corev1.Probe) {
+			if p == nil {
+				return
 			}
-			if c.ReadinessProbe.HTTPGet != nil && c.ReadinessProbe.HTTPGet.Port.Type == intstr.String {
-				unsupported = append(unsupported, fmt.Sprintf("%s.ReadinessProbe.HTTPGet.NamedPort", prefix))
+			if p.GRPC != nil {
+				unsupported = append(unsupported, fmt.Sprintf("%s.%s.GRPC", prefix, probeName))
 			}
-			if c.ReadinessProbe.TCPSocket != nil && c.ReadinessProbe.TCPSocket.Port.Type == intstr.String {
-				unsupported = append(unsupported, fmt.Sprintf("%s.ReadinessProbe.TCPSocket.NamedPort", prefix))
+			if p.HTTPGet != nil && p.HTTPGet.Port.Type == intstr.String {
+				unsupported = append(unsupported, fmt.Sprintf("%s.%s.HTTPGet.NamedPort", prefix, probeName))
+			}
+			if p.TCPSocket != nil && p.TCPSocket.Port.Type == intstr.String {
+				unsupported = append(unsupported, fmt.Sprintf("%s.%s.TCPSocket.NamedPort", prefix, probeName))
 			}
 		}
+		validateProbe("ReadinessProbe", c.ReadinessProbe)
+		validateProbe("LivenessProbe", c.LivenessProbe)
+		validateProbe("StartupProbe", c.StartupProbe)
 	}
 
 	for i := range pod.Spec.InitContainers {

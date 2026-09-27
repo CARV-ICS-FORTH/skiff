@@ -70,6 +70,52 @@ func watchReadinessProbe(ctx context.Context, podIP string, containerID string, 
 	}()
 }
 
+// watchLivenessProbe checks the live PodIP and invokes onFailure when failure threshold is reached.
+func watchLivenessProbe(ctx context.Context, podIP string, containerID string, probe *corev1.Probe, onFailure func()) {
+	go func() {
+		if delay := time.Duration(probe.InitialDelaySeconds) * time.Second; delay > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+		}
+		period := time.Duration(probe.PeriodSeconds) * time.Second
+		if period <= 0 {
+			period = 10 * time.Second
+		}
+		timeout := time.Duration(probe.TimeoutSeconds) * time.Second
+		if timeout <= 0 {
+			timeout = time.Second
+		}
+		failureThreshold := int(probe.FailureThreshold)
+		if failureThreshold <= 0 {
+			failureThreshold = 3
+		}
+		failures := 0
+		ticker := time.NewTicker(period)
+		defer ticker.Stop()
+		for {
+			if evaluateReadinessProbe(probe, podIP, containerID, timeout) {
+				failures = 0
+			} else {
+				failures++
+				if failures >= failureThreshold {
+					if onFailure != nil {
+						onFailure()
+					}
+					return
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
 func evaluateReadinessProbe(probe *corev1.Probe, podIP, containerID string, timeout time.Duration) bool {
 	if probe.Exec == nil {
 		return evaluateProbe(probe, podIP, timeout)

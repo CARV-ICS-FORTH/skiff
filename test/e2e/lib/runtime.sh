@@ -45,6 +45,19 @@ runtime_plaidctl() {
         "inst=\$(apptainer instance list 2>/dev/null | awk 'NR>1 {print \$1; exit}'); if [ -n \"\$inst\" ]; then apptainer exec instance://\$inst plaidctl ${cmd}; else plaidctl ${cmd}; fi"
 }
 
+# Run a command on a node, inside its active apptainer bubble instance if present
+runtime_node_exec() {
+    local node="$1"
+    shift
+    local node_ip
+    node_ip=$(runtime_node_ip "$node")
+    local cmd="$*"
+    local b64
+    b64=$(printf '%s' "$cmd" | base64 | tr -d '\r\n')
+    runtime_ssh_node "$node_ip" \
+        "inst=\$(apptainer instance list 2>/dev/null | awk 'NR>1 {print \$1; exit}'); if [ -n \"\$inst\" ]; then echo '$b64' | base64 -d | apptainer exec --pwd / instance://\$inst bash; else echo '$b64' | base64 -d | bash; fi"
+}
+
 # ---------------------------------------------------------------------------
 # Runtime identity store
 # Keyed by "<ns>/<pod>"; values are pipe-separated fields:
@@ -84,15 +97,23 @@ runtime_record_pod() {
     pod_ip=$(e2e_kubectl get pod "$pod" -n "$ns" \
         -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
 
-    # Retrieve pause-pid annotation (format: <pid>_<startTime>)
+    # Retrieve pause-pid annotation (format: pid://<pid>:<startTime> or <pid>_<startTime> or <pid>)
     pause_pid=""
     pause_start=""
     local pause_job
     pause_job=$(e2e_kubectl get pod "$pod" -n "$ns" \
         -o jsonpath='{.metadata.annotations.skiff\.io/pause-pid}' 2>/dev/null || echo "")
     if [ -n "$pause_job" ]; then
-        pause_pid="${pause_job%%_*}"
-        pause_start="${pause_job#*_}"
+        pause_job="${pause_job#pid://}"
+        if [[ "$pause_job" == *:* ]]; then
+            pause_pid="${pause_job%%:*}"
+            pause_start="${pause_job#*:}"
+        elif [[ "$pause_job" == *_* ]]; then
+            pause_pid="${pause_job%%_*}"
+            pause_start="${pause_job#*_}"
+        else
+            pause_pid="$pause_job"
+        fi
     fi
 
     pod_dir="/tmp/.skiff/.pods/${ns}/${pod}_${uid}"
@@ -117,7 +138,9 @@ runtime_record_pod() {
 
     # Record Plaid endpoint ID
     endpoint_id=""
-    if [ -n "$pod_ip" ]; then
+    endpoint_id=$(e2e_kubectl get pod "$pod" -n "$ns" \
+        -o jsonpath='{.metadata.annotations.skiff\.io/endpoint-id}' 2>/dev/null || echo "")
+    if [ -z "$endpoint_id" ] && [ -n "$pod_ip" ]; then
         endpoint_id=$(runtime_plaidctl "$node" status 2>/dev/null | grep -F "$pod_ip" | awk '{print $2}' | tr -d '()' || echo "")
     fi
     if [ -z "$endpoint_id" ] && [ -n "$uid" ]; then
@@ -177,7 +200,7 @@ runtime_verify_gone() {
         # 1. Process check
         if [ -n "$pause_pid" ]; then
             local pid_alive
-            pid_alive=$(runtime_ssh_node "$node_ip" \
+            pid_alive=$(runtime_node_exec "$node" \
                 "if [ -d /proc/${pause_pid} ]; then \
                      cur_start=\$(awk '{print \$22}' /proc/${pause_pid}/stat 2>/dev/null || echo ''); \
                      if [ -z '${pause_start}' ] || [ \"\$cur_start\" = '${pause_start}' ]; then echo 1; else echo 0; fi; \

@@ -192,10 +192,10 @@ run_workload_cases() {
     run_case "06" "logs-exec-portforward"
     run_case "07" "restart-policy"
     run_case "08" "graceful-delete"
-    run_case "09" "daemon-recovery"
     run_case "10" "image-failure"
     run_case "11" "harness-selfcheck"
     run_case "12" "daemon-collision"
+    run_case "09" "daemon-recovery"
 }
 
 run_startup_case() {

@@ -41,9 +41,12 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 			compute.PodError(pod, compute.ReasonUnsupportedFeatures, "%v", err)
 			return
 		}
-	case corev1.PodSucceeded, corev1.PodFailed:
-		/*-- If on final states, there is nothing else to do --*/
+	case corev1.PodSucceeded:
 		if pod.Spec.RestartPolicy != corev1.RestartPolicyAlways {
+			return
+		}
+	case corev1.PodFailed:
+		if pod.Spec.RestartPolicy == corev1.RestartPolicyNever {
 			return
 		}
 	}
@@ -148,7 +151,7 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 		},
 
 		{ /*-- RUNNING: at least one job is actively running, or previously started and restarting under Always/OnFailure --*/
-			expression: state.NumRunningJobs() > 0 || (hasEverStarted && state.NumPendingJobs() > 0 && (pod.Spec.RestartPolicy == corev1.RestartPolicyAlways || (pod.Spec.RestartPolicy == corev1.RestartPolicyOnFailure && state.NumSuccessfulJobs() < totalJobs))),
+			expression: state.NumRunningJobs() > 0 || (hasEverStarted && (pod.Spec.RestartPolicy == corev1.RestartPolicyAlways || (pod.Spec.RestartPolicy == corev1.RestartPolicyOnFailure && state.NumSuccessfulJobs() < totalJobs))),
 			change: func(status *corev1.PodStatus) {
 				status.Phase = corev1.PodRunning
 				status.Reason = "Running"

@@ -152,10 +152,21 @@ e2e_wait_condition() {
     local op_timeout="${E2E_OP_TIMEOUT:-10}"
     while true; do
         local ok=1
-        if command -v timeout >/dev/null 2>&1; then
-            timeout "$op_timeout" bash -c "$*" >/dev/null 2>&1 || ok=0
-        else
-            eval "$@" >/dev/null 2>&1 || ok=0
+        ( eval "$*" ) >/dev/null 2>&1 &
+        local pid=$!
+        local count=0
+        while kill -0 "$pid" 2>/dev/null; do
+            if [ "$count" -ge "$((op_timeout * 10))" ]; then
+                kill -9 "$pid" 2>/dev/null || true
+                wait "$pid" 2>/dev/null || true
+                ok=0
+                break
+            fi
+            sleep 0.1
+            count=$((count + 1))
+        done
+        if [ "$ok" -eq 1 ]; then
+            wait "$pid" 2>/dev/null || ok=0
         fi
         if [ "$ok" -eq 1 ]; then
             return 0
@@ -319,13 +330,17 @@ e2e_cleanup_run() {
 
 # Default trap: run cleanup stack and preserve on failure.
 _e2e_on_exit() {
-    local rc=$?
+    trap - EXIT
+    rc=$?
     if [ "$rc" -eq 77 ]; then
         e2e_log "Case ${E2E_CASE} skipped (rc=77)"
     elif [ "$rc" -ne 0 ] || [ "${E2E_FAILED:-0}" -ne 0 ]; then
         e2e_log "Case ${E2E_CASE} exiting with failure (rc=${rc}, E2E_FAILED=${E2E_FAILED:-0})"
     fi
     e2e_cleanup_run
+    if [ "${E2E_FAILED:-0}" -ne 0 ] && [ "$rc" -eq 0 ]; then
+        rc=1
+    fi
     exit "$rc"
 }
 trap '_e2e_on_exit' EXIT

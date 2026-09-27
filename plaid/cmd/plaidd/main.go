@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -329,17 +330,25 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 			d.Stop()
 		}
 	}()
-	// Initialize runtime dir, permissions, IPAM config, and binary
-	if err := initRuntimeDir(d.cfg.SocketPath, d.cfg.NodeCIDR, d.cfg.GatewayIP); err != nil {
+	// Ensure socket directory exists with permissive access before acquiring lock
+	socketDir := filepath.Dir(d.cfg.SocketPath)
+	if err := os.MkdirAll(socketDir, 0777); err != nil {
 		startErr = err
-		return fmt.Errorf("failed to initialize runtime dir: %w", err)
+		return fmt.Errorf("failed to create runtime socket directory %s: %w", socketDir, err)
 	}
+	_ = os.Chmod(socketDir, 0777)
 
-	// Acquire API socket lock and start listener before mutating network state or binding overlay ports.
+	// Acquire API socket lock and start listener before mutating network state, IPAM config, or binding overlay ports.
 	// This guarantees that a duplicate daemon fails immediately without disturbing an existing live daemon.
 	if err := d.apiServer.Start(ctx); err != nil {
 		startErr = err
 		return fmt.Errorf("failed to start API server: %w", err)
+	}
+
+	// Initialize runtime dir, permissions, IPAM config, and binary
+	if err := initRuntimeDir(d.cfg.SocketPath, d.cfg.NodeCIDR, d.cfg.GatewayIP); err != nil {
+		startErr = err
+		return fmt.Errorf("failed to initialize runtime dir: %w", err)
 	}
 
 	if d.cfg.GatewayMode == "tap" {
@@ -561,6 +570,7 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 	for i, ep := range eps {
 		epList[i] = fmt.Sprintf("%s (%s / %s)", ep.ID(), ep.IP(), ep.MAC())
 	}
+	sort.Strings(epList)
 
 	mode := "kubernetes"
 	if d.k8sCtrl == nil {

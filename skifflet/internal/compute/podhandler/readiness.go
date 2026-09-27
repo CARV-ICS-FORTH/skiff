@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -41,6 +42,10 @@ func WaitForReadiness(ctx context.Context, readinessFile string, timeout time.Du
 			if err == nil && len(data) > 0 {
 				var info SandboxInfo
 				if jsonErr := json.Unmarshal(data, &info); jsonErr == nil && info.PausePID > 1 && info.IP != "" {
+					info.IP = strings.Split(info.IP, "/")[0]
+					if info.Gateway != "" {
+						info.Gateway = strings.Split(info.Gateway, "/")[0]
+					}
 					return &info, nil
 				}
 			}
@@ -107,7 +112,8 @@ func VerifyPodIP(ipStr string, expectedSubnet *net.IPNet) error {
 		return fmt.Errorf("%w: empty IP", ErrInvalidPodIP)
 	}
 
-	parsedIP := net.ParseIP(ipStr)
+	cleanIP := strings.Split(ipStr, "/")[0]
+	parsedIP := net.ParseIP(cleanIP)
 	if parsedIP == nil {
 		return fmt.Errorf("%w: cannot parse IP '%s'", ErrInvalidPodIP, ipStr)
 	}

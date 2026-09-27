@@ -210,6 +210,12 @@ while true; do
         EXIT_CODE=1
         exit 1
     fi
+    if ! apptainer exec --pwd / instance://"$NAME" pgrep -f 'entrypoint.sh' >/dev/null 2>&1; then
+        echo "ERROR: Bubble entrypoint process terminated in instance $NAME!" >&2
+        apptainer instance stop "$NAME" 2>/dev/null || true
+        EXIT_CODE=1
+        exit 1
+    fi
     if [[ -n ${SOCAT_PID_6443:-} ]] && ! kill -0 "$SOCAT_PID_6443" 2>/dev/null; then
         echo "ERROR: Socat relay 6443 (PID $SOCAT_PID_6443) terminated unexpectedly!" >&2
         EXIT_CODE=1

@@ -90,14 +90,19 @@ e2e_wait_pod_ready "$NS" "e2e07-always" 60
 NEW_UID=$(e2e_kubectl get pod e2e07-always -n $NS -o jsonpath='{.metadata.uid}')
 e2e_assert_eq "pod UID unchanged" "$NEW_UID" "$UID_ALWAYS"
 
-CONTAINER_JOB=$(e2e_kubectl get pod e2e07-always -n "$NS" -o jsonpath='{.metadata.annotations.skiff\.io/container-pid}')
-e2e_assert_nonempty "container-pid annotation" "$CONTAINER_JOB"
-CONTAINER_PID="${CONTAINER_JOB%%_*}"
-PID_CHECK=$(runtime_ssh_node "$(runtime_node_ip "$NODE_A")" "if [ -d /proc/${CONTAINER_PID} ]; then echo 1; else echo 0; fi" 2>/dev/null || echo 0)
+CONTAINER_JOB=$(e2e_kubectl get pod e2e07-always -n "$NS" -o jsonpath='{.status.containerStatuses[0].containerID}')
+if [ -z "$CONTAINER_JOB" ]; then
+    CONTAINER_JOB=$(e2e_kubectl get pod e2e07-always -n "$NS" -o jsonpath='{.metadata.annotations.skiff\.io/container-pid}')
+fi
+e2e_assert_nonempty "container-pid annotation or status" "$CONTAINER_JOB"
+CONTAINER_PID="${CONTAINER_JOB#pid://}"
+CONTAINER_PID="${CONTAINER_PID%%:*}"
+CONTAINER_PID="${CONTAINER_PID%%_*}"
+PID_CHECK=$(runtime_node_exec "$NODE_A" "if [ -d /proc/${CONTAINER_PID} ]; then echo 1; else echo 0; fi" 2>/dev/null || echo 0)
 e2e_assert_eq "exact container PID alive" "$PID_CHECK" "1"
 
 NODE_A_IP=$(runtime_node_ip "$NODE_A")
-POD_PROCS=$(runtime_ssh_node "$NODE_A_IP" "ps -eo pid,args 2>/dev/null | grep -F '$NEW_UID' | grep -v grep | wc -l" 2>/dev/null || echo 0)
+POD_PROCS=$(runtime_ssh_node "$NODE_A_IP" "ps -eo pid,args 2>/dev/null | grep -F '$NEW_UID' | grep -v grep | grep -v '/pause' | wc -l" 2>/dev/null || echo 0)
 POD_PROCS="${POD_PROCS//[^0-9]/}"
 e2e_assert_eq "single container process for pod UID" "${POD_PROCS:-0}" "1"
 

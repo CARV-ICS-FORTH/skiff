@@ -366,7 +366,15 @@ shutdown_daemons() {
     if [ -n "$CSR_SIGN_PID" ]; then
         kill -KILL "$CSR_SIGN_PID" 2>/dev/null || true
     fi
-    wait 2>/dev/null || true
+    wait "$SKIFFLET_PID" "$PLAIDD_PID" "$KUBE_PROXY_PID" 2>/dev/null || true
+    if [ -n "$K3S_PID" ]; then
+        wait "$K3S_PID" 2>/dev/null || true
+    fi
+    if [ -n "$CSR_SIGN_PID" ]; then
+        wait "$CSR_SIGN_PID" 2>/dev/null || true
+    fi
+    kill -TERM 1 2>/dev/null || true
+    kill -KILL 1 2>/dev/null || true
 }
 trap shutdown_daemons EXIT INT TERM
 

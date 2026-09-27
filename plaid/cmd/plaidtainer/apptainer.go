@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -292,13 +293,19 @@ func runCommand(bin string, args []string) int {
 }
 
 // findContainerPID locates the live payload process beneath an Apptainer launcher.
-func findContainerPID(parentPID int) int {
+func findContainerPID(parentPID int, targetIP string) int {
+	cleanTargetIP := ""
+	if targetIP != "" {
+		cleanTargetIP = strings.Split(targetIP, "/")[0]
+	}
+
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		entries, err := os.ReadDir("/proc")
 		if err == nil {
 			parentOf := make(map[int]int)
 			pgrpOf := make(map[int]int)
+			commOf := make(map[int]string)
 			var pids []int
 			for _, entry := range entries {
 				pid, err := strconv.Atoi(entry.Name())
@@ -306,6 +313,9 @@ func findContainerPID(parentPID int) int {
 					continue
 				}
 				pids = append(pids, pid)
+				if commBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); err == nil {
+					commOf[pid] = strings.TrimSpace(string(commBytes))
+				}
 				if statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
 					idx := strings.LastIndex(string(statData), ")")
 					if idx != -1 && idx+2 < len(statData) {
@@ -347,9 +357,7 @@ func findContainerPID(parentPID int) int {
 			// Priority 1: A descendant whose comm is pause
 			for _, pid := range pids {
 				if isDescendant(pid) {
-					comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-					cStr := strings.TrimSpace(string(comm))
-					if cStr == "pause" {
+					if commOf[pid] == "pause" {
 						return pid
 					}
 				}
@@ -362,8 +370,7 @@ func findContainerPID(parentPID int) int {
 					if isDescendant(pid) {
 						ns, _ := os.Readlink(fmt.Sprintf("/proc/%d/ns/net", pid))
 						if ns != "" && ns != hostNetns {
-							comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-							cStr := strings.TrimSpace(string(comm))
+							cStr := commOf[pid]
 							if !strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "plaidtainer") {
 								return pid
 							}
@@ -375,10 +382,27 @@ func findContainerPID(parentPID int) int {
 			// Priority 3: Any non-fuse descendant whose comm is not starter/apptainer/plaidtainer
 			for _, pid := range pids {
 				if isDescendant(pid) {
-					comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-					cStr := strings.TrimSpace(string(comm))
+					cStr := commOf[pid]
 					if !strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "apptainer") && !strings.Contains(cStr, "plaidtainer") {
 						return pid
+					}
+				}
+			}
+
+			// Fallback: Match by target pod IP on eth0 inside its network namespace (must be descendant)
+			if cleanTargetIP != "" {
+				for _, pid := range pids {
+					if isDescendant(pid) {
+						cStr := commOf[pid]
+						if cStr == "pause" || (!strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "plaid")) {
+							cmd := exec.Command("nsenter", "-t", strconv.Itoa(pid), "-n", "ip", "-o", "-4", "addr", "show", "dev", "eth0")
+							if out, err := cmd.Output(); err == nil {
+								sOut := string(out)
+								if strings.Contains(sOut, " "+cleanTargetIP+"/") || strings.Contains(sOut, " "+cleanTargetIP+" ") {
+									return pid
+								}
+							}
+						}
 					}
 				}
 			}
@@ -390,7 +414,7 @@ func findContainerPID(parentPID int) int {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	return parentPID
+	return 0
 }
 
 // runCommandWithCleanup runs a command with bounded signal trapping and cleanup callback.
@@ -418,12 +442,19 @@ func runCommandWithCleanupAndReadiness(bin string, args []string, cleanup func()
 		return 1
 	}
 
+	var discoveredPID int32
 	if readinessFile != "" {
 		go func() {
-			cpid := findContainerPID(cmd.Process.Pid)
+			cpid := findContainerPID(cmd.Process.Pid, ipStr)
+			if cpid <= 1 {
+				return
+			}
+			atomic.StoreInt32(&discoveredPID, int32(cpid))
+			cleanIP := strings.Split(ipStr, "/")[0]
+			cleanGW := strings.Split(gwStr, "/")[0]
 			netnsPath := fmt.Sprintf("/proc/%d/ns/net", cpid)
 			readinessData := fmt.Sprintf(`{"pause_pid":%d,"netns_path":"%s","endpoint_id":"%s","ip":"%s","gateway":"%s"}`+"\n",
-				cpid, netnsPath, containerID, ipStr, gwStr)
+				cpid, netnsPath, containerID, cleanIP, cleanGW)
 			_ = os.WriteFile(readinessFile, []byte(readinessData), 0644)
 		}()
 	}
@@ -455,6 +486,12 @@ func runCommandWithCleanupAndReadiness(bin string, args []string, cleanup func()
 			waitErr = <-done
 		}
 	case waitErr = <-done:
+	}
+
+	cpidToKill := int(atomic.LoadInt32(&discoveredPID))
+	if cpidToKill > 1 {
+		_ = syscall.Kill(-cpidToKill, syscall.SIGKILL)
+		_ = syscall.Kill(cpidToKill, syscall.SIGKILL)
 	}
 
 	cleanup()

@@ -249,10 +249,12 @@ func DeletePod(podKey client.ObjectKey, localPod *corev1.Pod) bool {
 	_, statErr := os.Stat(podDir.String())
 	logger.Info(" * DeletePod invoked", "podDir", podDir.String(), "dirExists", statErr == nil)
 
-	// 1. Resolve pause PID
+	// 1. Resolve pause PID and endpoint ID
 	var pausePIDStr string
+	var endpointID string
 	if localPod != nil && localPod.Annotations != nil {
 		pausePIDStr = localPod.Annotations["skiff.io/pause-pid"]
+		endpointID = localPod.Annotations["skiff.io/endpoint-id"]
 	}
 	if pausePIDStr == "" && localPod != nil {
 		pausePIDStr = runtime.GetPodID(localPod)
@@ -313,6 +315,29 @@ func DeletePod(podKey client.ObjectKey, localPod *corev1.Pod) bool {
 		}
 	}
 
+	readinessPath := filepath.Join(podDir.String(), "job", "readiness.json")
+	if data, err := os.ReadFile(readinessPath); err == nil {
+		var rInfo struct {
+			PausePID   int    `json:"pause_pid"`
+			EndpointID string `json:"endpoint_id"`
+		}
+		if err := json.Unmarshal(data, &rInfo); err == nil {
+			if rInfo.PausePID > 0 {
+				pidStr := strconv.Itoa(rInfo.PausePID)
+				if pausePIDStr == "" {
+					pausePIDStr = pidStr
+					seen[pidStr] = true
+				} else if !seen[pidStr] {
+					seen[pidStr] = true
+					secondaryPIDs = append(secondaryPIDs, pidStr)
+				}
+			}
+			if rInfo.EndpointID != "" && endpointID == "" {
+				endpointID = rInfo.EndpointID
+			}
+		}
+	}
+
 	// 3. Terminate processes
 	gracePeriod := 30 * time.Second
 	if localPod != nil && localPod.Spec.TerminationGracePeriodSeconds != nil && *localPod.Spec.TerminationGracePeriodSeconds >= 0 {
@@ -343,6 +368,10 @@ func DeletePod(podKey client.ObjectKey, localPod *corev1.Pod) bool {
 				_ = syscall.Kill(pid, syscall.SIGKILL)
 			}
 		}
+	}
+
+	if endpointID != "" {
+		_ = RemovePlaidEndpoint(endpointID)
 	}
 
 	// 4. Remove Pod Directory (with retry for NFS file handle release)
@@ -661,7 +690,7 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 	info, err := WaitForReadiness(ctx, readinessFile, 15*time.Second)
 	if err == nil && info != nil && info.PausePID > 1 {
 		containerPID = info.PausePID
-		podIP = info.IP
+		podIP = strings.Split(info.IP, "/")[0]
 		netnsPath = info.NetnsPath
 		if netnsFile, err := VerifyNetnsDescriptor(netnsPath); err != nil {
 			killPauseAndWait()
@@ -709,6 +738,11 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 		return
 	}
 
+	var endpointID string
+	if info != nil && info.EndpointID != "" {
+		endpointID = info.EndpointID
+	}
+
 	h.updatePodState(func(p *corev1.Pod) {
 		if p.Annotations == nil {
 			p.Annotations = make(map[string]string)
@@ -717,6 +751,9 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 		containerStartTime, _ := runtime.GetProcessStartTime(containerPID)
 		p.Annotations["skiff.io/container-pid"] = runtime.FormatProcessJobID(containerPID, containerStartTime)
 		p.Annotations["skiff.io/pod-ip"] = podIP
+		if endpointID != "" {
+			p.Annotations["skiff.io/endpoint-id"] = endpointID
+		}
 		p.Status.PodIP = podIP
 		p.Status.PodIPs = []corev1.PodIP{{IP: podIP}}
 		runtime.SetPodID(p, runtime.JobIDTypeProcess, pauseJobID)
@@ -724,11 +761,13 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 
 	if h.lifecycle != nil {
 		h.lifecycle.SetSandbox(&SandboxRuntime{
-			PausePID:  pausePID,
-			StartTime: pauseStartTime,
-			PauseCmd:  pauseCmd,
-			IP:        podIP,
-			NetnsPath: netnsPath,
+			PausePID:     pausePID,
+			ContainerPID: containerPID,
+			StartTime:    pauseStartTime,
+			PauseCmd:     pauseCmd,
+			IP:           podIP,
+			NetnsPath:    netnsPath,
+			EndpointID:   endpointID,
 		})
 	}
 
@@ -961,6 +1000,30 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 							h.updatePodState(func(p *corev1.Pod) {
 								p.Status.ContainerStatuses[idx].Ready = ready
 							}, notify)
+						})
+					}
+
+					livenessProbe := pod.Spec.Containers[idx].LivenessProbe
+					if livenessProbe != nil {
+						h.mu.Lock()
+						currentIP := h.Pod.Status.PodIP
+						h.mu.Unlock()
+						watchLivenessProbe(probeCtx, currentIP, containerID, livenessProbe, func() {
+							if cmd.Process != nil {
+								_ = cmd.Process.Kill()
+							}
+						})
+					}
+
+					startupProbe := pod.Spec.Containers[idx].StartupProbe
+					if startupProbe != nil {
+						h.mu.Lock()
+						currentIP := h.Pod.Status.PodIP
+						h.mu.Unlock()
+						watchLivenessProbe(probeCtx, currentIP, containerID, startupProbe, func() {
+							if cmd.Process != nil {
+								_ = cmd.Process.Kill()
+							}
 						})
 					}
 

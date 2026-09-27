@@ -130,9 +130,26 @@ cleanup_slurm() {
     for pid in "${BG_PIDS[@]}"; do
         kill -TERM "$pid" 2>/dev/null || true
     done
-    sleep 2
+    local wait_count=0
+    while [ $wait_count -lt 10 ]; do
+        local any_alive=0
+        for pid in "${BG_PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                any_alive=1
+                break
+            fi
+        done
+        if [ $any_alive -eq 0 ]; then
+            break
+        fi
+        sleep 1
+        wait_count=$((wait_count + 1))
+    done
     for pid in "${BG_PIDS[@]}"; do
         kill -KILL "$pid" 2>/dev/null || true
+    done
+    for node in "${NODES[@]}"; do
+        srun --nodes=1 -w "$node" apptainer instance stop --all 2>/dev/null || true
     done
     rm -rf "$HOME/.skiff/kubeconfig" "$HOME/.skiff/tls" "$HOME/.skiff/.certs" "$HOME/.skiff"/slirp-*.sock 2>/dev/null || true
     wait 2>/dev/null || true
@@ -149,7 +166,7 @@ echo "Starting Controller on $CONTROLLER_NODE..."
     export SKIFF_ROLE="controller"
     export SKIFF_DEV=${SKIFF_DEV:-1}
     export CONTROLLER_IP="$CONTROLLER_IP"
-    srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" 1
+    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" 1
 ) &
 BG_PIDS+=($!)
 
@@ -177,7 +194,7 @@ for ((i=1; i<NUM_NODES; i++)); do
         export SKIFF_ROLE="node"
         export SKIFF_DEV=${SKIFF_DEV:-1}
         export CONTROLLER_IP="$CONTROLLER_IP"
-        srun --nodes=1 -w "$NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" "$BUBBLE_ID"
+        exec srun --nodes=1 -w "$NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" "$BUBBLE_ID"
     ) &
     BG_PIDS+=($!)
     

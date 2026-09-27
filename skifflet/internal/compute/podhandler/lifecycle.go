@@ -2,7 +2,10 @@ package podhandler
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -40,14 +43,15 @@ type ContainerRuntime struct {
 
 // SandboxRuntime holds handles for the pod's network sandbox and pause container.
 type SandboxRuntime struct {
-	PausePID   int
-	StartTime  uint64
-	PauseCmd   *exec.Cmd
-	NetnsPath  string
-	NetnsFile  *os.File
-	EndpointID string
-	IP         string
-	Gateway    string
+	PausePID     int
+	ContainerPID int
+	StartTime    uint64
+	PauseCmd     *exec.Cmd
+	NetnsPath    string
+	NetnsFile    *os.File
+	EndpointID   string
+	IP           string
+	Gateway      string
 }
 
 // PodLifecycle coordinates state transitions, concurrency control, and resource cleanup for a single pod UID.
@@ -188,7 +192,7 @@ func (l *PodLifecycle) UpdateFromAPI(newPod *corev1.Pod) {
 	}
 	for k, v := range newPod.Annotations {
 		// Do not let API overwrite internal runtime metadata
-		if k != "skiff.io/pause-pid" && k != "skiff.io/container-pid" && k != "pod.skiff/id" && k != "skiff.io/pod-ip" {
+		if k != "skiff.io/pause-pid" && k != "skiff.io/container-pid" && k != "pod.skiff/id" && k != "skiff.io/pod-ip" && k != "skiff.io/endpoint-id" {
 			l.publishedPod.Annotations[k] = v
 		}
 	}
@@ -208,16 +212,36 @@ func (l *PodLifecycle) SetSandbox(sb *SandboxRuntime) {
 	l.publishedPod.Annotations["skiff.io/pod-ip"] = sb.IP
 	pauseJobID := runtime.FormatProcessJobID(sb.PausePID, sb.StartTime)
 	l.publishedPod.Annotations["skiff.io/pause-pid"] = pauseJobID
+	if sb.EndpointID != "" {
+		l.publishedPod.Annotations["skiff.io/endpoint-id"] = sb.EndpointID
+	}
 	runtime.SetPodID(l.publishedPod, runtime.JobIDTypeProcess, pauseJobID)
 
 	l.ledger.Register("sandbox-pause-process", func() error {
+		if sb.ContainerPID > 1 && !runtime.IsProcessDead(sb.ContainerPID) {
+			_ = syscall.Kill(-sb.ContainerPID, syscall.SIGKILL)
+			_ = syscall.Kill(sb.ContainerPID, syscall.SIGKILL)
+		}
 		if sb.PauseCmd != nil && sb.PauseCmd.Process != nil && sb.PausePID > 1 {
-			_ = syscall.Kill(-sb.PausePID, syscall.SIGKILL)
-			_ = syscall.Kill(sb.PausePID, syscall.SIGKILL)
+			if !runtime.IsProcessDead(sb.PausePID) {
+				_ = syscall.Kill(-sb.PausePID, syscall.SIGTERM)
+				_ = syscall.Kill(sb.PausePID, syscall.SIGTERM)
+				deadline := time.Now().Add(3 * time.Second)
+				for !runtime.IsProcessDead(sb.PausePID) && time.Now().Before(deadline) {
+					time.Sleep(50 * time.Millisecond)
+				}
+				if !runtime.IsProcessDead(sb.PausePID) {
+					_ = syscall.Kill(-sb.PausePID, syscall.SIGKILL)
+					_ = syscall.Kill(sb.PausePID, syscall.SIGKILL)
+				}
+			}
 			_ = sb.PauseCmd.Wait()
 		}
 		if sb.NetnsFile != nil {
 			_ = sb.NetnsFile.Close()
+		}
+		if sb.EndpointID != "" {
+			_ = RemovePlaidEndpoint(sb.EndpointID)
 		}
 		return nil
 	})
@@ -260,7 +284,14 @@ func (l *PodLifecycle) SetContainerRunning(name string, cmd *exec.Cmd, pid int, 
 	cr.Cmd = cmd
 	cr.PID = pid
 	cr.StartTime = startTime
-	cr.Status.ContainerID = runtime.FormatProcessJobID(pid, startTime)
+	jobID := runtime.FormatProcessJobID(pid, startTime)
+	cr.Status.ContainerID = jobID
+	if l.publishedPod != nil {
+		if l.publishedPod.Annotations == nil {
+			l.publishedPod.Annotations = make(map[string]string)
+		}
+		l.publishedPod.Annotations["skiff.io/container-pid"] = jobID
+	}
 	cr.Status.State.Waiting = nil
 	cr.Status.State.Running = &corev1.ContainerStateRunning{
 		StartedAt: metav1.Now(),
@@ -682,8 +713,8 @@ func (l *PodLifecycle) recomputePhaseLocked() {
 			return
 		}
 		if restartPolicy == corev1.RestartPolicyOnFailure {
-			l.publishedPod.Status.Phase = corev1.PodFailed
-			l.publishedPod.Status.Reason = "ContainerFailed"
+			l.publishedPod.Status.Phase = corev1.PodRunning
+			l.publishedPod.Status.Reason = "CrashLoopBackOff"
 			return
 		}
 	}
@@ -694,18 +725,32 @@ func (l *PodLifecycle) stopSandbox() {
 	sb := l.sandbox
 	l.mu.RUnlock()
 
-	if sb != nil && sb.PauseCmd != nil && sb.PausePID > 1 {
-		compute.DefaultLogger.Info("Stopping pod sandbox network and pause process", "pod", l.key, "pid", sb.PausePID)
-		_ = syscall.Kill(-sb.PausePID, syscall.SIGTERM)
-		_ = syscall.Kill(sb.PausePID, syscall.SIGTERM)
-		time.Sleep(100 * time.Millisecond)
-		if !runtime.IsProcessDead(sb.PausePID) {
-			_ = syscall.Kill(-sb.PausePID, syscall.SIGKILL)
-			_ = syscall.Kill(sb.PausePID, syscall.SIGKILL)
+	if sb != nil {
+		compute.DefaultLogger.Info("Stopping pod sandbox network and pause process", "pod", l.key, "launcherPID", sb.PausePID, "containerPID", sb.ContainerPID)
+		if sb.ContainerPID > 1 && !runtime.IsProcessDead(sb.ContainerPID) {
+			_ = syscall.Kill(-sb.ContainerPID, syscall.SIGKILL)
+			_ = syscall.Kill(sb.ContainerPID, syscall.SIGKILL)
 		}
-		_ = sb.PauseCmd.Wait()
+		if sb.PauseCmd != nil && sb.PauseCmd.Process != nil && sb.PausePID > 1 {
+			if !runtime.IsProcessDead(sb.PausePID) {
+				_ = syscall.Kill(-sb.PausePID, syscall.SIGTERM)
+				_ = syscall.Kill(sb.PausePID, syscall.SIGTERM)
+				deadline := time.Now().Add(3 * time.Second)
+				for !runtime.IsProcessDead(sb.PausePID) && time.Now().Before(deadline) {
+					time.Sleep(50 * time.Millisecond)
+				}
+				if !runtime.IsProcessDead(sb.PausePID) {
+					_ = syscall.Kill(-sb.PausePID, syscall.SIGKILL)
+					_ = syscall.Kill(sb.PausePID, syscall.SIGKILL)
+				}
+			}
+			_ = sb.PauseCmd.Wait()
+		}
 		if sb.NetnsFile != nil {
 			_ = sb.NetnsFile.Close()
+		}
+		if sb.EndpointID != "" {
+			_ = RemovePlaidEndpoint(sb.EndpointID)
 		}
 	}
 }
@@ -770,4 +815,44 @@ func (l *PodLifecycle) Terminate(gracePeriod time.Duration) {
 
 	// Step 6: Remove pod directory
 	_ = os.RemoveAll(l.podDir.String())
+}
+
+// RemovePlaidEndpoint requests plaidd to remove an endpoint by ID over /run/plaid/plaidd.sock.
+func RemovePlaidEndpoint(endpointID string) error {
+	if endpointID == "" {
+		return nil
+	}
+	conn, err := net.DialTimeout("unix", "/run/plaid/plaidd.sock", 2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	req := fmt.Sprintf(`{"action":"remove_endpoint","pod_id":%q,"container_id":%q}`, endpointID, endpointID)
+	data := []byte(req)
+	frame := make([]byte, 4+len(data))
+	binary.BigEndian.PutUint32(frame[:4], uint32(len(data)))
+	copy(frame[4:], data)
+	if _, err := conn.Write(frame); err != nil {
+		return err
+	}
+
+	hdr := make([]byte, 4)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		return err
+	}
+	respLen := binary.BigEndian.Uint32(hdr)
+	respData := make([]byte, respLen)
+	if _, err := io.ReadFull(conn, respData); err != nil {
+		return err
+	}
+	var resp struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(respData, &resp); err == nil && !resp.Success {
+		return fmt.Errorf("remove_endpoint error: %s", resp.Error)
+	}
+	return nil
 }

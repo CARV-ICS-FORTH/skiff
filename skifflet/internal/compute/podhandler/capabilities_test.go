@@ -15,13 +15,27 @@ func TestValidatePodCapabilities(t *testing.T) {
 		wantErrSub string
 	}{
 		{
-			name: "valid pod",
+			name: "valid pod with supported probes",
 			pod: &corev1.Pod{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
 							Name: "web",
 							ReadinessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Port: intstr.FromInt(8080),
+									},
+								},
+							},
+							LivenessProbe: &corev1.Probe{
+								ProbeHandler: corev1.ProbeHandler{
+									HTTPGet: &corev1.HTTPGetAction{
+										Port: intstr.FromInt(8080),
+									},
+								},
+							},
+							StartupProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
 										Port: intstr.FromInt(8080),
@@ -53,25 +67,7 @@ func TestValidatePodCapabilities(t *testing.T) {
 			wantErrSub: "PreStop",
 		},
 		{
-			name: "startupProbe rejected",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name: "web",
-							StartupProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromInt(8080)},
-								},
-							},
-						},
-					},
-				},
-			},
-			wantErrSub: "StartupProbe",
-		},
-		{
-			name: "livenessProbe rejected",
+			name: "grpc probe rejected",
 			pod: &corev1.Pod{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
@@ -79,14 +75,14 @@ func TestValidatePodCapabilities(t *testing.T) {
 							Name: "web",
 							LivenessProbe: &corev1.Probe{
 								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromInt(8080)},
+									GRPC: &corev1.GRPCAction{Port: 8080},
 								},
 							},
 						},
 					},
 				},
 			},
-			wantErrSub: "LivenessProbe",
+			wantErrSub: "GRPC",
 		},
 		{
 			name: "named probe port rejected",
