@@ -348,7 +348,7 @@ func DeletePod(podKey client.ObjectKey, localPod *corev1.Pod) bool {
 	if localPod != nil && localPod.GetUID() != "" {
 		pl = GlobalRegistry.Get(localPod.GetUID())
 	}
-	if pl == nil {
+	if pl == nil && (localPod == nil || localPod.GetUID() == "") {
 		pl = GlobalRegistry.GetByKey(podKey)
 	}
 	if pl != nil {
@@ -403,8 +403,10 @@ type PodHandler struct {
 
 	podEnvVariables []corev1.EnvVar
 	podDirectory    endpoint.PodPath
+	expectedSubnet  *net.IPNet
 
 	logger logr.Logger
+	pids   podPIDsRecord
 }
 
 type podPIDsRecord struct {
@@ -415,11 +417,10 @@ type podPIDsRecord struct {
 }
 
 func (h *PodHandler) savePIDs(pausePID int, containerPID int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	pidsPath := filepath.Join(h.podDirectory.JobDir(), "pids.json")
-	var pids podPIDsRecord
-	if data, err := os.ReadFile(pidsPath); err == nil {
-		_ = json.Unmarshal(data, &pids)
-	}
+	pids := &h.pids
 	if pids.ContainerStartTimes == nil {
 		pids.ContainerStartTimes = make(map[int]uint64)
 	}
@@ -445,7 +446,24 @@ func (h *PodHandler) savePIDs(pausePID int, containerPID int) {
 		}
 	}
 	if data, err := json.Marshal(pids); err == nil {
-		_ = os.WriteFile(pidsPath, data, 0644)
+		f, err := os.CreateTemp(h.podDirectory.JobDir(), ".pids-*")
+		if err != nil {
+			h.logger.Error(err, "failed to create process record")
+			return
+		}
+		defer os.Remove(f.Name())
+		if _, err = f.Write(data); err == nil {
+			err = f.Chmod(0644)
+		}
+		if closeErr := f.Close(); err == nil {
+			err = closeErr
+		}
+		if err == nil {
+			err = os.Rename(f.Name(), pidsPath)
+		}
+		if err != nil {
+			h.logger.Error(err, "failed to save process record")
+		}
 	}
 }
 
@@ -515,8 +533,20 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 		}
 	}
 
-	pl := NewPodLifecycle(pod, podDir, notify)
-	GlobalRegistry.Register(pl)
+	pl := NewPodLifecycleWithContext(ctx, pod, podDir, notify)
+	pl.BeginLaunch()
+	launchedApps := false
+	defer func() {
+		pl.EndLaunch()
+		if !launchedApps {
+			pl.ReleaseLiveResources(0)
+		}
+	}()
+	if old := GlobalRegistry.Register(pl); old != nil {
+		old.Terminate(30 * time.Second)
+		GlobalRegistry.Delete(old.UID())
+	}
+	ctx = pl.Context()
 
 	h := &PodHandler{
 		Pod:             pod,
@@ -602,13 +632,15 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 	h.logger.Info(" * All volumes have been mounted")
 
 	// Pull Pause Image
-	if err := waitForPodNetwork(ctx); err != nil {
+	expectedSubnet, err := waitForPodNetwork(ctx)
+	if err != nil {
 		compute.PodError(pod, "NetworkNotReady", "%v", err)
 		if notify != nil {
 			notify(pod)
 		}
 		return
 	}
+	h.expectedSubnet = expectedSubnet
 	if err := PrepareDNS(pod, h.podDirectory, compute.Environment.KubeDNS, ""); err != nil {
 		compute.PodError(pod, "DNSError", "failed to prepare pause DNS: %v", err)
 		if notify != nil {
@@ -616,7 +648,7 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 		}
 		return
 	}
-	pauseImage, err := image.Pull(compute.Skiff.ImageDir(), image.Docker, compute.Environment.PauseImage)
+	pauseImage, err := image.PullWithPolicy(ctx, compute.Skiff.ImageDir(), image.Docker, compute.Environment.PauseImage, corev1.PullIfNotPresent)
 	if err != nil {
 		compute.PodError(pod, "ImagePullError", "ImagePull error. Image:%s: %v", compute.Environment.PauseImage, err)
 		if notify != nil {
@@ -632,7 +664,8 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 	pauseArgs := []string{
 		"exec",
 	}
-	if strings.Contains(compute.Environment.ApptainerBin, "plaidtainer") || filepath.Base(compute.Environment.ApptainerBin) == "plaidtainer" {
+	usesPlaidtainer := strings.Contains(compute.Environment.ApptainerBin, "plaidtainer") || filepath.Base(compute.Environment.ApptainerBin) == "plaidtainer"
+	if usesPlaidtainer {
 		pauseArgs = append(pauseArgs, "--readiness-file", readinessFile)
 	}
 	pauseArgs = append(pauseArgs,
@@ -674,11 +707,18 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 	killPauseAndWait := func() {
 		pauseWaitOnce.Do(func() {
 			if pauseCmd.Process != nil {
-				_ = pauseCmd.Process.Kill()
+				_ = pauseCmd.Process.Signal(syscall.SIGTERM)
 			}
 			select {
 			case <-pauseDone:
 			case <-time.After(5 * time.Second):
+				if pauseCmd.Process != nil {
+					_ = pauseCmd.Process.Kill()
+				}
+				select {
+				case <-pauseDone:
+				case <-time.After(2 * time.Second):
+				}
 			}
 		})
 	}
@@ -686,21 +726,52 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 	var containerPID int
 	var podIP string
 	var netnsPath string
+	var netnsFile *os.File
+	defer func() {
+		if netnsFile != nil {
+			_ = netnsFile.Close()
+		}
+	}()
 
 	info, err := WaitForReadiness(ctx, readinessFile, 15*time.Second)
+	if usesPlaidtainer && (err != nil || info == nil || info.PausePID <= 1 || info.NetnsPath == "" || info.NetnsInode == 0 || info.EndpointID == "") {
+		killPauseAndWait()
+		compute.PodError(pod, "SandboxReadinessError", "plaidtainer readiness handshake failed: %v", err)
+		if notify != nil {
+			notify(pod.DeepCopy())
+		}
+		return
+	}
 	if err == nil && info != nil && info.PausePID > 1 {
 		containerPID = info.PausePID
 		podIP = strings.Split(info.IP, "/")[0]
 		netnsPath = info.NetnsPath
-		if netnsFile, err := VerifyNetnsDescriptor(netnsPath); err != nil {
+		if netnsFile, err = VerifyNetnsDescriptor(netnsPath); err != nil {
 			killPauseAndWait()
 			compute.PodError(pod, "NetnsError", "failed to verify netns descriptor: %v", err)
 			if notify != nil {
 				notify(pod.DeepCopy())
 			}
 			return
-		} else {
-			_ = netnsFile.Close()
+		}
+		if usesPlaidtainer {
+			stat, statErr := netnsFile.Stat()
+			if statErr != nil {
+				killPauseAndWait()
+				compute.PodError(pod, "NetnsError", "failed to stat sandbox namespace: %v", statErr)
+				if notify != nil {
+					notify(pod.DeepCopy())
+				}
+				return
+			}
+			if sys, ok := stat.Sys().(*syscall.Stat_t); !ok || sys.Ino != info.NetnsInode {
+				killPauseAndWait()
+				compute.PodError(pod, "NetnsError", "sandbox namespace changed during handshake")
+				if notify != nil {
+					notify(pod.DeepCopy())
+				}
+				return
+			}
 		}
 	} else {
 		containerPID = FindContainerPID(pausePID)
@@ -725,17 +796,24 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 		netnsPath = fmt.Sprintf("/proc/%d/ns/net", containerPID)
 	}
 
-	var expectedSubnet *net.IPNet
-	if podCIDR := os.Getenv("POD_CIDR"); podCIDR != "" {
-		_, expectedSubnet, _ = net.ParseCIDR(podCIDR)
-	}
-	if err := VerifyPodIP(podIP, expectedSubnet); err != nil {
+	if err := VerifyPodIP(podIP, h.expectedSubnet); err != nil {
 		killPauseAndWait()
 		compute.PodError(pod, "NetnsIPError", "invalid pod IP %q: %v", podIP, err)
 		if notify != nil {
 			notify(pod.DeepCopy())
 		}
 		return
+	}
+	if usesPlaidtainer {
+		observedIP, observeErr := GetPodIPFromNetns(containerPID)
+		if observeErr != nil || observedIP != podIP {
+			killPauseAndWait()
+			compute.PodError(pod, "NetnsIPError", "sandbox eth0 address does not match handshake: assigned=%s observed=%s error=%v", podIP, observedIP, observeErr)
+			if notify != nil {
+				notify(pod.DeepCopy())
+			}
+			return
+		}
 	}
 
 	var endpointID string
@@ -767,8 +845,12 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 			PauseCmd:     pauseCmd,
 			IP:           podIP,
 			NetnsPath:    netnsPath,
+			NetnsFile:    netnsFile,
+			PauseDone:    pauseDone,
+			StopPause:    killPauseAndWait,
 			EndpointID:   endpointID,
 		})
+		netnsFile = nil
 	}
 
 	// Prepare DNS files in job directory
@@ -866,7 +948,7 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 			cmd.Stdout = logFile
 			cmd.Stderr = logFile
 
-			if err := cmd.Start(); err != nil {
+			if err := h.lifecycle.StartTrackedProcess(cmd); err != nil {
 				if logFile != nil {
 					logFile.Close()
 				}
@@ -899,6 +981,7 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 			}, notify)
 
 			waitErr := cmd.Wait()
+			h.lifecycle.FinishTrackedProcess(cmd.Process.Pid)
 			if logFile != nil {
 				logFile.Close()
 			}
@@ -959,12 +1042,17 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 				logFile, err := os.OpenFile(c.LogsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-				if err == nil {
-					cmd.Stdout = logFile
-					cmd.Stderr = logFile
+				if err != nil {
+					h.updatePodState(func(p *corev1.Pod) {
+						SetContainerTerminated(&p.Status.ContainerStatuses[idx], 128)
+						compute.PodError(p, "LogFileError", "failed to open container log file %s: %v", c.LogsPath, err)
+					}, notify)
+					return
 				}
+				cmd.Stdout = logFile
+				cmd.Stderr = logFile
 
-				if err := cmd.Start(); err != nil {
+				if err := h.lifecycle.StartTrackedProcess(cmd); err != nil {
 					if logFile != nil {
 						logFile.Close()
 					}
@@ -998,7 +1086,9 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 						h.mu.Unlock()
 						watchReadinessProbe(probeCtx, currentIP, containerID, probe, func(ready bool) {
 							h.updatePodState(func(p *corev1.Pod) {
-								p.Status.ContainerStatuses[idx].Ready = ready
+								if probeCtx.Err() == nil && p.Status.ContainerStatuses[idx].ContainerID == containerID {
+									p.Status.ContainerStatuses[idx].Ready = ready
+								}
 							}, notify)
 						})
 					}
@@ -1009,25 +1099,14 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 						currentIP := h.Pod.Status.PodIP
 						h.mu.Unlock()
 						watchLivenessProbe(probeCtx, currentIP, containerID, livenessProbe, func() {
-							if cmd.Process != nil {
-								_ = cmd.Process.Kill()
-							}
-						})
-					}
-
-					startupProbe := pod.Spec.Containers[idx].StartupProbe
-					if startupProbe != nil {
-						h.mu.Lock()
-						currentIP := h.Pod.Status.PodIP
-						h.mu.Unlock()
-						watchLivenessProbe(probeCtx, currentIP, containerID, startupProbe, func() {
-							if cmd.Process != nil {
-								_ = cmd.Process.Kill()
+							if probeCtx.Err() == nil && cmd.Process != nil {
+								h.lifecycle.SignalTrackedProcess(cmd.Process.Pid, syscall.SIGKILL)
 							}
 						})
 					}
 
 					waitErr := cmd.Wait()
+					h.lifecycle.FinishTrackedProcess(cmd.Process.Pid)
 					probeCancel()
 					if logFile != nil {
 						logFile.Close()
@@ -1089,14 +1168,13 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 		}(containerIdx, containerDef)
 	}
 
-	// For non-restarting pods, wait for all application containers to terminate and finalize
-	if pod.Spec.RestartPolicy != corev1.RestartPolicyAlways {
-		go func() {
-			appWg.Wait()
-			if ctx.Err() == nil {
-				killPauseAndWait()
-				h.updatePodState(nil, notify)
-			}
-		}()
-	}
+	launchedApps = true
+	// A normal terminal pod keeps status and logs while releasing its live resources.
+	go func() {
+		appWg.Wait()
+		if ctx.Err() == nil {
+			h.updatePodState(nil, notify)
+			h.lifecycle.ReleaseLiveResources(0)
+		}
+	}()
 }

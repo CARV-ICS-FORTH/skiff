@@ -1,9 +1,12 @@
 package podhandler
 
 import (
+	"context"
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -132,6 +135,96 @@ func TestPodLifecycle_DeleteCancelsWork(t *testing.T) {
 		// Success: context was cancelled
 	case <-time.After(1 * time.Second):
 		t.Fatal("context was not cancelled upon Terminate")
+	}
+}
+
+func TestPodLifecycle_SnapshotIsolation(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "snapshots", Namespace: "default", UID: "snapshot-uid"}}
+	pl := NewPodLifecycle(pod, endpoint.PodPath(t.TempDir()), nil)
+	updated := pod.DeepCopy()
+	updated.Labels = map[string]string{"version": "current"}
+	pl.UpdateFromAPI(updated)
+	updated.Labels["version"] = "external"
+	if got := pl.GetPod().Labels["version"]; got != "current" {
+		t.Fatalf("API update retained caller's labels: %s", got)
+	}
+	spec := corev1.Container{Name: "app", Command: []string{"original"}}
+	pl.RegisterContainer(spec, false)
+	spec.Command[0] = "external"
+	first, _ := pl.GetContainer("app")
+	first.Spec.Command[0] = "snapshot"
+	first.Status.State.Waiting.Reason = "snapshot"
+	second, _ := pl.GetContainer("app")
+	if second.Spec.Command[0] != "original" || second.Status.State.Waiting.Reason != "ContainerCreating" {
+		t.Fatal("container snapshot mutated lifecycle state")
+	}
+}
+
+func TestPodLifecycle_CancelDuringLaunchPreventsProcessStart(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "launch", Namespace: "default", UID: "launch-uid"}}
+	pl := NewPodLifecycle(pod, endpoint.PodPath(filepath.Join(t.TempDir(), "pod")), nil)
+	pl.BeginLaunch()
+	terminated := make(chan struct{})
+	go func() {
+		pl.Terminate(0)
+		close(terminated)
+	}()
+	select {
+	case <-pl.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("termination did not cancel the launcher")
+	}
+	if err := pl.StartTrackedProcess(exec.Command("sleep", "30")); err != context.Canceled {
+		t.Fatalf("process started after cancellation: %v", err)
+	}
+	pl.EndLaunch()
+	select {
+	case <-terminated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("termination did not wait for launcher quiescence")
+	}
+}
+
+func TestPodLifecycle_TerminateReapsTrackedProcessOnce(t *testing.T) {
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "running", Namespace: "default", UID: "running-uid"}}
+	pl := NewPodLifecycle(pod, endpoint.PodPath(filepath.Join(t.TempDir(), "pod")), nil)
+	pl.BeginLaunch()
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := pl.StartTrackedProcess(cmd); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan error, 1)
+	go func() {
+		err := cmd.Wait()
+		pl.FinishTrackedProcess(cmd.Process.Pid)
+		waited <- err
+	}()
+	pl.EndLaunch()
+	pl.Terminate(300 * time.Millisecond)
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sole process waiter did not complete")
+	}
+	if pl.SignalTrackedProcess(cmd.Process.Pid, syscall.SIGKILL) {
+		t.Fatal("completed attempt remained signalable")
+	}
+}
+
+func TestPodLifecycle_StartFailureLeavesNoProcessOwnership(t *testing.T) {
+	pl := NewPodLifecycle(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "failed-launch"}}, endpoint.PodPath(t.TempDir()), nil)
+	pl.BeginLaunch()
+	if err := pl.StartTrackedProcess(exec.Command(filepath.Join(t.TempDir(), "missing-launcher"))); err == nil {
+		t.Fatal("missing launcher unexpectedly started")
+	}
+	pl.EndLaunch()
+	pl.ReleaseLiveResources(0)
+	pl.Terminate(0)
+	pl.mu.RLock()
+	defer pl.mu.RUnlock()
+	if len(pl.attempts) != 0 {
+		t.Fatal("failed start retained process ownership")
 	}
 }
 

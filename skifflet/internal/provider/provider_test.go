@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -339,6 +340,121 @@ func TestProvider_UIDIsolation_RaceFree(t *testing.T) {
 	}
 	if current.UID != pod2.UID {
 		t.Fatalf("active pod changed after stale DeletePod: got %s, expected %s", current.UID, pod2.UID)
+	}
+}
+
+func TestProvider_ReconcileConcurrentReadersAndStaleSnapshot(t *testing.T) {
+	tmpDir := t.TempDir()
+	compute.Skiff = endpoint.SkiffWithPods(tmpDir, filepath.Join(tmpDir, ".skiff", ".pods"))
+	key := client.ObjectKey{Namespace: "default", Name: "snapshot-pod"}
+	old := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name, UID: "old"},
+		Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "alpine"}}},
+		Status:     corev1.PodStatus{Phase: corev1.PodPending},
+	}
+	vk := &VirtualK8S{}
+	vk.activeUIDs.Store(key, old.UID)
+	vk.pods.Store(key, old.DeepCopy())
+	stale, _ := vk.pods.Load(key)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			vk.reconcileNonTerminalPods()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_, _ = vk.GetPod(context.Background(), key.Namespace, key.Name)
+			_, _ = vk.GetPodStatus(context.Background(), key.Namespace, key.Name)
+		}
+	}()
+	wg.Wait()
+
+	replacement := old.DeepCopy()
+	replacement.UID = "new"
+	vk.stateMu.Lock()
+	vk.activeUIDs.Store(key, replacement.UID)
+	vk.pods.Store(key, replacement.DeepCopy())
+	vk.stateMu.Unlock()
+	vk.saveAndNotifyPodExpected("delayed-reconcile", old, stale.(*corev1.Pod))
+	current, err := vk.GetPod(context.Background(), key.Namespace, key.Name)
+	if err != nil || current.UID != replacement.UID {
+		t.Fatalf("stale snapshot affected replacement: pod=%v error=%v", current, err)
+	}
+}
+
+func TestProvider_ReplacementRejectsDelayedCallbackAndDelete(t *testing.T) {
+	root := t.TempDir()
+	previousSkiff := compute.Skiff
+	compute.Skiff = endpoint.SkiffWithPods(root, filepath.Join(root, ".pods"))
+	defer func() { compute.Skiff = previousSkiff }()
+	old := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "generation", Name: "replacement", UID: "generation-old"},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "unused"}}}}
+	key := client.ObjectKeyFromObject(old)
+	oldOwner := PodHandler.NewPodLifecycle(old.DeepCopy(), endpoint.PodPath(filepath.Join(root, "old")), nil)
+	PodHandler.GlobalRegistry.Register(oldOwner)
+	defer PodHandler.GlobalRegistry.Delete(old.UID)
+	v := &VirtualK8S{}
+	v.activeUIDs.Store(key, old.UID)
+	v.pods.Store(key, old.DeepCopy())
+	lookup, _ := v.pods.Load(key)
+	callbackReady, release := make(chan struct{}), make(chan struct{})
+	callbackDone := make(chan struct{})
+	go func() {
+		close(callbackReady)
+		<-release
+		v.saveAndNotifyPodExpected("delayed-old", old.DeepCopy(), lookup.(*corev1.Pod))
+		close(callbackDone)
+	}()
+	<-callbackReady
+
+	replacement := old.DeepCopy()
+	replacement.UID = "generation-new"
+	// This actual UpdatePod replacement must reject the unsupported spec before
+	// allocation, and must not apply its UID to the registered old execution.
+	replacement.Spec.Containers[0].StartupProbe = &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}
+	updated := make(chan struct{}, 1)
+	v.updatedPod = func(p *corev1.Pod) {
+		if p.UID == replacement.UID {
+			updated <- struct{}{}
+		}
+	}
+	if err := v.UpdatePod(context.Background(), replacement); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-updated:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replacement did not publish its rejection")
+	}
+	if oldOwner.GetPod().UID != old.UID || oldOwner.Context().Err() == nil {
+		t.Fatal("UpdatePod mutated the old owner or failed to cancel it")
+	}
+	newOwner := PodHandler.NewPodLifecycle(replacement.DeepCopy(), endpoint.PodPath(filepath.Join(root, "new")), nil)
+	PodHandler.GlobalRegistry.Register(newOwner)
+	defer PodHandler.GlobalRegistry.Delete(replacement.UID)
+	newCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	v.stateMu.Lock()
+	v.cancelFuncs.Store(key, context.CancelFunc(cancel))
+	v.stateMu.Unlock()
+	close(release)
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- v.DeletePod(context.Background(), old.DeepCopy()) }()
+	<-callbackDone
+	if err := <-deleteDone; err != nil {
+		t.Fatal(err)
+	}
+	current, err := v.GetPod(context.Background(), key.Namespace, key.Name)
+	if err != nil || current.UID != replacement.UID {
+		t.Fatalf("replacement snapshot lost: %v, %v", current, err)
+	}
+	if _, ok := v.cancelFuncs.Load(key); !ok || newCtx.Err() != nil || newOwner.Context().Err() != nil || PodHandler.GlobalRegistry.GetByKey(key) != newOwner {
+		t.Fatal("delayed old work affected replacement cancellation or registry ownership")
 	}
 }
 

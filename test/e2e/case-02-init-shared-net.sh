@@ -66,6 +66,7 @@ e2e_assert_eq "client exit code" "$c2_exit" "0"
 
 e2e_record_uid "$NS" "success-pod"
 runtime_record_pod "$NS" "success-pod"
+runtime_verify_released "$NS" "success-pod" 60
 e2e_kubectl delete pod success-pod -n $NS
 runtime_verify_gone "$NS" "success-pod"
 
@@ -105,6 +106,7 @@ e2e_assert_eq "client exit code" "$client_exit" "7"
 
 e2e_record_uid "$NS" "failure-pod"
 runtime_record_pod "$NS" "failure-pod"
+runtime_verify_released "$NS" "failure-pod" 60
 e2e_kubectl delete pod failure-pod -n $NS
 runtime_verify_gone "$NS" "failure-pod"
 

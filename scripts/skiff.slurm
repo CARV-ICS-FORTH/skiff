@@ -12,8 +12,19 @@
 
 set -euo pipefail
 
+SKIFF_STATE_DIR="${SKIFF_STATE_DIR:-$HOME/.skiff}"
 NODES=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
 NUM_NODES=${#NODES[@]}
+
+JOB_RESULT_DIR="$SKIFF_STATE_DIR/job-results"
+mkdir -p "$JOB_RESULT_DIR"
+record_job_exit() {
+    local status="$1" tmp
+    tmp=$(mktemp "$JOB_RESULT_DIR/.${SLURM_JOB_ID:-unknown}.XXXXXX") || return
+    printf '%s\n' "$status" > "$tmp"
+    mv -f "$tmp" "$JOB_RESULT_DIR/${SLURM_JOB_ID:-unknown}.exit"
+}
+trap 'record_job_exit $?' EXIT
 
 if [ "$NUM_NODES" -eq 0 ]; then
     echo "This script must be run via sbatch/srun." >&2
@@ -74,14 +85,14 @@ done
 
 # Safe cleanup of old cluster credentials (only after verifying no active job)
 echo "Preparing ~/.skiff for cluster startup..."
-rm -rf "$HOME/.skiff/kubeconfig" "$HOME/.skiff/tls" "$HOME/.skiff/.certs" "$HOME/.skiff"/slirp-*.sock
+rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock
 
 # Pre-process images
 echo "Pre-processing images..."
-IMAGE_DIR="$HOME/.skiff/images"
+IMAGE_DIR="$SKIFF_STATE_DIR/images"
 mkdir -p "$IMAGE_DIR"
 
-if [ "${SKIFF_DEV:-1}" = "1" ]; then
+if [ "${SKIFF_DEV:-0}" = "1" ]; then
     echo "Development mode: ensuring local .tar image is converted to .sif..."
     IMAGE_TAR="$IMAGE_DIR/skiff-bubble.tar"
     IMAGE_SIF="$IMAGE_DIR/skiff-bubble.sif"
@@ -125,7 +136,11 @@ handle_int() {
 }
 
 cleanup_slurm() {
+    local original_status=$?
     trap - EXIT INT TERM
+    if [ "$SLURM_EXIT_CODE" -eq 0 ] && [ "$original_status" -ne 0 ]; then
+        SLURM_EXIT_CODE=$original_status
+    fi
     echo "Shutting down Skiff cluster (Job ID: ${SLURM_JOB_ID:-})..."
     for pid in "${BG_PIDS[@]}"; do
         kill -TERM "$pid" 2>/dev/null || true
@@ -149,22 +164,35 @@ cleanup_slurm() {
         kill -KILL "$pid" 2>/dev/null || true
     done
     for node in "${NODES[@]}"; do
-        srun --nodes=1 -w "$node" apptainer instance stop --all 2>/dev/null || true
+        timeout --signal=KILL 15s srun --nodes=1 -w "$node" apptainer instance stop --all 2>/dev/null || true
     done
-    rm -rf "$HOME/.skiff/kubeconfig" "$HOME/.skiff/tls" "$HOME/.skiff/.certs" "$HOME/.skiff"/slirp-*.sock 2>/dev/null || true
+    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
     wait 2>/dev/null || true
     echo "Cluster cleanup complete."
+    record_job_exit "${SLURM_EXIT_CODE:-1}"
     exit "${SLURM_EXIT_CODE:-0}"
 }
 trap handle_term TERM
 trap handle_int INT
 trap cleanup_slurm EXIT
 
+fail_exited_step() {
+    local pid="$1" status
+    if wait "$pid" 2>/dev/null; then
+        status=1
+    else
+        status=$?
+    fi
+    echo "ERROR: A Skiff bubble process (PID $pid) terminated unexpectedly with exit code $status!" >&2
+    SLURM_EXIT_CODE="$status"
+    exit "$status"
+}
+
 # Start Controller Bubble
 echo "Starting Controller on $CONTROLLER_NODE..."
 (
     export SKIFF_ROLE="controller"
-    export SKIFF_DEV=${SKIFF_DEV:-1}
+    export SKIFF_DEV=${SKIFF_DEV:-0}
     export CONTROLLER_IP="$CONTROLLER_IP"
     exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" 1
 ) &
@@ -174,7 +202,8 @@ BG_PIDS+=($!)
 echo "Waiting for Controller initialization..."
 WAIT_TIME=0
 MAX_WAIT=300
-while [ ! -f "$HOME/.skiff/kubeconfig" ] || [ ! -f "$HOME/.skiff/tls/server-ca.crt" ]; do
+while [ ! -f "$SKIFF_STATE_DIR/kubeconfig" ] || [ ! -f "$SKIFF_STATE_DIR/tls/server-ca.crt" ]; do
+    kill -0 "${BG_PIDS[0]}" 2>/dev/null || fail_exited_step "${BG_PIDS[0]}"
     if [ $WAIT_TIME -ge $MAX_WAIT ]; then
         echo "ERROR: Controller failed to initialize within ${MAX_WAIT} seconds." >&2
         exit 1
@@ -192,7 +221,7 @@ for ((i=1; i<NUM_NODES; i++)); do
     
     (
         export SKIFF_ROLE="node"
-        export SKIFF_DEV=${SKIFF_DEV:-1}
+        export SKIFF_DEV=${SKIFF_DEV:-0}
         export CONTROLLER_IP="$CONTROLLER_IP"
         exec srun --nodes=1 -w "$NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" "$BUBBLE_ID"
     ) &
@@ -206,14 +235,7 @@ echo "Cluster nodes started. Supervising job steps..."
 while true; do
     for pid in "${BG_PIDS[@]}"; do
         if ! kill -0 "$pid" 2>/dev/null; then
-            wait "$pid" 2>/dev/null
-            EXIT_CODE=$?
-            echo "ERROR: A Skiff bubble process (PID $pid) terminated unexpectedly with exit code $EXIT_CODE!" >&2
-            if [ "$EXIT_CODE" -eq 0 ]; then
-                EXIT_CODE=1
-            fi
-            SLURM_EXIT_CODE="$EXIT_CODE"
-            exit "$EXIT_CODE"
+            fail_exited_step "$pid"
         fi
     done
     sleep 2

@@ -79,6 +79,7 @@ func TestCNIPlugin(t *testing.T) {
 	if err := srv.Start(ctx); err != nil {
 		t.Fatalf("Failed to start test API server: %v", err)
 	}
+	srv.MarkReady()
 	defer srv.Close()
 
 	binPath := filepath.Join(tmpDir, "plaid")

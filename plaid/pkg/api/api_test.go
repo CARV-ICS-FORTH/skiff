@@ -60,13 +60,21 @@ func TestAPIServerAndClient(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(sockPath)
+	initial, err := client.GetStatus()
+	if err != nil || !initial.Success || initial.Ready {
+		t.Fatalf("initializing daemon must report not ready: status=%+v err=%v", initial, err)
+	}
+	if err := client.AddRoute(&Request{Subnet: "10.244.2.0/24", RemoteHostIP: "192.168.1.10"}); err == nil {
+		t.Fatal("route mutation was accepted before daemon initialization")
+	}
+	srv.MarkReady()
 
 	// 1. Test GetStatus
 	status, err := client.GetStatus()
 	if err != nil {
 		t.Fatalf("GetStatus error: %v", err)
 	}
-	if !status.Success || status.EndpointsCount != 42 || status.NodeCIDR != "10.244.1.0/24" {
+	if !status.Success || !status.Ready || status.EndpointsCount != 42 || status.NodeCIDR != "10.244.1.0/24" {
 		t.Errorf("Unexpected status response: %+v", status)
 	}
 
@@ -159,6 +167,7 @@ func TestLargeResponseAndFraming(t *testing.T) {
 		t.Fatalf("Failed to start server: %v", err)
 	}
 	defer srv.Close()
+	srv.MarkReady()
 
 	client := NewClient(sockPath)
 	resp, err := client.GetStatus()
@@ -195,6 +204,7 @@ func TestFDLeakPrevention(t *testing.T) {
 		t.Fatalf("Failed to start server: %v", err)
 	}
 	defer srv.Close()
+	srv.MarkReady()
 
 	// 1. Send unexpected FD with a non-AddEndpoint request (e.g. remove_route)
 	rPipe, wPipe, err := os.Pipe()
@@ -251,6 +261,7 @@ func TestAddEndpointErr_FD(t *testing.T) {
 		t.Fatalf("Failed to start server: %v", err)
 	}
 	defer srv.Close()
+	srv.MarkReady()
 
 	rPipe, wPipe, err := os.Pipe()
 	if err != nil {

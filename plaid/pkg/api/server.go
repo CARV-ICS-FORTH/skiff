@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -51,6 +52,12 @@ type Server struct {
 	mu            sync.Mutex
 	closed        bool
 	closeOnce     sync.Once
+	ready         atomic.Bool
+}
+
+// MarkReady allows endpoint and route operations after daemon initialization.
+func (s *Server) MarkReady() {
+	s.ready.Store(true)
 }
 
 // NewServer creates a new API server.
@@ -216,6 +223,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	var resp Response
+	if req.Action != ActionGetStatus && !s.ready.Load() {
+		sendResponse(unixConn, &Response{Success: false, Error: "plaidd is initializing"})
+		return
+	}
 	switch req.Action {
 	case ActionAddEndpoint:
 		if s.epHandler != nil {
@@ -258,16 +269,19 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 		}
 	case ActionGetStatus:
-		if s.statusProv != nil {
+		if !s.ready.Load() {
+			resp = Response{Success: true, Ready: false}
+		} else if s.statusProv != nil {
 			statusResp, err := s.statusProv.HandleGetStatus()
 			if err != nil {
 				resp = Response{Success: false, Error: err.Error()}
 			} else {
 				resp = *statusResp
 				resp.Success = true
+				resp.Ready = s.ready.Load()
 			}
 		} else {
-			resp = Response{Success: true}
+			resp = Response{Success: true, Ready: s.ready.Load()}
 		}
 	case ActionAddFilterRule:
 		if s.filterHandler != nil {
@@ -329,6 +343,7 @@ func sendResponse(conn *net.UnixConn, resp *Response) {
 func (s *Server) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
+		s.ready.Store(false)
 		s.mu.Lock()
 		s.closed = true
 		s.mu.Unlock()

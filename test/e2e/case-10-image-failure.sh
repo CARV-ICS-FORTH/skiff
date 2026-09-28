@@ -41,7 +41,11 @@ if [ "$PHASE" = "Running" ] || [ "$PHASE" = "Succeeded" ]; then
 fi
 
 UID_BAD=$(e2e_record_uid "$NS" "e2e10-bad")
+# The pause sandbox is allocated before the application image is resolved.
+# Its retained handshake lets us prove the failed image released live resources
+# while the API object still reports the pull error.
 runtime_record_pod "$NS" "e2e10-bad"
+runtime_verify_released "$NS" "e2e10-bad" 60
 
 PROC_COUNT=$(runtime_count_processes "$NODE_A" "$UID_BAD")
 e2e_assert_eq "no running process for UID" "$PROC_COUNT" "0"
@@ -72,6 +76,59 @@ e2e_wait_pod_phase "$NS" "e2e10-good" "Succeeded" 90
 
 CUR_UID_GOOD=$(e2e_kubectl get pod e2e10-good -n "$NS" -o jsonpath='{.metadata.uid}')
 e2e_assert_eq "UID unchanged" "$CUR_UID_GOOD" "$UID_GOOD"
+
+# Hold the production launcher in init while making the application's log
+# target a directory. Opening the log must visibly fail before application start.
+cat <<EOF | e2e_kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: e2e10-log-failure
+  namespace: ${NS}
+spec:
+  nodeName: ${NODE_A}
+  restartPolicy: Never
+  initContainers:
+  - name: init
+    image: ${FIXTURE_IMAGE}
+    command: ["sh", "-c", "while [ ! -f /gate/release ]; do sleep 1; done"]
+    volumeMounts:
+    - name: gate
+      mountPath: /gate
+  containers:
+  - name: app
+    image: ${FIXTURE_IMAGE}
+    command: ["sh", "-c", "touch /gate/app-started; sleep 3600"]
+    volumeMounts:
+    - name: gate
+      mountPath: /gate
+  volumes:
+  - name: gate
+    emptyDir: {}
+EOF
+e2e_wait_condition 30 "log failure fixture held in init" "test -n \"\$(e2e_kubectl get pod e2e10-log-failure -n $NS -o jsonpath='{.status.initContainerStatuses[0].state.running}')\""
+runtime_record_pod "$NS" e2e10-log-failure
+IFS='|' read -r _ _ _ _ _ _ _ _ log_failure_dir _ _ _ <<< "${_RT_IDENTITY[$NS/e2e10-log-failure]}"
+e2e_log "Injecting application log-open failure at ${log_failure_dir}/logs/app.logs"
+runtime_bubble_exec "$NODE_A" "mkdir '${log_failure_dir}/logs/app.logs'; touch '${log_failure_dir}/volumes/gate/release'"
+e2e_wait_pod_phase "$NS" e2e10-log-failure Failed 30
+reason=$(e2e_kubectl get pod e2e10-log-failure -n "$NS" -o jsonpath='{.status.reason}')
+e2e_assert_eq "log-open failure remains visible" "$reason" LogFileError
+app_id=$(e2e_kubectl get pod e2e10-log-failure -n "$NS" -o jsonpath='{.status.containerStatuses[0].containerID}')
+e2e_assert_eq "application has no launched attempt ID" "$app_id" "${NS}_e2e10-log-failure_app"
+# The logical container ID exists before launch. Check both execution records
+# and an application-only marker to establish that no application ran.
+pids_json=$(runtime_bubble_exec "$NODE_A" "cat '${log_failure_dir}/job/pids.json'")
+attempt_count=$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)["container_pids"]))' <<< "$pids_json")
+e2e_assert_eq "only the completed init attempt was started" "$attempt_count" "1"
+if runtime_bubble_exec "$NODE_A" "test -d '${log_failure_dir}/volumes/gate' && test ! -e '${log_failure_dir}/volumes/gate/app-started'"; then
+    e2e_pass "application start marker absent"
+else
+    e2e_fail "application start marker present or gate volume could not be observed"
+fi
+runtime_verify_released "$NS" e2e10-log-failure 60
+e2e_kubectl delete pod e2e10-log-failure -n "$NS" --grace-period=1 --timeout=30s
+runtime_verify_gone "$NS" e2e10-log-failure 60
 
 e2e_kubectl delete namespace "$NS"
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

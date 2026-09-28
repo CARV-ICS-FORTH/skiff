@@ -2,6 +2,7 @@ package podhandler
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -70,6 +71,31 @@ func TestWaitForReadiness_Timeout(t *testing.T) {
 	_, err := WaitForReadiness(ctx, readinessFile, 50*time.Millisecond)
 	if err != ErrReadinessTimeout {
 		t.Fatalf("expected ErrReadinessTimeout, got: %v", err)
+	}
+}
+
+func TestWaitForReadiness_CancellationWinsOverHandshake(t *testing.T) {
+	readinessFile := filepath.Join(t.TempDir(), "readiness.json")
+	if err := os.WriteFile(readinessFile, []byte(`{"pause_pid": 12345, "ip": "10.244.1.10"}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := WaitForReadiness(ctx, readinessFile, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled handshake succeeded: %v", err)
+	}
+}
+
+func TestVerifyNetnsDescriptor_RejectsOwnNamespace(t *testing.T) {
+	if _, err := os.Stat("/proc/self/ns/net"); err != nil {
+		t.Skip("Linux procfs unavailable")
+	}
+	file, err := VerifyNetnsDescriptor("/proc/self/ns/net")
+	if file != nil {
+		file.Close()
+	}
+	if !errors.Is(err, ErrInvalidNetns) {
+		t.Fatalf("own namespace accepted: %v", err)
 	}
 }
 

@@ -47,11 +47,19 @@ type SandboxRuntime struct {
 	ContainerPID int
 	StartTime    uint64
 	PauseCmd     *exec.Cmd
+	PauseDone    <-chan struct{}
+	StopPause    func()
 	NetnsPath    string
 	NetnsFile    *os.File
 	EndpointID   string
 	IP           string
 	Gateway      string
+}
+
+type trackedProcess struct {
+	done    chan struct{}
+	process *os.Process
+	start   uint64
 }
 
 // PodLifecycle coordinates state transitions, concurrency control, and resource cleanup for a single pod UID.
@@ -63,9 +71,13 @@ type PodLifecycle struct {
 	generation int64
 	podDir     endpoint.PodPath
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	doneCh chan struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
+	doneCh     chan struct{}
+	liveOnce   sync.Once
+	deleteOnce sync.Once
+	launchDone chan struct{}
+	attempts   map[int]*trackedProcess
 
 	desiredPod   *corev1.Pod
 	publishedPod *corev1.Pod
@@ -82,7 +94,11 @@ type PodLifecycle struct {
 
 // NewPodLifecycle creates a new lifecycle owner for a pod.
 func NewPodLifecycle(pod *corev1.Pod, podDir endpoint.PodPath, notifyFn func(*corev1.Pod)) *PodLifecycle {
-	ctx, cancel := context.WithCancel(context.Background())
+	return NewPodLifecycleWithContext(context.Background(), pod, podDir, notifyFn)
+}
+
+func NewPodLifecycleWithContext(parent context.Context, pod *corev1.Pod, podDir endpoint.PodPath, notifyFn func(*corev1.Pod)) *PodLifecycle {
+	ctx, cancel := context.WithCancel(parent)
 	key := client.ObjectKeyFromObject(pod)
 
 	pl := &PodLifecycle{
@@ -96,6 +112,7 @@ func NewPodLifecycle(pod *corev1.Pod, podDir endpoint.PodPath, notifyFn func(*co
 		desiredPod:   pod.DeepCopy(),
 		publishedPod: pod.DeepCopy(),
 		containers:   make(map[string]*ContainerRuntime),
+		attempts:     make(map[int]*trackedProcess),
 		ledger:       NewResourceLedger(),
 		notifyFn:     notifyFn,
 	}
@@ -150,6 +167,65 @@ func (l *PodLifecycle) Context() context.Context {
 	return l.ctx
 }
 
+// BeginLaunch records that the production launcher can still start processes.
+func (l *PodLifecycle) BeginLaunch() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.launchDone = make(chan struct{})
+}
+
+func (l *PodLifecycle) EndLaunch() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.launchDone != nil {
+		close(l.launchDone)
+		l.launchDone = nil
+	}
+}
+
+// StartTrackedProcess makes the cancellation check and command start one
+// transition. The launcher remains the sole waiter for the process.
+func (l *PodLifecycle) StartTrackedProcess(cmd *exec.Cmd) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.terminating || l.ctx.Err() != nil {
+		return context.Canceled
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	start, _ := runtime.GetProcessStartTime(cmd.Process.Pid)
+	l.attempts[cmd.Process.Pid] = &trackedProcess{done: make(chan struct{}), process: cmd.Process, start: start}
+	return nil
+}
+
+func (l *PodLifecycle) FinishTrackedProcess(pid int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if done, ok := l.attempts[pid]; ok {
+		delete(l.attempts, pid)
+		close(done.done)
+	}
+}
+
+// SignalTrackedProcess only signals a PID while it belongs to this active
+// launch attempt. FinishTrackedProcess closes this gate after the sole waiter.
+func (l *PodLifecycle) SignalTrackedProcess(pid int, signal syscall.Signal) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ctx.Err() != nil || l.terminating {
+		return false
+	}
+	attempt, ok := l.attempts[pid]
+	if !ok || (attempt.start != 0 && !runtime.VerifyProcessIdentity(pid, attempt.start)) {
+		return false
+	}
+	if syscall.Kill(-pid, signal) == nil {
+		return true
+	}
+	return attempt.process.Signal(signal) == nil
+}
+
 // Ledger returns the resource cleanup ledger for this pod.
 func (l *PodLifecycle) Ledger() *ResourceLedger {
 	return l.ledger
@@ -181,10 +257,11 @@ func (l *PodLifecycle) Publish(snapshot *corev1.Pod) {
 
 // UpdateFromAPI updates the desired spec without overwriting local runtime state.
 func (l *PodLifecycle) UpdateFromAPI(newPod *corev1.Pod) {
+	newPod = newPod.DeepCopy()
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.desiredPod = newPod.DeepCopy()
+	l.desiredPod = newPod
 	// Update metadata and labels while preserving status and runtime annotations
 	l.publishedPod.Labels = newPod.Labels
 	if l.publishedPod.Annotations == nil {
@@ -217,34 +294,6 @@ func (l *PodLifecycle) SetSandbox(sb *SandboxRuntime) {
 	}
 	runtime.SetPodID(l.publishedPod, runtime.JobIDTypeProcess, pauseJobID)
 
-	l.ledger.Register("sandbox-pause-process", func() error {
-		if sb.ContainerPID > 1 && !runtime.IsProcessDead(sb.ContainerPID) {
-			_ = syscall.Kill(-sb.ContainerPID, syscall.SIGKILL)
-			_ = syscall.Kill(sb.ContainerPID, syscall.SIGKILL)
-		}
-		if sb.PauseCmd != nil && sb.PauseCmd.Process != nil && sb.PausePID > 1 {
-			if !runtime.IsProcessDead(sb.PausePID) {
-				_ = syscall.Kill(-sb.PausePID, syscall.SIGTERM)
-				_ = syscall.Kill(sb.PausePID, syscall.SIGTERM)
-				deadline := time.Now().Add(3 * time.Second)
-				for !runtime.IsProcessDead(sb.PausePID) && time.Now().Before(deadline) {
-					time.Sleep(50 * time.Millisecond)
-				}
-				if !runtime.IsProcessDead(sb.PausePID) {
-					_ = syscall.Kill(-sb.PausePID, syscall.SIGKILL)
-					_ = syscall.Kill(sb.PausePID, syscall.SIGKILL)
-				}
-			}
-			_ = sb.PauseCmd.Wait()
-		}
-		if sb.NetnsFile != nil {
-			_ = sb.NetnsFile.Close()
-		}
-		if sb.EndpointID != "" {
-			_ = RemovePlaidEndpoint(sb.EndpointID)
-		}
-		return nil
-	})
 }
 
 // RegisterContainer registers an initialized container before launch.
@@ -254,7 +303,7 @@ func (l *PodLifecycle) RegisterContainer(spec corev1.Container, isInit bool) *Co
 
 	cr := &ContainerRuntime{
 		Name:   spec.Name,
-		Spec:   spec,
+		Spec:   *spec.DeepCopy(),
 		IsInit: isInit,
 		Status: corev1.ContainerStatus{
 			Name:  spec.Name,
@@ -305,24 +354,6 @@ func (l *PodLifecycle) SetContainerRunning(name string, cmd *exec.Cmd, pid int, 
 		l.StartProbes(name, cr.Spec.ReadinessProbe, true)
 	}
 
-	// Register container process in cleanup ledger
-	l.ledger.Register("container-"+name, func() error {
-		if cmd != nil && cmd.Process != nil && pid > 1 {
-			if runtime.IsProcessDead(pid) {
-				return nil
-			}
-			_ = syscall.Kill(-pid, syscall.SIGTERM)
-			_ = syscall.Kill(pid, syscall.SIGTERM)
-			time.Sleep(100 * time.Millisecond)
-			if !runtime.IsProcessDead(pid) {
-				_ = syscall.Kill(-pid, syscall.SIGKILL)
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
-			_ = cmd.Wait()
-		}
-		return nil
-	})
-
 	l.recomputePhaseLocked()
 	l.syncStatusesLocked()
 	snapshot := l.publishedPod.DeepCopy()
@@ -347,6 +378,8 @@ func (l *PodLifecycle) GetContainer(name string) (*ContainerRuntime, bool) {
 		return nil, false
 	}
 	copyCr := *cr
+	copyCr.Spec = *cr.Spec.DeepCopy()
+	copyCr.Status = *cr.Status.DeepCopy()
 	return &copyCr, true
 }
 
@@ -727,11 +760,9 @@ func (l *PodLifecycle) stopSandbox() {
 
 	if sb != nil {
 		compute.DefaultLogger.Info("Stopping pod sandbox network and pause process", "pod", l.key, "launcherPID", sb.PausePID, "containerPID", sb.ContainerPID)
-		if sb.ContainerPID > 1 && !runtime.IsProcessDead(sb.ContainerPID) {
-			_ = syscall.Kill(-sb.ContainerPID, syscall.SIGKILL)
-			_ = syscall.Kill(sb.ContainerPID, syscall.SIGKILL)
-		}
-		if sb.PauseCmd != nil && sb.PauseCmd.Process != nil && sb.PausePID > 1 {
+		if sb.StopPause != nil {
+			sb.StopPause()
+		} else if sb.PauseCmd != nil && sb.PauseCmd.Process != nil && sb.PausePID > 1 {
 			if !runtime.IsProcessDead(sb.PausePID) {
 				_ = syscall.Kill(-sb.PausePID, syscall.SIGTERM)
 				_ = syscall.Kill(sb.PausePID, syscall.SIGTERM)
@@ -744,7 +775,16 @@ func (l *PodLifecycle) stopSandbox() {
 					_ = syscall.Kill(sb.PausePID, syscall.SIGKILL)
 				}
 			}
-			_ = sb.PauseCmd.Wait()
+			if sb.PauseDone != nil {
+				select {
+				case <-sb.PauseDone:
+				case <-time.After(5 * time.Second):
+				}
+			}
+		}
+		if sb.ContainerPID > 1 && !runtime.IsProcessDead(sb.ContainerPID) {
+			_ = syscall.Kill(-sb.ContainerPID, syscall.SIGKILL)
+			_ = syscall.Kill(sb.ContainerPID, syscall.SIGKILL)
 		}
 		if sb.NetnsFile != nil {
 			_ = sb.NetnsFile.Close()
@@ -755,66 +795,65 @@ func (l *PodLifecycle) stopSandbox() {
 	}
 }
 
-// Terminate executes the structured graceful shutdown sequence for the pod.
-func (l *PodLifecycle) Terminate(gracePeriod time.Duration) {
-	l.mu.Lock()
-	if l.terminating {
-		l.mu.Unlock()
-		<-l.doneCh
-		return
-	}
-	l.terminating = true
-	l.cancel() // Cancel active image pulls, inits, or pending startups
-	l.mu.Unlock()
-
-	defer close(l.doneCh)
-
-	// Step 1: Send SIGTERM to application containers
-	l.mu.RLock()
-	var appPIDs []int
-	for _, cr := range l.containers {
-		if !cr.IsInit && cr.PID > 1 && !cr.Finished {
-			appPIDs = append(appPIDs, cr.PID)
+// ReleaseLiveResources stops process and network allocations while retaining
+// the pod's final status, logs, and metadata until API deletion.
+func (l *PodLifecycle) ReleaseLiveResources(gracePeriod time.Duration) {
+	l.liveOnce.Do(func() {
+		l.mu.Lock()
+		l.terminating = true
+		l.cancel()
+		attempts := make(map[int]*trackedProcess, len(l.attempts))
+		for pid, attempt := range l.attempts {
+			attempts[pid] = attempt
 		}
-	}
-	l.mu.RUnlock()
+		launchDone := l.launchDone
+		l.mu.Unlock()
 
-	for _, pid := range appPIDs {
-		_ = syscall.Kill(-pid, syscall.SIGTERM)
-		_ = syscall.Kill(pid, syscall.SIGTERM)
-	}
-
-	// Step 2: Await application shutdown within grace budget
-	deadline := time.Now().Add(gracePeriod)
-	allAppsDead := func() bool {
-		for _, pid := range appPIDs {
-			if !runtime.IsProcessDead(pid) {
-				return false
+		for pid, attempt := range attempts {
+			if attempt.start == 0 || runtime.VerifyProcessIdentity(pid, attempt.start) {
+				if syscall.Kill(-pid, syscall.SIGTERM) != nil {
+					_ = attempt.process.Signal(syscall.SIGTERM)
+				}
 			}
 		}
-		return true
-	}
-
-	for !allAppsDead() && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-	}
-
-	// Step 3: Escalate to SIGKILL for any surviving application processes
-	for _, pid := range appPIDs {
-		if !runtime.IsProcessDead(pid) {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+		deadline := time.Now().Add(gracePeriod)
+		for pid, attempt := range attempts {
+			remaining := time.Until(deadline)
+			if remaining > 0 {
+				select {
+				case <-attempt.done:
+					continue
+				case <-time.After(remaining):
+				}
+			}
+			if attempt.start == 0 || runtime.VerifyProcessIdentity(pid, attempt.start) {
+				_ = syscall.Kill(-pid, syscall.SIGKILL)
+				_ = attempt.process.Kill()
+			}
+			select {
+			case <-attempt.done:
+			case <-time.After(2 * time.Second):
+			}
 		}
-	}
+		if launchDone != nil {
+			select {
+			case <-launchDone:
+			case <-time.After(10 * time.Second):
+			}
+		}
+		l.stopSandbox()
+		_ = l.ledger.CleanupAll()
+	})
+}
 
-	// Step 4: Stop pause container and release network sandbox
-	l.stopSandbox()
-
-	// Step 5: Unwind resource ledger cleanup stack
-	_ = l.ledger.CleanupAll()
-
-	// Step 6: Remove pod directory
-	_ = os.RemoveAll(l.podDir.String())
+// Terminate also removes the UID-owned files after live resources are released.
+func (l *PodLifecycle) Terminate(gracePeriod time.Duration) {
+	l.deleteOnce.Do(func() {
+		l.ReleaseLiveResources(gracePeriod)
+		_ = os.RemoveAll(l.podDir.String())
+		close(l.doneCh)
+	})
+	<-l.doneCh
 }
 
 // RemovePlaidEndpoint requests plaidd to remove an endpoint by ID over /run/plaid/plaidd.sock.

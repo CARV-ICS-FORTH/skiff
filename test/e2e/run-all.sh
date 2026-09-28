@@ -9,6 +9,7 @@
 #   --artifact-dir DIR       Path to candidate binaries/manifest (sets SKIFF_ARTIFACT_DIR)
 #   --registry HOST:PORT     Local registry for fixture images (sets FIXTURE_REGISTRY)
 #   --recovery-policy POLICY Recovery policy for E2E-09 (fail-and-replace|adopt)
+#   --daemon-class CLASS    Target one daemon class with --case 09
 #   --case N                 Run only case N (1–10; for development)
 #   --no-teardown            Skip cluster cancellation at the end
 #   --preflight-only         Run only the pre-flight scripts, then exit
@@ -36,6 +37,7 @@ while [ $# -gt 0 ]; do
         --artifact-dir)    export SKIFF_ARTIFACT_DIR="$2"; shift 2 ;;
         --registry)        export FIXTURE_REGISTRY="$2"; shift 2 ;;
         --recovery-policy) export SKIFF_RECOVERY_POLICY="$2"; shift 2 ;;
+        --daemon-class)   export E2E_DAEMON_CLASS="$2"; shift 2 ;;
         --case)            ONLY_CASE="$2"; shift 2 ;;
         --no-teardown)     export NO_TEARDOWN=1; shift ;;
         --network-only|--preflight-only) NETWORK_ONLY=1; shift ;;
@@ -46,8 +48,15 @@ done
 # ---------------------------------------------------------------------------
 # Shared state
 # ---------------------------------------------------------------------------
-export E2E_RUN_ID="${E2E_RUN_ID:-$(date +%s)-$(git -C "$SCRIPT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
+candidate_ref=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("git_commit", "")[:7])' \
+    "${SKIFF_MANIFEST_PATH:-${HOME}/.skiff/images/manifest.json}" 2>/dev/null || true)
+[ -n "$candidate_ref" ] || candidate_ref=unknown
+export E2E_RUN_ID="${E2E_RUN_ID:-$(date +%s)-${candidate_ref}}"
 export E2E_LOGDIR="${E2E_LOGDIR:-${E2E_DIR}/results/${E2E_RUN_ID}}"
+if [ -z "$ONLY_CASE" ] && [ "$NETWORK_ONLY" -eq 0 ] && [ -d "$E2E_LOGDIR" ] && [ -n "$(ls -A "$E2E_LOGDIR")" ]; then
+    echo "Refusing to reuse existing qualification results: $E2E_LOGDIR" >&2
+    exit 1
+fi
 mkdir -p "$E2E_LOGDIR"
 
 export E2E_SKIFF_TEST_DIR="${E2E_SKIFF_TEST_DIR:-$(cd "$SCRIPT_DIR/../../test" && pwd)}"
@@ -56,6 +65,9 @@ export E2E_SKIFF_TEST_DIR="${E2E_SKIFF_TEST_DIR:-$(cd "$SCRIPT_DIR/../../test" &
 E2E_CASE="00"
 # shellcheck source=lib/common.sh
 source "$LIB_DIR/common.sh"
+source "$LIB_DIR/profile.sh"
+source "$LIB_DIR/runtime.sh"
+profile_required_cases >/dev/null || exit 1
 
 # ---------------------------------------------------------------------------
 # Result tracking
@@ -68,7 +80,7 @@ record() {
     local label="$1" result="$2" duration="$3"
     RESULTS["$label"]="$result"
     DURATIONS["$label"]="${duration}s"
-    if [ "$result" = "FAIL" ]; then
+    if [ "$result" = "FAIL" ] && { [ -n "$ONLY_CASE" ] || [ "$NETWORK_ONLY" -eq 1 ] || profile_is_required "$label"; }; then
         OVERALL=1
     fi
 }
@@ -183,6 +195,37 @@ run_case() {
     run_script "E2E-${n}" "$E2E_DIR/case-${n}-${name}.sh"
 }
 
+matrix_ready() {
+    local count
+    count=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c '^True$' || true)
+    [ "$count" -ge 2 ] || return 1
+    e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -q '^True$'
+}
+
+run_daemon_failure_matrix() {
+    local class prior_job matrix_result=PASS
+    for class in skifflet plaidd slirp relay; do
+        run_script "E2E-09-${class}" env E2E_DAEMON_CLASS="$class" "$E2E_DIR/case-09-daemon-recovery.sh"
+        [ "${RESULTS[E2E-09-${class}]:-FAIL}" = PASS ] || matrix_result=FAIL
+        if [ "$class" != relay ]; then
+            prior_job="$SKIFF_JOB_ID"
+            if [ "${RESULTS[E2E-09-${class}]:-FAIL}" != PASS ]; then
+                # A setup failure may occur before injection. Release this exact
+                # job before starting the next isolated failure scenario.
+                scancel "$prior_job" || return 1
+            fi
+            e2e_wait_condition 90 "prior Slurm job ${prior_job} stopped" \
+                "test -z \"\$(squeue -j ${prior_job} -h -o %i 2>/dev/null)\"" || return 1
+            SKIFF_JOB_ID=$(sbatch --parsable "${SKIFF_ARTIFACT_DIR:-/home/vagrant/skiff}/scripts/skiff.slurm" | cut -d';' -f1) || return 1
+            export SKIFF_JOB_ID
+            [[ "$SKIFF_JOB_ID" =~ ^[0-9]+$ ]] || return 1
+            printf '%s\n' "$SKIFF_JOB_ID" >> "${E2E_LOGDIR}/matrix-job-ids"
+            e2e_wait_condition 300 "fresh two-node cluster after ${class} failure" matrix_ready || matrix_result=FAIL
+        fi
+    done
+    record E2E-09 "$matrix_result" 0
+}
+
 run_workload_cases() {
     echo "--- E2E CASES ---------------------------------------------------------"
     run_case "02" "init-shared-net"
@@ -195,7 +238,7 @@ run_workload_cases() {
     run_case "10" "image-failure"
     run_case "11" "harness-selfcheck"
     run_case "12" "daemon-collision"
-    run_case "09" "daemon-recovery"
+    run_daemon_failure_matrix
 }
 
 run_startup_case() {
@@ -209,9 +252,42 @@ run_startup_case() {
         result01=FAIL
         OVERALL=1
     fi
+    if [ -f "${E2E_LOGDIR}/job-id" ]; then
+        SKIFF_JOB_ID=$(cat "${E2E_LOGDIR}/job-id")
+        export SKIFF_JOB_ID
+    fi
+    if [[ ! "${SKIFF_JOB_ID:-}" =~ ^[0-9]+$ ]]; then
+        result01=FAIL
+        OVERALL=1
+    fi
     end01=$(date +%s)
     record "E2E-01" "$result01" "$((end01 - start01))"
     echo -e "  $([ "$result01" = PASS ] && echo '\033[0;32m' || echo '\033[0;31m')${result01}\033[0m  E2E-01  ($((end01 - start01))s)" >&2
+}
+
+collect_candidate_evidence() {
+    local manifest="${SKIFF_MANIFEST_PATH:-${HOME}/.skiff/images/manifest.json}"
+    local sif="${HOME}/.skiff/images/skiff-bubble.sif"
+    local fixture="${HOME}/.skiff/images/skiff-e2e-fixture.sif"
+    local nodes_file="${E2E_LOGDIR}/candidate-nodes.tsv"
+    local node ip arch sif_sha version
+    [ -s "$manifest" ] && [ -s "$sif" ] && [ -s "$fixture" ] || return 1
+    [[ "${SKIFF_JOB_ID:-}" =~ ^[0-9]+$ ]] || return 1
+    cp "$manifest" "${E2E_LOGDIR}/deployment-manifest.json"
+    cp "${HOME}/.skiff/fixture.env" "${E2E_LOGDIR}/fixture.env" || return 1
+    e2e_kubectl get nodes -o json > "${E2E_LOGDIR}/nodes.json" || return 1
+    scontrol show job "$SKIFF_JOB_ID" > "${E2E_LOGDIR}/slurm-job.txt" || return 1
+    : > "$nodes_file"
+    for node in "$(e2e_node_a)" "$(e2e_node_b)"; do
+        ip=$(runtime_node_ip "$node") || return 1
+        arch=$(runtime_ssh_node "$ip" "uname -m") || return 1
+        sif_sha=$(runtime_ssh_node "$ip" "sha256sum /home/vagrant/.skiff/images/skiff-bubble.sif | cut -d' ' -f1") || return 1
+        version=$(e2e_kubectl get node "$node" -o jsonpath='{.status.nodeInfo.kubeletVersion}') || return 1
+        printf '%s\t%s\t%s\t%s\n' "$node" "$arch" "$sif_sha" "$version" >> "$nodes_file"
+    done
+    python3 "$LIB_DIR/candidate.py" "$manifest" "$sif" "$fixture" \
+        "${HOME}/.skiff/fixture.env" "$nodes_file" "${E2E_LOGDIR}/candidate.json" \
+        "$E2E_RUN_ID" "$E2E_PROFILE" "$SKIFF_JOB_ID"
 }
 
 # ---------------------------------------------------------------------------
@@ -246,6 +322,11 @@ else
         # Fresh cluster mode: run E2E-01 first to submit job and bootstrap cluster
         run_startup_case
         if [ "${RESULTS[E2E-01]:-FAIL}" = "PASS" ]; then
+            if collect_candidate_evidence >> "${E2E_LOGDIR}/candidate.log" 2>&1; then
+                record CANDIDATE PASS 0
+            else
+                record CANDIDATE FAIL 0
+            fi
             run_networking_tests
             run_workload_cases
         else
@@ -254,6 +335,11 @@ else
     else
         # Attach mode: cluster is already running
         e2e_require_nodes 2
+        if collect_candidate_evidence >> "${E2E_LOGDIR}/candidate.log" 2>&1; then
+            record CANDIDATE PASS 0
+        else
+            record CANDIDATE FAIL 0
+        fi
         run_networking_tests
         run_workload_cases
     fi
@@ -261,6 +347,12 @@ fi
 
 # Execute deferred teardown explicitly before summary and results.json
 _run_deferred
+
+if [ -z "$ONLY_CASE" ] && [ "$NETWORK_ONLY" -eq 0 ]; then
+    if ! profile_check_results; then
+        OVERALL=1
+    fi
+fi
 
 # ---------------------------------------------------------------------------
 # Summary
@@ -276,8 +368,9 @@ for label in \
     "NET-1-plaid-integration" "NET-2-plaid-all" \
     "NET-3-tap-acceptance" "NET-4-tap-webhook" \
     "E2E-01" "E2E-02" "E2E-03" "E2E-04" "E2E-05" \
-    "E2E-06" "E2E-07" "E2E-08" "E2E-09" "E2E-10" \
-    "E2E-11" "E2E-12" \
+    "E2E-06" "E2E-07" "E2E-08" "E2E-09" \
+    "E2E-09-skifflet" "E2E-09-plaidd" "E2E-09-slirp" "E2E-09-relay" "E2E-10" \
+    "E2E-11" "E2E-12" "CANDIDATE" \
     "E2E-01-teardown"; do
     result="${RESULTS[$label]:-SKIP}"
     dur="${DURATIONS[$label]:-}"
@@ -300,6 +393,7 @@ $(for k in "${!RESULTS[@]}"; do
 done)
 out = {
     'run_id': '${E2E_RUN_ID}',
+    'profile': '${E2E_PROFILE}',
     'overall': '$([ $OVERALL -eq 0 ] && echo PASS || echo FAIL)',
     'cases': results,
 }

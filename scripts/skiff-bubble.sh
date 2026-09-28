@@ -58,7 +58,11 @@ handle_int() {
 }
 
 cleanup() {
+    local original_status=$?
     trap - EXIT INT TERM
+    if [ "$EXIT_CODE" -eq 0 ] && [ "$original_status" -ne 0 ]; then
+        EXIT_CODE=$original_status
+    fi
     echo "Cleaning up Bubble $NAME..."
     if [[ -n ${SOCAT_PID_6443:-} ]]; then
         kill "$SOCAT_PID_6443" 2>/dev/null || true
@@ -94,7 +98,7 @@ echo "  CIDR: $CIDR"
 echo "  Host IP: $HOST_IP_DETECTED"
 
 # Determine image source
-if [ "${SKIFF_DEV:-1}" = "1" ]; then
+if [ "${SKIFF_DEV:-0}" = "1" ]; then
     echo "  Development mode: using local image"
     IMAGE_DIR="$HOME/.skiff/images"
     IMAGE_SIF="$IMAGE_DIR/skiff-bubble.sif"

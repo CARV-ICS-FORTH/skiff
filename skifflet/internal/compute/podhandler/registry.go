@@ -27,7 +27,7 @@ func NewPodRegistry() *PodRegistry {
 
 // Register registers a new PodLifecycle. If a previous pod with the same ObjectKey exists under
 // a different UID, the old pod is cancelled to prevent resurrection or stale interactions.
-func (r *PodRegistry) Register(lifecycle *PodLifecycle) {
+func (r *PodRegistry) Register(lifecycle *PodLifecycle) *PodLifecycle {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -35,14 +35,17 @@ func (r *PodRegistry) Register(lifecycle *PodLifecycle) {
 	key := lifecycle.Key()
 
 	// Cancel old pod generation if UID differs
+	var oldLifecycle *PodLifecycle
 	if oldUID, exists := r.byKey[key]; exists && oldUID != uid {
-		if oldLifecycle, ok := r.byUID[oldUID]; ok {
+		oldLifecycle = r.byUID[oldUID]
+		if oldLifecycle != nil {
 			oldLifecycle.cancel()
 		}
 	}
 
 	r.byUID[uid] = lifecycle
 	r.byKey[key] = uid
+	return oldLifecycle
 }
 
 // Get returns the PodLifecycle for a given UID.

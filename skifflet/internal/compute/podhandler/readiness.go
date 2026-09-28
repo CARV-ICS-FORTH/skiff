@@ -22,6 +22,7 @@ var (
 type SandboxInfo struct {
 	PausePID   int    `json:"pause_pid"`
 	NetnsPath  string `json:"netns_path"`
+	NetnsInode uint64 `json:"netns_inode"`
 	EndpointID string `json:"endpoint_id"`
 	IP         string `json:"ip"`
 	Gateway    string `json:"gateway"`

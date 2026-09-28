@@ -54,6 +54,12 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 		validateProbe("ReadinessProbe", c.ReadinessProbe)
 		validateProbe("LivenessProbe", c.LivenessProbe)
 		validateProbe("StartupProbe", c.StartupProbe)
+		if c.LivenessProbe != nil && c.LivenessProbe.Exec != nil {
+			unsupported = append(unsupported, fmt.Sprintf("%s.LivenessProbe.Exec", prefix))
+		}
+		if c.StartupProbe != nil {
+			unsupported = append(unsupported, fmt.Sprintf("%s.StartupProbe", prefix))
+		}
 	}
 
 	for i := range pod.Spec.InitContainers {

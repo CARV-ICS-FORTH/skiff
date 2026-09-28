@@ -1,11 +1,15 @@
 package podhandler
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"skifflet/internal/compute"
 )
 
 func TestValidatePodCapabilities(t *testing.T) {
@@ -15,7 +19,7 @@ func TestValidatePodCapabilities(t *testing.T) {
 		wantErrSub string
 	}{
 		{
-			name: "valid pod with supported probes",
+			name: "valid pod with supported readiness probe",
 			pod: &corev1.Pod{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
@@ -28,25 +32,38 @@ func TestValidatePodCapabilities(t *testing.T) {
 									},
 								},
 							},
-							LivenessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Port: intstr.FromInt(8080),
-									},
-								},
-							},
-							StartupProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Port: intstr.FromInt(8080),
-									},
-								},
-							},
 						},
 					},
 				},
 			},
 			wantErrSub: "",
+		},
+		{
+			name: "startup probe rejected",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "web", StartupProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}},
+			}}}},
+			wantErrSub: "StartupProbe",
+		},
+		{
+			name: "HTTP liveness probe supported for CoreDNS",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "web", LivenessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromInt(8080)}}},
+			}}}},
+		},
+		{
+			name: "exec liveness probe rejected",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "web", LivenessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}},
+			}}}},
+			wantErrSub: "LivenessProbe",
+		},
+		{
+			name: "postStart lifecycle hook rejected",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "web", Lifecycle: &corev1.Lifecycle{PostStart: &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}},
+			}}}},
+			wantErrSub: "PostStart",
 		},
 		{
 			name: "preStop lifecycle hook rejected",
@@ -117,6 +134,16 @@ func TestValidatePodCapabilities(t *testing.T) {
 				}
 				if !strings.Contains(err.Error(), tt.wantErrSub) {
 					t.Fatalf("expected error containing %q, got: %v", tt.wantErrSub, err)
+				}
+				tt.pod.Name, tt.pod.Namespace, tt.pod.UID = "rejected", "capability-test", "rejected-capability"
+				var snapshot *corev1.Pod
+				CreatePod(context.Background(), tt.pod, func(p *corev1.Pod) { snapshot = p })
+				if snapshot == nil || snapshot.Status.Phase != corev1.PodFailed || snapshot.Status.Reason != compute.ReasonUnsupportedFeatures {
+					t.Fatalf("production launcher did not publish unsupported result: %+v", snapshot)
+				}
+				path := compute.Skiff.PodWithUID(client.ObjectKeyFromObject(tt.pod), tt.pod.UID)
+				if _, err := os.Stat(path.String()); !os.IsNotExist(err) || GlobalRegistry.Get(tt.pod.UID) != nil || snapshot.Status.PodIP != "" {
+					t.Fatal("unsupported capability allocated runtime resources")
 				}
 			}
 		})

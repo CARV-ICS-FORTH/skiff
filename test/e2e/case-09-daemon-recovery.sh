@@ -13,6 +13,13 @@ NODE_B=$(e2e_node_b)
 
 e2e_require_nodes 2
 
+TARGET_JOB="${SKIFF_JOB_ID:-}"
+[[ "$TARGET_JOB" =~ ^[0-9]+$ ]] || e2e_die "Case 09 requires the exact Slurm job ID before fault injection"
+JOB_NODES=$(scontrol show job "$TARGET_JOB" -o | sed -n 's/.* NodeList=\([^ ]*\).*/\1/p')
+[ -n "$JOB_NODES" ] || e2e_die "Cannot capture allocated nodes for job $TARGET_JOB"
+NODE_A_IP=$(runtime_node_ip "$NODE_A")
+NODE_B_IP=$(runtime_node_ip "$NODE_B")
+
 export SKIFF_RECOVERY_POLICY="${SKIFF_RECOVERY_POLICY:-fail-the-job}"
 [ -n "${SKIFF_RECOVERY_POLICY:-}" ] || e2e_die "SKIFF_RECOVERY_POLICY must be set"
 
@@ -44,39 +51,54 @@ runtime_record_pod "$NS" "e2e09-test-pod"
 
 E2E_RECOVERY_DEADLINE=${E2E_RECOVERY_DEADLINE:-60}
 
-# REQUIRED DAEMON FAILURE
-SKIFFLET_PID=$(runtime_get_pid "$NODE_B" "skifflet")
-e2e_assert_nonempty "skifflet PID" "$SKIFFLET_PID"
-
-e2e_log "Injecting daemon failure (killing skifflet PID ${SKIFFLET_PID} on ${NODE_B})..."
-runtime_kill_process "$NODE_B" "$SKIFFLET_PID" KILL
+# Each daemon class runs against a fresh Slurm job in the aggregate runner.
+DAEMON_CLASS="${E2E_DAEMON_CLASS:-skifflet}"
+case "$DAEMON_CLASS" in
+    skifflet|plaidd|slirp)
+        process_name="$DAEMON_CLASS"
+        [ "$process_name" = slirp ] && process_name=slirp4netns
+        TARGET_PID=$(runtime_get_pid "$NODE_B" "$process_name")
+        ;;
+    relay)
+        NODE_B_IP=$(runtime_node_ip "$NODE_B")
+        TARGET_PID=$(runtime_ssh_node "$NODE_B_IP" "ps -eo pid,args | awk '/[s]ocat TCP4-LISTEN:10250/ {print \$1; exit}'")
+        ;;
+    *) e2e_die "unknown daemon failure class: $DAEMON_CLASS" ;;
+esac
+[[ "$TARGET_PID" =~ ^[0-9]+$ ]] || e2e_die "cannot identify $DAEMON_CLASS process on $NODE_B"
+e2e_log "Injecting $DAEMON_CLASS failure (PID ${TARGET_PID} on ${NODE_B}, job ${TARGET_JOB})..."
+runtime_kill_process "$NODE_B" "$TARGET_PID" KILL
 
 if [ "$SKIFF_RECOVERY_POLICY" = "fail-the-job" ]; then
     # In fail-the-job model (K4/S1), daemon failure fatal-exits the bubble and aborts the Slurm job
-    if [ -z "${SKIFF_JOB_ID:-}" ]; then
-        SKIFF_JOB_ID=$(squeue -u "$(whoami)" -h -o "%i" | head -n1 || true)
-    fi
-
     # 1. Verify Slurm job failure or termination within bounded deadline
-    if [ -n "${SKIFF_JOB_ID:-}" ]; then
-        e2e_wait_condition 60 "Slurm job failed or terminated" \
-            "test \"\$(squeue -j $SKIFF_JOB_ID -h -o %T 2>/dev/null || echo 'COMPLETED')\" != 'RUNNING'"
-        e2e_pass "Slurm job ${SKIFF_JOB_ID} terminated upon required daemon failure"
-    fi
+    e2e_wait_condition 60 "Slurm job terminated" \
+        "test -z \"\$(squeue -j $TARGET_JOB -h -o %i 2>/dev/null)\""
+    result_path="${HOME}/.skiff/job-results/${TARGET_JOB}.exit"
+    e2e_wait_condition 30 "authoritative batch exit result" "test -s '$result_path'"
+    JOB_EXIT=$(cat "$result_path")
+    [[ "$JOB_EXIT" =~ ^[0-9]+$ ]] && [ "$JOB_EXIT" -gt 0 ] || e2e_die "Slurm job $TARGET_JOB reported success or invalid exit result: '$JOB_EXIT'"
+    e2e_pass "Slurm job $TARGET_JOB failed with exit code $JOB_EXIT on nodes $JOB_NODES"
+
+    job_resources_clean() {
+        local ip
+        for ip in "$NODE_A_IP" "$NODE_B_IP"; do
+            runtime_host_resources_gone "$ip" || return 1
+        done
+    }
+    e2e_wait_condition 90 "all allocated nodes released bubble processes and ports" job_resources_clean
 
     # 2. Verify bubble instances on NODE_B terminated cleanly
-    NODE_B_IP=$(runtime_node_ip "$NODE_B" 2>/dev/null || echo "")
-    if [ -n "$NODE_B_IP" ]; then
-        e2e_wait_condition 30 "bubble instances terminated on NODE_B" \
-            "test \"\$(runtime_ssh_node \"$NODE_B_IP\" \"apptainer instance list 2>/dev/null | grep -c bubble || true\")\" -eq 0"
-        e2e_pass "bubble instances terminated on NODE_B"
-    fi
+    e2e_pass "Bubble processes and forwarded ports released on both allocated nodes"
 
     # 3. Verify node state reflects failure (node NotReady, Unknown, or cluster terminated)
     e2e_wait_condition "$E2E_RECOVERY_DEADLINE" "NODE_B Ready=False or NotReady or cluster terminated" \
         "test -z \"\$(squeue -j ${SKIFF_JOB_ID:-0} -h -o %i 2>/dev/null)\" || e2e_kubectl get node $NODE_B -o jsonpath='{range .status.conditions[?(@.type==\"Ready\")]}{.status}{end}' 2>/dev/null | grep -E 'False|Unknown|^$'"
 
     e2e_pass "Fail-the-job recovery semantics verified for daemon failure"
+    # The API and its namespaces disappear with this deliberately destroyed job.
+    # All host resources were checked above; no API cleanup remains applicable.
+    _E2E_CLEANUP_STACK=()
 elif [ "$SKIFF_RECOVERY_POLICY" = "adopt" ]; then
     e2e_wait_condition "$E2E_RECOVERY_DEADLINE" "NODE_B Ready=False" "e2e_kubectl get node $NODE_B -o jsonpath='{range .status.conditions[?(@.type==\"Ready\")]}{.status}{end}' | grep -E 'False|Unknown'"
     e2e_wait_condition "$E2E_RECOVERY_DEADLINE" "NODE_B Ready=True" "test \"\$(e2e_kubectl get node $NODE_B -o jsonpath='{range .status.conditions[?(@.type==\"Ready\")]}{.status}{end}')\" = \"True\""

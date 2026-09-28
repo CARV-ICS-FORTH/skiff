@@ -40,10 +40,7 @@ wait_clean() {
     while [ \$elapsed -lt \$max ]; do
         local ok=1
         for host in \$(scontrol show hostnames "\$nodelist"); do
-            local pids=\$(ssh -i "\${E2E_SSH_KEY:-/home/vagrant/.ssh/id_ed25519}" -o StrictHostKeyChecking=no vagrant@\$host "pgrep -f '[s]kifflet|[p]laidd' || true")
-            local bubs=\$(ssh -i "\${E2E_SSH_KEY:-/home/vagrant/.ssh/id_ed25519}" -o StrictHostKeyChecking=no vagrant@\$host "apptainer instance list 2>/dev/null | grep bubble || true")
-            local ports=\$(ssh -i "\${E2E_SSH_KEY:-/home/vagrant/.ssh/id_ed25519}" -o StrictHostKeyChecking=no vagrant@\$host "ss -tuln | grep -E ':(6443|10250|8472)' || true")
-            if [ -n "\$pids" ] || [ -n "\$bubs" ] || [ -n "\$ports" ]; then
+            if ! runtime_host_resources_gone "\$host"; then
                 ok=0
                 break
             fi
@@ -104,6 +101,7 @@ if [ -z "${SKIFF_JOB_ID:-}" ]; then
     e2e_log "Submitting skiff.slurm from ${REPO_ROOT}/scripts/skiff.slurm"
     SKIFF_JOB_ID=$(sbatch --parsable "${REPO_ROOT}/scripts/skiff.slurm" | cut -d';' -f1)
     export SKIFF_JOB_ID
+    printf '%s\n' "$SKIFF_JOB_ID" > "${E2E_LOGDIR}/job-id"
     e2e_log "Submitted Skiff cluster job: ${SKIFF_JOB_ID}"
 fi
 write_teardown_script
@@ -117,12 +115,15 @@ check_coredns_ready() {
 }
 e2e_wait_condition 300 "CoreDNS pod Ready" check_coredns_ready
 
-if [ -n "${SKIFF_ARTIFACT_DIR:-}" ] && [ -f "${SKIFF_ARTIFACT_DIR}/VERSION" ]; then
-    expected_version=$(cat "${SKIFF_ARTIFACT_DIR}/VERSION")
-    actual_version=$(e2e_kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}')
-    e2e_log "Expected version: $expected_version, Actual: $actual_version"
-    e2e_assert_eq "Node kubeletVersion matches candidate VERSION" "$actual_version" "$expected_version"
+manifest_path="${SKIFF_MANIFEST_PATH:-${HOME}/.skiff/images/manifest.json}"
+if [ ! -f "$manifest_path" ]; then
+    e2e_die "candidate manifest missing: $manifest_path"
 fi
+expected_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$manifest_path")
+for node in $(e2e_node_a) $(e2e_node_b); do
+    actual_version=$(e2e_kubectl get node "$node" -o jsonpath='{.status.nodeInfo.kubeletVersion}')
+    e2e_assert_eq "Node $node kubeletVersion matches candidate" "$actual_version" "$expected_version"
+done
 
 for node in $(e2e_node_a) $(e2e_node_b); do
     cpu=$(e2e_kubectl get node "$node" -o jsonpath='{.status.allocatable.cpu}')
@@ -132,6 +133,41 @@ for node in $(e2e_node_a) $(e2e_node_b); do
     e2e_assert_ne "Node $node allocatable CPU non-zero" "$cpu" "0"
     e2e_assert_nonempty "Node $node allocatable memory" "$mem"
     e2e_assert_ne "Node $node allocatable memory non-zero" "$mem" "0"
+    allocation=$(scontrol show job "$SKIFF_JOB_ID" -o)
+    if python3 - "$allocation" "$cpu" "$mem" <<'PY'
+import decimal, re, sys
+job, cpu, mem = sys.argv[1:]
+def field(name):
+    match = re.search(r'(?:^| )' + name + r'=([^ ]+)', job)
+    if not match:
+        raise ValueError('missing Slurm ' + name)
+    return match.group(1)
+def quantity(value):
+    match = re.fullmatch(r'(\d+(?:\.\d+)?)([KMGTPE]i?|)', value)
+    if not match:
+        raise ValueError('invalid quantity ' + value)
+    number, suffix = match.groups()
+    if not suffix:
+        return decimal.Decimal(number)
+    base = 1024 if suffix.endswith('i') else 1000
+    power = 'KMGTPE'.index(suffix[0]) + 1
+    return decimal.Decimal(number) * base ** power
+nodes = decimal.Decimal(field('NumNodes'))
+cpu_limit = decimal.Decimal(field('NumCPUs')) / nodes
+slurm_mem = field('MinMemoryNode')
+if not re.fullmatch(r'\d+[KMGT]?', slurm_mem):
+    raise ValueError('invalid Slurm node memory ' + slurm_mem)
+memory_limit = decimal.Decimal(slurm_mem[:-1]) * 1024 ** ('KMGT'.index(slurm_mem[-1]) + 1) if slurm_mem[-1].isalpha() else decimal.Decimal(slurm_mem)
+advertised_cpu = decimal.Decimal(cpu[:-1]) / 1000 if cpu.endswith('m') else decimal.Decimal(cpu)
+advertised_memory = quantity(mem)
+if not (0 < advertised_cpu <= cpu_limit and 0 < advertised_memory <= memory_limit):
+    raise SystemExit(f'allocatable exceeds allocation: cpu={advertised_cpu}/{cpu_limit}, memory={advertised_memory}/{memory_limit}')
+PY
+    then
+        e2e_pass "Node $node allocatable CPU/memory bounded by Slurm allocation"
+    else
+        e2e_fail "Node $node advertises resources outside Slurm allocation"
+    fi
 done
 
 NS=$(e2e_namespace 01)
@@ -155,9 +191,15 @@ spec:
     imagePullPolicy: IfNotPresent
     command: ["true"]
 EOF
-    e2e_wait_pod_phase "$NS" "$pod_name" "Succeeded" 120
+    if ! e2e_wait_pod_phase "$NS" "$pod_name" "Succeeded" 120; then
+        e2e_preserve_failure "$NS" "$pod_name"
+        exit 1
+    fi
     e2e_record_uid "$NS" "$pod_name"
     runtime_record_pod "$NS" "$pod_name"
+    runtime_verify_released "$NS" "$pod_name" 60
+    retained_phase=$(e2e_kubectl get pod "$pod_name" -n "$NS" -o jsonpath='{.status.phase}')
+    e2e_assert_eq "completed pod status remains readable" "$retained_phase" "Succeeded"
     e2e_kubectl delete pod "$pod_name" -n "$NS"
     runtime_verify_gone "$NS" "$pod_name"
 done

@@ -250,17 +250,11 @@ func (h *PodHandler) buildContainer(container *corev1.Container, containerStatus
 				vol := findVolume(h.Pod, mount.Name)
 				isEmptyDir := vol != nil && vol.VolumeSource.EmptyDir != nil
 
-				if isEmptyDir || strings.HasSuffix(subPath, "/") {
-					if err := hostutil.SafeMakeDir(subPath, hostPath, endpoint.PodGlobalDirectoryPermissions); err != nil {
-						return Container{}, fmt.Errorf("failed to create dir placeholder. subpath:'%s': %w", subPathFile, err)
-					}
-				} else {
-					if err := os.MkdirAll(filepath.Dir(subPathFile), endpoint.PodGlobalDirectoryPermissions); err != nil {
-						return Container{}, fmt.Errorf("failed to create parent dir for subpath:'%s': %w", subPathFile, err)
-					}
-					if err = os.WriteFile(subPathFile, []byte{}, endpoint.PodGlobalDirectoryPermissions); err != nil {
-						return Container{}, fmt.Errorf("failed to create placeholder. subpath:'%s': %w", subPathFile, err)
-					}
+				if !isEmptyDir {
+					return Container{}, fmt.Errorf("subPath source does not exist for volume '%s': %s", mount.Name, subPathFile)
+				}
+				if err := hostutil.SafeMakeDir(subPath, hostPath, endpoint.PodGlobalDirectoryPermissions); err != nil {
+					return Container{}, fmt.Errorf("failed to create emptyDir subpath '%s': %w", subPathFile, err)
 				}
 			}
 

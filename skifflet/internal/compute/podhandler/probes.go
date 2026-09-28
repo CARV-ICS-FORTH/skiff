@@ -42,12 +42,15 @@ func watchReadinessProbe(ctx context.Context, podIP string, containerID string, 
 		defer ticker.Stop()
 		isReady := false
 		for {
+			if ctx.Err() != nil {
+				return
+			}
 			if evaluateReadinessProbe(probe, podIP, containerID, timeout) {
 				successes++
 				failures = 0
 				if successes >= successThreshold && !isReady {
 					isReady = true
-					if onReadyChange != nil {
+					if onReadyChange != nil && ctx.Err() == nil {
 						onReadyChange(true)
 					}
 				}
@@ -56,7 +59,7 @@ func watchReadinessProbe(ctx context.Context, podIP string, containerID string, 
 				successes = 0
 				if failures >= failureThreshold && isReady {
 					isReady = false
-					if onReadyChange != nil {
+					if onReadyChange != nil && ctx.Err() == nil {
 						onReadyChange(false)
 					}
 				}
@@ -96,12 +99,15 @@ func watchLivenessProbe(ctx context.Context, podIP string, containerID string, p
 		ticker := time.NewTicker(period)
 		defer ticker.Stop()
 		for {
+			if ctx.Err() != nil {
+				return
+			}
 			if evaluateReadinessProbe(probe, podIP, containerID, timeout) {
 				failures = 0
 			} else {
 				failures++
 				if failures >= failureThreshold {
-					if onFailure != nil {
+					if onFailure != nil && ctx.Err() == nil {
 						onFailure()
 					}
 					return

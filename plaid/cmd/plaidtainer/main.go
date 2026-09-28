@@ -84,7 +84,7 @@ func main() {
 
 	default:
 		// Forward any other Apptainer command directly (build, inspect, pull, etc.)
-		code := runCommand(apptainerBin, os.Args[1:])
+		code := execPassthroughCommand(apptainerBin, os.Args[1:])
 		os.Exit(code)
 	}
 }
@@ -329,7 +329,7 @@ func handleExec(apptainerBin string, globalOpts PlaidOptions, args []string) {
 		apptainerArgs = append(apptainerArgs, image)
 		apptainerArgs = append(apptainerArgs, cmdArgs...)
 
-		code := runCommand(apptainerBin, apptainerArgs)
+		code := execPassthroughCommand(apptainerBin, apptainerArgs)
 		os.Exit(code)
 	}
 
@@ -445,7 +445,7 @@ func handleRun(apptainerBin string, globalOpts PlaidOptions, args []string) {
 		apptainerArgs = append(apptainerArgs, image)
 		apptainerArgs = append(apptainerArgs, cmdArgs...)
 
-		code := runCommand(apptainerBin, apptainerArgs)
+		code := execPassthroughCommand(apptainerBin, apptainerArgs)
 		os.Exit(code)
 	}
 

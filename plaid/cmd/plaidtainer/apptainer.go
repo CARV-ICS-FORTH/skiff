@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,24 @@ import (
 	"syscall"
 	"time"
 )
+
+func selectReadyContainerPID(pids []int, commOf map[int]string, descendant, ready func(int) bool) int {
+	for _, pid := range pids {
+		if commOf[pid] == "pause" && descendant(pid) && ready(pid) {
+			return pid
+		}
+	}
+	for _, pid := range pids {
+		comm := commOf[pid]
+		if comm == "" || comm == "ip" || comm == "nsenter" || strings.Contains(comm, "fuse") || strings.Contains(comm, "starter") || strings.Contains(comm, "apptainer") || strings.Contains(comm, "plaid") {
+			continue
+		}
+		if descendant(pid) && ready(pid) {
+			return pid
+		}
+	}
+	return 0
+}
 
 // PlaidOptions captures Plaid-specific networking options extracted from CLI flags.
 type PlaidOptions struct {
@@ -292,6 +311,16 @@ func runCommand(bin string, args []string) int {
 	return 0
 }
 
+// A passthrough workload needs no wrapper cleanup. Replace the wrapper so the
+// execution owner's waiter observes Apptainer's lifetime through termination.
+func execPassthroughCommand(bin string, args []string) int {
+	if err := syscall.Exec(bin, append([]string{bin}, args...), os.Environ()); err != nil {
+		fmt.Fprintf(os.Stderr, "Error executing %s: %v\n", bin, err)
+		return 1
+	}
+	return 0
+}
+
 // findContainerPID locates the live payload process beneath an Apptainer launcher.
 func findContainerPID(parentPID int, targetIP string) int {
 	cleanTargetIP := ""
@@ -354,57 +383,20 @@ func findContainerPID(parentPID int, targetIP string) int {
 				}
 			}
 
-			// Priority 1: A descendant whose comm is pause
-			for _, pid := range pids {
-				if isDescendant(pid) {
-					if commOf[pid] == "pause" {
-						return pid
-					}
-				}
-			}
-
-			// Priority 2: Any descendant whose network namespace differs from host /proc/1/ns/net
+			selfNetns, _ := os.Readlink("/proc/self/ns/net")
 			hostNetns, _ := os.Readlink("/proc/1/ns/net")
-			if hostNetns != "" {
-				for _, pid := range pids {
-					if isDescendant(pid) {
-						ns, _ := os.Readlink(fmt.Sprintf("/proc/%d/ns/net", pid))
-						if ns != "" && ns != hostNetns {
-							cStr := commOf[pid]
-							if !strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "plaidtainer") {
-								return pid
-							}
-						}
-					}
+			isReady := func(pid int) bool {
+				ns, _ := os.Readlink(fmt.Sprintf("/proc/%d/ns/net", pid))
+				if cleanTargetIP == "" || selfNetns == "" || ns == "" || ns == selfNetns || ns == hostNetns {
+					return false
 				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				out, err := exec.CommandContext(ctx, "nsenter", "-t", strconv.Itoa(pid), "-n", "ip", "-o", "-4", "addr", "show", "dev", "eth0").Output()
+				return err == nil && strings.Contains(string(out), " "+cleanTargetIP+"/")
 			}
-
-			// Priority 3: Any non-fuse descendant whose comm is not starter/apptainer/plaidtainer
-			for _, pid := range pids {
-				if isDescendant(pid) {
-					cStr := commOf[pid]
-					if !strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "apptainer") && !strings.Contains(cStr, "plaidtainer") {
-						return pid
-					}
-				}
-			}
-
-			// Fallback: Match by target pod IP on eth0 inside its network namespace (must be descendant)
-			if cleanTargetIP != "" {
-				for _, pid := range pids {
-					if isDescendant(pid) {
-						cStr := commOf[pid]
-						if cStr == "pause" || (!strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "plaid")) {
-							cmd := exec.Command("nsenter", "-t", strconv.Itoa(pid), "-n", "ip", "-o", "-4", "addr", "show", "dev", "eth0")
-							if out, err := cmd.Output(); err == nil {
-								sOut := string(out)
-								if strings.Contains(sOut, " "+cleanTargetIP+"/") || strings.Contains(sOut, " "+cleanTargetIP+" ") {
-									return pid
-								}
-							}
-						}
-					}
-				}
+			if pid := selectReadyContainerPID(pids, commOf, isDescendant, isReady); pid > 1 {
+				return pid
 			}
 		}
 
@@ -453,8 +445,17 @@ func runCommandWithCleanupAndReadiness(bin string, args []string, cleanup func()
 			cleanIP := strings.Split(ipStr, "/")[0]
 			cleanGW := strings.Split(gwStr, "/")[0]
 			netnsPath := fmt.Sprintf("/proc/%d/ns/net", cpid)
-			readinessData := fmt.Sprintf(`{"pause_pid":%d,"netns_path":"%s","endpoint_id":"%s","ip":"%s","gateway":"%s"}`+"\n",
-				cpid, netnsPath, containerID, cleanIP, cleanGW)
+			var netnsInode uint64
+			if stat, err := os.Stat(netnsPath); err == nil {
+				if sys, ok := stat.Sys().(*syscall.Stat_t); ok {
+					netnsInode = sys.Ino
+				}
+			}
+			if netnsInode == 0 {
+				return
+			}
+			readinessData := fmt.Sprintf(`{"pause_pid":%d,"netns_path":"%s","netns_inode":%d,"endpoint_id":"%s","ip":"%s","gateway":"%s"}`+"\n",
+				cpid, netnsPath, netnsInode, containerID, cleanIP, cleanGW)
 			_ = os.WriteFile(readinessFile, []byte(readinessData), 0644)
 		}()
 	}

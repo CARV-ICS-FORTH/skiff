@@ -61,6 +61,7 @@ type Response struct {
 	GatewayIP      string   `json:"gateway_ip,omitempty"`
 	GatewayMode    string   `json:"gateway_mode,omitempty"`
 	GatewayReady   bool     `json:"gateway_ready"`
+	Ready          bool     `json:"ready"`
 	GatewayMAC     string   `json:"gateway_mac,omitempty"`
 	BubbleMAC      string   `json:"bubble_mac,omitempty"`
 	Uplink         string   `json:"uplink,omitempty"`

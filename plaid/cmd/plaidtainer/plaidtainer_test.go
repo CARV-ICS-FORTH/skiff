@@ -1,11 +1,84 @@
 package main
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"plaid/pkg/api"
 )
+
+func TestPassthroughWaitsForTermCompletion(t *testing.T) {
+	if os.Getenv("PLAID_TEST_PASSTHROUGH") == "1" {
+		os.Exit(execPassthroughCommand("/bin/sh", []string{os.Getenv("PLAID_TEST_SCRIPT")}))
+	}
+	root := t.TempDir()
+	script := filepath.Join(root, "handler.sh")
+	ready, complete := filepath.Join(root, "ready"), filepath.Join(root, "complete")
+	if err := os.WriteFile(script, []byte("trap 'sleep 0.2; touch \"$PLAID_TEST_COMPLETE\"; exit 0' TERM\ntouch \"$PLAID_TEST_READY\"\nsleep 30 &\nwait $!\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPassthroughWaitsForTermCompletion$")
+	cmd.Env = append(os.Environ(), "PLAID_TEST_PASSTHROUGH=1", "PLAID_TEST_SCRIPT="+script, "PLAID_TEST_READY="+ready, "PLAID_TEST_COMPLETE="+complete)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	completed := false
+	t.Cleanup(func() {
+		if !completed {
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+	})
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			cmd.Process.Kill()
+			cmd.Wait()
+			t.Fatal("passthrough workload did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	err := cmd.Wait()
+	completed = err == nil
+	if err != nil {
+		t.Fatalf("wrapper ended before graceful completion: %v", err)
+	}
+	if _, err := os.Stat(complete); err != nil {
+		t.Fatalf("waiter completed before TERM work: %v", err)
+	}
+}
+
+func TestContainerSelectionWaitsForVerifiedNetwork(t *testing.T) {
+	pids := []int{10, 11, 12, 13}
+	comm := map[int]string{10: "ip", 11: "pause", 12: "pause", 13: "sh"}
+	descendant := func(pid int) bool { return pid != 12 }
+	ready := map[int]bool{10: true, 12: true}
+	check := func(want int) {
+		t.Helper()
+		if got := selectReadyContainerPID(pids, comm, descendant, func(pid int) bool { return ready[pid] }); got != want {
+			t.Fatalf("selected PID %d, want %d", got, want)
+		}
+	}
+	// A setup command, an unconfigured pause, and another launcher's pause
+	// cannot publish this launcher's readiness handshake.
+	check(0)
+	ready[11] = true
+	check(11)
+	ready[11] = false
+	ready[13] = true
+	check(13)
+}
 
 func TestTapResolverRequiresConfiguration(t *testing.T) {
 	status := &api.Response{GatewayMode: "tap", GatewayIP: "10.244.1.1"}

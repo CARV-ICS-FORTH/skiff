@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 08)
 NODE_A=$(e2e_node_a)
+NODE_B=$(e2e_node_b)
 
 e2e_require_nodes 2
 
@@ -16,7 +17,10 @@ e2e_kubectl create namespace "$NS"
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found"
 e2e_cleanup_register "e2e_preserve_failure $NS"
 
-e2e_kubectl create configmap e2e08-term-result -n "$NS"
+fixture_server_pod "$NS" e2e08-term-server "$NODE_B" 8088 | e2e_kubectl apply -f -
+e2e_wait_pod_ready "$NS" e2e08-term-server 60
+SERVER_IP=$(e2e_kubectl get pod e2e08-term-server -n "$NS" -o jsonpath='{.status.podIP}')
+runtime_record_pod "$NS" e2e08-term-server
 
 cat <<EOF | e2e_kubectl apply -f -
 apiVersion: v1
@@ -26,12 +30,12 @@ metadata:
   namespace: ${NS}
 spec:
   nodeName: ${NODE_A}
-  terminationGracePeriodSeconds: 10
+  terminationGracePeriodSeconds: 20
   restartPolicy: Never
   containers:
   - name: app
     image: ${FIXTURE_IMAGE}
-    args: ["term-handler", "/shared/term-done", "30"]
+    args: ["term-handler", "/shared/term-done", "300", "http://${SERVER_IP}:8088/term-complete/${E2E_RUN_ID}"]
     volumeMounts:
     - name: shared
       mountPath: /shared
@@ -45,21 +49,29 @@ e2e_record_uid "$NS" "e2e08-term"
 runtime_record_pod "$NS" "e2e08-term"
 
 LOG_FILE=$(mktemp)
+e2e_cleanup_register "rm -f $LOG_FILE"
 e2e_kubectl logs e2e08-term -n "$NS" --follow > "$LOG_FILE" 2>&1 &
 LOG_PID=$!
+e2e_cleanup_register "kill $LOG_PID 2>/dev/null || true"
 sleep 1
 
-e2e_kubectl delete pod e2e08-term -n "$NS" --grace-period=8 &
+e2e_kubectl delete pod e2e08-term -n "$NS" --grace-period=20 --timeout=30s &
 
 e2e_wait_condition 10 "SIGTERM received in logs" "grep -q 'SIGTERM received' '$LOG_FILE' 2>/dev/null || (e2e_kubectl logs e2e08-term -n '$NS' 2>/dev/null | grep -q 'SIGTERM received')" || true
+e2e_wait_condition 15 "network work completed during termination grace" "grep -q 'network completion succeeded' '$LOG_FILE'"
 
 kill "$LOG_PID" 2>/dev/null || true
 LOGS=$(cat "$LOG_FILE" 2>/dev/null || true)
 rm -f "$LOG_FILE"
 e2e_assert_contains "final pod logs contain SIGTERM received" "$LOGS" "SIGTERM received"
+e2e_assert_contains "TERM handler finished network work" "$LOGS" "network completion succeeded"
+SERVER_LOGS=$(e2e_kubectl logs e2e08-term-server -n "$NS")
+e2e_assert_contains "remote server received TERM completion" "$SERVER_LOGS" "TERM_COMPLETION /term-complete/${E2E_RUN_ID}"
 
 e2e_wait_pod_gone "$NS" "e2e08-term" 30
 runtime_verify_gone "$NS" "e2e08-term" 60
+e2e_kubectl delete pod e2e08-term-server -n "$NS" --grace-period=1 --timeout=30s
+runtime_verify_gone "$NS" e2e08-term-server 60
 
 for i in $(seq 1 10); do
 cat <<EOF | e2e_kubectl apply -f -

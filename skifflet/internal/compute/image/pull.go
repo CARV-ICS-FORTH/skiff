@@ -213,6 +213,10 @@ func PullWithPolicy(ctx context.Context, imageDir string, transport Transport, i
 
 func executePullWithProgress(ctx context.Context, imageName string, command string, arguments ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, command, arguments...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, process.GoEnviron...)
 
@@ -315,7 +319,8 @@ func executePullWithProgress(ctx context.Context, imageName string, command stri
 	for {
 		select {
 		case <-ctx.Done():
-			_ = cmd.Process.Kill()
+			_ = cmd.Cancel()
+			<-done
 			wg.Wait()
 			return nil, ctx.Err()
 

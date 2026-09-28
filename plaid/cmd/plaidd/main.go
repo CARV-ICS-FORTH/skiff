@@ -410,6 +410,7 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 		)
 	}
 
+	d.apiServer.MarkReady()
 	return nil
 }
 

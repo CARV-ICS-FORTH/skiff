@@ -68,13 +68,13 @@ fi
 
 e2e_kubectl() {
     if command -v "${E2E_KUBECTL:-kubectl}" >/dev/null 2>&1; then
-        "${E2E_KUBECTL:-kubectl}" "$@"
+        "${E2E_KUBECTL:-kubectl}" --request-timeout=10s "$@"
     elif command -v k3s >/dev/null 2>&1; then
-        k3s kubectl "$@"
+        k3s kubectl --request-timeout=10s "$@"
     elif command -v apptainer >/dev/null 2>&1; then
-        apptainer exec --pwd / instance://bubble1 k3s kubectl --kubeconfig /var/lib/skiff/kubeconfig "$@"
+        apptainer exec --pwd / instance://bubble1 k3s kubectl --request-timeout=10s --kubeconfig /var/lib/skiff/kubeconfig "$@"
     else
-        "${E2E_KUBECTL:-kubectl}" "$@"
+        "${E2E_KUBECTL:-kubectl}" --request-timeout=10s "$@"
     fi
 }
 
@@ -144,6 +144,27 @@ E2E_POLL_INTERVAL="${E2E_POLL_INTERVAL:-2}"
 
 # e2e_wait_condition DEADLINE_SECS DESCRIPTION CMD [ARGS...]
 # Runs CMD until it exits 0, failing if DEADLINE_SECS elapses.
+e2e_run_bounded() {
+    local timeout_seconds="$1" command="$2" had_monitor=0 count=0 rc=0
+    [[ $- == *m* ]] && had_monitor=1
+    # Give each operation a process group so its deadline also stops children.
+    set -m
+    ( eval "$command" ) &
+    local pid=$!
+    [ "$had_monitor" -eq 1 ] || set +m
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$count" -ge "$((timeout_seconds * 10))" ]; then
+            kill -9 -- "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            return 124
+        fi
+        sleep 0.1
+        count=$((count + 1))
+    done
+    wait "$pid" 2>/dev/null || rc=$?
+    return "$rc"
+}
+
 e2e_wait_condition() {
     local deadline="$1" desc="$2"
     shift 2
@@ -151,24 +172,7 @@ e2e_wait_condition() {
     start_time=$(date +%s)
     local op_timeout="${E2E_OP_TIMEOUT:-10}"
     while true; do
-        local ok=1
-        ( eval "$*" ) >/dev/null 2>&1 &
-        local pid=$!
-        local count=0
-        while kill -0 "$pid" 2>/dev/null; do
-            if [ "$count" -ge "$((op_timeout * 10))" ]; then
-                kill -9 "$pid" 2>/dev/null || true
-                wait "$pid" 2>/dev/null || true
-                ok=0
-                break
-            fi
-            sleep 0.1
-            count=$((count + 1))
-        done
-        if [ "$ok" -eq 1 ]; then
-            wait "$pid" 2>/dev/null || ok=0
-        fi
-        if [ "$ok" -eq 1 ]; then
+        if e2e_run_bounded "$op_timeout" "$*" >/dev/null 2>&1; then
             return 0
         fi
         now=$(date +%s)
@@ -184,18 +188,17 @@ e2e_wait_condition() {
 # e2e_wait_pod_phase NS POD PHASE DEADLINE
 e2e_wait_pod_phase() {
     local ns="$1" pod="$2" want="$3" deadline="$4"
-    local start_time now elapsed got
+    local start_time now elapsed got reason
     start_time=$(date +%s)
     while true; do
         got=$(e2e_kubectl get pod "$pod" -n "$ns" \
             -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
         [ "$got" = "$want" ] && return 0
-        # Fail fast on terminal phases when waiting for non-terminal
-        if [ "$want" != "Failed" ] && [ "$want" != "Succeeded" ]; then
-            if [ "$got" = "Failed" ] || [ "$got" = "Succeeded" ]; then
-                e2e_fail "Pod ${ns}/${pod}: unexpected terminal phase '${got}' while waiting for '${want}'"
-                return 1
-            fi
+        # A different terminal phase cannot recover to the requested phase.
+        if { [ "$got" = "Failed" ] || [ "$got" = "Succeeded" ]; } && [ "$got" != "$want" ]; then
+            reason=$(e2e_kubectl get pod "$pod" -n "$ns" -o jsonpath='{.status.reason}: {.status.message}' 2>/dev/null || true)
+            e2e_fail "Pod ${ns}/${pod}: terminal phase '${got}' while waiting for '${want}' (${reason})"
+            return 1
         fi
         now=$(date +%s)
         elapsed=$((now - start_time))
@@ -323,15 +326,17 @@ e2e_cleanup_run() {
     for (( i=${#_E2E_CLEANUP_STACK[@]}-1 ; i>=0 ; i-- )); do
         cmd="${_E2E_CLEANUP_STACK[$i]}"
         e2e_log "Cleanup: ${cmd}"
-        eval "$cmd" 2>/dev/null || true
+        if ! e2e_run_bounded "${E2E_CLEANUP_TIMEOUT:-70}" "$cmd"; then
+            e2e_fail "Cleanup failed or timed out: $cmd"
+        fi
     done
     _E2E_CLEANUP_STACK=()
 }
 
 # Default trap: run cleanup stack and preserve on failure.
 _e2e_on_exit() {
+    local rc=$?
     trap - EXIT
-    rc=$?
     if [ "$rc" -eq 77 ]; then
         e2e_log "Case ${E2E_CASE} skipped (rc=77)"
     elif [ "$rc" -ne 0 ] || [ "${E2E_FAILED:-0}" -ne 0 ]; then

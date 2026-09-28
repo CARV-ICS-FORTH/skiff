@@ -73,6 +73,8 @@ httpd = None
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         global ready, httpd
+        if self.path.startswith('/term-complete/'):
+            print('TERM_COMPLETION ' + self.path, flush=True)
         if self.path == '/ready':
             if ready:
                 self.send_response(200)
@@ -90,6 +92,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', '8')
             self.end_headers()
             self.wfile.write(b'Ready-ON')
+        elif self.path == '/ready-off':
+            ready = False
+            self.send_response(200)
+            self.send_header('Content-Length', '9')
+            self.end_headers()
+            self.wfile.write(b'Ready-OFF')
         elif self.path == '/payload':
             self.send_response(200)
             self.send_header('Content-Length', str(len(payload)))
@@ -201,6 +209,7 @@ check)
 
     # Environment: cfg-key (from ConfigMap envFrom)
     [ "${cfg_key:-}" = "cfg-value" ]        && pass "cfg-key=cfg-value" || fail "cfg-key='${cfg_key:-}'"
+    [ "${sec_key:-}" = "sec-value" ]        && pass "Secret envFrom" || fail "Secret envFrom value mismatch"
     # OVERRIDE_VAR: explicit env wins over ConfigMap
     [ "${OVERRIDE_VAR:-}" = "explicit-wins" ] && pass "OVERRIDE_VAR=explicit-wins" || fail "OVERRIDE_VAR='${OVERRIDE_VAR:-}'"
     # MY_POD_IP FieldRef
@@ -220,6 +229,10 @@ check)
     echo "scratch-ok" > /scratch/test.txt
     VAL=$(cat /scratch/test.txt)
     [ "$VAL" = "scratch-ok" ]               && pass "emptyDir write/read" || fail "emptyDir read='${VAL}'"
+
+    # The mounted source must contain the requested value before checking access.
+    CFG_VALUE=$(cat /config-ro/cfg-key 2>/dev/null || true)
+    [ "$CFG_VALUE" = "cfg-value" ]          && pass "ConfigMap mounted value" || fail "ConfigMap mounted value mismatch"
 
     # ConfigMap mount read-only: write must fail
     if echo "x" >> /config-ro/cfg-key 2>/dev/null; then
@@ -293,8 +306,14 @@ log-emitter)
 term-handler)
     MARKER="${1:-/shared/term-done}"
     SLEEP="${2:-30}"
+    COMPLETION_URL="${3:-}"
     _on_term() {
         echo "term-handler: SIGTERM received; writing marker ${MARKER}" >&2
+        if [ -n "$COMPLETION_URL" ]; then
+            sleep 3
+            curl -fsS --max-time 5 "$COMPLETION_URL" >/dev/null
+            echo "term-handler: network completion succeeded" >&2
+        fi
         touch "$MARKER"
         exit 0
     }
