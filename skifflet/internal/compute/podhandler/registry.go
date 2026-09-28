@@ -33,19 +33,49 @@ func (r *PodRegistry) Register(lifecycle *PodLifecycle) *PodLifecycle {
 
 	uid := lifecycle.UID()
 	key := lifecycle.Key()
+	if lifecycle.Context().Err() != nil {
+		return nil
+	}
+	// A UID has one execution owner, including while its deletion is finishing.
+	if existing := r.byUID[uid]; existing != nil {
+		return existing
+	}
 
 	// Cancel old pod generation if UID differs
 	var oldLifecycle *PodLifecycle
 	if oldUID, exists := r.byKey[key]; exists && oldUID != uid {
 		oldLifecycle = r.byUID[oldUID]
 		if oldLifecycle != nil {
-			oldLifecycle.cancel()
+			oldLifecycle.Revoke()
 		}
 	}
 
 	r.byUID[uid] = lifecycle
 	r.byKey[key] = uid
 	return oldLifecycle
+}
+
+// Detach revokes authority immediately while retaining the UID for cleanup.
+func (r *PodRegistry) Detach(owner *PodLifecycle) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	owner.Revoke()
+	if r.byUID[owner.UID()] == owner && r.byKey[owner.Key()] == owner.UID() {
+		delete(r.byKey, owner.Key())
+	}
+}
+
+// DeleteOwner cannot remove another owner that happens to reuse a UID.
+func (r *PodRegistry) DeleteOwner(owner *PodLifecycle) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.byUID[owner.UID()] != owner {
+		return
+	}
+	if r.byKey[owner.Key()] == owner.UID() {
+		delete(r.byKey, owner.Key())
+	}
+	delete(r.byUID, owner.UID())
 }
 
 // Get returns the PodLifecycle for a given UID.

@@ -353,7 +353,7 @@ func DeletePod(podKey client.ObjectKey, localPod *corev1.Pod) bool {
 	}
 	if pl != nil {
 		pl.Terminate(gracePeriod)
-		GlobalRegistry.Delete(pl.UID())
+		GlobalRegistry.DeleteOwner(pl)
 	} else if pausePIDStr != "" || len(secondaryPIDs) > 0 {
 		out, err := runtime.KillPodProcessesWithTimeout(pausePIDStr, secondaryPIDs, gracePeriod)
 		if err != nil && !errors.Is(err, runtime.ErrInvalidJob) {
@@ -487,12 +487,48 @@ func (h *PodHandler) updatePodState(fn func(p *corev1.Pod), notify func(*corev1.
 // CreatePod sets up the pod environment, launches the pause container, discovers the pod IP,
 // configures DNS, and executes init and application containers in-process.
 func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
+	if err := ValidatePodCapabilities(pod); err != nil {
+		compute.PodError(pod, compute.ReasonUnsupportedFeatures, "capability validation failed: %v", err)
+		if notify != nil {
+			notify(pod.DeepCopy())
+		}
+		return
+	}
+	podDir := compute.Skiff.PodWithUID(client.ObjectKeyFromObject(pod), pod.UID)
+	owner := NewPodLifecycleWithContext(ctx, pod, podDir, notify)
+	owner.BeginLaunch()
+	old := GlobalRegistry.Register(owner)
+	if GlobalRegistry.Get(pod.UID) != owner {
+		owner.EndLaunch()
+		owner.Revoke()
+		return
+	}
+	if old != nil {
+		old.Terminate(30 * time.Second)
+		GlobalRegistry.DeleteOwner(old)
+	}
+	PreparePod(owner, pod, notify)
+}
+
+// PreparePod consumes the owner installed before dispatch. It never registers a
+// generation, and closes startup tracking on every return, including a panic.
+func PreparePod(pl *PodLifecycle, pod *corev1.Pod, notify func(*corev1.Pod)) {
+	ctx := pl.Context()
+	launchedApps := false
+	defer func() {
+		pl.EndLaunch()
+		if !launchedApps {
+			pl.ReleaseLiveResources(0)
+		}
+	}()
+
 	podKey := client.ObjectKeyFromObject(pod)
 	logger := compute.DefaultLogger.WithValues("pod", podKey)
 
 	// Pre-flight capability validation (B8)
 	if err := ValidatePodCapabilities(pod); err != nil {
 		compute.PodError(pod, compute.ReasonUnsupportedFeatures, "capability validation failed: %v", err)
+		pl.Publish(pod)
 		if notify != nil {
 			notify(pod.DeepCopy())
 		}
@@ -506,9 +542,14 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 	podEnvVars, err := FromServicesForPod(ctx, pod)
 	if err != nil {
 		compute.PodError(pod, "EnvVarError", "failed to list services when setting up env vars: %v", err)
+		pl.Publish(pod)
 		if notify != nil {
 			notify(pod.DeepCopy())
 		}
+		return
+	}
+
+	if ctx.Err() != nil {
 		return
 	}
 
@@ -532,21 +573,6 @@ func CreatePod(ctx context.Context, pod *corev1.Pod, notify func(*corev1.Pod)) {
 			}
 		}
 	}
-
-	pl := NewPodLifecycleWithContext(ctx, pod, podDir, notify)
-	pl.BeginLaunch()
-	launchedApps := false
-	defer func() {
-		pl.EndLaunch()
-		if !launchedApps {
-			pl.ReleaseLiveResources(0)
-		}
-	}()
-	if old := GlobalRegistry.Register(pl); old != nil {
-		old.Terminate(30 * time.Second)
-		GlobalRegistry.Delete(old.UID())
-	}
-	ctx = pl.Context()
 
 	h := &PodHandler{
 		Pod:             pod,

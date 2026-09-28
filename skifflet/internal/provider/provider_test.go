@@ -399,6 +399,10 @@ func TestProvider_ReplacementRejectsDelayedCallbackAndDelete(t *testing.T) {
 	PodHandler.GlobalRegistry.Register(oldOwner)
 	defer PodHandler.GlobalRegistry.Delete(old.UID)
 	v := &VirtualK8S{}
+	preparationDone := make(chan struct{})
+	v.dispatchPreparation = func(run func()) {
+		go func() { defer close(preparationDone); run() }()
+	}
 	v.activeUIDs.Store(key, old.UID)
 	v.pods.Store(key, old.DeepCopy())
 	lookup, _ := v.pods.Load(key)
@@ -434,8 +438,12 @@ func TestProvider_ReplacementRejectsDelayedCallbackAndDelete(t *testing.T) {
 	if oldOwner.GetPod().UID != old.UID || oldOwner.Context().Err() == nil {
 		t.Fatal("UpdatePod mutated the old owner or failed to cancel it")
 	}
-	newOwner := PodHandler.NewPodLifecycle(replacement.DeepCopy(), endpoint.PodPath(filepath.Join(root, "new")), nil)
-	PodHandler.GlobalRegistry.Register(newOwner)
+	awaitPreparation(t, preparationDone, "unsupported replacement preparation")
+	newOwner := PodHandler.GlobalRegistry.Get(replacement.UID)
+	if newOwner == nil {
+		t.Fatal("replacement has no lifecycle owner")
+	}
+	defer newOwner.Terminate(0)
 	defer PodHandler.GlobalRegistry.Delete(replacement.UID)
 	newCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -453,7 +461,7 @@ func TestProvider_ReplacementRejectsDelayedCallbackAndDelete(t *testing.T) {
 	if err != nil || current.UID != replacement.UID {
 		t.Fatalf("replacement snapshot lost: %v, %v", current, err)
 	}
-	if _, ok := v.cancelFuncs.Load(key); !ok || newCtx.Err() != nil || newOwner.Context().Err() != nil || PodHandler.GlobalRegistry.GetByKey(key) != newOwner {
+	if _, ok := v.cancelFuncs.Load(key); !ok || newCtx.Err() != nil || PodHandler.GlobalRegistry.GetByKey(key) != newOwner {
 		t.Fatal("delayed old work affected replacement cancellation or registry ownership")
 	}
 }

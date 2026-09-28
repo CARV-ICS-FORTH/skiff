@@ -167,6 +167,14 @@ func (l *PodLifecycle) Context() context.Context {
 	return l.ctx
 }
 
+// Revoke closes the launch gate without waiting for startup or resource cleanup.
+func (l *PodLifecycle) Revoke() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.terminating = true
+	l.cancel()
+}
+
 // BeginLaunch records that the production launcher can still start processes.
 func (l *PodLifecycle) BeginLaunch() {
 	l.mu.Lock()

@@ -77,6 +77,8 @@ type VirtualK8S struct {
 	Logger logr.Logger
 
 	updatedPod func(*corev1.Pod)
+	// dispatchPreparation defaults to a goroutine; tests can join dispatched work.
+	dispatchPreparation func(func())
 
 	activeUIDs   sync.Map // map[client.ObjectKey]types.UID
 	pods         sync.Map // map[client.ObjectKey]*corev1.Pod
@@ -158,11 +160,15 @@ func NewVirtualK8S(config InitConfig) (*VirtualK8S, error) {
 // CreatePod takes a Kubernetes Pod and deploys it within the provider.
 func (v *VirtualK8S) CreatePod(ctx context.Context, pod *corev1.Pod) error {
 	v.transitionMu.Lock()
-	defer v.transitionMu.Unlock()
-	return v.createPodLocked(ctx, pod)
+	cleanup, err := v.createPodLocked(ctx, pod)
+	v.transitionMu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
+	return err
 }
 
-func (v *VirtualK8S) createPodLocked(ctx context.Context, pod *corev1.Pod) error {
+func (v *VirtualK8S) createPodLocked(ctx context.Context, pod *corev1.Pod) (func(), error) {
 	pod = pod.DeepCopy()
 	podKey := client.ObjectKeyFromObject(pod)
 	logger := v.Logger.WithValues("obj", podKey, "uid", pod.GetUID())
@@ -175,50 +181,66 @@ func (v *VirtualK8S) createPodLocked(ctx context.Context, pod *corev1.Pod) error
 
 	pod.Status.HostIP = v.InitConfig.InternalIP
 
-	// Cancel previous generation context if exists for this podKey
-	v.stateMu.Lock()
-	if oldCancel, ok := v.cancelFuncs.LoadAndDelete(podKey); ok {
-		oldCancel.(context.CancelFunc)()
+	// The generation transition owns registration; preparation cannot choose or
+	// replace an owner later. Duplicate creates reuse the installed UID.
+	if owner := PodHandler.GlobalRegistry.Get(pod.UID); owner != nil {
+		owner.UpdateFromAPI(pod)
+		if active, ok := v.activeUIDs.Load(podKey); ok && active == pod.UID {
+			v.stateMu.Lock()
+			v.pods.Store(podKey, owner.GetPod())
+			v.stateMu.Unlock()
+		}
+		return nil, nil
 	}
-
-	uid := pod.GetUID()
-	v.activeUIDs.Store(podKey, uid)
-	v.pods.Store(podKey, pod.DeepCopy())
-
-	podCtx, podCancel := context.WithCancel(context.Background())
-	v.cancelFuncs.Store(podKey, podCancel)
-	v.stateMu.Unlock()
+	var cleanup func()
+	if val, ok := v.pods.Load(podKey); ok {
+		cleanup, _ = v.deletePodLocked(ctx, val.(*corev1.Pod))
+	}
 	executionPod := pod.DeepCopy()
+	notify := func(p *corev1.Pod) { v.saveAndNotifyPod("podhandler", p) }
+	owner := PodHandler.NewPodLifecycle(executionPod,
+		compute.Skiff.PodWithUID(podKey, pod.UID), notify)
+	owner.BeginLaunch()
+	PodHandler.GlobalRegistry.Register(owner)
+	v.stateMu.Lock()
+	v.activeUIDs.Store(podKey, pod.UID)
+	v.pods.Store(podKey, pod.DeepCopy())
+	v.cancelFuncs.Store(podKey, context.CancelFunc(owner.Revoke))
+	v.stateMu.Unlock()
 
-	go func() {
+	prepare := func() {
 		defer func() {
 			if r := recover(); r != nil {
 				logger.Error(fmt.Errorf("%v", r), "Recovered panic in CreatePod goroutine", "pod", podKey)
 				compute.PodError(executionPod, "PanicError", "internal panic occurred during pod creation: %v", r)
-				if pl := PodHandler.GlobalRegistry.Get(executionPod.GetUID()); pl != nil {
-					v.saveAndNotifyPod("panic", pl.GetPod())
-				} else {
-					v.saveAndNotifyPod("panic", executionPod.DeepCopy())
-				}
+				owner.Publish(executionPod)
+				v.saveAndNotifyPod("panic", owner.GetPod())
 			}
 		}()
 
-		PodHandler.CreatePod(podCtx, executionPod, func(p *corev1.Pod) {
-			v.saveAndNotifyPod("podhandler", p)
-		})
-	}()
+		PodHandler.PreparePod(owner, executionPod, notify)
+	}
+	if v.dispatchPreparation != nil {
+		v.dispatchPreparation(prepare)
+	} else {
+		go prepare()
+	}
 
-	return nil
+	return cleanup, nil
 }
 
 // UpdatePod takes a Kubernetes Pod and updates it within the provider.
 func (v *VirtualK8S) UpdatePod(ctx context.Context, pod *corev1.Pod) error {
 	v.transitionMu.Lock()
-	defer v.transitionMu.Unlock()
-	return v.updatePodLocked(ctx, pod)
+	cleanup, err := v.updatePodLocked(ctx, pod)
+	v.transitionMu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
+	return err
 }
 
-func (v *VirtualK8S) updatePodLocked(ctx context.Context, pod *corev1.Pod) error {
+func (v *VirtualK8S) updatePodLocked(ctx context.Context, pod *corev1.Pod) (func(), error) {
 	podKey := client.ObjectKeyFromObject(pod)
 	logger := v.Logger.WithValues("obj", podKey, "uid", pod.GetUID())
 
@@ -238,7 +260,6 @@ func (v *VirtualK8S) updatePodLocked(ctx context.Context, pod *corev1.Pod) error
 
 	if localPod.UID != pod.UID {
 		logger.Info("Pod UID changed in UpdatePod, replacing old pod instance", "oldUID", localPod.UID, "newUID", pod.UID)
-		_ = v.deletePodLocked(ctx, localPod)
 		return v.createPodLocked(ctx, pod)
 	}
 
@@ -247,7 +268,7 @@ func (v *VirtualK8S) updatePodLocked(ctx context.Context, pod *corev1.Pod) error
 		v.stateMu.Lock()
 		v.pods.Store(podKey, pl.GetPod())
 		v.stateMu.Unlock()
-		return nil
+		return nil, nil
 	}
 
 	localVersion, errLocal := strconv.ParseUint(localPod.ResourceVersion, 10, 64)
@@ -262,29 +283,33 @@ func (v *VirtualK8S) updatePodLocked(ctx context.Context, pod *corev1.Pod) error
 
 	if isOlder {
 		logger.Info("Discard update since its ResourceVersion is not newer than local")
-		return nil
+		return nil, nil
 	}
 
 	if !runtime.HasJobID(pod) {
 		logger.Info("Discard update because container is still starting")
-		return nil
+		return nil, nil
 	}
 
 	v.stateMu.Lock()
 	v.pods.Store(podKey, pod.DeepCopy())
 	v.stateMu.Unlock()
 
-	return nil
+	return nil, nil
 }
 
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
 func (v *VirtualK8S) DeletePod(ctx context.Context, pod *corev1.Pod) error {
 	v.transitionMu.Lock()
-	defer v.transitionMu.Unlock()
-	return v.deletePodLocked(ctx, pod)
+	cleanup, err := v.deletePodLocked(ctx, pod)
+	v.transitionMu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
+	return err
 }
 
-func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) error {
+func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) (func(), error) {
 	podKey := client.ObjectKeyFromObject(pod)
 	logger := v.Logger.WithValues("obj", podKey, "uid", pod.GetUID())
 
@@ -292,7 +317,7 @@ func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) error
 
 	if !isPodOwnedByNode(pod, v.NodeName) {
 		logger.Info("[K8s] <- DeletePod (SKIPPED - pod owned by another node)", "podNode", pod.Spec.NodeName, "ownNode", v.NodeName)
-		return nil
+		return nil, nil
 	}
 
 	// UID verification: check if this DeletePod call is targeting a superseded UID
@@ -300,7 +325,7 @@ func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) error
 		if activeUID, ok := activeUIDVal.(types.UID); ok && activeUID != "" && pod.GetUID() != "" {
 			if activeUID != pod.GetUID() {
 				logger.Info("[K8s] <- DeletePod (SKIPPED - stale UID deletion)", "activeUID", activeUID, "targetUID", pod.GetUID())
-				return nil
+				return nil, nil
 			}
 		}
 	}
@@ -317,13 +342,13 @@ func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) error
 
 	if !isPodOwnedByNode(localPod, v.NodeName) {
 		logger.Info("[K8s] <- DeletePod (SKIPPED - local pod owned by another node)", "podNode", localPod.Spec.NodeName, "ownNode", v.NodeName)
-		return nil
+		return nil, nil
 	}
 
 	// Double-check UID against localPod if present
 	if localPod.GetUID() != "" && pod.GetUID() != "" && localPod.GetUID() != pod.GetUID() {
 		logger.Info("[K8s] <- DeletePod (SKIPPED - local pod UID mismatch)", "localUID", localPod.GetUID(), "targetUID", pod.GetUID())
-		return nil
+		return nil, nil
 	}
 
 	gracePeriod := 30 * time.Second
@@ -341,13 +366,20 @@ func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) error
 	v.stateMu.Unlock()
 
 	if pl != nil {
-		pl.Terminate(gracePeriod)
-		PodHandler.GlobalRegistry.Delete(pl.UID())
+		PodHandler.GlobalRegistry.Detach(pl)
 	}
-	_ = PodHandler.DeletePod(podKey, localPod)
-	RemoveJournalRecord(compute.Skiff.String(), localPod.GetUID())
-	logger.Info("[K8s] <- DeletePod (SUCCESS)")
-	return nil
+	// Waiting for startup/processes or callbacks while holding transitionMu can
+	// block the generation that must run to finish that work.
+	return func() {
+		if pl != nil {
+			pl.Terminate(gracePeriod)
+			PodHandler.GlobalRegistry.DeleteOwner(pl)
+		} else {
+			_ = PodHandler.DeletePod(podKey, localPod)
+		}
+		RemoveJournalRecord(compute.Skiff.String(), localPod.GetUID())
+		logger.Info("[K8s] <- DeletePod (SUCCESS)")
+	}, nil
 }
 
 // GetPod retrieves a pod by name from the provider.
