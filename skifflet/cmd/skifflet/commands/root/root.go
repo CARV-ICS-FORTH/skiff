@@ -381,7 +381,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 				case <-ctx.Done():
 					return
 				case <-ticker.C:
-					conn, err := net.DialTimeout("unix", "/run/plaid/plaidd.sock", time.Second)
+					conn, err := net.DialTimeout("unix", compute.Environment.PlaidSocketPath(), time.Second)
 					isPlaidAlive := err == nil
 					if conn != nil {
 						_ = conn.Close()
@@ -452,7 +452,7 @@ func waitForPlaid(ctx context.Context, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for {
-		conn, err := net.DialTimeout("unix", "/run/plaid/plaidd.sock", time.Second)
+		conn, err := net.DialTimeout("unix", compute.Environment.PlaidSocketPath(), time.Second)
 		if err == nil {
 			_ = conn.Close()
 			return nil

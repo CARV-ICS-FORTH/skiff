@@ -163,7 +163,7 @@ EOF
     uid=$(e2e_kubectl get pod "e2e07-unsupported-${feature}" -n "$NS" -o jsonpath='{.metadata.uid}')
     pod_ip=$(e2e_kubectl get pod "e2e07-unsupported-${feature}" -n "$NS" -o jsonpath='{.status.podIP}')
     e2e_assert_eq "${feature} rejected without pod IP" "$pod_ip" ""
-    allocated=$(runtime_bubble_exec "$NODE_A" "if [ -e '/tmp/.skiff/.pods/${NS}/e2e07-unsupported-${feature}_${uid}' ]; then echo 1; else echo 0; fi")
+    allocated=$(runtime_bubble_exec "$NODE_A" "if [ -e '$(runtime_pod_dir "$NS" "e2e07-unsupported-${feature}" "$uid")' ]; then echo 1; else echo 0; fi")
     e2e_assert_eq "${feature} rejected before runtime allocation" "$allocated" "0"
     e2e_kubectl delete pod "e2e07-unsupported-${feature}" -n "$NS" --wait=true
 done

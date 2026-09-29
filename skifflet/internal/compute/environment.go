@@ -37,6 +37,17 @@ type HostEnvironment struct {
 
 	// PauseImage is the image used for the pause container.
 	PauseImage string
+
+	// PlaidSocket is the API socket of plaidd; empty means endpoint.DefaultPlaidSocket.
+	PlaidSocket string
+}
+
+// PlaidSocketPath is the API socket of plaidd that every part of Skifflet talks to.
+func (e HostEnvironment) PlaidSocketPath() string {
+	if e.PlaidSocket == "" {
+		return endpoint.DefaultPlaidSocket
+	}
+	return e.PlaidSocket
 }
 
 // Instantiated Types

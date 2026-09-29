@@ -66,10 +66,10 @@ func TestCreateDeleteWhileNetworkInitializationBlocked(t *testing.T) {
 
 	scheme := kruntime.NewScheme()
 	corev1.AddToScheme(scheme)
-	oldClient, oldSocket := compute.K8SClient, podNetworkSocket
+	oldClient, oldEnvironment := compute.K8SClient, compute.Environment
 	compute.K8SClient = fake.NewClientBuilder().WithScheme(scheme).Build()
-	podNetworkSocket = socket
-	defer func() { compute.K8SClient, podNetworkSocket = oldClient, oldSocket }()
+	compute.Environment.PlaidSocket = socket
+	defer func() { compute.K8SClient, compute.Environment = oldClient, oldEnvironment }()
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "blocked-network", Namespace: "startup-cancel", UID: "blocked-network-uid"},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "unused"}}}}
 	states := make(chan *corev1.Pod, 16)
@@ -145,13 +145,13 @@ func TestCreateDeleteDuringPauseImagePull(t *testing.T) {
 	t.Setenv("SKIFF_TEST_LAUNCH_MARKER", launchMarker)
 	scheme := kruntime.NewScheme()
 	corev1.AddToScheme(scheme)
-	oldClient, oldSocket, oldEnvironment := compute.K8SClient, podNetworkSocket, compute.Environment
+	oldClient, oldEnvironment := compute.K8SClient, compute.Environment
 	compute.K8SClient = fake.NewClientBuilder().WithScheme(scheme).Build()
-	podNetworkSocket = socket
+	compute.Environment.PlaidSocket = socket
 	compute.Environment.ApptainerBin = launcher
 	compute.Environment.PauseImage = "test/blocked-pause:cancel"
 	defer func() {
-		compute.K8SClient, podNetworkSocket, compute.Environment = oldClient, oldSocket, oldEnvironment
+		compute.K8SClient, compute.Environment = oldClient, oldEnvironment
 	}()
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "blocked-pull", Namespace: "startup-cancel", UID: "blocked-pull-uid"},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "unused"}}}}

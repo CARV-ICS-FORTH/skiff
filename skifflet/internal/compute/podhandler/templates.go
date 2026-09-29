@@ -17,7 +17,6 @@ package podhandler
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
@@ -89,8 +88,8 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath) []
 	}
 
 	var binds []string
-	resolvPath := filepath.Join(podDir.JobDir(), "resolv.conf")
-	hostsPath := filepath.Join(podDir.JobDir(), "hosts")
+	resolvPath := podDir.ResolvConf()
+	hostsPath := podDir.HostsFile()
 	if _, err := os.Stat(resolvPath); err == nil {
 		binds = append(binds, resolvPath+":/etc/resolv.conf")
 	}

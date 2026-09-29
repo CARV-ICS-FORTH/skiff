@@ -8,9 +8,9 @@ import (
 	"io"
 	"net"
 	"time"
-)
 
-var podNetworkSocket = "/run/plaid/plaidd.sock"
+	"skifflet/internal/compute"
+)
 
 type podNetworkStatus struct {
 	Success      bool   `json:"success"`
@@ -22,7 +22,7 @@ type podNetworkStatus struct {
 
 func readPodNetworkStatus(ctx context.Context) (podNetworkStatus, error) {
 	var status podNetworkStatus
-	conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "unix", podNetworkSocket)
+	conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "unix", compute.Environment.PlaidSocketPath())
 	if err != nil {
 		return status, err
 	}

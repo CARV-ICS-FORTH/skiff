@@ -83,6 +83,15 @@ runtime_parse_process_identities() {
     python3 -c 'import json,sys; p=json.load(sys.stdin); starts=p.get("container_start_times") or {}; ids=p.get("container_pids") or []; assert all(isinstance(pid,int) and pid>1 and int(starts.get(str(pid),0))>0 for pid in ids); print(",".join(str(pid)+":"+str(starts[str(pid)]) for pid in ids))'
 }
 
+# The pods directory of the nodes' Skifflet (its --pods-dir); override for a
+# deployment that configures a different one.
+_RT_PODS_DIR="${E2E_PODS_DIR:-/tmp/.skiff/.pods}"
+
+# runtime_pod_dir NS POD UID: the runtime directory of one pod generation.
+runtime_pod_dir() {
+    echo "${_RT_PODS_DIR}/$1/$2_$3"
+}
+
 # runtime_record_pod NS POD
 # Records explicit UID, node placement, IP, pause PID + start time, netns inode,
 # Plaid endpoint ID, and pod directory path for strict post-deletion cleanup checks.
@@ -115,7 +124,7 @@ runtime_record_pod() {
     pod_ip=$(e2e_kubectl get pod "$pod" -n "$ns" \
         -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
 
-    pod_dir="/tmp/.skiff/.pods/${ns}/${pod}_${uid}"
+    pod_dir=$(runtime_pod_dir "$ns" "$pod" "$uid")
 
     local readiness pids_json details
     if ! readiness=$(runtime_bubble_exec "$node" "cat '${pod_dir}/job/readiness.json'" 2>/dev/null); then
@@ -164,7 +173,7 @@ runtime_record_pod() {
 #   1. No process matching pause PID + start time, nor matching UID / pod_dir
 #   2. No network namespace matching recorded inode
 #   3. No Plaid endpoint with the recorded endpoint ID or IP
-#   4. No pod directory lingering at /tmp/.skiff/.pods/...
+#   4. No pod directory lingering under the pods directory
 #   5. No IPAM lease file lingering
 # ---------------------------------------------------------------------------
 runtime_observe() {

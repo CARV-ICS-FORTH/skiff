@@ -687,7 +687,7 @@ func RemovePlaidEndpoint(endpointID string) error {
 	if endpointID == "" {
 		return nil
 	}
-	conn, err := net.DialTimeout("unix", "/run/plaid/plaidd.sock", 2*time.Second)
+	conn, err := net.DialTimeout("unix", compute.Environment.PlaidSocketPath(), 2*time.Second)
 	if err != nil {
 		return err
 	}

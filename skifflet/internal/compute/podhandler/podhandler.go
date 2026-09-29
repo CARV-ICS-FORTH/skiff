@@ -244,7 +244,7 @@ type podPIDsRecord struct {
 
 func readProcessRecord(podDir endpoint.PodPath) (podPIDsRecord, bool) {
 	var rec podPIDsRecord
-	data, err := os.ReadFile(filepath.Join(podDir.JobDir(), "pids.json"))
+	data, err := os.ReadFile(podDir.PidsFile())
 	if err != nil || json.Unmarshal(data, &rec) != nil {
 		return podPIDsRecord{}, false
 	}
@@ -288,7 +288,7 @@ func ReapRecordedProcesses(podDir endpoint.PodPath) {
 
 // podEndpointID returns the Plaid endpoint recorded by the sandbox handshake.
 func podEndpointID(podDir endpoint.PodPath) string {
-	data, err := os.ReadFile(filepath.Join(podDir.JobDir(), "readiness.json"))
+	data, err := os.ReadFile(podDir.ReadinessFile())
 	if err != nil {
 		return ""
 	}
@@ -411,7 +411,7 @@ type PodHandler struct {
 func (h *PodHandler) savePIDs(pausePID int, containerPID int) {
 	h.pidsMu.Lock()
 	defer h.pidsMu.Unlock()
-	pidsPath := filepath.Join(h.podDirectory.JobDir(), "pids.json")
+	pidsPath := h.podDirectory.PidsFile()
 	pids := &h.pids
 	if pids.ContainerStartTimes == nil {
 		pids.ContainerStartTimes = make(map[int]uint64)
@@ -619,7 +619,7 @@ func PreparePod(pl *PodLifecycle) {
 		return
 	}
 
-	readinessFile := filepath.Join(h.podDirectory.JobDir(), "readiness.json")
+	readinessFile := h.podDirectory.ReadinessFile()
 	_ = os.Remove(readinessFile)
 
 	// Launch Pause Container via compute.Environment.ApptainerBin (without --host-networking)
@@ -632,7 +632,7 @@ func PreparePod(pl *PodLifecycle) {
 	}
 	pauseArgs = append(pauseArgs,
 		"--dns", compute.Environment.KubeDNS,
-		"--bind", filepath.Join(h.podDirectory.JobDir(), "resolv.conf")+":/etc/resolv.conf",
+		"--bind", h.podDirectory.ResolvConf()+":/etc/resolv.conf",
 		"--nv",
 		"--cleanenv",
 		"--writable-tmpfs",

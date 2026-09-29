@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"skifflet/internal/compute/endpoint"
@@ -105,7 +104,7 @@ func PrepareDNS(pod *corev1.Pod, podDir endpoint.PodPath, kubeDNSIP string, podI
 		return fmt.Errorf("failed to create job dir for DNS: %w", err)
 	}
 
-	resolvPath := filepath.Join(jobDir, "resolv.conf")
+	resolvPath := podDir.ResolvConf()
 	if err := os.WriteFile(resolvPath, []byte(resolvConfContent), 0644); err != nil {
 		return fmt.Errorf("error writing resolv.conf: %w", err)
 	}
@@ -115,7 +114,7 @@ func PrepareDNS(pod *corev1.Pod, podDir endpoint.PodPath, kubeDNSIP string, podI
 		hostname = pod.Spec.Hostname
 	}
 	hostsContent := fmt.Sprintf("127.0.0.1 localhost\n%s %s\n", podIP, hostname)
-	hostsPath := filepath.Join(jobDir, "hosts")
+	hostsPath := podDir.HostsFile()
 	if err := os.WriteFile(hostsPath, []byte(hostsContent), 0644); err != nil {
 		return fmt.Errorf("error writing hosts: %w", err)
 	}

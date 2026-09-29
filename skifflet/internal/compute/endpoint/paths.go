@@ -18,15 +18,38 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// Layout of the runtime files of a pod, all under one directory per pod
+// generation, <podsDir>/<namespace>/<name>_<pod UID>/ (the pod UID keeps a
+// replacement of the same name apart from the pod it replaces):
+//
+//	job/pids.json        the on-disk record of the pod's processes (crash cleanup)
+//	job/readiness.json   the sandbox handshake written by plaidtainer
+//	job/resolv.conf      the pod's /etc/resolv.conf, mounted into every container
+//	job/hosts            the pod's /etc/hosts
+//	job/<container>.env  the container's environment, given to Apptainer
+//	volumes/<volume>     the pod's volumes
+//	logs/                container logs (see ContainerPath)
+//	tmp/                 the pod's Apptainer temporary directory (see TmpDir)
+//
+// Everything that launches, reads, execs into or cleans up a pod builds these
+// paths here, from the runtime directory it was configured with (SkiffPath); no
+// other code spells out a file name or a path. The pods directory is node-local
+// and disposable. User volume backing data does not live here.
 const (
 	PodGlobalDirectoryPermissions = os.FileMode(0o777)
 	DefaultPodsDir                = "/tmp/.skiff/.pods"
+
+	// DefaultPlaidSocket is the API socket of plaidd, the daemon that gives pods
+	// their network and removes their endpoints.
+	DefaultPlaidSocket = "/run/plaid/plaidd.sock"
 )
 
 // Container-Related Extensions
@@ -36,6 +59,9 @@ const (
 
 	// ExtensionLogs describes the file where container execution will write its logs.
 	ExtensionLogs = ".logs"
+
+	// ExtensionAttemptLog ends the name of the log file of one attempt.
+	ExtensionAttemptLog = ".log"
 )
 
 type SkiffPath struct {
@@ -142,6 +168,18 @@ func (p PodPath) JobDir() string {
 	return filepath.Join(string(p), "job")
 }
 
+// PidsFile is the on-disk record of the pod's processes.
+func (p PodPath) PidsFile() string { return filepath.Join(p.JobDir(), "pids.json") }
+
+// ReadinessFile is where the sandbox handshake of plaidtainer is written.
+func (p PodPath) ReadinessFile() string { return filepath.Join(p.JobDir(), "readiness.json") }
+
+// ResolvConf is the pod's /etc/resolv.conf.
+func (p PodPath) ResolvConf() string { return filepath.Join(p.JobDir(), "resolv.conf") }
+
+// HostsFile is the pod's /etc/hosts.
+func (p PodPath) HostsFile() string { return filepath.Join(p.JobDir(), "hosts") }
+
 func (p PodPath) VolumeDir() string {
 	return filepath.Join(string(p), "volumes")
 }
@@ -172,6 +210,50 @@ type ContainerPath struct {
 
 func (c ContainerPath) LogsPath() string {
 	return filepath.Join(c.p.LogDir(), c.containerName+ExtensionLogs)
+}
+
+// LogDir is the directory of the container's per-attempt logs.
+func (c ContainerPath) LogDir() string {
+	return filepath.Join(c.p.LogDir(), c.containerName)
+}
+
+// AttemptLogPath is the log of one attempt (launch) of the container. Attempts
+// are numbered from 1; the number is part of the file name, so a reader can pick
+// the attempt it was asked for and can never mix the output of two.
+func (c ContainerPath) AttemptLogPath(attempt int) string {
+	return filepath.Join(c.LogDir(), fmt.Sprintf("%d%s", attempt, ExtensionAttemptLog))
+}
+
+// AttemptLogs lists the attempts that have a log, oldest first.
+func (c ContainerPath) AttemptLogs() ([]int, error) {
+	entries, err := os.ReadDir(c.LogDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var attempts []int
+	for _, entry := range entries {
+		if attempt, ok := ParseAttemptLogName(entry.Name()); ok && !entry.IsDir() {
+			attempts = append(attempts, attempt)
+		}
+	}
+	sort.Ints(attempts)
+	return attempts, nil
+}
+
+// ParseAttemptLogName returns the attempt a log file name belongs to.
+func ParseAttemptLogName(name string) (attempt int, ok bool) {
+	number, found := strings.CutSuffix(name, ExtensionAttemptLog)
+	if !found || number == "" || (len(number) > 1 && number[0] == '0') {
+		return 0, false
+	}
+	attempt, err := strconv.Atoi(number)
+	if err != nil || attempt <= 0 {
+		return 0, false
+	}
+	return attempt, true
 }
 
 func (c ContainerPath) EnvFilePath() string {

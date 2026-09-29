@@ -68,7 +68,16 @@ const (
 	EnvKubeletAddress  = "VKUBELET_ADDRESS"
 	EnvAPICertLocation = "APISERVER_CERT_LOCATION"
 	EnvAPIKeyLocation  = "APISERVER_KEY_LOCATION"
+	// EnvPlaidSocket is the variable the Plaid tools read the same setting from.
+	EnvPlaidSocket = "PLAID_SOCKET_PATH"
 )
+
+func envOrDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
+}
 
 func installFlags(flags *pflag.FlagSet, c *Opts) {
 	flags.StringVar(&c.KubeletAddress, "kubelet-addr", os.Getenv(EnvKubeletAddress), "which address to tell API server to use")
@@ -85,6 +94,7 @@ func installFlags(flags *pflag.FlagSet, c *Opts) {
 	flags.StringVar(&c.DefaultHostEnvironment.ContainerRegistry, "registry", "docker://", "container registry")
 	flags.StringVar(&c.DefaultHostEnvironment.WorkingDirectory, "working-dir", GetUserHomeDir(), "sets up the Skiff working directory")
 	flags.StringVar(&c.DefaultHostEnvironment.PodsDirectory, "pods-dir", endpoint.DefaultPodsDir, "sets up the Skiff pods directory")
+	flags.StringVar(&c.DefaultHostEnvironment.PlaidSocket, "plaid-socket", envOrDefault(EnvPlaidSocket, endpoint.DefaultPlaidSocket), "API socket of plaidd")
 
 	flags.IntVar(&c.PodSyncWorkers, "pod-sync-workers", 1, `set the number of pod synchronization workers`)
 	flags.DurationVar(&c.InformerResyncPeriod, "full-resync-period", 0, "how often to perform a full resync of pods between kubernetes and the provider")
