@@ -77,6 +77,37 @@ e2e_assert_eq "port-forward body" "$BODY" "e2e06-http-ok"
 kill $PF_PID
 e2e_wait_condition 5 "port-forward exited" "! kill -0 $PF_PID 2>/dev/null" || true
 
+# T04: the kubelet HTTP surface, reached through the API server's node proxy.
+# The implemented operations were exercised above; report them as subcases.
+e2e_subcase_run T04-logs test "$LOGS" != ""
+e2e_subcase_run T04-exec test "$OUT" = "e2e06-marker"
+e2e_subcase_run T04-portforward test "$BODY" = "e2e06-http-ok"
+
+node_proxy() { e2e_kubectl get --raw "/api/v1/nodes/${NODE_A}/proxy/$1" 2>&1 || true; }
+
+t04_lists() {  # t04_lists PATH: the view names our pod
+    e2e_assert_contains "$1 lists the pod" "$(node_proxy "$1")" "e2e06-pod"
+}
+e2e_subcase_run T04-pods-assigned t04_lists pods
+e2e_subcase_run T04-runningpods t04_lists runningpods/
+
+t04_not_implemented() {  # t04_not_implemented DESCRIPTION OUTPUT WORD
+    e2e_assert_contains "$1 is reported as not implemented" "$2" "not implemented"
+    e2e_assert_contains "$1 explains itself" "$2" "$3"
+}
+e2e_subcase_run T04-attach-501 t04_not_implemented "kubectl attach" \
+    "$(e2e_kubectl attach e2e06-pod -n "$NS" -c app 2>&1 || true)" "attach"
+e2e_subcase_run T04-stats-501 t04_not_implemented "/stats/summary" "$(node_proxy stats/summary)" "statistics"
+e2e_subcase_run T04-metrics-501 t04_not_implemented "/metrics/resource" "$(node_proxy metrics/resource)" "metrics"
+
+# Genuine missing resources keep their normal error; the proxy bypasses the
+# API server's own pod/container validation, so these are Skifflet's answers.
+t04_missing() {  # t04_missing PATH
+    e2e_assert_contains "$1 is NotFound" "$(node_proxy "$1")" "NotFound"
+}
+e2e_subcase_run T04-logs-missing-pod t04_missing "containerLogs/${NS}/no-such-pod/app"
+e2e_subcase_run T04-logs-missing-container t04_missing "containerLogs/${NS}/e2e06-pod/no-such-container"
+
 runtime_record_pod "$NS" "e2e06-pod"
 e2e_kubectl delete pod e2e06-pod -n "$NS"
 

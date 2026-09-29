@@ -24,29 +24,16 @@ import (
 	"errors"
 
 	"github.com/sirupsen/logrus"
-	"github.com/virtual-kubelet/virtual-kubelet/node/api"
 )
 
 func StartAPIServer(c Opts, virtualk8s *provider.VirtualK8S) {
-	mux := http.NewServeMux()
-
-	mux.Handle("/hello", http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Write([]byte("Hi there! I 'm Skifflet. My job is to run your Kubernetes stuff on HPC.\n"))
-	}))
-
-	/*---------------------------------------------------
-	 * Add handlers for Logs and Statistics
-	 *---------------------------------------------------*/
-	api.AttachPodRoutes(api.PodHandlerConfig{
+	mux := newKubeletMux(kubeletRoutes{
 		RunInContainer:   virtualk8s.RunInContainer,
 		GetContainerLogs: virtualk8s.GetContainerLogs,
-		GetPods:          virtualk8s.GetPods,
 		PortForward:      virtualk8s.PortForward,
-		// AttachToContainer: ,
-		// GetStatsSummary:       virtualk8s.GetStatsSummary,
-		// StreamIdleTimeout:     0,
-		// StreamCreationTimeout: 0,
-	}, mux, true)
+		GetRunningPods:   virtualk8s.GetPods,
+		GetAssignedPods:  virtualk8s.GetAssignedPods,
+	})
 
 	/*---------------------------------------------------
 	 * Start the Webhook on the background

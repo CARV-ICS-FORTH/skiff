@@ -247,6 +247,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 		if err != nil {
 			return fmt.Errorf("failed to add informers: %w", err)
 		}
+		virtualk8s.SetAssignedPodLister(podInformer.Lister())
 
 		DefaultLogger.Info("Informers are ready",
 			"crds", []string{

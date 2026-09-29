@@ -18,6 +18,8 @@ import (
 	vkapi "github.com/virtual-kubelet/virtual-kubelet/node/api"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corelisters "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -263,12 +265,6 @@ func TestProvider_UnsupportedOperations(t *testing.T) {
 	err := vk.PortForward(context.Background(), "default", "p1", 8080, nil)
 	if err == nil {
 		t.Fatalf("expected error from unsupported PortForward, got nil")
-	}
-
-	// StatsSummary must return an error
-	_, err = vk.GetStatsSummary(context.Background())
-	if err == nil {
-		t.Fatalf("expected error from unsupported GetStatsSummary, got nil")
 	}
 
 	// RunInContainer on missing pod must return NotFound
@@ -593,5 +589,34 @@ func TestGetContainerLogs_RejectsPrevious(t *testing.T) {
 	_, err := vk.GetContainerLogs(context.Background(), "default", "pod-x", "container-y", vkapi.ContainerLogOpts{Previous: true})
 	if err == nil || !errdefs.IsInvalidInput(err) {
 		t.Fatalf("expected InvalidInput error when Previous=true, got %v", err)
+	}
+}
+
+func TestGetAssignedPods(t *testing.T) {
+	vk := &VirtualK8S{}
+	if _, err := vk.GetAssignedPods(context.Background()); err == nil {
+		t.Fatal("assigned pods must not be reported (as empty) before the informer exists")
+	}
+
+	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{cache.NamespaceIndex: cache.MetaNamespaceIndexFunc})
+	for _, name := range []string{"a", "b"} {
+		if err := indexer.Add(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: name}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vk.SetAssignedPodLister(corelisters.NewPodLister(indexer))
+	// Something the provider runs that the API server did not assign must not leak into the view.
+	vk.pods.Store(client.ObjectKey{Namespace: "default", Name: "local-only"}, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "local-only"}})
+
+	pods, err := vk.GetAssignedPods(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, p := range pods {
+		got[p.Name] = true
+	}
+	if len(got) != 2 || !got["a"] || !got["b"] {
+		t.Fatalf("assigned pods = %v, want a and b from the informer", got)
 	}
 }

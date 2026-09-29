@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -42,9 +43,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
+	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/rest"
-	statsv1alpha1 "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	utilexec "k8s.io/utils/exec"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -86,6 +88,9 @@ type VirtualK8S struct {
 	stateMu      sync.Mutex
 	transitionMu sync.Mutex
 	lock         *InstanceLock
+
+	// assigned lists the pods the API server has assigned to this node.
+	assigned atomic.Pointer[corelisters.PodLister]
 }
 
 // NewVirtualK8S reads a kubeconfig file and sets up a client to interact
@@ -620,11 +625,21 @@ func (v *VirtualK8S) PortForward(ctx context.Context, namespace, pod string, por
 	return err
 }
 
-func (v *VirtualK8S) GetStatsSummary(context.Context) (*statsv1alpha1.Summary, error) {
-	v.Logger.Info("[K8s] -> GetStatsSummary")
-	defer v.Logger.Info("[K8s] <- GetStatsSummary")
+// SetAssignedPodLister installs the view of the pods that Kubernetes has
+// assigned to this node. It exists only once the pod informer has been created.
+func (v *VirtualK8S) SetAssignedPodLister(lister corelisters.PodLister) {
+	v.assigned.Store(&lister)
+}
 
-	return nil, errors.New("GetStatsSummary is not supported")
+// GetAssignedPods returns the pods the API server has assigned to this node,
+// which is the meaning of the kubelet's /pods endpoint. It is the desired
+// state; GetPods returns what the provider is running (/runningpods/).
+func (v *VirtualK8S) GetAssignedPods(ctx context.Context) ([]*corev1.Pod, error) {
+	lister := v.assigned.Load()
+	if lister == nil {
+		return nil, errors.New("assigned pods are not available yet: the pod informer has not started")
+	}
+	return (*lister).List(labels.Everything())
 }
 
 type followLogReader struct {
