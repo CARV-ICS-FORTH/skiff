@@ -38,11 +38,11 @@ Skifflet is a Virtual Kubelet provider: it implements the pod lifecycle and the 
 | Operation | Status | Result | Alternative | Test |
 |---|---|---|---|---|
 | `/containerLogs` (`kubectl logs`) | implemented | Current container output | | T04 |
-| `/exec` (`kubectl exec`) | implemented | Runs a new process in the running container | | T04 |
+| `/exec` (`kubectl exec`) | implemented | Runs a command inside the running container (same namespaces and filesystem; no new container is created) | | T04 |
 | `/portForward` (`kubectl port-forward`) | implemented | Connects to the pod IP from the node | | T04 |
 | `/pods` | implemented | The pods Kubernetes has assigned to this node (desired state) | | T04 |
 | `/runningpods/` | implemented | The pods Skifflet is running (runtime view) | | T04 |
-| `/attach` (`kubectl attach`) | not implemented | Streaming clients get the explanation on the error stream (`kubectl` prints `error attaching to container: attach is not implemented ...`); other requests get HTTP 501 | `kubectl exec` starts a new process instead | T04 |
+| `/attach` (`kubectl attach`) | not implemented | Streaming clients get the explanation on the error stream (`kubectl` prints `error attaching to container: attach is not implemented ...`); other requests get HTTP 501 | `kubectl logs -f` to follow output; `kubectl exec` to run a command in the container | T04 |
 | `/stats/summary`, `/metrics/resource` | not implemented | HTTP 501; no usage values are invented, so usage-based `kubectl top` and autoscaling do not work | | T04 |
 
 Unknown pods or containers, and malformed requests, keep their normal 404 and 400 responses.

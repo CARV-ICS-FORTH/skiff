@@ -24,7 +24,7 @@ type kubeletRoutes struct {
 	GetAssignedPods api.PodListerFunc
 }
 
-const attachUnsupported = "attach is not implemented by skifflet; use kubectl exec to run a new process in the container"
+const attachUnsupported = "attach is not implemented by skifflet: use kubectl logs to read the container's output, or kubectl exec to run a command in it"
 
 // Deliberately unimplemented kubelet operations answer 501 with an
 // explanation, instead of the 404 an unregistered route would produce.

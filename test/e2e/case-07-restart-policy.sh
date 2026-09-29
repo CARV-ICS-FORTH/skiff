@@ -100,10 +100,7 @@ NEW_UID=$(e2e_kubectl get pod e2e07-always -n $NS -o jsonpath='{.metadata.uid}')
 e2e_assert_eq "pod UID unchanged" "$NEW_UID" "$UID_ALWAYS"
 
 CONTAINER_JOB=$(e2e_kubectl get pod e2e07-always -n "$NS" -o jsonpath='{.status.containerStatuses[0].containerID}')
-if [ -z "$CONTAINER_JOB" ]; then
-    CONTAINER_JOB=$(e2e_kubectl get pod e2e07-always -n "$NS" -o jsonpath='{.metadata.annotations.skiff\.io/container-pid}')
-fi
-e2e_assert_nonempty "container-pid annotation or status" "$CONTAINER_JOB"
+e2e_assert_nonempty "restarted attempt identity" "$CONTAINER_JOB"
 e2e_assert_ne "liveness restart has a new attempt identity" "$CONTAINER_JOB" "$INITIAL_CONTAINER_JOB"
 CONTAINER_PID="${CONTAINER_JOB#pid://}"
 CONTAINER_PID="${CONTAINER_PID%%:*}"

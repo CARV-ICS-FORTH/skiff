@@ -115,25 +115,6 @@ runtime_record_pod() {
     pod_ip=$(e2e_kubectl get pod "$pod" -n "$ns" \
         -o jsonpath='{.status.podIP}' 2>/dev/null || echo "")
 
-    # Retrieve pause-pid annotation (format: pid://<pid>:<startTime> or <pid>_<startTime> or <pid>)
-    pause_pid=""
-    pause_start=""
-    local pause_job
-    pause_job=$(e2e_kubectl get pod "$pod" -n "$ns" \
-        -o jsonpath='{.metadata.annotations.skiff\.io/pause-pid}' 2>/dev/null || echo "")
-    if [ -n "$pause_job" ]; then
-        pause_job="${pause_job#pid://}"
-        if [[ "$pause_job" == *:* ]]; then
-            pause_pid="${pause_job%%:*}"
-            pause_start="${pause_job#*:}"
-        elif [[ "$pause_job" == *_* ]]; then
-            pause_pid="${pause_job%%_*}"
-            pause_start="${pause_job#*_}"
-        else
-            pause_pid="$pause_job"
-        fi
-    fi
-
     pod_dir="/tmp/.skiff/.pods/${ns}/${pod}_${uid}"
 
     local readiness pids_json details
@@ -155,6 +136,9 @@ runtime_record_pod() {
         e2e_fail "runtime_record_pod: malformed process record for ${ns}/${pod}"
         return 1
     fi
+    # The pause launcher's identity comes from the same on-disk record.
+    pause_pid="" pause_start=""
+    read -r pause_pid pause_start < <(printf '%s' "$pids_json" | python3 -c 'import json,sys; p=json.load(sys.stdin); print(p.get("pause_pid", ""), p.get("pause_start_time", ""))' 2>/dev/null || true) || true
     if [ -z "$processes" ]; then
         local waiting_reason
         waiting_reason=$(e2e_kubectl get pod "$pod" -n "$ns" \

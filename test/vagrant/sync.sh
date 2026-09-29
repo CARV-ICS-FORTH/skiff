@@ -5,6 +5,10 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(cd "$script_dir/../.." && pwd)
 cd "$repo_dir"
 transport="$script_dir/transport.sh"
+# The e2e suite inspects the nodes over SSH from the controller. The home directory
+# is shared between the VMs, so one key in it (idempotently created and authorized)
+# gives the controller access to both.
+"$transport" ssh controller 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && { [ -f ~/.ssh/id_ed25519 ] || ssh-keygen -q -t ed25519 -N "" -f ~/.ssh/id_ed25519; } && { grep -qF "$(cut -d" " -f1,2 ~/.ssh/id_ed25519.pub)" ~/.ssh/authorized_keys || cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys; }'
 "$transport" ssh controller "mkdir -p ~/skiff/scripts ~/skiff/test/e2e/network ~/skiff/test/e2e/lib ~/skiff/test/e2e/images/fixture"
 for file in scripts/* test/*.sh test/README.md test/e2e/network/* test/e2e/lib/*.sh test/e2e/lib/*.py test/e2e/case-*.sh test/e2e/run-all.sh test/e2e/images/fixture/app.py test/e2e/images/fixture/app_test.py; do
     "$transport" upload "$file" "/home/vagrant/skiff/$file" controller
