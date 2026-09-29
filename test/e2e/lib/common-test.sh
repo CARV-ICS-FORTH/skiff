@@ -29,3 +29,20 @@ sleep 3
 
 # A host inspection failure must propagate after the bubble has disappeared.
 bash -c 'source "$1/common.sh"; source "$1/runtime.sh"; runtime_ssh_node() { return 9; }; if runtime_host_resources_gone node; then exit 1; fi' _ "$lib_dir"
+
+# Subcase reporting: e2e_subcase_run reports PASS only for a clean return, and
+# a recorded failure or bad status stays visible to the case afterwards.
+E2E_SUBRESULTS="$tmp/sub.tsv" bash -c '
+    source "$1/common.sh"
+    ok() { true; }
+    bad_status() { return 3; }
+    bad_assert() { e2e_fail injected; }
+    e2e_subcase_run T00-ok ok
+    e2e_subcase_run T00-status bad_status
+    e2e_subcase_run T00-assert bad_assert
+    e2e_subcase T00-skip SKIP
+    e2e_subcase T00-bogus MAYBE
+    [ "$E2E_FAILED" -eq 1 ] || exit 9
+    E2E_FAILED=0   # the exit trap would otherwise turn the recorded failure into rc=1' _ "$lib_dir" >"$tmp/sub.log" 2>&1 || { cat "$tmp/sub.log"; echo "subcase helpers misbehaved" >&2; exit 1; }
+want=$(printf 'T00-ok\tPASS\nT00-status\tFAIL\nT00-assert\tFAIL\nT00-skip\tSKIP')
+[ "$(cat "$tmp/sub.tsv")" = "$want" ] || { cat "$tmp/sub.tsv"; echo "unexpected subcase results" >&2; exit 1; }

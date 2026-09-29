@@ -10,5 +10,6 @@ RUN apk add --no-cache \
     bash \
     python3
 COPY fixture.sh /usr/local/bin/fixture
+COPY app.py /usr/local/lib/fixture/app.py
 RUN chmod +x /usr/local/bin/fixture
 ENTRYPOINT ["/usr/local/bin/fixture"]

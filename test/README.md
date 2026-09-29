@@ -51,12 +51,16 @@ bash test/e2e/network/test-tap-acceptance.sh
 bash test/e2e/network/test-tap-webhook.sh
 ```
 
-## Alpha Profile and Results
+## Qualification Profile and Results
 
-The `skiff-tap-alpha` profile covers a dedicated two-node Slurm allocation with IPv4 TAP networking and kube-proxy Services. A required daemon failure stops the whole job; recovery uses a fresh job. Runtime qualification currently targets ARM64. Building for another architecture does not qualify its runtime behavior.
+The qualification profile covers a dedicated two-node Slurm allocation with IPv4 TAP networking and kube-proxy Services. A required daemon failure stops the whole job; recovery uses a fresh job. Runtime qualification currently targets ARM64. Building for another architecture does not qualify its runtime behavior.
 
-The profile requires 20 checks: cases 01–12, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, and teardown with a second boot. They cover workload startup and completion, init containers, networking, readiness, environment/volumes, logs/exec/port-forward, restarts, graceful deletion, startup failures and cleanup. Standalone Plaid checks NET-1 and NET-2 are outside this profile.
+The profile requires these checks: cases 01–12, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, and teardown with a second boot. They cover workload startup and completion, init containers, networking, readiness, environment/volumes, logs/exec/port-forward, restarts, graceful deletion, startup failures and cleanup. Standalone Plaid checks NET-1 and NET-2 are outside this profile.
 
 Supported probes are numeric-port HTTP/TCP readiness and liveness, plus command readiness. Startup probes, command liveness, gRPC/named-port probes and lifecycle hooks are rejected. Host namespaces and ephemeral containers are also rejected before local allocation.
+
+Cases can also report named subcases with `e2e_subcase ID RESULT` (or run a function as one with `e2e_subcase_run ID cmd...`). The aggregate records each as a result of its own, named after the acceptance group and variant, for example `T07-startup-http`. Subcases the profile requires are listed in `test/e2e/lib/profile.sh`; a required subcase that is missing, skipped or failed fails the run, and a reported failure fails it even for a label not yet listed.
+
+The fixture image also contains a controllable application (`fixture app serve|hook`, see `test/e2e/images/fixture/app.py`): readiness, startup and liveness switches that can be flipped over HTTP or through files for command probes, a start delay, per-path request counters, chosen exit codes, hook and SIGTERM event markers with timestamps and attempt numbers, and sequenced log records. Its behaviour is tested locally by `regression.sh`.
 
 The aggregate saves `candidate.json`, `results.json` and logs in `~/skiff/test/e2e/results/<run-id>/` on the controller. Qualification requires a clean source commit, recorded image/fixture identities, matching runtime identity on both nodes, and every required check passing. A missing, failed or skipped required check fails the profile. Each aggregate uses a new result directory and fixed deployed artifacts throughout the run.

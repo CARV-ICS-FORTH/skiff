@@ -67,7 +67,6 @@ E2E_CASE="00"
 source "$LIB_DIR/common.sh"
 source "$LIB_DIR/profile.sh"
 source "$LIB_DIR/runtime.sh"
-profile_required_cases >/dev/null || exit 1
 
 # ---------------------------------------------------------------------------
 # Result tracking
@@ -83,6 +82,19 @@ record() {
     if [ "$result" = "FAIL" ] && { [ -n "$ONLY_CASE" ] || [ "$NETWORK_ONLY" -eq 1 ] || profile_is_required "$label"; }; then
         OVERALL=1
     fi
+}
+
+# Named subcases are reported by the case scripts through e2e_subcase; each is
+# recorded as a result of its own so it is judged like any other required label.
+export E2E_SUBRESULTS="${E2E_LOGDIR}/subresults.tsv"
+ingest_subresults() {
+    local id result
+    while IFS=$'\t' read -r id result; do
+        [ -n "$id" ] || continue
+        record "$id" "$result" 0
+        # A reported subcase failure fails the run even if the label is not yet required.
+        [ "$result" = FAIL ] && OVERALL=1
+    done < <(profile_merge_subresults "$E2E_SUBRESULTS")
 }
 
 run_script() {
@@ -102,6 +114,7 @@ run_script() {
     end=$(date +%s)
     duration=$((end - start))
     record "$label" "$result" "$duration"
+    ingest_subresults
     local colour
     if [ "$result" = "PASS" ]; then
         colour='\033[0;32m'
@@ -262,6 +275,7 @@ run_startup_case() {
     fi
     end01=$(date +%s)
     record "E2E-01" "$result01" "$((end01 - start01))"
+    ingest_subresults
     echo -e "  $([ "$result01" = PASS ] && echo '\033[0;32m' || echo '\033[0;31m')${result01}\033[0m  E2E-01  ($((end01 - start01))s)" >&2
 }
 
@@ -287,7 +301,7 @@ collect_candidate_evidence() {
     done
     python3 "$LIB_DIR/candidate.py" "$manifest" "$sif" "$fixture" \
         "${HOME}/.skiff/fixture.env" "$nodes_file" "${E2E_LOGDIR}/candidate.json" \
-        "$E2E_RUN_ID" "$E2E_PROFILE" "$SKIFF_JOB_ID"
+        "$E2E_RUN_ID" "$SKIFF_JOB_ID"
 }
 
 # ---------------------------------------------------------------------------
@@ -327,6 +341,8 @@ else
             else
                 record CANDIDATE FAIL 0
             fi
+            runtime_record_node_ips || true
+            runtime_record_disposable start
             run_networking_tests
             run_workload_cases
         else
@@ -347,6 +363,7 @@ fi
 
 # Execute deferred teardown explicitly before summary and results.json
 _run_deferred
+runtime_record_disposable end
 
 if [ -z "$ONLY_CASE" ] && [ "$NETWORK_ONLY" -eq 0 ]; then
     if ! profile_check_results; then
@@ -364,14 +381,14 @@ echo "========================================================================"
 printf "%-30s %-10s %s\n" "Test" "Result" "Duration"
 printf "%-30s %-10s %s\n" "----" "------" "--------"
 
-for label in \
-    "NET-1-plaid-integration" "NET-2-plaid-all" \
-    "NET-3-tap-acceptance" "NET-4-tap-webhook" \
-    "E2E-01" "E2E-02" "E2E-03" "E2E-04" "E2E-05" \
-    "E2E-06" "E2E-07" "E2E-08" "E2E-09" \
-    "E2E-09-skifflet" "E2E-09-plaidd" "E2E-09-slirp" "E2E-09-relay" "E2E-10" \
-    "E2E-11" "E2E-12" "CANDIDATE" \
-    "E2E-01-teardown"; do
+# Required labels first, in profile order, then any other recorded results.
+summary_labels=(NET-1-plaid-integration NET-2-plaid-all)
+while IFS= read -r label; do summary_labels+=("$label"); done < <(profile_required_cases)
+for label in $(printf '%s\n' "${!RESULTS[@]}" | sort); do
+    [ -n "$label" ] || continue
+    profile_is_required "$label" || [ "$label" = NET-1-plaid-integration ] || [ "$label" = NET-2-plaid-all ] || summary_labels+=("$label")
+done
+for label in "${summary_labels[@]}"; do
     result="${RESULTS[$label]:-SKIP}"
     dur="${DURATIONS[$label]:-}"
     colour='\033[0m'
@@ -382,6 +399,10 @@ for label in \
 done
 
 echo "========================================================================"
+if [ -s "${E2E_LOGDIR}/disposable-resources.txt" ]; then
+    echo "Disposable node-local resources (start, end):"
+    sed 's/^/  /' "${E2E_LOGDIR}/disposable-resources.txt"
+fi
 echo "Log directory: ${E2E_LOGDIR}"
 
 # Write machine-readable results
@@ -393,7 +414,6 @@ $(for k in "${!RESULTS[@]}"; do
 done)
 out = {
     'run_id': '${E2E_RUN_ID}',
-    'profile': '${E2E_PROFILE}',
     'overall': '$([ $OVERALL -eq 0 ] && echo PASS || echo FAIL)',
     'cases': results,
 }

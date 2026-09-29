@@ -350,3 +350,34 @@ runtime_kill_process() {
     node_ip=$(runtime_node_ip "$node")
     runtime_ssh_node "$node_ip" "kill -${sig} ${pid}" 2>/dev/null
 }
+
+# ---------------------------------------------------------------------------
+# Disposable node-local resources
+# ---------------------------------------------------------------------------
+# Unpacked container root filesystems live in the Apptainer temporary directory
+# and must be removed with their pod. Record how many remain and how much space
+# they and the root filesystem use on each node, so growth across a run (and a
+# full disk on a development node) is visible in the result bundle.
+_RT_APPTAINER_TMP="${E2E_APPTAINER_TMP:-/tmp/.skiff/.apptainer/tmp}"
+
+runtime_record_node_ips() {
+    local node
+    : > "${E2E_LOGDIR}/node-ips"
+    for node in "$(e2e_node_a)" "$(e2e_node_b)"; do
+        printf '%s\t%s\n' "$node" "$(runtime_node_ip "$node")" >> "${E2E_LOGDIR}/node-ips"
+    done
+}
+
+# runtime_record_disposable LABEL: append one observation per recorded node to
+# disposable-resources.txt. Observation problems are recorded, not fatal.
+runtime_record_disposable() {
+    local label="$1" node ip line
+    [ -s "${E2E_LOGDIR}/node-ips" ] || return 0
+    while IFS=$'\t' read -r node ip; do
+        line=$(runtime_ssh_node "$ip" "printf 'rootfs_dirs=%s tmp_mb=%s root_used=%s' \
+            \"\$(find '${_RT_APPTAINER_TMP}' -maxdepth 1 -name 'rootfs-*' 2>/dev/null | wc -l)\" \
+            \"\$(du -sm '${_RT_APPTAINER_TMP}' 2>/dev/null | cut -f1)\" \
+            \"\$(df --output=pcent / | tail -n1 | tr -d ' ')\"" 2>/dev/null </dev/null) || line="observation-failed"
+        printf '%s %s %s\n' "$label" "$node" "$line" >> "${E2E_LOGDIR}/disposable-resources.txt"
+    done < "${E2E_LOGDIR}/node-ips"
+}

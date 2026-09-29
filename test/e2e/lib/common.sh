@@ -53,6 +53,34 @@ e2e_skip() {
 
 E2E_FAILED=0
 
+# e2e_subcase ID RESULT: report one named subcase (PASS, FAIL or SKIP) to the
+# aggregate through E2E_SUBRESULTS. Outside an aggregate run it only logs.
+e2e_subcase() {
+    local id="$1" result="$2"
+    case "$result" in PASS|FAIL|SKIP) ;; *) e2e_fail "invalid subcase result '$result' for $id"; return 0 ;; esac
+    if [ -n "${E2E_SUBRESULTS:-}" ]; then
+        printf '%s\t%s\n' "$id" "$result" >> "$E2E_SUBRESULTS"
+    fi
+    echo -e "[SUBCASE] [E2E-${E2E_CASE:-??}] ${id}: ${result}" >&2
+}
+
+# e2e_subcase_run ID COMMAND...: run COMMAND in the current shell and report
+# PASS when it returns 0 without recording an e2e_fail, otherwise FAIL. The
+# failure stays visible to the case afterwards.
+e2e_subcase_run() {
+    local id="$1" prev="$E2E_FAILED" rc=0
+    shift
+    E2E_FAILED=0
+    "$@" || rc=$?
+    if [ "$rc" -eq 0 ] && [ "$E2E_FAILED" -eq 0 ]; then
+        e2e_subcase "$id" PASS
+    else
+        e2e_subcase "$id" FAIL
+        prev=1
+    fi
+    E2E_FAILED=$prev
+}
+
 # ---------------------------------------------------------------------------
 # kubectl wrapper
 # ---------------------------------------------------------------------------

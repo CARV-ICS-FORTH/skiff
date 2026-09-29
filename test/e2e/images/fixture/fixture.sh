@@ -13,6 +13,7 @@
 #   term-handler  MARKER_PATH [--sleep SECS]
 #   blocker       (sleeps indefinitely; honours SIGTERM)
 #   dns           HOSTNAME [--tcp]
+#   app           serve|hook ...  (controllable application, see app.py)
 
 set -euo pipefail
 trap 'exit 0' TERM INT
@@ -344,9 +345,13 @@ dns)
     dig $TCP +short "$HOST"
     ;;
 
+app)
+    exec python3 /usr/local/lib/fixture/app.py "$@"
+    ;;
+
 *)
     echo "Unknown mode: ${MODE}" >&2
-    echo "Modes: server client checksum check restart-counter log-emitter term-handler blocker dns" >&2
+    echo "Modes: server client checksum check restart-counter log-emitter term-handler blocker dns app" >&2
     exit 1
     ;;
 esac

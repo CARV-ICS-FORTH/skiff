@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record and validate the image actually exercised by the alpha profile."""
+"""Record and validate the image actually exercised by the qualification run."""
 
 import hashlib
 import json
@@ -39,7 +39,7 @@ def validate(record):
 
 
 def build(args):
-    manifest_path, sif_path, fixture_path, fixture_env, nodes_path, out_path, run_id, profile, job_id = args
+    manifest_path, sif_path, fixture_path, fixture_env, nodes_path, out_path, run_id, job_id = args
     manifest = json.loads(pathlib.Path(manifest_path).read_text())
     fixture_text = pathlib.Path(fixture_env).read_text()
     match = re.search(r'^export FIXTURE_IMAGE_TAG="([^"]+)"$', fixture_text, re.M)
@@ -48,7 +48,7 @@ def build(args):
     for line in pathlib.Path(nodes_path).read_text().splitlines():
         name, arch, sif_sha, version = line.split("\t")
         nodes.append(dict(name=name, architecture=arch, sif_sha256=sif_sha, kubelet_version=version))
-    record = dict(run_id=run_id, profile=profile, job_id=job_id, manifest=manifest,
+    record = dict(run_id=run_id, job_id=job_id, manifest=manifest,
                   sif_sha256=digest(sif_path), fixture_sif_sha256=digest(fixture_path),
                   fixture_image_tag=fixture_tag, nodes=nodes)
     pathlib.Path(out_path).write_text(json.dumps(record, indent=2) + "\n")
@@ -83,7 +83,7 @@ def self_test():
 if __name__ == "__main__":
     if sys.argv[1:] == ["--self-test"]:
         self_test()
-    elif len(sys.argv) == 10:
+    elif len(sys.argv) == 9:
         build(sys.argv[1:])
     else:
-        raise SystemExit("usage: candidate.py MANIFEST SIF FIXTURE_SIF FIXTURE_ENV NODES_TSV OUTPUT RUN_ID PROFILE JOB_ID")
+        raise SystemExit("usage: candidate.py MANIFEST SIF FIXTURE_SIF FIXTURE_ENV NODES_TSV OUTPUT RUN_ID JOB_ID")

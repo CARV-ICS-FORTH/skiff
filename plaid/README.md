@@ -253,17 +253,17 @@ vagrant up
 
 ### 3. Individual Test Suites
 
-- **Privileged CNI Suite (`test/test-plaid-e2e.sh`)**:
+- **Privileged CNI Suite (`test/e2e/network/test-plaid-e2e.sh`)**:
   Tests standard root CNI container networking (`sudo apptainer --network=plaid`):
   ```bash
-  vagrant ssh controller -c "sudo bash /home/vagrant/skiff/test/test-plaid-e2e.sh"
+  vagrant ssh controller -c "sudo bash /home/vagrant/skiff/test/e2e/network/test-plaid-e2e.sh"
   ```
   Verifies intra-node communication, cross-host VXLAN (UDP 8472), host loopback access, and outbound internet access.
 
-- **Unprivileged Apptainer Suite (`test/test-plaid-unprivileged.sh`)**:
+- **Unprivileged Apptainer Suite (`test/e2e/network/test-plaid-unprivileged.sh`)**:
   Tests rootless workflows without `sudo` as regular user `vagrant`:
   ```bash
-  vagrant ssh controller -c "bash /home/vagrant/skiff/test/test-plaid-unprivileged.sh"
+  vagrant ssh controller -c "bash /home/vagrant/skiff/test/e2e/network/test-plaid-unprivileged.sh"
   ```
   Verifies:
   - **Persistent Instances**: `plaidtainer instance start / run / stop` with dynamic IPAM on stock `alpine.sif`.
@@ -274,10 +274,10 @@ vagrant up
   - **Internet NAT**: Outbound HTTP traffic via `slirp4netns`.
   - **Inter-Node Overlay**: Cross-host VXLAN ping between unprivileged containers on `controller` and `node`.
 
-### 4. Master Unattended Test Suite (`test/test-plaid-all.sh`)
+### 4. Master Unattended Test Suite (`test/e2e/network/test-plaid-all.sh`)
 To run **all workflows unattended in a single run** and generate a consolidated report card:
 ```bash
-vagrant ssh controller -c "bash /home/vagrant/skiff/test/test-plaid-all.sh"
+vagrant ssh controller -c "bash /home/vagrant/skiff/test/e2e/network/test-plaid-all.sh"
 ```
 
 The master script automatically verifies prerequisites, runs both the privileged and unprivileged test suites across nodes, cleans up all instances, and produces an execution matrix:
