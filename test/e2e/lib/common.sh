@@ -96,7 +96,11 @@ fi
 
 e2e_kubectl() {
     if command -v "${E2E_KUBECTL:-kubectl}" >/dev/null 2>&1; then
-        "${E2E_KUBECTL:-kubectl}" --request-timeout=10s "$@"
+        # The job writes its credentials to the shared home after this file was
+        # sourced, so resolve the kubeconfig at call time.
+        local kubeconfig="${KUBECONFIG:-}"
+        [ -f "$kubeconfig" ] || kubeconfig="$HOME/.skiff/kubeconfig"
+        "${E2E_KUBECTL:-kubectl}" --kubeconfig "$kubeconfig" --request-timeout=10s "$@"
     elif command -v k3s >/dev/null 2>&1; then
         k3s kubectl --request-timeout=10s "$@"
     elif command -v apptainer >/dev/null 2>&1; then
@@ -106,11 +110,13 @@ e2e_kubectl() {
     fi
 }
 
+# e2e_curl runs curl on the same side as e2e_kubectl, so that a port forwarded
+# by kubectl is reachable at localhost: on the host when kubectl is installed
+# there (the documented setup), inside the bubble otherwise.
 e2e_curl() {
-    if command -v apptainer >/dev/null 2>&1 && apptainer instance list 2>/dev/null | grep -q "bubble1"; then
+    if ! command -v "${E2E_KUBECTL:-kubectl}" >/dev/null 2>&1 &&
+        command -v apptainer >/dev/null 2>&1 && apptainer instance list 2>/dev/null | grep -q "bubble1"; then
         apptainer exec --pwd / instance://bubble1 curl "$@"
-    elif command -v curl >/dev/null 2>&1; then
-        curl "$@"
     else
         curl "$@"
     fi

@@ -79,6 +79,13 @@ add-apt-repository -y ppa:apptainer/ppa
 apt-get update
 apt-get install -y git slurm-wlm munge nfs-common avahi-daemon libnss-mdns apptainer slirp4netns socat
 
+# kubectl for host-level access to the cluster (the same release as the bubble's Kubernetes)
+KUBECTL_VERSION=v1.35.0
+KUBECTL_ARCH=$(dpkg --print-architecture)
+curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KUBECTL_ARCH}/kubectl"
+echo "$(curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KUBECTL_ARCH}/kubectl.sha256")  /usr/local/bin/kubectl" | sha256sum -c -
+chmod +x /usr/local/bin/kubectl
+
 # Enable mDNS
 # Configure Avahi to only listen on eth0 (Cluster Network) to avoid checking out 10.0.2.15 (NAT)
 sed -i 's/#allow-interfaces=eth0/allow-interfaces=eth0/' /etc/avahi/avahi-daemon.conf

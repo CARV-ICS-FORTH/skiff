@@ -93,7 +93,7 @@ ingest_subresults() {
         [ -n "$id" ] || continue
         record "$id" "$result" 0
         # A reported subcase failure fails the run even if the label is not yet required.
-        [ "$result" = FAIL ] && OVERALL=1
+        if [ "$result" = FAIL ]; then OVERALL=1; fi
     done < <(profile_merge_subresults "$E2E_SUBRESULTS")
 }
 

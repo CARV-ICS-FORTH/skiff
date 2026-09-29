@@ -109,6 +109,23 @@ write_teardown_script
 e2e_wait_condition 300 "2 nodes ready" check_nodes_ready
 e2e_require_nodes 2
 
+# The documented quickstart: kubectl on a host outside the bubble, with the
+# credentials the job writes to the shared home. Check it from both hosts.
+host_sees_nodes_ready() {  # host_sees_nodes_ready [ADDRESS]: local when ADDRESS is empty or omitted
+    local command='KUBECONFIG=$HOME/.skiff/kubeconfig kubectl --request-timeout=10s get nodes --no-headers 2>/dev/null | grep -c " Ready"'
+    local ready
+    if [ -z "${1:-}" ]; then
+        ready=$(bash -c "$command") || true
+    else
+        ready=$(runtime_ssh_node "$1" "$command") || true
+    fi
+    [ "$ready" = 2 ]
+}
+command -v kubectl >/dev/null 2>&1 || e2e_die "kubectl is not installed on this host; reprovision the VMs (test/vagrant/install.sh)"
+e2e_wait_condition 60 "host-level kubectl on $(hostname) sees both nodes Ready" host_sees_nodes_ready
+e2e_wait_condition 60 "host-level kubectl on $(e2e_node_b) sees both nodes Ready" \
+    host_sees_nodes_ready "$(runtime_node_ip "$(e2e_node_b)")"
+
 check_coredns_ready() {
     local pod=$(e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     [ -n "$pod" ] && e2e_kubectl wait --for=condition=Ready "pod/${pod}" -n kube-system --timeout=0s >/dev/null 2>&1
