@@ -22,7 +22,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -805,30 +804,51 @@ func (v *VirtualK8S) RunInContainer(ctx context.Context, namespace, podName, con
 	}
 	logger = logger.WithValues("uid", owner.UID(), "attempt", target.Attempt.ID)
 
-	execCmd, release, err := target.Command(ctx, cmd)
-	if err != nil {
-		return execTargetError(err, namespace, podName, containerName)
-	}
-	defer release()
+	var streams PodHandler.ExecStreams
 	if attach != nil {
-		execCmd.Stdin = attach.Stdin()
-		execCmd.Stdout = attach.Stdout()
-		execCmd.Stderr = attach.Stderr()
+		streams = PodHandler.ExecStreams{Stdin: attach.Stdin(), Stdout: attach.Stdout(), Stderr: attach.Stderr(), TTY: attach.TTY()}
+		if attach.TTY() {
+			resizes, stop := forwardResizes(ctx, attach.Resize())
+			defer stop()
+			streams.Resize = resizes
+		}
 	}
 
-	if err := execCmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			logger.Info("exec finished", "action", "exec", "exitCode", exitErr.ExitCode())
-			return utilexec.CodeExitError{
-				Err:  exitErr,
-				Code: exitErr.ExitCode(),
+	code, err := target.Exec(ctx, cmd, streams)
+	if err != nil {
+		logger.Info("exec ended early", "action", "exec", "reason", err.Error())
+		return execTargetError(err, namespace, podName, containerName)
+	}
+	logger.Info("exec finished", "action", "exec", "exitCode", code)
+	if code != 0 {
+		return utilexec.CodeExitError{Err: fmt.Errorf("command terminated with exit code %d", code), Code: code}
+	}
+	return nil
+}
+
+// forwardResizes hands a client's terminal size changes to an exec session. The
+// returned stop function ends the forwarding, which also ends with ctx.
+func forwardResizes(ctx context.Context, sizes <-chan vkapi.TermSize) (<-chan PodHandler.TermSize, func()) {
+	ctx, stop := context.WithCancel(ctx)
+	out := make(chan PodHandler.TermSize)
+	go func() {
+		for {
+			select {
+			case size, ok := <-sizes:
+				if !ok {
+					return
+				}
+				select {
+				case out <- PodHandler.TermSize{Width: size.Width, Height: size.Height}:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
 			}
 		}
-		logger.Info("exec failed", "action", "exec", "reason", err.Error())
-		return err
-	}
-	logger.Info("exec finished", "action", "exec", "exitCode", 0)
-	return nil
+	}()
+	return out, stop
 }
 
 // execTargetError maps why a container cannot be used to the response: a

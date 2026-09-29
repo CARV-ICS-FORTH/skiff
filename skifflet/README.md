@@ -38,7 +38,7 @@ Skifflet is a Virtual Kubelet provider: it implements the pod lifecycle and the 
 | Operation | Status | Result | Alternative | Test |
 |---|---|---|---|---|
 | `/containerLogs` (`kubectl logs`) | implemented | Current container output | | T04 |
-| `/exec` (`kubectl exec`) | implemented | Runs a command inside the running container: its namespaces, root filesystem, working directory and environment; no new container is created. Refused if the container's main process or namespaces do not verify | | T04, T17 |
+| `/exec` (`kubectl exec`) | implemented | Runs a command inside the running container: its namespaces, root filesystem, working directory and environment; no new container is created. Without `-t`, output and error are separate streams, input ends with end of file and the exit status is the command's (128 plus the signal if it was killed). With `-t` the command gets a real pseudo-terminal (`TERM=xterm` unless the container sets one) that follows the client's terminal size. A running init container is a valid target; a container that is not running (finished, not started, restarting) is refused with "container is not running". The session, and everything it started, ends when the client disconnects, the container's process ends or is replaced, or the pod is deleted, and never affects the application. Refused if the container's main process or namespaces do not verify | | T04, T14, T17 |
 | `/portForward` (`kubectl port-forward`) | implemented | Connects to the pod IP from the node | | T04 |
 | `/pods` | implemented | The pods Kubernetes has assigned to this node (desired state) | | T04 |
 | `/runningpods/` | implemented | The pods Skifflet is running (runtime view) | | T04 |
