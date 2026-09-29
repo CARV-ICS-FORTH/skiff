@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // ValidatePodCapabilities verifies that the requested pod specification is supported by skifflet
@@ -37,28 +36,15 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 				unsupported = append(unsupported, fmt.Sprintf("%s.Lifecycle.PreStop", prefix))
 			}
 		}
-		validateProbe := func(probeName string, p *corev1.Probe) {
-			if p == nil {
-				return
+		// Startup, readiness and liveness probes over HTTP, TCP and exec (with named
+		// ports) are supported; gRPC probes are not.
+		for _, probe := range []struct {
+			name string
+			p    *corev1.Probe
+		}{{"ReadinessProbe", c.ReadinessProbe}, {"LivenessProbe", c.LivenessProbe}, {"StartupProbe", c.StartupProbe}} {
+			if probe.p != nil && probe.p.GRPC != nil {
+				unsupported = append(unsupported, fmt.Sprintf("%s.%s.GRPC", prefix, probe.name))
 			}
-			if p.GRPC != nil {
-				unsupported = append(unsupported, fmt.Sprintf("%s.%s.GRPC", prefix, probeName))
-			}
-			if p.HTTPGet != nil && p.HTTPGet.Port.Type == intstr.String {
-				unsupported = append(unsupported, fmt.Sprintf("%s.%s.HTTPGet.NamedPort", prefix, probeName))
-			}
-			if p.TCPSocket != nil && p.TCPSocket.Port.Type == intstr.String {
-				unsupported = append(unsupported, fmt.Sprintf("%s.%s.TCPSocket.NamedPort", prefix, probeName))
-			}
-		}
-		validateProbe("ReadinessProbe", c.ReadinessProbe)
-		validateProbe("LivenessProbe", c.LivenessProbe)
-		validateProbe("StartupProbe", c.StartupProbe)
-		if c.LivenessProbe != nil && c.LivenessProbe.Exec != nil {
-			unsupported = append(unsupported, fmt.Sprintf("%s.LivenessProbe.Exec", prefix))
-		}
-		if c.StartupProbe != nil {
-			unsupported = append(unsupported, fmt.Sprintf("%s.StartupProbe", prefix))
 		}
 	}
 

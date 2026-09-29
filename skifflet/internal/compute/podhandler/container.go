@@ -371,6 +371,8 @@ func SetContainerTerminated(containerStatus *corev1.ContainerStatus, exitCode in
 		startedAt = prevState.Terminated.StartedAt
 	}
 
+	notStarted := false
+	containerStatus.Started = &notStarted
 	containerStatus.Ready = false
 	containerStatus.State.Waiting = nil
 	containerStatus.State.Running = nil

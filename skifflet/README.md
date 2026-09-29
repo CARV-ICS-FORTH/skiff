@@ -12,7 +12,7 @@ Rather than running standard rootful container runtimes (like `containerd` or `d
 - Supports volume mounts (ConfigMaps, Secrets, EmptyDir, HostPath, DownwardAPI, Projected volumes) directly inside unprivileged Apptainer user namespaces.
 - Registers its Node before accepting pods, then waits for Plaid's ready gateway socket before marking the Node Ready. This gives K3s time to allocate a PodCIDR without starting CoreDNS or workloads before their network exists.
 - Gives `ClusterFirst` pods the `kube-dns` Service IP in `/etc/resolv.conf`; `Default` pods inherit the bubble's upstream resolver. The same file is mounted into pause and application containers.
-- Evaluates HTTP, TCP, and exec readiness probes after the PodIP is available; `PodReady` follows the container readiness state.
+- Runs startup, readiness and liveness probes (HTTP, TCP and exec) with the Kubernetes timing and threshold rules, after the PodIP is available; `PodReady` follows the containers' readiness.
 - Serves logs, exec, and port forwarding through its advertised kubelet address. Exec enters the live Apptainer payload's mount, network, PID, and root filesystem; port forwarding connects to the PodIP from the bubble.
 
 ## Building
@@ -46,6 +46,18 @@ Skifflet is a Virtual Kubelet provider: it implements the pod lifecycle and the 
 | `/stats/summary`, `/metrics/resource` | not implemented | HTTP 501; no usage values are invented, so usage-based `kubectl top` and autoscaling do not work | | T04 |
 
 Unknown pods or containers, and malformed requests, keep their normal 404 and 400 responses.
+
+**Container probes** (`startupProbe`, `readinessProbe`, `livenessProbe`):
+
+| Field | Status | Result | Alternative | Test |
+|---|---|---|---|---|
+| `httpGet`, `tcpSocket`, `exec` probes | implemented | Kubelet behaviour: HTTP 200-399 succeeds (HTTPS is not verified; a `Host` header sets the request host; a redirect to another host is not followed), TCP connects, `exec` runs in the container's namespaces, root filesystem and environment and succeeds on exit code 0. Network probes use the pod IP unless the probe names a host. Defaults and thresholds are Kubernetes' | | T07, T08 |
+| startup gating | implemented | Until the startup probe succeeds the container is not `Started` or `Ready` and its readiness and liveness probes do not run; initial delays count from the container's start | | T07 |
+| readiness failure | implemented | The container's `Ready` and the pod's `Ready` follow the probe in both directions; nothing is restarted, and other containers are untouched | | T07, T08 |
+| liveness or startup failure | implemented | The container gets SIGTERM, then SIGKILL after the probe's `terminationGracePeriodSeconds` (else the pod's, never less than 2 seconds); the restart policy decides what follows. A container that ignores SIGTERM is killed at the deadline, as with any container whose main process handles no signals | | T07 |
+| named ports (`port: http`) | implemented | Resolved against the probed container's `ports`; a name it does not declare fails the probe (never defaulted to another port) | | T07 |
+| probe termination and deletion | implemented | A hanging probe command is bounded by its timeout and the container's lifetime: deleting or restarting cancels it and leaves no process behind | | T09 |
+| `grpc` probes | not supported | The pod is rejected at creation (`UnsupportedFeatures`) naming the field | `httpGet`, `tcpSocket` or `exec` | unit (capabilities) |
 
 ## Command Line Flags
 

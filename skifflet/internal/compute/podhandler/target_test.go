@@ -122,7 +122,7 @@ func newScenario(t *testing.T, tweak func(s *scenario)) *scenario {
 		t.Fatal(err)
 	}
 	cmd := sleeper("30")
-	if err := a.Start(cmd, false); err != nil {
+	if err := a.Start(cmd, probeGates{}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); a.Wait(cmd) })
@@ -315,7 +315,7 @@ func liveTarget(t *testing.T) (*Target, *Attempt) {
 		t.Fatal(err)
 	}
 	cmd := sleeper("30")
-	if err := a.Start(cmd, false); err != nil {
+	if err := a.Start(cmd, probeGates{}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); a.Wait(cmd) })

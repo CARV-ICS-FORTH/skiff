@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -345,6 +346,9 @@ type Attempt struct {
 	// verified (see Target); guarded by pl.mu.
 	payload      int
 	payloadStart uint64
+
+	gates    probeGates  // set by Start
+	stopping atomic.Bool // one termination sequence per attempt (see Stop)
 }
 
 // BeginAttempt creates the next attempt of a container. It fails once the pod is
@@ -372,9 +376,20 @@ func (l *PodLifecycle) BeginAttempt(name string, init bool) (*Attempt, error) {
 // to the attempt (probes, hooks, exec sessions) stops with it.
 func (a *Attempt) Context() context.Context { return a.ctx }
 
+// probeGates says which probes hold a container's Started and Ready statuses
+// back once it runs: a startup probe holds Started (and so Ready), a readiness
+// probe holds Ready.
+type probeGates struct {
+	startup, readiness bool
+}
+
+func gatesOf(spec *corev1.Container) probeGates {
+	return probeGates{startup: spec.StartupProbe != nil, readiness: spec.ReadinessProbe != nil}
+}
+
 // Start makes the revocation check and the process start one transition, then
 // publishes the container as running. The launcher remains the sole waiter.
-func (a *Attempt) Start(cmd *exec.Cmd, awaitReadiness bool) error {
+func (a *Attempt) Start(cmd *exec.Cmd, gates probeGates) error {
 	l := a.pl
 	l.mu.Lock()
 	if l.terminating || l.ctx.Err() != nil || a.ctx.Err() != nil {
@@ -393,15 +408,16 @@ func (a *Attempt) Start(cmd *exec.Cmd, awaitReadiness bool) error {
 	a.pid = cmd.Process.Pid
 	a.startTime, _ = runtime.GetProcessStartTime(a.pid)
 	a.done = make(chan struct{})
+	a.gates = gates
 	l.live[a] = struct{}{}
 	l.mu.Unlock()
 
 	a.logger.Info("container attempt started", "action", "start", "pid", a.pid)
 	a.update(func(cs *corev1.ContainerStatus) bool {
 		SetContainerRunning(cs, a.pid, a.startTime)
-		if awaitReadiness {
-			cs.Ready = false
-		}
+		started := !gates.startup
+		cs.Started = &started
+		cs.Ready = started && !gates.readiness
 		return true
 	})
 	return nil
@@ -458,6 +474,23 @@ func (a *Attempt) FailPod(exitCode int, reason, format string, args ...any) {
 	})
 }
 
+// SetStarted publishes that the container has passed its startup probe. Unless a
+// readiness probe still has to say so, that also makes it ready.
+func (a *Attempt) SetStarted() {
+	changed := a.update(func(cs *corev1.ContainerStatus) bool {
+		if cs.State.Running == nil || (cs.Started != nil && *cs.Started) {
+			return false
+		}
+		started := true
+		cs.Started = &started
+		cs.Ready = !a.gates.readiness
+		return true
+	})
+	if changed {
+		a.logger.Info("container started", "action", "startup")
+	}
+}
+
 // SetReady publishes the readiness of the attempt's container.
 func (a *Attempt) SetReady(ready bool) {
 	changed := a.update(func(cs *corev1.ContainerStatus) bool {
@@ -487,6 +520,29 @@ func (a *Attempt) update(fn func(cs *corev1.ContainerStatus) bool) bool {
 		}
 		return fn(cs)
 	})
+}
+
+// Stop ends the attempt's process the way the kubelet ends a container that
+// failed a probe: the termination signal first, then, if the process is still
+// there when grace has passed, a kill. Only the first call acts, so competing
+// paths cannot run two termination sequences for one attempt. A pod that is
+// being deleted is stopped by its own termination, which this yields to.
+func (a *Attempt) Stop(grace time.Duration, reason string) {
+	if !a.stopping.CompareAndSwap(false, true) {
+		return
+	}
+	a.logger.Info("stopping the container", "action", "stop", "reason", reason, "grace", grace.String())
+	if !a.Signal(syscall.SIGTERM) {
+		return
+	}
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-a.done:
+	case <-a.ctx.Done():
+	case <-timer.C:
+		a.Signal(syscall.SIGKILL)
+	}
 }
 
 // killGrace is how long a killed container's launcher gets to exit on its own.

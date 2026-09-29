@@ -501,14 +501,17 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 
-	awaitReadiness := !init && spec.ReadinessProbe != nil
-	if err := a.Start(cmd, awaitReadiness); err != nil {
+	var gates probeGates
+	if !init {
+		gates = gatesOf(spec)
+	}
+	if err := a.Start(cmd, gates); err != nil {
 		a.Fail(128)
 		return 128, attemptNotStarted, err
 	}
 	h.savePIDs(0, a.pid)
 	if !init {
-		startProbes(a, h.lifecycle.GetPodStatus().PodIP, spec)
+		startProbes(a, h.lifecycle.GetPodStatus().PodIP, spec, a.execProbe)
 	}
 	return a.Wait(cmd), attemptExited, nil
 }

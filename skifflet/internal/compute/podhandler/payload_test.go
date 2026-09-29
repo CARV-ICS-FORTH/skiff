@@ -37,7 +37,7 @@ func startFakeLauncher(t *testing.T, pl *PodLifecycle) (*Attempt, *exec.Cmd, int
 	}
 	cmd := exec.Command("sh", "-c", "trap '' TERM; sleep 60 & echo $! > "+pidFile+"; wait; exit 0")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := a.Start(cmd, false); err != nil {
+	if err := a.Start(cmd, probeGates{}); err != nil {
 		t.Fatal(err)
 	}
 	var payload int

@@ -38,11 +38,10 @@ func TestValidatePodCapabilities(t *testing.T) {
 			wantErrSub: "",
 		},
 		{
-			name: "startup probe rejected",
+			name: "exec startup probe supported",
 			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
 				Name: "web", StartupProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}},
 			}}}},
-			wantErrSub: "StartupProbe",
 		},
 		{
 			name: "HTTP liveness probe supported for CoreDNS",
@@ -51,11 +50,10 @@ func TestValidatePodCapabilities(t *testing.T) {
 			}}}},
 		},
 		{
-			name: "exec liveness probe rejected",
+			name: "exec liveness probe supported",
 			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
 				Name: "web", LivenessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}},
 			}}}},
-			wantErrSub: "LivenessProbe",
 		},
 		{
 			name: "postStart lifecycle hook rejected",
@@ -101,22 +99,21 @@ func TestValidatePodCapabilities(t *testing.T) {
 			wantErrSub: "GRPC",
 		},
 		{
-			name: "named probe port rejected",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name: "web",
-							ReadinessProbe: &corev1.Probe{
-								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromString("http")},
-								},
-							},
-						},
-					},
-				},
-			},
-			wantErrSub: "NamedPort",
+			name: "named probe ports supported for every probe kind",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name:           "web",
+				Ports:          []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}},
+				StartupProbe:   &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString("http")}}},
+				ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromString("http")}}},
+				LivenessProbe:  &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromString("http")}}},
+			}}}},
+		},
+		{
+			name: "grpc startup probe rejected",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "web", StartupProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{GRPC: &corev1.GRPCAction{Port: 8080}}},
+			}}}},
+			wantErrSub: "StartupProbe.GRPC",
 		},
 	}
 

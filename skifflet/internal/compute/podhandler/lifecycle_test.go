@@ -55,7 +55,7 @@ func runToExit(t *testing.T, pl *PodLifecycle, name string, code int) *Attempt {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code))
-	if err := a.Start(cmd, false); err != nil {
+	if err := a.Start(cmd, probeGates{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := a.Wait(cmd); got != code {
@@ -152,7 +152,7 @@ func TestPodLifecycle_MetadataUpdatesKeepRuntimeState(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := sleeper("30")
-	if err := a.Start(cmd, false); err != nil {
+	if err := a.Start(cmd, probeGates{}); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
@@ -269,7 +269,7 @@ func TestPodLifecycle_CancelDuringLaunchPreventsProcessStart(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("termination did not cancel the launcher")
 	}
-	if err := a.Start(sleeper("30"), false); err != context.Canceled {
+	if err := a.Start(sleeper("30"), probeGates{}); err != context.Canceled {
 		t.Fatalf("process started after cancellation: %v", err)
 	}
 	if _, err := pl.BeginAttempt("app", false); err != context.Canceled {
@@ -291,7 +291,7 @@ func TestPodLifecycle_TerminateReapsAttemptOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := sleeper("30")
-	if err := a.Start(cmd, false); err != nil {
+	if err := a.Start(cmd, probeGates{}); err != nil {
 		t.Fatal(err)
 	}
 	waited := make(chan int, 1)
@@ -318,7 +318,7 @@ func TestPodLifecycle_StartFailureLeavesNoProcessOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Start(exec.Command(filepath.Join(t.TempDir(), "missing-launcher")), false); err == nil {
+	if err := a.Start(exec.Command(filepath.Join(t.TempDir(), "missing-launcher")), probeGates{}); err == nil {
 		t.Fatal("missing launcher unexpectedly started")
 	}
 	a.Fail(128)
@@ -350,7 +350,7 @@ func TestAttempt_SupersededAttemptCannotPublishOrSignal(t *testing.T) {
 		t.Fatalf("attempt ids %d then %d: not consecutive", old.ID, next.ID)
 	}
 	cmd := sleeper("30")
-	if err := next.Start(cmd, true); err != nil {
+	if err := next.Start(cmd, probeGates{readiness: true}); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
