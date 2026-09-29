@@ -35,6 +35,7 @@ func newFakeProc(t *testing.T) *fakeProc {
 }
 
 type procSpec struct {
+	exe   string // what /proc/<pid>/exe points to, if anything
 	ppid  int
 	nspid []int
 	start uint64
@@ -90,6 +91,11 @@ func (f *fakeProc) add(pid int, spec procSpec) {
 	}
 	if err := os.Symlink(f.root, filepath.Join(dir, "root")); err != nil {
 		f.t.Fatal(err)
+	}
+	if spec.exe != "" {
+		if err := os.Symlink(spec.exe, filepath.Join(dir, "exe")); err != nil {
+			f.t.Fatal(err)
+		}
 	}
 	if err := os.Rename(dir, final); err != nil {
 		f.t.Fatal(err)
@@ -189,6 +195,56 @@ func TestResolveTarget_RefusesWhatIsNotTheContainer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The container is Running before its application is: while the image is unpacked
+// the first process of the pid namespace is Apptainer's own helper, and the process
+// that will be the application is not yet in the pod's namespaces. Resolution waits
+// for the real thing instead of refusing what it found first.
+func TestResolveTarget_WaitsForTheApplicationToBeInPlace(t *testing.T) {
+	t.Run("a runtime helper is not the application", func(t *testing.T) {
+		s := newScenario(t, func(s *scenario) { s.payload.exe = "/usr/libexec/apptainer/bin/unsquashfs" })
+		s.withSandbox(t)
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			s.payload.exe = "/usr/bin/python3"
+			s.proc.remove(fakePayload)
+			s.proc.add(fakePayload, s.payload)
+		}()
+		if _, err := s.a.Target(context.Background(), 3*time.Second); err != nil {
+			t.Fatalf("the application was not found once the helper was gone: %v", err)
+		}
+		// Nothing but the helper for the whole wait: it is not a running container yet.
+		s2 := newScenario(t, func(s *scenario) { s.payload.exe = "/usr/libexec/apptainer/bin/unsquashfs" })
+		s2.withSandbox(t)
+		if _, err := s2.a.Target(context.Background(), 200*time.Millisecond); !errors.Is(err, ErrContainerNotRunning) {
+			t.Fatalf("a helper as the only candidate: %v", err)
+		}
+	})
+
+	t.Run("a process on its way into the pod's network namespace", func(t *testing.T) {
+		s := newScenario(t, func(s *scenario) { s.payload.ns["net"] = "elsewhere" })
+		s.withSandbox(t)
+		go func() {
+			time.Sleep(150 * time.Millisecond)
+			s.payload.ns["net"] = "pod"
+			s.proc.remove(fakePayload)
+			s.proc.add(fakePayload, s.payload)
+		}()
+		if _, err := s.a.Target(context.Background(), 3*time.Second); err != nil {
+			t.Fatalf("a process that reached the pod's namespace during the wait was refused: %v", err)
+		}
+	})
+
+	t.Run("the reason is reported when it never gets there", func(t *testing.T) {
+		s := newScenario(t, func(s *scenario) { s.payload.ns["net"] = "elsewhere" })
+		s.withSandbox(t)
+		start := time.Now()
+		_, err := s.a.Target(context.Background(), 300*time.Millisecond)
+		if !errors.Is(err, ErrTargetUnverified) || !strings.Contains(err.Error(), "network namespace") || time.Since(start) < 250*time.Millisecond {
+			t.Fatalf("after %v: %v", time.Since(start), err)
+		}
+	})
 }
 
 // A remembered main process that stopped being PID 1 of a namespace of its own is
@@ -318,7 +374,8 @@ func liveTarget(t *testing.T) (*Target, *Attempt) {
 	if err := a.Start(cmd, probeGates{}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); a.Wait(cmd) })
+	go a.Wait(cmd) // the launcher's waiter, so that the container can end by itself
+	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); <-a.done })
 	return &Target{Attempt: a, Payload: 4242, Env: os.Environ()}, a
 }
 

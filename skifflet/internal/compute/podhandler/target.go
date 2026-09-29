@@ -75,8 +75,10 @@ func (a *Attempt) Target(ctx context.Context, wait time.Duration) (*Target, erro
 			return t, nil
 		}
 		if !errors.Is(err, errPayloadPending) || !time.Now().Before(deadline) {
-			if errors.Is(err, errPayloadPending) {
+			if err == errPayloadPending {
 				err = fmt.Errorf("%w: its main process has not started", ErrContainerNotRunning)
+			} else if pending := (*pendingError)(nil); errors.As(err, &pending) {
+				err = pending.cause // still not what it must be when the wait ran out: say why
 			}
 			if errors.Is(err, ErrContainerNotRunning) {
 				// Common while a container starts or stops, and probes ask every period.
@@ -98,6 +100,23 @@ func (a *Attempt) Target(ctx context.Context, wait time.Duration) (*Target, erro
 
 var errPayloadPending = errors.New("main process not found yet")
 
+// pendingError is a process that may become the container's main process but is
+// not yet what it must be. Resolution keeps waiting for it; when the wait ends
+// the cause is reported as it is.
+type pendingError struct{ cause error }
+
+func (e *pendingError) Error() string   { return e.cause.Error() }
+func (e *pendingError) Unwrap() []error { return []error{errPayloadPending, e.cause} }
+
+// isRuntimeHelper says whether the process runs one of Apptainer's own helper
+// programs. While a container starts, the runtime works in the container's
+// namespaces (for example unpacking the image with unsquashfs as the first process
+// of its pid namespace); none of that is the application.
+func isRuntimeHelper(pid int) bool {
+	exe, err := os.Readlink(procRoot + "/" + strconv.Itoa(pid) + "/exe")
+	return err == nil && strings.Contains(exe, "/libexec/apptainer/")
+}
+
 func (a *Attempt) resolveTarget() (*Target, error) {
 	launcher, _, ok := a.Launcher()
 	if !ok {
@@ -109,7 +128,7 @@ func (a *Attempt) resolveTarget() (*Target, error) {
 	l.mu.RUnlock()
 	cached := payload > 1
 	if !cached {
-		if payload = findPayload(launcher); payload <= 1 {
+		if payload = findPayload(launcher); payload <= 1 || isRuntimeHelper(payload) {
 			return nil, errPayloadPending
 		}
 		start, _ = runtime.GetProcessStartTimeIn(procRoot, payload)
@@ -120,8 +139,12 @@ func (a *Attempt) resolveTarget() (*Target, error) {
 			l.mu.Lock()
 			a.payload, a.payloadStart = 0, 0
 			l.mu.Unlock()
+			return nil, err
 		}
-		return nil, err
+		// A process just found may still be on its way to the container's
+		// namespaces (the container is Running before its application is): the
+		// caller keeps waiting, and reports this if the wait runs out.
+		return nil, &pendingError{cause: err}
 	}
 	if !cached {
 		l.mu.Lock()
