@@ -185,18 +185,22 @@ func findVolume(pod *corev1.Pod, name string) *corev1.Volume {
 	return nil
 }
 
-// buildContainer replicates the container preparation behavior.
-func (h *PodHandler) buildContainer(container *corev1.Container, containerStatus *corev1.ContainerStatus) (Container, error) {
+// buildContainer resolves everything one container needs to run: environment,
+// mounts and image. It reads the pod as the lifecycle owner knows it now, so the
+// pod IP is available to the environment.
+func (h *PodHandler) buildContainer(container *corev1.Container) (Container, error) {
+	pod := h.lifecycle.GetPod()
+
 	/*---------------------------------------------------
 	 * Determine the effective security context
 	 *---------------------------------------------------*/
-	effectiSecurityContext := DetermineEffectiveSecurityContext(h.Pod, container)
+	effectiSecurityContext := DetermineEffectiveSecurityContext(pod, container)
 	uid, gid := DetermineEffectiveRunAsUser(effectiSecurityContext)
 
 	/*---------------------------------------------------
 	 * Resolve Container Environment Pipeline
 	 *---------------------------------------------------*/
-	resolvedEnvs, err := ResolveContainerEnvironment(h.Pod, container, h.podEnvVariables)
+	resolvedEnvs, err := ResolveContainerEnvironment(pod, container, h.podEnvVariables)
 	if err != nil {
 		return Container{}, fmt.Errorf("failed to resolve container environment: %w", err)
 	}
@@ -327,15 +331,7 @@ func (h *PodHandler) buildContainer(container *corev1.Container, containerStatus
 		LogsPath:      containerPath.LogsPath(),
 	}
 
-	/*---------------------------------------------------
-	 * Update Container Status Fields
-	 *---------------------------------------------------*/
-	containerStatus.Name = container.Name
-	containerStatus.ContainerID = containerID
-	containerStatus.Image = container.Image
-	containerStatus.ImageID = img.Filepath
-
-	return c, err
+	return c, nil
 }
 
 // SetContainerRunning marks the container status as running.

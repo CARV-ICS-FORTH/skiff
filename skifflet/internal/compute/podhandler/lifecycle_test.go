@@ -3,6 +3,7 @@ package podhandler
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os/exec"
 	"path/filepath"
 	"sync"
@@ -17,109 +18,116 @@ import (
 	"skifflet/internal/compute/endpoint"
 )
 
-func TestPodLifecycle_RaceFree(t *testing.T) {
-	tmpDir := t.TempDir()
-	podDir := endpoint.PodPath(filepath.Join(tmpDir, "pod"))
-
+func testLifecycle(t *testing.T, notify func(*corev1.Pod), containers ...string) *PodLifecycle {
+	t.Helper()
 	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-race-pod",
-			Namespace: "default",
-			UID:       types.UID("uid-12345"),
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{Name: "c1", Image: "alpine"},
-				{Name: "c2", Image: "nginx"},
-				{Name: "c3", Image: "redis"},
-			},
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: "lifecycle", Namespace: "default", UID: types.UID("uid-" + t.Name())},
+		Spec:       corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever},
 	}
+	for _, name := range containers {
+		pod.Spec.Containers = append(pod.Spec.Containers, corev1.Container{Name: name, Image: "unused"})
+	}
+	pl := NewPodLifecycle(pod, endpoint.PodPath(filepath.Join(t.TempDir(), "pod")), notify)
+	pl.InitializeStatuses()
+	return pl
+}
 
-	var notifyCount int
+func sleeper(seconds string) *exec.Cmd {
+	cmd := exec.Command("sleep", seconds)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	return cmd
+}
+
+func containerState(pl *PodLifecycle, name string) corev1.ContainerStatus {
+	for _, cs := range pl.GetPodStatus().ContainerStatuses {
+		if cs.Name == name {
+			return cs
+		}
+	}
+	return corev1.ContainerStatus{}
+}
+
+// runToExit launches one attempt of a container that exits with code and waits for it.
+func runToExit(t *testing.T, pl *PodLifecycle, name string, code int) *Attempt {
+	t.Helper()
+	a, err := pl.BeginAttempt(name, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", code))
+	if err := a.Start(cmd, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.Wait(cmd); got != code {
+		t.Fatalf("exit code %d, want %d", got, code)
+	}
+	return a
+}
+
+func TestPodLifecycle_RaceFree(t *testing.T) {
 	var notifyMu sync.Mutex
-	notifyFn := func(p *corev1.Pod) {
-		notifyMu.Lock()
-		notifyCount++
-		notifyMu.Unlock()
-	}
-
-	pl := NewPodLifecycle(pod, podDir, notifyFn)
-	pl.RegisterContainer(pod.Spec.Containers[0], false)
-	pl.RegisterContainer(pod.Spec.Containers[1], false)
-	pl.RegisterContainer(pod.Spec.Containers[2], false)
+	notified := 0
+	pl := testLifecycle(t, func(*corev1.Pod) { notifyMu.Lock(); notified++; notifyMu.Unlock() }, "c1", "c2", "c3")
 
 	var wg sync.WaitGroup
-
-	// Reader goroutines (simulating GetPod and GetPodStatus calls from K8s API)
+	// Readers, as the provider's GetPod and GetPodStatus.
 	for i := 0; i < 5; i++ {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				_ = pl.GetPod()
-				time.Sleep(1 * time.Millisecond)
+				time.Sleep(time.Millisecond)
 			}
 		}()
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
 				_ = pl.GetPodStatus()
-				time.Sleep(1 * time.Millisecond)
+				time.Sleep(time.Millisecond)
 			}
 		}()
 	}
-
-	// Writer goroutines (simulating container starts and exits)
-	for i := 0; i < 3; i++ {
-		idx := i
-		cName := fmt.Sprintf("c%d", idx+1)
+	// Writers: containers starting and exiting through the production attempt path.
+	for i, name := range []string{"c1", "c2", "c3"} {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			time.Sleep(5 * time.Millisecond)
-			pl.SetContainerRunning(cName, nil, 1000+idx, 50000+uint64(idx))
-			time.Sleep(10 * time.Millisecond)
-			pl.HandleContainerExit(cName, idx, nil)
+			runToExit(t, pl, name, i)
 		}()
 	}
-
-	// API update goroutine (simulating informer updates)
+	// Informer updates.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for j := 0; j < 20; j++ {
-			updated := pod.DeepCopy()
+			updated := pl.GetPod()
 			updated.Labels = map[string]string{"iter": fmt.Sprintf("%d", j)}
 			pl.UpdateFromAPI(updated)
 			time.Sleep(2 * time.Millisecond)
 		}
 	}()
-
 	wg.Wait()
 
-	finalPod := pl.GetPod()
-	if finalPod.Status.Phase == "" {
-		t.Errorf("expected non-empty final phase, got empty")
+	final := pl.GetPod()
+	if final.Status.Phase == "" {
+		t.Errorf("expected a phase after the containers exited")
+	}
+	for i, name := range []string{"c1", "c2", "c3"} {
+		cs := containerState(pl, name)
+		if cs.State.Terminated == nil || int(cs.State.Terminated.ExitCode) != i {
+			t.Errorf("%s: terminated state %+v, want exit %d", name, cs.State, i)
+		}
+	}
+	notifyMu.Lock()
+	defer notifyMu.Unlock()
+	if notified == 0 {
+		t.Error("no status was published")
 	}
 }
 
 func TestPodLifecycle_DeleteCancelsWork(t *testing.T) {
-	tmpDir := t.TempDir()
-	podDir := endpoint.PodPath(filepath.Join(tmpDir, "pod"))
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-cancel-pod",
-			Namespace: "default",
-			UID:       types.UID("uid-cancel-123"),
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{Name: "c1"}},
-		},
-	}
-
-	pl := NewPodLifecycle(pod, podDir, nil)
+	pl := testLifecycle(t, nil, "c1")
 
 	select {
 	case <-pl.Context().Done():
@@ -127,42 +135,129 @@ func TestPodLifecycle_DeleteCancelsWork(t *testing.T) {
 	default:
 	}
 
-	// Terminate should cancel context
 	go pl.Terminate(50 * time.Millisecond)
 
 	select {
 	case <-pl.Context().Done():
-		// Success: context was cancelled
-	case <-time.After(1 * time.Second):
+	case <-time.After(time.Second):
 		t.Fatal("context was not cancelled upon Terminate")
 	}
 }
 
+// Metadata follows the API, including removals, without disturbing what runs.
+func TestPodLifecycle_MetadataUpdatesKeepRuntimeState(t *testing.T) {
+	pl := testLifecycle(t, nil, "app")
+	a, err := pl.BeginAttempt("app", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := sleeper("30")
+	if err := a.Start(cmd, false); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		a.Wait(cmd)
+	}()
+	before := containerState(pl, "app")
+
+	update := func(labels, annotations map[string]string) {
+		p := pl.GetPod()
+		p.Labels, p.Annotations = labels, annotations
+		pl.UpdateFromAPI(p)
+	}
+	update(map[string]string{"a": "1", "b": "1"}, map[string]string{"x": "1", "y": "1"})
+	update(map[string]string{"a": "2"}, map[string]string{"x": "2"}) // change one, remove others
+	got := pl.GetPod()
+	if len(got.Labels) != 1 || got.Labels["a"] != "2" || len(got.Annotations) != 1 || got.Annotations["x"] != "2" {
+		t.Fatalf("labels %v annotations %v: changes and removals were not applied", got.Labels, got.Annotations)
+	}
+	update(nil, nil)
+	if got := pl.GetPod(); len(got.Labels) != 0 || len(got.Annotations) != 0 {
+		t.Fatalf("removing all metadata failed: %v %v", got.Labels, got.Annotations)
+	}
+
+	// A status publication after a metadata update must not bring the old metadata back.
+	update(map[string]string{"kept": "yes"}, nil)
+	pl.Update(func(*corev1.PodStatus) {})
+	if pl.GetPod().Labels["kept"] != "yes" {
+		t.Fatal("a status publication reverted the metadata update")
+	}
+	after := containerState(pl, "app")
+	if after.State.Running == nil || after.ContainerID != before.ContainerID || after.RestartCount != before.RestartCount {
+		t.Fatalf("metadata updates disturbed the running container: %+v vs %+v", after, before)
+	}
+	if a2, ok := pl.RunningAttempt("app"); !ok || a2 != a {
+		t.Fatal("metadata updates replaced the attempt")
+	}
+}
+
+// The spec is what was launched: an updated spec does not become the running configuration.
+func TestPodLifecycle_SpecChangesAreNotAppliedFromAPI(t *testing.T) {
+	pl := testLifecycle(t, nil, "app")
+	update := pl.GetPod()
+	update.Spec.Containers[0].Image = "other:image"
+	update.Labels = map[string]string{"changed": "yes"}
+	pl.UpdateFromAPI(update)
+	got := pl.GetPod()
+	if got.Spec.Containers[0].Image != "unused" || got.Labels["changed"] != "yes" {
+		t.Fatalf("image %q labels %v: only metadata may follow the API", got.Spec.Containers[0].Image, got.Labels)
+	}
+}
+
 func TestPodLifecycle_SnapshotIsolation(t *testing.T) {
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "snapshots", Namespace: "default", UID: "snapshot-uid"}}
-	pl := NewPodLifecycle(pod, endpoint.PodPath(t.TempDir()), nil)
-	updated := pod.DeepCopy()
+	pl := testLifecycle(t, nil, "app")
+	updated := pl.GetPod()
 	updated.Labels = map[string]string{"version": "current"}
 	pl.UpdateFromAPI(updated)
 	updated.Labels["version"] = "external"
 	if got := pl.GetPod().Labels["version"]; got != "current" {
 		t.Fatalf("API update retained caller's labels: %s", got)
 	}
-	spec := corev1.Container{Name: "app", Command: []string{"original"}}
-	pl.RegisterContainer(spec, false)
-	spec.Command[0] = "external"
-	first, _ := pl.GetContainer("app")
-	first.Spec.Command[0] = "snapshot"
-	first.Status.State.Waiting.Reason = "snapshot"
-	second, _ := pl.GetContainer("app")
-	if second.Spec.Command[0] != "original" || second.Status.State.Waiting.Reason != "ContainerCreating" {
-		t.Fatal("container snapshot mutated lifecycle state")
+	first := pl.GetPod()
+	first.Labels["version"] = "snapshot"
+	first.Status.ContainerStatuses[0].State.Waiting.Reason = "snapshot"
+	first.Spec.Containers[0].Image = "snapshot"
+	second := pl.GetPod()
+	if second.Labels["version"] != "current" || second.Spec.Containers[0].Image != "unused" ||
+		second.Status.ContainerStatuses[0].State.Waiting.Reason != "ContainerCreating" {
+		t.Fatal("a snapshot mutated lifecycle state")
+	}
+}
+
+func TestPodLifecycle_PublishesInOrder(t *testing.T) {
+	var mu sync.Mutex
+	var last string
+	// A slow, jittery consumer widens the window in which an unordered publisher
+	// would deliver an older snapshot after a newer one.
+	pl := testLifecycle(t, func(p *corev1.Pod) {
+		time.Sleep(time.Duration(rand.Intn(3)) * 500 * time.Microsecond)
+		mu.Lock()
+		last = p.Status.HostIP
+		mu.Unlock()
+	}, "app")
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pl.Update(func(s *corev1.PodStatus) { s.HostIP = fmt.Sprintf("update-%d", i) })
+		}()
+	}
+	wg.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if last != pl.GetPodStatus().HostIP {
+		t.Fatalf("the last published status %q is not the current status %q: publication is out of order", last, pl.GetPodStatus().HostIP)
 	}
 }
 
 func TestPodLifecycle_CancelDuringLaunchPreventsProcessStart(t *testing.T) {
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "launch", Namespace: "default", UID: "launch-uid"}}
-	pl := NewPodLifecycle(pod, endpoint.PodPath(filepath.Join(t.TempDir(), "pod")), nil)
+	pl := testLifecycle(t, nil, "app")
+	a, err := pl.BeginAttempt("app", false)
+	if err != nil {
+		t.Fatal(err)
+	}
 	pl.BeginLaunch()
 	terminated := make(chan struct{})
 	go func() {
@@ -174,8 +269,11 @@ func TestPodLifecycle_CancelDuringLaunchPreventsProcessStart(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("termination did not cancel the launcher")
 	}
-	if err := pl.StartTrackedProcess(exec.Command("sleep", "30")); err != context.Canceled {
+	if err := a.Start(sleeper("30"), false); err != context.Canceled {
 		t.Fatalf("process started after cancellation: %v", err)
+	}
+	if _, err := pl.BeginAttempt("app", false); err != context.Canceled {
+		t.Fatalf("a revoked owner began a new attempt: %v", err)
 	}
 	pl.EndLaunch()
 	select {
@@ -185,21 +283,19 @@ func TestPodLifecycle_CancelDuringLaunchPreventsProcessStart(t *testing.T) {
 	}
 }
 
-func TestPodLifecycle_TerminateReapsTrackedProcessOnce(t *testing.T) {
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "running", Namespace: "default", UID: "running-uid"}}
-	pl := NewPodLifecycle(pod, endpoint.PodPath(filepath.Join(t.TempDir(), "pod")), nil)
+func TestPodLifecycle_TerminateReapsAttemptOnce(t *testing.T) {
+	pl := testLifecycle(t, nil, "app")
 	pl.BeginLaunch()
-	cmd := exec.Command("sleep", "30")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := pl.StartTrackedProcess(cmd); err != nil {
+	a, err := pl.BeginAttempt("app", false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	waited := make(chan error, 1)
-	go func() {
-		err := cmd.Wait()
-		pl.FinishTrackedProcess(cmd.Process.Pid)
-		waited <- err
-	}()
+	cmd := sleeper("30")
+	if err := a.Start(cmd, false); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan int, 1)
+	go func() { waited <- a.Wait(cmd) }()
 	pl.EndLaunch()
 	pl.Terminate(300 * time.Millisecond)
 	select {
@@ -207,24 +303,120 @@ func TestPodLifecycle_TerminateReapsTrackedProcessOnce(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("sole process waiter did not complete")
 	}
-	if pl.SignalTrackedProcess(cmd.Process.Pid, syscall.SIGKILL) {
+	if a.Signal(syscall.SIGKILL) {
 		t.Fatal("completed attempt remained signalable")
+	}
+	if _, running := pl.RunningAttempt("app"); running {
+		t.Fatal("completed attempt is still reported running")
 	}
 }
 
 func TestPodLifecycle_StartFailureLeavesNoProcessOwnership(t *testing.T) {
-	pl := NewPodLifecycle(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{UID: "failed-launch"}}, endpoint.PodPath(t.TempDir()), nil)
+	pl := testLifecycle(t, nil, "app")
 	pl.BeginLaunch()
-	if err := pl.StartTrackedProcess(exec.Command(filepath.Join(t.TempDir(), "missing-launcher"))); err == nil {
+	a, err := pl.BeginAttempt("app", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(exec.Command(filepath.Join(t.TempDir(), "missing-launcher")), false); err == nil {
 		t.Fatal("missing launcher unexpectedly started")
 	}
+	a.Fail(128)
 	pl.EndLaunch()
 	pl.ReleaseLiveResources(0)
 	pl.Terminate(0)
 	pl.mu.RLock()
-	defer pl.mu.RUnlock()
-	if len(pl.attempts) != 0 {
+	live := len(pl.live)
+	pl.mu.RUnlock()
+	if live != 0 {
 		t.Fatal("failed start retained process ownership")
+	}
+	if term := containerState(pl, "app").State.Terminated; term == nil || term.ExitCode != 128 {
+		t.Fatalf("failed start was not published as exit 128: %+v", containerState(pl, "app").State)
+	}
+}
+
+// An old attempt (a restarted container's earlier launch, or a probe still holding
+// it) can neither publish status nor signal the process of a newer attempt.
+func TestAttempt_SupersededAttemptCannotPublishOrSignal(t *testing.T) {
+	pl := testLifecycle(t, nil, "app")
+	old := runToExit(t, pl, "app", 1)
+
+	next, err := pl.BeginAttempt("app", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID != old.ID+1 {
+		t.Fatalf("attempt ids %d then %d: not consecutive", old.ID, next.ID)
+	}
+	cmd := sleeper("30")
+	if err := next.Start(cmd, true); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		next.Wait(cmd)
+	}()
+	if cs := containerState(pl, "app"); cs.RestartCount != 1 || cs.Ready {
+		t.Fatalf("second attempt: restarts %d ready %v, want 1 and unready (awaiting its readiness probe)", cs.RestartCount, cs.Ready)
+	}
+
+	old.SetReady(true)
+	if containerState(pl, "app").Ready {
+		t.Fatal("a late readiness result of the old attempt marked the new attempt ready")
+	}
+	if old.Signal(syscall.SIGKILL) {
+		t.Fatal("the old attempt signalled the new attempt's process")
+	}
+	if syscall.Kill(cmd.Process.Pid, 0) != nil {
+		t.Fatal("the new attempt's process was killed by the old attempt")
+	}
+
+	next.SetReady(true)
+	if !containerState(pl, "app").Ready {
+		t.Fatal("the current attempt could not publish readiness")
+	}
+	if a2, ok := pl.RunningAttempt("app"); !ok || a2 != next {
+		t.Fatal("the running attempt is not the newest one")
+	}
+}
+
+// The controller ignores status updates for a pod the API server already shows as
+// Failed, so the container's exit and the pod's failure reason must arrive together.
+func TestAttempt_FailPodPublishesContainerAndReasonTogether(t *testing.T) {
+	var mu sync.Mutex
+	var published []*corev1.Pod
+	pl := testLifecycle(t, func(p *corev1.Pod) { mu.Lock(); published = append(published, p); mu.Unlock() }, "app")
+	mu.Lock()
+	published = nil // ignore the initial publication
+	mu.Unlock()
+
+	a, err := pl.BeginAttempt("app", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.FailPod(128, "LogFileError", "cannot open %s", "app.logs")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(published) != 1 {
+		t.Fatalf("%d publications, want exactly one", len(published))
+	}
+	got := published[0]
+	if got.Status.Phase != corev1.PodFailed || got.Status.Reason != "LogFileError" {
+		t.Fatalf("phase %s reason %q, want Failed/LogFileError in the one publication", got.Status.Phase, got.Status.Reason)
+	}
+	if cs := got.Status.ContainerStatuses[0]; cs.State.Terminated == nil || cs.State.Terminated.ExitCode != 128 {
+		t.Fatalf("container state %+v, want terminated with 128", cs.State)
+	}
+}
+
+func TestAttempt_ReadinessDoesNotOutliveTheProcess(t *testing.T) {
+	pl := testLifecycle(t, nil, "app")
+	a := runToExit(t, pl, "app", 0)
+	a.SetReady(true)
+	if cs := containerState(pl, "app"); cs.Ready || cs.State.Terminated == nil {
+		t.Fatalf("readiness was published for an exited container: %+v", cs)
 	}
 }
 

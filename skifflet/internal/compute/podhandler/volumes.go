@@ -249,8 +249,7 @@ func (h *PodHandler) DownwardAPIVolumeSource(ctx context.Context, vol corev1.Vol
 
 	data, err := downwardapi.CollectData(vol.DownwardAPI.Items, h.Pod, &defaultMode)
 	if err != nil {
-		compute.PodError(h.Pod, compute.ReasonSpecError, "%v", err)
-		return err
+		return fmt.Errorf("downwardAPI volume '%s': %w", vol.Name, err)
 	}
 
 	for relPath, fileProj := range data {
@@ -306,9 +305,7 @@ func (h *PodHandler) PersistentVolumeClaimSource(ctx context.Context, vol corev1
 				return nil
 			},
 		); errPVC != nil { // error cehcking
-			compute.PodError(h.Pod, "PVCError", "PVC (%s) has failed. error:'%v'", pvc.GetName(), errPVC)
-
-			return errPVC
+			return fmt.Errorf("PVC (%s) has failed: %w", pvc.GetName(), errPVC)
 		}
 	}
 
@@ -327,12 +324,7 @@ func (h *PodHandler) PersistentVolumeClaimSource(ctx context.Context, vol corev1
 				return compute.K8SClient.Get(ctx, key, &pv)
 			},
 		); errPV != nil { // error checking
-			compute.PodError(h.Pod, "PVError", "PV (%s) has failed. err:'%v'",
-				pv.GetName(),
-				errPV,
-			)
-
-			return errPV
+			return fmt.Errorf("PV (%s) has failed: %w", pvc.Spec.VolumeName, errPV)
 		}
 	}
 

@@ -123,13 +123,13 @@ func TestBuildContainerRejectsMissingSourceSubPath(t *testing.T) {
 					}
 				}
 				pod := &corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "config", VolumeSource: tc.source}}}}
-				h := &PodHandler{Pod: pod, podDirectory: podDir}
+				h := newTestHandler(pod, podDir)
 				imagePath := filepath.Join(t.TempDir(), "fixture.sif")
 				if err := os.WriteFile(imagePath, []byte("fixture"), 0600); err != nil {
 					t.Fatal(err)
 				}
 				container := &corev1.Container{Name: "app", Image: imagePath, ImagePullPolicy: corev1.PullNever, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/config", SubPath: subPath}}}
-				_, err := h.buildContainer(container, &corev1.ContainerStatus{})
+				_, err := h.buildContainer(container)
 				if err == nil || !strings.Contains(err.Error(), "subPath source does not exist") {
 					t.Errorf("missing source should fail before image preparation: %v", err)
 				}
@@ -168,8 +168,8 @@ func TestBuildContainerPreservesSupportedSubPaths(t *testing.T) {
 			if err := os.WriteFile(imagePath, []byte("fixture"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			h := &PodHandler{Pod: &corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "config", VolumeSource: source}}}}, podDirectory: podDir}
-			container, err := h.buildContainer(&corev1.Container{Name: "app", Image: imagePath, ImagePullPolicy: corev1.PullNever, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/config", SubPath: subPath}}}, &corev1.ContainerStatus{})
+			h := newTestHandler(&corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "config", VolumeSource: source}}}}, podDir)
+			container, err := h.buildContainer(&corev1.Container{Name: "app", Image: imagePath, ImagePullPolicy: corev1.PullNever, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/config", SubPath: subPath}}})
 			if err != nil {
 				t.Fatal(err)
 			}

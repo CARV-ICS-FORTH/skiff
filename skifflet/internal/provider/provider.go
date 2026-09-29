@@ -17,7 +17,6 @@ package provider
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +27,6 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"skifflet/internal/compute"
@@ -114,40 +112,12 @@ func NewVirtualK8S(config InitConfig) (*VirtualK8S, error) {
 	}
 
 	/*---------------------------------------------------
-	 * Reconcile Surviving Workloads from Journal
-	 *---------------------------------------------------*/
-	if err := ReconcileSurvivingWorkloads(compute.Skiff.String()); err != nil {
-		logger.Error(err, "warning: error during surviving workloads reconciliation")
-	}
-
-	/*---------------------------------------------------
 	 * Clean up any leftover pod directories from prior runs
 	 *---------------------------------------------------*/
 	_ = compute.Skiff.WalkPodDirectories(func(podpath endpoint.PodPath) error {
 		logger.Info("Cleaning up leftover pod directory", "path", podpath)
-		pidsPath := filepath.Join(podpath.JobDir(), "pids.json")
-		if data, err := os.ReadFile(pidsPath); err == nil {
-			var pids struct {
-				PausePID            int            `json:"pause_pid"`
-				PauseStartTime      uint64         `json:"pause_start_time"`
-				ContainerPIDs       []int          `json:"container_pids"`
-				ContainerStartTimes map[int]uint64 `json:"container_start_times"`
-			}
-			if err := json.Unmarshal(data, &pids); err == nil {
-				for _, pid := range pids.ContainerPIDs {
-					st := pids.ContainerStartTimes[pid]
-					if pid > 1 && runtime.VerifyProcessIdentity(pid, st) && !runtime.IsProcessDead(pid) {
-						_ = syscall.Kill(-pid, syscall.SIGKILL)
-						_ = syscall.Kill(pid, syscall.SIGKILL)
-					}
-				}
-				if pids.PausePID > 1 && runtime.VerifyProcessIdentity(pids.PausePID, pids.PauseStartTime) && !runtime.IsProcessDead(pids.PausePID) {
-					_ = syscall.Kill(-pids.PausePID, syscall.SIGKILL)
-					_ = syscall.Kill(pids.PausePID, syscall.SIGKILL)
-				}
-			}
-		}
-		_ = os.RemoveAll(podpath.String())
+		PodHandler.ReapRecordedProcesses(podpath)
+		_ = PodHandler.SafeRemovePodDirectory(podpath.String())
 		namespaceDir := filepath.Dir(podpath.String())
 		if empty, _ := endpoint.IsEmpty(namespaceDir); empty {
 			_ = os.Remove(namespaceDir)
@@ -201,9 +171,8 @@ func (v *VirtualK8S) createPodLocked(ctx context.Context, pod *corev1.Pod) (func
 	if val, ok := v.pods.Load(podKey); ok {
 		cleanup, _ = v.deletePodLocked(ctx, val.(*corev1.Pod))
 	}
-	executionPod := pod.DeepCopy()
 	notify := func(p *corev1.Pod) { v.saveAndNotifyPod("podhandler", p) }
-	owner := PodHandler.NewPodLifecycle(executionPod,
+	owner := PodHandler.NewPodLifecycle(pod,
 		compute.Skiff.PodWithUID(podKey, pod.UID), notify)
 	owner.BeginLaunch()
 	PodHandler.GlobalRegistry.Register(owner)
@@ -217,13 +186,11 @@ func (v *VirtualK8S) createPodLocked(ctx context.Context, pod *corev1.Pod) (func
 		defer func() {
 			if r := recover(); r != nil {
 				logger.Error(fmt.Errorf("%v", r), "Recovered panic in CreatePod goroutine", "pod", podKey)
-				compute.PodError(executionPod, "PanicError", "internal panic occurred during pod creation: %v", r)
-				owner.Publish(executionPod)
-				v.saveAndNotifyPod("panic", owner.GetPod())
+				owner.Fail("PanicError", "internal panic occurred during pod creation: %v", r)
 			}
 		}()
 
-		PodHandler.PreparePod(owner, executionPod, notify)
+		PodHandler.PreparePod(owner)
 	}
 	if v.dispatchPreparation != nil {
 		v.dispatchPreparation(prepare)
@@ -276,31 +243,10 @@ func (v *VirtualK8S) updatePodLocked(ctx context.Context, pod *corev1.Pod) (func
 		return nil, nil
 	}
 
-	localVersion, errLocal := strconv.ParseUint(localPod.ResourceVersion, 10, 64)
-	newVersion, errNew := strconv.ParseUint(pod.ResourceVersion, 10, 64)
-
-	isOlder := false
-	if errLocal == nil && errNew == nil {
-		isOlder = localVersion >= newVersion
-	} else {
-		isOlder = localPod.ResourceVersion == pod.ResourceVersion
-	}
-
-	if isOlder {
-		logger.Info("Discard update since its ResourceVersion is not newer than local")
-		return nil, nil
-	}
-
-	if !runtime.HasJobID(pod) {
-		logger.Info("Discard update because container is still starting")
-		return nil, nil
-	}
-
-	v.stateMu.Lock()
-	v.pods.Store(podKey, pod.DeepCopy())
-	v.stateMu.Unlock()
-
-	return nil, nil
+	// The cache holds the pod but no owner runs it: nothing is executing this UID,
+	// so treat the update as a creation rather than recording a spec nobody applies.
+	logger.Info("Pod has no lifecycle owner in UpdatePod, creating it", "uid", pod.UID)
+	return v.createPodLocked(ctx, pod)
 }
 
 // DeletePod takes a Kubernetes Pod and deletes it from the provider.
@@ -356,10 +302,9 @@ func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) (func
 		return nil, nil
 	}
 
-	gracePeriod := 30 * time.Second
-	if localPod.Spec.TerminationGracePeriodSeconds != nil && *localPod.Spec.TerminationGracePeriodSeconds >= 0 {
-		gracePeriod = time.Duration(*localPod.Spec.TerminationGracePeriodSeconds) * time.Second
-	}
+	// A deletion request's own grace period (kubectl delete --grace-period) takes
+	// precedence over the value the pod was created with.
+	gracePeriod := PodHandler.TerminationGrace(pod, localPod)
 
 	v.stateMu.Lock()
 	if cancelVal, ok := v.cancelFuncs.LoadAndDelete(podKey); ok {
@@ -382,7 +327,6 @@ func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) (func
 		} else {
 			_ = PodHandler.DeletePod(podKey, localPod)
 		}
-		RemoveJournalRecord(compute.Skiff.String(), localPod.GetUID())
 		logger.Info("[K8s] <- DeletePod (SUCCESS)")
 	}, nil
 }
@@ -592,11 +536,11 @@ func (v *VirtualK8S) PortForward(ctx context.Context, namespace, pod string, por
 	if stream == nil {
 		return fmt.Errorf("port-forward stream is nil")
 	}
-	value, ok := v.pods.Load(podKey)
-	if !ok {
+	owner := PodHandler.GlobalRegistry.GetByKey(podKey)
+	if owner == nil {
 		return errdefs.NotFoundf("pod %s/%s not found", namespace, pod)
 	}
-	podIP := value.(*corev1.Pod).Status.PodIP
+	podIP := owner.GetPodStatus().PodIP
 	if net.ParseIP(podIP) == nil || port <= 0 || port > 65535 {
 		return fmt.Errorf("pod %s/%s has no valid forwarding target", namespace, pod)
 	}
@@ -851,22 +795,16 @@ func (v *VirtualK8S) RunInContainer(ctx context.Context, namespace, podName, con
 		}
 	}()
 
-	value, ok := v.pods.Load(podKey)
-	if !ok {
+	owner := PodHandler.GlobalRegistry.GetByKey(podKey)
+	if owner == nil {
 		return errdefs.NotFoundf("pod %s/%s not found", namespace, podName)
 	}
-	containerID := ""
-	for _, status := range value.(*corev1.Pod).Status.ContainerStatuses {
-		if status.Name == containerName && status.State.Running != nil {
-			containerID = status.ContainerID
-			break
-		}
-	}
-	launcherPID, startTime, err := runtime.ParseProcessJobID(containerID)
-	if err != nil || runtime.IsProcessDead(launcherPID) {
+	attempt, running := owner.RunningAttempt(containerName)
+	if !running {
 		return errdefs.NotFoundf("container %s is not running in pod %s/%s", containerName, namespace, podName)
 	}
-	if currentStart, err := runtime.GetProcessStartTime(launcherPID); err != nil || (startTime > 0 && currentStart != startTime) {
+	launcherPID, _, verified := attempt.Launcher()
+	if !verified {
 		return errdefs.NotFoundf("container %s process was replaced", containerName)
 	}
 	containerPID := PodHandler.FindContainerPID(launcherPID)

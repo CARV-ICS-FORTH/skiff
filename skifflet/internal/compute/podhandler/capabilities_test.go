@@ -1,7 +1,6 @@
 package podhandler
 
 import (
-	"context"
 	"os"
 	"strings"
 	"testing"
@@ -137,12 +136,17 @@ func TestValidatePodCapabilities(t *testing.T) {
 				}
 				tt.pod.Name, tt.pod.Namespace, tt.pod.UID = "rejected", "capability-test", "rejected-capability"
 				var snapshot *corev1.Pod
-				CreatePod(context.Background(), tt.pod, func(p *corev1.Pod) { snapshot = p })
+				owner := installOwner(t, tt.pod, func(p *corev1.Pod) { snapshot = p })
+				defer func() { owner.Terminate(0); GlobalRegistry.DeleteOwner(owner) }()
+				<-prepare(owner)
 				if snapshot == nil || snapshot.Status.Phase != corev1.PodFailed || snapshot.Status.Reason != compute.ReasonUnsupportedFeatures {
 					t.Fatalf("production launcher did not publish unsupported result: %+v", snapshot)
 				}
 				path := compute.Skiff.PodWithUID(client.ObjectKeyFromObject(tt.pod), tt.pod.UID)
-				if _, err := os.Stat(path.String()); !os.IsNotExist(err) || GlobalRegistry.Get(tt.pod.UID) != nil || snapshot.Status.PodIP != "" {
+				owner.mu.RLock()
+				allocated := owner.sandbox != nil || len(owner.live) != 0
+				owner.mu.RUnlock()
+				if _, err := os.Stat(path.String()); !os.IsNotExist(err) || allocated || snapshot.Status.PodIP != "" {
 					t.Fatal("unsupported capability allocated runtime resources")
 				}
 			}

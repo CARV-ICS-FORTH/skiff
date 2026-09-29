@@ -51,14 +51,6 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 		}
 	}
 
-	/*-- Initialization of virtual environment  --*/
-	if pod.Status.PodIP == "" {
-		if ip, ok := pod.Annotations["skiff.io/pod-ip"]; ok && ip != "" {
-			pod.Status.PodIP = ip
-			pod.Status.PodIPs = append(pod.Status.PodIPs, corev1.PodIP{IP: ip})
-		}
-	}
-
 	/*---------------------------------------------------
 	 * Load Container Statuses
 	 *---------------------------------------------------*/

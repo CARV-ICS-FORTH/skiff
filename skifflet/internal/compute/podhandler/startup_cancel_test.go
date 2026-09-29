@@ -1,7 +1,6 @@
 package podhandler
 
 import (
-	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -73,20 +72,17 @@ func TestCreateDeleteWhileNetworkInitializationBlocked(t *testing.T) {
 	defer func() { compute.K8SClient, podNetworkSocket = oldClient, oldSocket }()
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "blocked-network", Namespace: "startup-cancel", UID: "blocked-network-uid"},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "unused"}}}}
-	launched := make(chan struct{})
 	states := make(chan *corev1.Pod, 16)
-	go func() {
-		CreatePod(context.Background(), pod.DeepCopy(), func(p *corev1.Pod) { states <- p.DeepCopy() })
-		close(states)
-		close(launched)
-	}()
+	owner := installOwner(t, pod, func(p *corev1.Pod) { states <- p.DeepCopy() })
+	launched := prepare(owner)
+	go func() { <-launched; close(states) }()
 	select {
 	case <-requested:
 	case <-time.After(2 * time.Second):
 		t.Fatal("production launcher did not reach readiness barrier")
 	}
 	pl := GlobalRegistry.Get(pod.UID)
-	if pl == nil {
+	if pl != owner {
 		t.Fatal("production launcher has no lifecycle owner")
 	}
 	deleted := make(chan bool, 1)
@@ -114,7 +110,7 @@ func TestCreateDeleteWhileNetworkInitializationBlocked(t *testing.T) {
 		t.Fatal("deleted lifecycle remained registered")
 	}
 	pl.mu.RLock()
-	allocated := pl.sandbox != nil || len(pl.attempts) != 0
+	allocated := pl.sandbox != nil || len(pl.live) != 0
 	pl.mu.RUnlock()
 	if allocated {
 		t.Fatal("cancelled startup allocated processes or sandbox after deletion")
@@ -159,8 +155,7 @@ func TestCreateDeleteDuringPauseImagePull(t *testing.T) {
 	}()
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "blocked-pull", Namespace: "startup-cancel", UID: "blocked-pull-uid"},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "unused"}}}}
-	finished := make(chan struct{})
-	go func() { CreatePod(context.Background(), pod.DeepCopy(), nil); close(finished) }()
+	finished := prepare(installOwner(t, pod, nil))
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if _, err := os.Stat(pullMarker); err == nil {

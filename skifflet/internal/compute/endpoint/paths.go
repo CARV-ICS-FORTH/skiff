@@ -146,6 +146,14 @@ func (p PodPath) VolumeDir() string {
 	return filepath.Join(string(p), "volumes")
 }
 
+// TmpDir is the pod's own Apptainer temporary directory (APPTAINER_TMPDIR).
+// Apptainer unpacks each container's root filesystem here and removes it when the
+// container exits normally; a container that is killed leaves it behind, so it
+// must live inside the pod directory, where pod cleanup removes it.
+func (p PodPath) TmpDir() string {
+	return filepath.Join(string(p), "tmp")
+}
+
 func (p PodPath) LogDir() string {
 	return filepath.Join(string(p), "logs")
 }
