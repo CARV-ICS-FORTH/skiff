@@ -67,6 +67,11 @@ class AppTest(unittest.TestCase):
         with open(os.path.join(self.ctl, "events")) as f:
             return [line.split() for line in f.read().splitlines()]
 
+    def test_hostname_says_who_answered(self):
+        self.start()
+        wait_for(lambda: fetch(self.port, "/hostname")[0] == 200, "listening")
+        self.assertEqual(fetch(self.port, "/hostname")[1], socket.gethostname())
+
     def test_switches_counters_and_headers(self):
         self.start()
         wait_for(lambda: fetch(self.port, "/ready")[0] == 200, "listening")

@@ -131,23 +131,12 @@ e2e_assert_eq "one server payload remains in the Pod namespace" "$POD_PROCS" "1"
 e2e_kubectl delete pod e2e07-always -n "$NS"
 runtime_verify_gone "$NS" "e2e07-always" 60
 
-# Unsupported probe and hook forms must be rejected before sandbox allocation.
-for feature in startup hook; do
-    case "$feature" in
-        startup) unsupported_spec='    startupProbe:
-      httpGet:
-        path: /ready
-        port: 9007' ;;
-        hook) unsupported_spec='    lifecycle:
-      postStart:
-        exec:
-          command: ["/bin/true"]' ;;
-    esac
-    cat <<EOF | e2e_kubectl apply -f -
+# Lifecycle hooks are not supported yet and must be rejected before sandbox allocation.
+cat <<EOF | e2e_kubectl apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
-  name: e2e07-unsupported-${feature}
+  name: e2e07-unsupported-hook
   namespace: ${NS}
 spec:
   nodeName: ${NODE_A}
@@ -155,17 +144,19 @@ spec:
   - name: app
     image: ${FIXTURE_IMAGE}
     command: ["sleep", "3600"]
-${unsupported_spec}
+    lifecycle:
+      postStart:
+        exec:
+          command: ["/bin/true"]
 EOF
-    e2e_wait_pod_phase "$NS" "e2e07-unsupported-${feature}" "Failed" 60
-    reason=$(e2e_kubectl get pod "e2e07-unsupported-${feature}" -n "$NS" -o jsonpath='{.status.reason}')
-    e2e_assert_eq "${feature} rejection reason" "$reason" "UnsupportedFeatures"
-    uid=$(e2e_kubectl get pod "e2e07-unsupported-${feature}" -n "$NS" -o jsonpath='{.metadata.uid}')
-    pod_ip=$(e2e_kubectl get pod "e2e07-unsupported-${feature}" -n "$NS" -o jsonpath='{.status.podIP}')
-    e2e_assert_eq "${feature} rejected without pod IP" "$pod_ip" ""
-    allocated=$(runtime_bubble_exec "$NODE_A" "if [ -e '$(runtime_pod_dir "$NS" "e2e07-unsupported-${feature}" "$uid")' ]; then echo 1; else echo 0; fi")
-    e2e_assert_eq "${feature} rejected before runtime allocation" "$allocated" "0"
-    e2e_kubectl delete pod "e2e07-unsupported-${feature}" -n "$NS" --wait=true
-done
+e2e_wait_pod_phase "$NS" "e2e07-unsupported-hook" "Failed" 60
+reason=$(e2e_kubectl get pod "e2e07-unsupported-hook" -n "$NS" -o jsonpath='{.status.reason}')
+e2e_assert_eq "hook rejection reason" "$reason" "UnsupportedFeatures"
+uid=$(e2e_kubectl get pod "e2e07-unsupported-hook" -n "$NS" -o jsonpath='{.metadata.uid}')
+pod_ip=$(e2e_kubectl get pod "e2e07-unsupported-hook" -n "$NS" -o jsonpath='{.status.podIP}')
+e2e_assert_eq "hook rejected without pod IP" "$pod_ip" ""
+allocated=$(runtime_bubble_exec "$NODE_A" "if [ -e '$(runtime_pod_dir "$NS" "e2e07-unsupported-hook" "$uid")' ]; then echo 1; else echo 0; fi")
+e2e_assert_eq "hook rejected before runtime allocation" "$allocated" "0"
+e2e_kubectl delete pod "e2e07-unsupported-hook" -n "$NS" --wait=true
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

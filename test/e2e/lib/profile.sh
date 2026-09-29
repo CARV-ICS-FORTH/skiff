@@ -8,12 +8,15 @@ profile_required_cases() {
     printf '%s\n' \
         E2E-01 E2E-02 E2E-03 E2E-04 E2E-05 E2E-06 \
         E2E-07 E2E-08 E2E-09 E2E-09-skifflet E2E-09-plaidd \
-        E2E-09-slirp E2E-09-relay E2E-10 E2E-11 E2E-12 \
+        E2E-09-slirp E2E-09-relay E2E-10 E2E-11 E2E-12 E2E-13 \
         NET-3-tap-acceptance NET-4-tap-webhook CANDIDATE E2E-01-teardown \
         T04-logs T04-exec T04-portforward T04-pods-assigned T04-runningpods \
         T04-attach-501 T04-stats-501 T04-metrics-501 \
         T04-logs-missing-pod T04-logs-missing-container \
-        T17-exec-environment T17-exec-workdir
+        T17-exec-environment T17-exec-workdir \
+        T07-startup-protects-slow-start T07-startup-failure-restarts T07-startup-failure-kill \
+        T07-named-ports T07-exec-probes T07-http-request T08-service-readiness \
+        T09-delete-during-probe
 }
 
 profile_is_required() {

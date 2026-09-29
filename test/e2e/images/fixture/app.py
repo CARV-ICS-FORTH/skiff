@@ -16,6 +16,7 @@ restarts):
 Endpoints: /startup /ready /live answer 200 unless switched off; /ctl/<probe>/on
 and /ctl/<probe>/off flip a switch; /counters returns request counts per path;
 /headers?path=/x returns the headers of the last request to that path;
+/hostname returns the container's hostname (which backend answered);
 /hook/<name> records a hook call; /exit/<code> exits with that code.
 Before --listen-delay elapses nothing listens, so every network probe fails.
 SIGTERM records "term", waits --term-delay, records "exit" and exits 0.
@@ -25,6 +26,7 @@ import argparse
 import json
 import os
 import signal
+import socket
 import socketserver
 import sys
 import threading
@@ -138,6 +140,8 @@ class App:
                         os.remove(app.switch_path(parts[1]))
                     app.event("switch", probe=parts[1], state=parts[2])
                     self.reply(200, parts[2])
+                elif parts == ["hostname"]:
+                    self.reply(200, socket.gethostname())
                 elif parts == ["counters"]:
                     with app.lock:
                         self.reply(200, json.dumps({"attempt": app.attempt, "counts": app.counts}))
