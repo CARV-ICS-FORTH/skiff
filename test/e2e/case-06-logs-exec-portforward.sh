@@ -29,6 +29,9 @@ spec:
   - name: app
     image: ${FIXTURE_IMAGE}
     args: ["log-emitter", "--port", "8080"]
+    env:
+    - name: E2E06_VAR
+      value: from-the-pod
 EOF
 
 e2e_wait_pod_ready "$NS" "e2e06-pod" 60
@@ -65,6 +68,23 @@ OUT=$(e2e_kubectl exec e2e06-pod -n $NS -- cat /workdir/marker.txt)
 e2e_assert_eq "exec cat marker" "$OUT" "e2e06-marker"
 
 e2e_assert_exit "exec exit code" 7 e2e_kubectl exec e2e06-pod -n $NS -- sh -c 'exit 7'
+
+# T17 (partial): a command run with exec sees the container's own environment and
+# working directory, not those of Skifflet. HOST_IP is set in the bubble that runs
+# Skifflet and must not reach the container.
+exec_environment() {
+    e2e_assert_eq "the container's own variable is visible" "$(e2e_kubectl exec e2e06-pod -n "$NS" -- printenv E2E06_VAR)" "from-the-pod"
+    e2e_assert_eq "the bubble's environment is not" "$(e2e_kubectl exec e2e06-pod -n "$NS" -- sh -c 'printenv HOST_IP || echo absent')" "absent"
+}
+exec_workdir() {
+    local exec_dir main_dir
+    exec_dir=$(e2e_kubectl exec e2e06-pod -n "$NS" -- pwd)
+    main_dir=$(e2e_kubectl exec e2e06-pod -n "$NS" -- readlink /proc/1/cwd)
+    e2e_assert_nonempty "exec working directory" "$exec_dir"
+    e2e_assert_eq "exec starts in the working directory of the main process" "$exec_dir" "$main_dir"
+}
+e2e_subcase_run T17-exec-environment exec_environment
+e2e_subcase_run T17-exec-workdir exec_workdir
 
 e2e_kubectl port-forward e2e06-pod 18080:8080 -n $NS &
 PF_PID=$!

@@ -799,28 +799,17 @@ func (v *VirtualK8S) RunInContainer(ctx context.Context, namespace, podName, con
 	if owner == nil {
 		return errdefs.NotFoundf("pod %s/%s not found", namespace, podName)
 	}
-	attempt, running := owner.RunningAttempt(containerName)
-	if !running {
-		return errdefs.NotFoundf("container %s is not running in pod %s/%s", containerName, namespace, podName)
+	target, err := owner.ResolveTarget(ctx, containerName)
+	if err != nil {
+		return execTargetError(err, namespace, podName, containerName)
 	}
-	launcherPID, _, verified := attempt.Launcher()
-	if !verified {
-		return errdefs.NotFoundf("container %s process was replaced", containerName)
-	}
-	containerPID := PodHandler.FindContainerPID(launcherPID)
-	if containerPID == launcherPID || runtime.IsProcessDead(containerPID) {
-		return errdefs.NotFoundf("container %s payload is not running", containerName)
-	}
+	logger = logger.WithValues("uid", owner.UID(), "attempt", target.Attempt.ID)
 
-	// Execute command locally into the container's namespaces using nsenter
-	nsenterArgs := []string{
-		"-t", strconv.Itoa(containerPID),
-		"-m", "-n", "-p", "-r",
-		"--",
+	execCmd, release, err := target.Command(ctx, cmd)
+	if err != nil {
+		return execTargetError(err, namespace, podName, containerName)
 	}
-	nsenterArgs = append(nsenterArgs, cmd...)
-
-	execCmd := exec.CommandContext(ctx, "nsenter", nsenterArgs...)
+	defer release()
 	if attach != nil {
 		execCmd.Stdin = attach.Stdin()
 		execCmd.Stdout = attach.Stdout()
@@ -829,12 +818,26 @@ func (v *VirtualK8S) RunInContainer(ctx context.Context, namespace, podName, con
 
 	if err := execCmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
+			logger.Info("exec finished", "action", "exec", "exitCode", exitErr.ExitCode())
 			return utilexec.CodeExitError{
 				Err:  exitErr,
 				Code: exitErr.ExitCode(),
 			}
 		}
+		logger.Info("exec failed", "action", "exec", "reason", err.Error())
 		return err
 	}
+	logger.Info("exec finished", "action", "exec", "exitCode", 0)
 	return nil
+}
+
+// execTargetError maps why a container cannot be used to the response: a
+// container that is not running, or whose process was replaced while the request
+// was being served, is not found; anything else (for example a failed namespace
+// verification) is reported as it is.
+func execTargetError(err error, namespace, podName, containerName string) error {
+	if errors.Is(err, PodHandler.ErrContainerNotRunning) || errors.Is(err, PodHandler.ErrTargetChanged) {
+		return errdefs.NotFoundf("container %s in pod %s/%s: %v", containerName, namespace, podName, err)
+	}
+	return fmt.Errorf("container %s in pod %s/%s: %w", containerName, namespace, podName, err)
 }

@@ -340,6 +340,11 @@ type Attempt struct {
 	pid       int
 	startTime uint64
 	done      chan struct{} // closed once the sole waiter has returned
+
+	// The container's main process, remembered once it has been found and
+	// verified (see Target); guarded by pl.mu.
+	payload      int
+	payloadStart uint64
 }
 
 // BeginAttempt creates the next attempt of a container. It fails once the pod is
@@ -520,7 +525,7 @@ func (a *Attempt) kill() {
 	if !a.verified() {
 		return
 	}
-	if payload := findPayload(a.pid); payload > 1 {
+	if payload := a.mainProcess(); payload > 1 {
 		_ = syscall.Kill(payload, syscall.SIGKILL)
 		select {
 		case <-a.done:
@@ -532,6 +537,18 @@ func (a *Attempt) kill() {
 		_ = syscall.Kill(-a.pid, syscall.SIGKILL)
 		_ = a.process.Kill()
 	}
+}
+
+// mainProcess returns the PID of the container's main process, or 0 if it has
+// not been found.
+func (a *Attempt) mainProcess() int {
+	a.pl.mu.RLock()
+	payload := a.payload
+	a.pl.mu.RUnlock()
+	if payload > 1 {
+		return payload
+	}
+	return findPayload(a.pid)
 }
 
 func (a *Attempt) verified() bool {
@@ -547,11 +564,6 @@ func (a *Attempt) Launcher() (pid int, startTime uint64, ok bool) {
 		return 0, 0, false
 	}
 	return a.pid, a.startTime, true
-}
-
-// LauncherID is the process identity recorded as the container's ID.
-func (a *Attempt) LauncherID() string {
-	return runtime.FormatProcessJobID(a.pid, a.startTime)
 }
 
 // RunningAttempt returns the current attempt of a container if its process runs.

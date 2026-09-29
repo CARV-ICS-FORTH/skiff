@@ -5,32 +5,49 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os/exec"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	"skifflet/internal/compute/runtime"
 
 	corev1 "k8s.io/api/core/v1"
 )
 
 // startProbes runs the probes of a container for one attempt. Both stop when the
 // attempt ends (its context is cancelled), and their results reach the pod only
-// through the attempt, which drops them once it has been superseded.
+// through the attempt, which drops them once it has been superseded. Network
+// probes run from here against the pod IP; exec probes run inside the container
+// through the attempt's verified target.
 func startProbes(a *Attempt, podIP string, spec *corev1.Container) {
-	launcherID := a.LauncherID()
+	check := func(ctx context.Context, probe *corev1.Probe, timeout time.Duration) bool {
+		return evaluateProbe(ctx, probe, podIP, timeout, a.execProbe)
+	}
 	if probe := spec.ReadinessProbe; probe != nil {
-		watchReadinessProbe(a.Context(), podIP, launcherID, probe, a.SetReady)
+		watchReadinessProbe(a.Context(), probe, check, a.SetReady)
 	}
 	if probe := spec.LivenessProbe; probe != nil {
-		watchLivenessProbe(a.Context(), podIP, launcherID, probe, func() { a.Signal(syscall.SIGKILL) })
+		watchLivenessProbe(a.Context(), probe, check, func() {
+			a.logger.Info("liveness probe failed; stopping the container", "action", "probe", "reason", "liveness failure threshold reached")
+			a.Signal(syscall.SIGKILL)
+		})
 	}
 }
 
+// probeCheck runs one probe once.
+type probeCheck func(ctx context.Context, probe *corev1.Probe, timeout time.Duration) bool
+
+// execProbe runs a command probe inside the container. A container that is not
+// (yet) a usable target simply fails the probe.
+func (a *Attempt) execProbe(ctx context.Context, argv []string, timeout time.Duration) bool {
+	target, err := a.Target(ctx, 0)
+	if err != nil {
+		return false
+	}
+	code, err := target.Run(ctx, argv, timeout)
+	return err == nil && code == 0
+}
+
 // watchReadinessProbe checks the live PodIP from the bubble and reports readiness changes via onReadyChange.
-func watchReadinessProbe(ctx context.Context, podIP string, containerID string, probe *corev1.Probe, onReadyChange func(ready bool)) {
+func watchReadinessProbe(ctx context.Context, probe *corev1.Probe, check probeCheck, onReadyChange func(ready bool)) {
 	go func() {
 		if delay := time.Duration(probe.InitialDelaySeconds) * time.Second; delay > 0 {
 			select {
@@ -63,7 +80,7 @@ func watchReadinessProbe(ctx context.Context, podIP string, containerID string, 
 			if ctx.Err() != nil {
 				return
 			}
-			if evaluateReadinessProbe(probe, podIP, containerID, timeout) {
+			if check(ctx, probe, timeout) {
 				successes++
 				failures = 0
 				if successes >= successThreshold && !isReady {
@@ -92,7 +109,7 @@ func watchReadinessProbe(ctx context.Context, podIP string, containerID string, 
 }
 
 // watchLivenessProbe checks the live PodIP and invokes onFailure when failure threshold is reached.
-func watchLivenessProbe(ctx context.Context, podIP string, containerID string, probe *corev1.Probe, onFailure func()) {
+func watchLivenessProbe(ctx context.Context, probe *corev1.Probe, check probeCheck, onFailure func()) {
 	go func() {
 		if delay := time.Duration(probe.InitialDelaySeconds) * time.Second; delay > 0 {
 			select {
@@ -120,7 +137,7 @@ func watchLivenessProbe(ctx context.Context, podIP string, containerID string, p
 			if ctx.Err() != nil {
 				return
 			}
-			if evaluateReadinessProbe(probe, podIP, containerID, timeout) {
+			if check(ctx, probe, timeout) {
 				failures = 0
 			} else {
 				failures++
@@ -140,29 +157,10 @@ func watchLivenessProbe(ctx context.Context, podIP string, containerID string, p
 	}()
 }
 
-func evaluateReadinessProbe(probe *corev1.Probe, podIP, containerID string, timeout time.Duration) bool {
-	if probe.Exec == nil {
-		return evaluateProbe(probe, podIP, timeout)
-	}
-	if len(probe.Exec.Command) == 0 {
-		return false
-	}
-	launcherPID, _, err := runtime.ParseProcessJobID(containerID)
-	if err != nil || runtime.IsProcessDead(launcherPID) {
-		return false
-	}
-	containerPID := FindContainerPID(launcherPID)
-	if containerPID == launcherPID || runtime.IsProcessDead(containerPID) {
-		return false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	args := []string{"-t", strconv.Itoa(containerPID), "-m", "-n", "-p", "-r", "--"}
-	args = append(args, probe.Exec.Command...)
-	return exec.CommandContext(ctx, "nsenter", args...).Run() == nil
-}
-
-func evaluateProbe(probe *corev1.Probe, podIP string, timeout time.Duration) bool {
+// evaluateProbe runs one probe once. Network probes are made from here against
+// the pod IP, bound to ctx; exec probes are handed to runExec.
+func evaluateProbe(ctx context.Context, probe *corev1.Probe, podIP string, timeout time.Duration,
+	runExec func(ctx context.Context, argv []string, timeout time.Duration) bool) bool {
 	if probe.HTTPGet != nil {
 		port := probe.HTTPGet.Port.IntValue()
 		if port <= 0 {
@@ -181,7 +179,7 @@ func evaluateProbe(probe *corev1.Probe, podIP string, timeout time.Duration) boo
 		}
 		url := fmt.Sprintf("%s://%s:%d%s", scheme, host, port, probe.HTTPGet.Path)
 		client := &http.Client{Timeout: timeout}
-		req, err := http.NewRequest("GET", url, nil)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {
 			return false
 		}
@@ -208,7 +206,7 @@ func evaluateProbe(probe *corev1.Probe, podIP string, timeout time.Duration) boo
 		if host == "" {
 			return false
 		}
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), timeout)
+		conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, port))
 		if err != nil {
 			return false
 		}
@@ -216,11 +214,11 @@ func evaluateProbe(probe *corev1.Probe, podIP string, timeout time.Duration) boo
 		return true
 	}
 
-	if probe.Exec != nil && len(probe.Exec.Command) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, probe.Exec.Command[0], probe.Exec.Command[1:]...)
-		return cmd.Run() == nil
+	if probe.Exec != nil {
+		if len(probe.Exec.Command) == 0 || runExec == nil {
+			return false
+		}
+		return runExec(ctx, probe.Exec.Command, timeout)
 	}
 
 	return true

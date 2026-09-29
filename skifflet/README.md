@@ -38,7 +38,7 @@ Skifflet is a Virtual Kubelet provider: it implements the pod lifecycle and the 
 | Operation | Status | Result | Alternative | Test |
 |---|---|---|---|---|
 | `/containerLogs` (`kubectl logs`) | implemented | Current container output | | T04 |
-| `/exec` (`kubectl exec`) | implemented | Runs a command inside the running container (same namespaces and filesystem; no new container is created) | | T04 |
+| `/exec` (`kubectl exec`) | implemented | Runs a command inside the running container: its namespaces, root filesystem, working directory and environment; no new container is created. Refused if the container's main process or namespaces do not verify | | T04, T17 |
 | `/portForward` (`kubectl port-forward`) | implemented | Connects to the pod IP from the node | | T04 |
 | `/pods` | implemented | The pods Kubernetes has assigned to this node (desired state) | | T04 |
 | `/runningpods/` | implemented | The pods Skifflet is running (runtime view) | | T04 |

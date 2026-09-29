@@ -12,7 +12,8 @@ profile_required_cases() {
         NET-3-tap-acceptance NET-4-tap-webhook CANDIDATE E2E-01-teardown \
         T04-logs T04-exec T04-portforward T04-pods-assigned T04-runningpods \
         T04-attach-501 T04-stats-501 T04-metrics-501 \
-        T04-logs-missing-pod T04-logs-missing-container
+        T04-logs-missing-pod T04-logs-missing-container \
+        T17-exec-environment T17-exec-workdir
 }
 
 profile_is_required() {

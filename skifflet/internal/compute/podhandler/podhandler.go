@@ -40,7 +40,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// FindContainerPID locates the live payload beneath an Apptainer launcher.
+// FindContainerPID locates the live process beneath the Apptainer launcher of the
+// pause container, by heuristics. It is the fallback for a sandbox launched without
+// the Plaid handshake, which reports the process itself. Application containers do
+// not use it: they are resolved through Attempt.Target, which verifies what it finds.
 func FindContainerPID(parentPID int) int {
 	deadline := time.Now().Add(10 * time.Second)
 	for {

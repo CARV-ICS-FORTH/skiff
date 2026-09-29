@@ -1,6 +1,7 @@
 package podhandler
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -57,7 +58,43 @@ func TestHTTPReadinessUsesPodIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	probe := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromInt(port)}}}
-	if !evaluateReadinessProbe(probe, host, "", time.Second) {
+	if !evaluateProbe(context.Background(), probe, host, time.Second, nil) {
 		t.Fatal("HTTP readiness probe could not reach the PodIP")
+	}
+}
+
+// Exec probes are run by the runner they are handed (the container's target in
+// production): success is exit code 0, and an empty command never succeeds.
+func TestExecProbeUsesTheRunner(t *testing.T) {
+	var got []string
+	run := func(succeed bool) func(context.Context, []string, time.Duration) bool {
+		return func(_ context.Context, argv []string, _ time.Duration) bool { got = argv; return succeed }
+	}
+	probe := &corev1.Probe{ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"test", "-f", "/ready"}}}}
+	if !evaluateProbe(context.Background(), probe, "", time.Second, run(true)) || len(got) != 3 || got[0] != "test" {
+		t.Fatalf("a succeeding runner did not make the probe succeed (ran %v)", got)
+	}
+	if evaluateProbe(context.Background(), probe, "", time.Second, run(false)) {
+		t.Fatal("a failing runner made the probe succeed")
+	}
+	if evaluateProbe(context.Background(), probe, "", time.Second, nil) {
+		t.Fatal("an exec probe without anything to run it in succeeded")
+	}
+	probe.Exec.Command = nil
+	if evaluateProbe(context.Background(), probe, "", time.Second, run(true)) {
+		t.Fatal("an exec probe with no command succeeded")
+	}
+}
+
+// A container that is not a usable target fails its exec probe instead of running
+// the command anywhere else.
+func TestExecProbeFailsWhenThereIsNoTarget(t *testing.T) {
+	pl := testLifecycle(t, nil, "app")
+	a, err := pl.BeginAttempt("app", false) // never started: nothing to run in
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.execProbe(context.Background(), []string{"true"}, time.Second) {
+		t.Fatal("an exec probe succeeded for an attempt without a process")
 	}
 }

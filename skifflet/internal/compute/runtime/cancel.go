@@ -78,10 +78,15 @@ func isProcessDead(pid int) bool {
 
 // GetProcessStartTime returns the process start time (field 22 of /proc/<pid>/stat) in clock ticks since boot.
 func GetProcessStartTime(pid int) (uint64, error) {
+	return GetProcessStartTimeIn("/proc", pid)
+}
+
+// GetProcessStartTimeIn is GetProcessStartTime for a proc filesystem mounted at procDir.
+func GetProcessStartTimeIn(procDir string, pid int) (uint64, error) {
 	if pid <= 1 {
 		return 0, fmt.Errorf("%w: cannot get start time for pid %d", ErrPIDTooLow, pid)
 	}
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	data, err := os.ReadFile(fmt.Sprintf("%s/%d/stat", procDir, pid))
 	if err != nil {
 		return 0, err
 	}
