@@ -1,4 +1,4 @@
-.PHONY: all build build-linux build-linux-amd64 build-linux-arm64 vet test test-race clean
+.PHONY: all build vet test test-race clean
 
 BIN_DIR := bin
 
@@ -18,7 +18,8 @@ endif
 endif
 
 BUILD_TIME ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS := -X plaid/pkg/version.Version=$(VERSION) \
+# -s -w drops the symbol table and DWARF (about 30% of the binary); stack traces are unaffected.
+LDFLAGS := -s -w -X plaid/pkg/version.Version=$(VERSION) \
            -X plaid/pkg/version.BuildTime=$(BUILD_TIME) \
            -X plaid/pkg/version.GitCommit=$(GIT_COMMIT)
 
@@ -30,26 +31,6 @@ build:
 	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaid ./cmd/plaid
 	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidctl ./cmd/plaidctl
 	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidtainer ./cmd/plaidtainer
-
-build-linux: build-linux-amd64
-
-build-linux-amd64:
-	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidd-linux-amd64 ./cmd/plaidd
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaid-linux-amd64 ./cmd/plaid
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidctl-linux-amd64 ./cmd/plaidctl
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidtainer-linux-amd64 ./cmd/plaidtainer
-	@cp -f $(BIN_DIR)/plaidd-linux-amd64 $(BIN_DIR)/plaidd-linux 2>/dev/null || true
-	@cp -f $(BIN_DIR)/plaid-linux-amd64 $(BIN_DIR)/plaid-linux 2>/dev/null || true
-	@cp -f $(BIN_DIR)/plaidctl-linux-amd64 $(BIN_DIR)/plaidctl-linux 2>/dev/null || true
-	@cp -f $(BIN_DIR)/plaidtainer-linux-amd64 $(BIN_DIR)/plaidtainer-linux 2>/dev/null || true
-
-build-linux-arm64:
-	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidd-linux-arm64 ./cmd/plaidd
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaid-linux-arm64 ./cmd/plaid
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidctl-linux-arm64 ./cmd/plaidctl
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidtainer-linux-arm64 ./cmd/plaidtainer
 
 vet:
 	go vet ./...

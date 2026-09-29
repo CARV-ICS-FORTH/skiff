@@ -40,8 +40,10 @@ jobs:
       - name: Run tests with race detector
         run: make test-race
 
-      - name: Build binaries (linux/amd64)
-        run: make binaries-linux-amd64
-
-      - name: Build binaries (linux/arm64)
-        run: make binaries-linux-arm64
+      - name: Cross-compile check (linux/amd64, linux/arm64)
+        run: |
+          for arch in amd64 arm64; do
+            for module in skifflet plaid; do
+              (cd "$module" && CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build ./...)
+            done
+          done

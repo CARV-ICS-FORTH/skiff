@@ -1,5 +1,4 @@
 # Binaries
-bin/
 skifflet/bin/
 plaid/bin/
 *.test

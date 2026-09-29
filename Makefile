@@ -19,11 +19,9 @@ endif
 
 BUILD_TIME := $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 
-# Binary output directory
-BIN_DIR = bin
 export GOFLAGS ?= -buildvcs=false
 
-.PHONY: all build build-skifflet build-plaid binaries-linux-amd64 binaries-linux-arm64 vet test test-race clean builder images publish-images develop e2e-images fmt fmt-check check-shell
+.PHONY: all build build-skifflet build-plaid vet test test-race clean builder images publish-images develop e2e-images fmt fmt-check check-shell
 
 all: build
 
@@ -36,22 +34,6 @@ build-skifflet:
 build-plaid:
 	@echo "Building plaid..."
 	$(MAKE) -C plaid build
-
-binaries-linux-amd64:
-	@echo "Building linux/amd64 binaries..."
-	@mkdir -p $(BIN_DIR)
-	$(MAKE) -C skifflet build-linux-amd64
-	$(MAKE) -C plaid build-linux-amd64
-	@cp -f skifflet/bin/*-linux-amd64 $(BIN_DIR)/ 2>/dev/null || true
-	@cp -f plaid/bin/*-linux-amd64 $(BIN_DIR)/ 2>/dev/null || true
-
-binaries-linux-arm64:
-	@echo "Building linux/arm64 binaries..."
-	@mkdir -p $(BIN_DIR)
-	$(MAKE) -C skifflet build-linux-arm64
-	$(MAKE) -C plaid build-linux-arm64
-	@cp -f skifflet/bin/*-linux-arm64 $(BIN_DIR)/ 2>/dev/null || true
-	@cp -f plaid/bin/*-linux-arm64 $(BIN_DIR)/ 2>/dev/null || true
 
 vet:
 	@echo "Running go vet on skifflet..."
@@ -193,4 +175,4 @@ e2e-images:
 clean:
 	$(MAKE) -C skifflet clean
 	$(MAKE) -C plaid clean
-	rm -rf $(BIN_DIR) /tmp/skiff-images
+	rm -rf /tmp/skiff-images

@@ -1,4 +1,4 @@
-.PHONY: all build build-linux build-linux-amd64 build-linux-arm64 vet test test-race clean
+.PHONY: all build vet test test-race clean
 
 BIN_DIR := bin
 BINARY := $(BIN_DIR)/skifflet
@@ -19,7 +19,8 @@ endif
 endif
 
 BUILD_TIME ?= $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
-LDFLAGS := -X skifflet/pkg/version.Version=$(VERSION) \
+# -s -w drops the symbol table and DWARF (about 30% of the binary); stack traces are unaffected.
+LDFLAGS := -s -w -X skifflet/pkg/version.Version=$(VERSION) \
            -X skifflet/pkg/version.BuildTime=$(BUILD_TIME) \
            -X skifflet/pkg/version.GitCommit=$(GIT_COMMIT) \
            -X skifflet/cmd/skifflet/commands.BuildVersion=$(VERSION) \
@@ -31,17 +32,6 @@ all: build
 build:
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY) ./cmd/skifflet
-
-build-linux: build-linux-amd64
-
-build-linux-amd64:
-	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(BINARY)-linux-amd64 ./cmd/skifflet
-	@cp -f $(BINARY)-linux-amd64 $(BINARY)-linux 2>/dev/null || true
-
-build-linux-arm64:
-	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BINARY)-linux-arm64 ./cmd/skifflet
 
 vet:
 	go vet ./...

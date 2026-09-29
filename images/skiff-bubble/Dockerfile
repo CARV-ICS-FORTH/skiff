@@ -7,16 +7,23 @@ ARG VERSION=unknown
 ARG GIT_COMMIT=unknown
 ARG BUILD_TIME=unknown
 WORKDIR /src
-COPY . .
-RUN CGO_ENABLED=0 GOARCH=${TARGETARCH} make -C skifflet build VERSION="${VERSION}" GIT_COMMIT="${GIT_COMMIT}" BUILD_TIME="${BUILD_TIME}"
-RUN CGO_ENABLED=0 GOARCH=${TARGETARCH} make -C plaid build VERSION="${VERSION}" GIT_COMMIT="${GIT_COMMIT}" BUILD_TIME="${BUILD_TIME}"
+# Only the source of the two modules is copied (see .dockerignore). The Go module
+# and build caches live in BuildKit cache mounts, so they are reused between
+# builds instead of being stored again in every layer.
+COPY skifflet/ skifflet/
+COPY plaid/ plaid/
+RUN --mount=type=cache,target=/root/.go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOARCH=${TARGETARCH} make -C skifflet build VERSION="${VERSION}" GIT_COMMIT="${GIT_COMMIT}" BUILD_TIME="${BUILD_TIME}" && \
+    CGO_ENABLED=0 GOARCH=${TARGETARCH} make -C plaid build VERSION="${VERSION}" GIT_COMMIT="${GIT_COMMIT}" BUILD_TIME="${BUILD_TIME}"
 
 FROM ${BASE_IMAGE}
 WORKDIR /
 
 # Basic utilities, iptables, and nscd. Outer slirp4netns runs on the VM/HPC host.
+# drill (ldnsutils) answers the DNS readiness check in entrypoint.sh; dig would
+# pull in libxml2 and libicu (about 45 MB).
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends vim-tiny curl dnsutils iproute2 net-tools iputils-ping nano socat iptables nscd && \
+    apt-get install -y --no-install-recommends curl ldnsutils iproute2 iputils-ping iptables nscd && \
     rm -rf /var/lib/apt/lists/*
 
 # Apptainer
@@ -27,7 +34,10 @@ RUN apt-get update && \
     echo "deb [signed-by=/etc/apt/keyrings/apptainer.gpg] https://ppa.launchpadcontent.net/apptainer/ppa/ubuntu noble main" > /etc/apt/sources.list.d/apptainer-ubuntu-ppa-noble.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends apptainer && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    # Plaid provides the network (containers run with --network=none) and nothing
+    # here uses encrypted images, so Apptainer's bundled CNI plugins and gocryptfs are dead weight.
+    rm -rf /usr/libexec/apptainer/cni /usr/libexec/apptainer/bin/gocryptfs
 
 # CNI plugins (host-local IPAM plugin used by Plaid)
 ARG TARGETARCH

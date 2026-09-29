@@ -1,4 +1,11 @@
-.git
-.gitignore
-*.md
-LICENSE
+# The images are built from an allow-list: only what the build reads goes into
+# the build context. Local binaries, tests, plans and documentation never do.
+*
+!skifflet
+!plaid
+!images/skiff-bubble/entrypoint.sh
+
+# Local build outputs and test files inside the allowed directories.
+**/bin
+**/*_test.go
+**/*.md

@@ -335,7 +335,7 @@ echo "Waiting for Kubernetes API Service and cluster DNS..."
 NETWORK_WAIT=0
 while true; do
     API_CODE="$(curl -ksS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' https://10.43.0.1/version 2>/dev/null || true)"
-    DNS_ANSWER="$(dig +short +time=2 +tries=1 @10.43.0.10 kubernetes.default.svc.cluster.local A 2>/dev/null || true)"
+    DNS_ANSWER="$(timeout 3 drill -Q @10.43.0.10 kubernetes.default.svc.cluster.local A 2>/dev/null | awk '{print $NF}' || true)"
     if [ "$API_CODE" != "000" ] && [ -n "$API_CODE" ] && printf '%s\n' "$DNS_ANSWER" | grep -qx '10.43.0.1'; then
         echo "Kubernetes API Service and cluster DNS are ready"
         break

@@ -82,12 +82,11 @@ On each node (e.g. `10.244.x.0/24`):
 Plaid is written in Go with zero external C dependencies for the core binaries.
 
 ```bash
-# Build host binaries (macOS / Linux) into bin/
+# Build the binaries for this host into bin/
 make build
-
-# Cross-compile Linux binaries (bin/plaidd-linux, bin/plaid-linux, bin/plaidctl-linux, bin/plaidtainer-linux)
-make build-linux
 ```
+
+The Linux binaries that run in the cluster are built inside the builder container (`make images` from the repository root).
 
 ---
 
