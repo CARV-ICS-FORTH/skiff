@@ -252,6 +252,7 @@ run_workload_cases() {
     run_case "11" "harness-selfcheck"
     run_case "12" "daemon-collision"
     run_case "13" "probes"
+    run_case "14" "exec"
     run_daemon_failure_matrix
 }
 
@@ -327,6 +328,7 @@ if [ -n "$ONLY_CASE" ]; then
             11) run_case "11" "harness-selfcheck" ;;
             12) run_case "12" "daemon-collision" ;;
             13) run_case "13" "probes" ;;
+            14) run_case "14" "exec" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

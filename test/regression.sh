@@ -5,6 +5,7 @@ repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_dir"
 python3 test/e2e/lib/candidate.py --self-test
 python3 test/e2e/images/fixture/app_test.py
+python3 test/e2e/lib/pty_client.py --self-test
 bash test/skiff-supervision-test.sh
 if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
     for suite in runtime-observer profile common; do
