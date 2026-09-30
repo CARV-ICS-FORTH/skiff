@@ -1,6 +1,7 @@
 package podhandler
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"skifflet/internal/compute/endpoint"
@@ -42,7 +43,7 @@ func TestResolveContainerEnvironment_FieldRefAndCIdentifier(t *testing.T) {
 		{Name: "OVERRIDE_VAR", Value: "service-loses"},
 	}
 
-	resolved, err := ResolveContainerEnvironment(pod, container, serviceEnvs)
+	resolved, err := ResolveContainerEnvironment(context.Background(), pod, container, serviceEnvs)
 	if err != nil {
 		t.Fatalf("unexpected error resolving env: %v", err)
 	}
@@ -97,7 +98,7 @@ func TestResolveContainerEnvironment_MissingNonOptional(t *testing.T) {
 		},
 	}
 
-	_, err := ResolveContainerEnvironment(pod, container, nil)
+	_, err := ResolveContainerEnvironment(context.Background(), pod, container, nil)
 	if err == nil {
 		t.Fatalf("expected error resolving missing non-optional configmap, got nil")
 	}
@@ -129,7 +130,7 @@ func TestBuildContainerRejectsMissingSourceSubPath(t *testing.T) {
 					t.Fatal(err)
 				}
 				container := &corev1.Container{Name: "app", Image: imagePath, ImagePullPolicy: corev1.PullNever, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/config", SubPath: subPath}}}
-				_, err := h.buildContainer(container)
+				_, err := h.buildContainer(context.Background(), container)
 				if err == nil || !strings.Contains(err.Error(), "subPath source does not exist") {
 					t.Errorf("missing source should fail before image preparation: %v", err)
 				}
@@ -169,7 +170,7 @@ func TestBuildContainerPreservesSupportedSubPaths(t *testing.T) {
 				t.Fatal(err)
 			}
 			h := newTestHandler(&corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "config", VolumeSource: source}}}}, podDir)
-			container, err := h.buildContainer(&corev1.Container{Name: "app", Image: imagePath, ImagePullPolicy: corev1.PullNever, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/config", SubPath: subPath}}})
+			container, err := h.buildContainer(context.Background(), &corev1.Container{Name: "app", Image: imagePath, ImagePullPolicy: corev1.PullNever, VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/config", SubPath: subPath}}})
 			if err != nil {
 				t.Fatal(err)
 			}

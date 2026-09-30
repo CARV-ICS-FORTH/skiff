@@ -31,7 +31,7 @@ import (
 // Map's value is the (sorted) content of the field to be dumped in the file.
 //
 // Note: this function is exported so that it can be called from the projection volume driver
-func CollectData(items []corev1.DownwardAPIVolumeFile, pod *corev1.Pod, defaultMode *int32) (map[string]volumeutil.FileProjection, error) {
+func CollectData(items []corev1.DownwardAPIVolumeFile, pod *corev1.Pod, defaultMode *int32, resources fieldpath.ResourceResolver) (map[string]volumeutil.FileProjection, error) {
 	if defaultMode == nil {
 		return nil, fmt.Errorf("no defaultMode used, not even the default value for it")
 	}
@@ -48,17 +48,24 @@ func CollectData(items []corev1.DownwardAPIVolumeFile, pod *corev1.Pod, defaultM
 		}
 
 		if fileInfo.FieldRef != nil {
-			// TODO: unify with Kubelet.podFieldSelectorRuntimeValue
-			if values, err := fieldpath.ExtractFieldPathAsString(pod, fileInfo.FieldRef.FieldPath); err != nil {
+			if values, err := fieldpath.PodFieldValue(pod, fileInfo.FieldRef.FieldPath); err != nil {
 				klog.Errorf("Unable to extract field %s: %s", fileInfo.FieldRef.FieldPath, err.Error())
 				errlist = append(errlist, err)
 			} else {
 				fileProjection.Data = []byte(values)
 			}
 		} else if fileInfo.ResourceFieldRef != nil {
-			err := fmt.Errorf("resourceFieldRef is unsupported for container '%s', resource '%s' at path '%s'", fileInfo.ResourceFieldRef.ContainerName, fileInfo.ResourceFieldRef.Resource, fileInfo.Path)
-			klog.Errorf("%v", err)
-			errlist = append(errlist, err)
+			if resources == nil {
+				err := fmt.Errorf("resourceFieldRef for container '%s', resource '%s' at path '%s' cannot be resolved here", fileInfo.ResourceFieldRef.ContainerName, fileInfo.ResourceFieldRef.Resource, fileInfo.Path)
+				klog.Errorf("%v", err)
+				errlist = append(errlist, err)
+			} else if value, err := resources(fileInfo.ResourceFieldRef); err != nil {
+				err = fmt.Errorf("path '%s': %w", fileInfo.Path, err)
+				klog.Errorf("%v", err)
+				errlist = append(errlist, err)
+			} else {
+				fileProjection.Data = []byte(value)
+			}
 		} else {
 			err := fmt.Errorf("fieldRef and resourceFieldRef are both missing for path '%s'", fileInfo.Path)
 			klog.Errorf("%v", err)

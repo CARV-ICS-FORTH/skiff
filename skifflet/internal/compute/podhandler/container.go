@@ -34,145 +34,6 @@ import (
 	mounter "k8s.io/utils/mount"
 )
 
-// ResolveContainerEnvironment resolves the final container environment by:
-// 1. Starting with cluster/service-derived variables (lower precedence)
-// 2. Applying container-specific environment variables from EnvFrom (ConfigMaps/Secrets)
-// 3. Applying container-specific environment variables (higher precedence)
-// 4. Resolving deferred runtime FieldRefs (status.podIP, status.hostIP, metadata.name, metadata.namespace, metadata.uid)
-func ResolveContainerEnvironment(pod *corev1.Pod, container *corev1.Container, serviceEnvs []corev1.EnvVar) ([]corev1.EnvVar, error) {
-	envMap := make(map[string]string)
-	var order []string
-
-	addOrUpdate := func(name, value string) {
-		if _, exists := envMap[name]; !exists {
-			order = append(order, name)
-		}
-		envMap[name] = value
-	}
-
-	// 1. Lower precedence: service-derived environment variables
-	for _, envVar := range serviceEnvs {
-		addOrUpdate(envVar.Name, envVar.Value)
-	}
-
-	// 2. Middle precedence: container.EnvFrom (ConfigMaps and Secrets)
-	ctx := context.Background()
-	for _, envFrom := range container.EnvFrom {
-		if envFrom.ConfigMapRef != nil {
-			optional := envFrom.ConfigMapRef.Optional != nil && *envFrom.ConfigMapRef.Optional
-			if compute.K8SClientset != nil {
-				cm, err := compute.K8SClientset.CoreV1().ConfigMaps(pod.Namespace).Get(ctx, envFrom.ConfigMapRef.Name, metav1.GetOptions{})
-				if err != nil {
-					if !optional {
-						return nil, fmt.Errorf("configmap %q not found: %w", envFrom.ConfigMapRef.Name, err)
-					}
-				} else if cm != nil {
-					for k, v := range cm.Data {
-						key := envFrom.Prefix + k
-						if len(validation.IsCIdentifier(key)) == 0 {
-							addOrUpdate(key, v)
-						}
-					}
-				}
-			} else if !optional {
-				return nil, fmt.Errorf("k8s clientset unavailable to resolve configmap %q", envFrom.ConfigMapRef.Name)
-			}
-		} else if envFrom.SecretRef != nil {
-			optional := envFrom.SecretRef.Optional != nil && *envFrom.SecretRef.Optional
-			if compute.K8SClientset != nil {
-				sec, err := compute.K8SClientset.CoreV1().Secrets(pod.Namespace).Get(ctx, envFrom.SecretRef.Name, metav1.GetOptions{})
-				if err != nil {
-					if !optional {
-						return nil, fmt.Errorf("secret %q not found: %w", envFrom.SecretRef.Name, err)
-					}
-				} else if sec != nil {
-					for k, v := range sec.Data {
-						key := envFrom.Prefix + k
-						if len(validation.IsCIdentifier(key)) == 0 {
-							addOrUpdate(key, string(v))
-						}
-					}
-				}
-			} else if !optional {
-				return nil, fmt.Errorf("k8s clientset unavailable to resolve secret %q", envFrom.SecretRef.Name)
-			}
-		}
-	}
-
-	// 3. Higher precedence: container.Env (user-specified, explicit overrides, ValueFrom, etc.)
-	for _, envVar := range container.Env {
-		val := envVar.Value
-		// Deferred FieldRef and ValueFrom resolution
-		if envVar.ValueFrom != nil {
-			if envVar.ValueFrom.FieldRef != nil {
-				switch envVar.ValueFrom.FieldRef.FieldPath {
-				case "status.podIP":
-					val = pod.Status.PodIP
-				case "status.hostIP":
-					val = pod.Status.HostIP
-				case "metadata.name":
-					val = pod.Name
-				case "metadata.namespace":
-					val = pod.Namespace
-				case "metadata.uid":
-					val = string(pod.UID)
-				}
-			} else if envVar.ValueFrom.ConfigMapKeyRef != nil {
-				ref := envVar.ValueFrom.ConfigMapKeyRef
-				optional := ref.Optional != nil && *ref.Optional
-				if compute.K8SClientset != nil {
-					cm, err := compute.K8SClientset.CoreV1().ConfigMaps(pod.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-					if err != nil {
-						if !optional {
-							return nil, fmt.Errorf("configmap %q not found: %w", ref.Name, err)
-						}
-					} else if cm != nil {
-						if v, ok := cm.Data[ref.Key]; ok {
-							val = v
-						} else if !optional {
-							return nil, fmt.Errorf("key %q not found in configmap %q", ref.Key, ref.Name)
-						}
-					}
-				} else if !optional {
-					return nil, fmt.Errorf("k8s clientset unavailable to resolve configmap %q", ref.Name)
-				}
-			} else if envVar.ValueFrom.SecretKeyRef != nil {
-				ref := envVar.ValueFrom.SecretKeyRef
-				optional := ref.Optional != nil && *ref.Optional
-				if compute.K8SClientset != nil {
-					sec, err := compute.K8SClientset.CoreV1().Secrets(pod.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
-					if err != nil {
-						if !optional {
-							return nil, fmt.Errorf("secret %q not found: %w", ref.Name, err)
-						}
-					} else if sec != nil {
-						if v, ok := sec.Data[ref.Key]; ok {
-							val = string(v)
-						} else if !optional {
-							return nil, fmt.Errorf("key %q not found in secret %q", ref.Key, ref.Name)
-						}
-					}
-				} else if !optional {
-					return nil, fmt.Errorf("k8s clientset unavailable to resolve secret %q", ref.Name)
-				}
-			}
-		} else if val == ".status.podIP" { // legacy skifflet convention
-			val = pod.Status.PodIP
-		}
-
-		addOrUpdate(envVar.Name, val)
-	}
-
-	resolved := make([]corev1.EnvVar, len(order))
-	for i, name := range order {
-		resolved[i] = corev1.EnvVar{
-			Name:  name,
-			Value: envMap[name],
-		}
-	}
-	return resolved, nil
-}
-
 func findVolume(pod *corev1.Pod, name string) *corev1.Volume {
 	if pod == nil {
 		return nil
@@ -188,7 +49,7 @@ func findVolume(pod *corev1.Pod, name string) *corev1.Volume {
 // buildContainer resolves everything one container needs to run: environment,
 // mounts and image. It reads the pod as the lifecycle owner knows it now, so the
 // pod IP is available to the environment.
-func (h *PodHandler) buildContainer(container *corev1.Container) (Container, error) {
+func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Container) (Container, error) {
 	pod := h.lifecycle.GetPod()
 
 	/*---------------------------------------------------
@@ -200,8 +61,11 @@ func (h *PodHandler) buildContainer(container *corev1.Container) (Container, err
 	/*---------------------------------------------------
 	 * Resolve Container Environment Pipeline
 	 *---------------------------------------------------*/
-	resolvedEnvs, err := ResolveContainerEnvironment(pod, container, h.podEnvVariables)
+	resolvedEnvs, err := ResolveContainerEnvironment(ctx, pod, container, h.podEnvVariables)
 	if err != nil {
+		if IsConfigError(err) {
+			return Container{}, err // said as it is: what is missing, as the kubelet says it
+		}
 		return Container{}, fmt.Errorf("failed to resolve container environment: %w", err)
 	}
 

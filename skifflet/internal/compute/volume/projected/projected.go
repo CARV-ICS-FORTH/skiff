@@ -26,6 +26,7 @@ import (
 	"skifflet/internal/compute/volume/downwardapi"
 	"skifflet/internal/compute/volume/secret"
 	"skifflet/internal/compute/volume/util"
+	"skifflet/pkg/fieldpath"
 
 	"github.com/go-logr/logr"
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -43,6 +44,9 @@ type VolumeMounter struct {
 	Volume corev1.Volume
 
 	Pod corev1.Pod
+
+	// Resources evaluates resourceFieldRef items of a downwardAPI source.
+	Resources fieldpath.ResourceResolver
 
 	Logger logr.Logger
 }
@@ -190,7 +194,7 @@ func (b *VolumeMounter) collectDataWithExpiry(ctx context.Context) (map[string]u
 			/*---------------------------------------------------
 			 * Projected DownwardAPI
 			 *---------------------------------------------------*/
-			downwardAPIPayload, err := downwardapi.CollectData(source.DownwardAPI.Items, &b.Pod, b.Volume.Projected.DefaultMode)
+			downwardAPIPayload, err := downwardapi.CollectData(source.DownwardAPI.Items, &b.Pod, b.Volume.Projected.DefaultMode, b.Resources)
 			if err != nil {
 				b.Logger.Error(err, "Couldn't get downwardAPI payload")
 

@@ -213,9 +213,10 @@ func (h *PodHandler) mountVolumeSource(ctx context.Context, vol corev1.Volume) e
 		}
 
 		mounter := projected.VolumeMounter{
-			Volume: vol,
-			Pod:    *h.Pod,
-			Logger: h.logger,
+			Volume:    vol,
+			Pod:       *h.Pod,
+			Resources: h.resourceResolver(ctx),
+			Logger:    h.logger,
 		}
 
 		if err := mounter.SetUpAt(ctx, projectedDir); err != nil {
@@ -247,7 +248,7 @@ func (h *PodHandler) DownwardAPIVolumeSource(ctx context.Context, vol corev1.Vol
 		defaultMode = *vol.DownwardAPI.DefaultMode
 	}
 
-	data, err := downwardapi.CollectData(vol.DownwardAPI.Items, h.Pod, &defaultMode)
+	data, err := downwardapi.CollectData(vol.DownwardAPI.Items, h.Pod, &defaultMode, h.resourceResolver(ctx))
 	if err != nil {
 		return fmt.Errorf("downwardAPI volume '%s': %w", vol.Name, err)
 	}
