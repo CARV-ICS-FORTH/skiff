@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -13,8 +14,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// fakeConfig serves ConfigMaps, Secrets and the node's allocatable resources from memory.
+// fakeConfig serves ConfigMaps, Secrets and the node's allocatable resources from
+// memory. It is read by the goroutine that prepares a container while a test
+// changes it, so what it serves is guarded.
 type fakeConfig struct {
+	mu          sync.Mutex
 	configMaps  map[string]*corev1.ConfigMap
 	secrets     map[string]*corev1.Secret
 	allocatable corev1.ResourceList
@@ -22,7 +26,16 @@ type fakeConfig struct {
 	reads       int
 }
 
+// setConfigMaps replaces the ConfigMaps served.
+func (f *fakeConfig) setConfigMaps(m map[string]*corev1.ConfigMap) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.configMaps = m
+}
+
 func (f *fakeConfig) ConfigMap(_ context.Context, ns, name string) (*corev1.ConfigMap, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.reads++
 	if f.failWith != nil {
 		return nil, f.failWith
@@ -34,6 +47,8 @@ func (f *fakeConfig) ConfigMap(_ context.Context, ns, name string) (*corev1.Conf
 }
 
 func (f *fakeConfig) Secret(_ context.Context, ns, name string) (*corev1.Secret, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.reads++
 	if f.failWith != nil {
 		return nil, f.failWith
@@ -45,6 +60,8 @@ func (f *fakeConfig) Secret(_ context.Context, ns, name string) (*corev1.Secret,
 }
 
 func (f *fakeConfig) Allocatable(context.Context, string) (corev1.ResourceList, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.allocatable == nil {
 		return nil, errors.New("node unknown")
 	}

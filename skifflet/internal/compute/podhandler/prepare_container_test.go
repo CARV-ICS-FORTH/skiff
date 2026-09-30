@@ -87,7 +87,7 @@ func TestPrepareContainer_WaitsForMissingConfiguration(t *testing.T) {
 	}
 
 	// The ConfigMap is created: the next try succeeds.
-	config.configMaps = map[string]*corev1.ConfigMap{"team/settings": {Data: map[string]string{"mode": "fast"}}}
+	config.setConfigMaps(map[string]*corev1.ConfigMap{"team/settings": {Data: map[string]string{"mode": "fast"}}})
 	select {
 	case r := <-done:
 		if !r.ok {
@@ -103,8 +103,15 @@ func TestPrepareContainer_SiblingsAreNotHeldBack(t *testing.T) {
 	useConfig(t, &fakeConfig{})
 	h, _ := handlerFor(t, configMapEnv("missing"), corev1.Container{Name: "plain"})
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go h.prepareContainer(ctx, &h.Pod.Spec.Containers[0], false, 0)
+	waiting := make(chan struct{})
+	go func() {
+		defer close(waiting)
+		h.prepareContainer(ctx, &h.Pod.Spec.Containers[0], false, 0)
+	}()
+	defer func() {
+		cancel()
+		<-waiting // it reads the configuration until it ends
+	}()
 	c, ok := h.prepareContainer(context.Background(), &h.Pod.Spec.Containers[1], false, 1)
 	if !ok || c.InstanceName == "" {
 		t.Fatalf("the sibling was not prepared: %+v, %v", c, ok)
