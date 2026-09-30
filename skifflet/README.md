@@ -47,6 +47,14 @@ Skifflet is a Virtual Kubelet provider: it implements the pod lifecycle and the 
 
 Unknown pods or containers, and malformed requests, keep their normal 404 and 400 responses.
 
+**Lifecycle hooks** (`lifecycle.postStart`, `lifecycle.preStop` of application containers):
+
+| Field | Status | Result | Alternative | Test |
+|---|---|---|---|---|
+| `exec`, `httpGet` and `sleep` handlers | implemented | Kubelet semantics. `postStart` runs once the container's application process is in place, alongside its entrypoint (no ordering between them; an HTTP hook may reach the application before it listens, as with any kubelet); the container is not reported Running, and its probes do not start, until the hook succeeded. A failing hook stops the container (`FailedPostStartHook` event) and the restart policy applies. `preStop` runs before the termination signal, whatever ends the container (deletion, a failing liveness or startup probe); it is bounded by the grace period, which it shares with the application's own shutdown (the application always gets at least 2 seconds after the signal); with a zero grace period it does not run; a failing hook is an event (`FailedPreStopHook`) and does not prevent the termination; it does not run for a container that already exited. Containers of a pod stop side by side | | T10, T11 |
+| `tcpSocket` handler | not supported | The pod is rejected at creation (`UnsupportedFeatures`) naming the field (the API deprecates it) | `exec`, `httpGet` or `sleep` | unit (capabilities) |
+| hooks of init containers | not supported | The pod is rejected at creation (`UnsupportedFeatures`) naming the field | Use the entrypoint or a separate init container | unit (capabilities) |
+
 **Container probes** (`startupProbe`, `readinessProbe`, `livenessProbe`):
 
 | Field | Status | Result | Alternative | Test |
@@ -57,6 +65,7 @@ Unknown pods or containers, and malformed requests, keep their normal 404 and 40
 | liveness or startup failure | implemented | The container gets SIGTERM, then SIGKILL after the probe's `terminationGracePeriodSeconds` (else the pod's, never less than 2 seconds); the restart policy decides what follows. A container that ignores SIGTERM is killed at the deadline, as with any container whose main process handles no signals | | T07 |
 | named ports (`port: http`) | implemented | Resolved against the probed container's `ports`; a name it does not declare fails the probe (never defaulted to another port) | | T07 |
 | probe termination and deletion | implemented | A hanging probe command is bounded by its timeout and the container's lifetime: deleting or restarting cancels it and leaves no process behind | | T09 |
+| probe events | implemented | `Unhealthy` (with the failure) for a failing readiness, liveness or startup probe and `Killing` when a container is stopped for one, recorded with the API server as from `kubelet` on the node | | T11 |
 | `grpc` probes | not supported | The pod is rejected at creation (`UnsupportedFeatures`) naming the field | `httpGet`, `tcpSocket` or `exec` | unit (capabilities) |
 
 ## Command Line Flags

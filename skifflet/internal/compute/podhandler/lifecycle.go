@@ -349,6 +349,16 @@ type Attempt struct {
 
 	gates    probeGates  // set by Start
 	stopping atomic.Bool // one termination sequence per attempt (see Stop)
+
+	// spec is the container this attempt runs; its lifecycle hooks are what
+	// PostStart and Stop run.
+	spec *corev1.Container
+
+	// lifeCtx lasts as long as the process does, unlike ctx, which also ends when
+	// the pod is revoked. The termination sequence (PreStop hook, signals) runs on
+	// it: deleting the pod must not cancel the hook that is part of deleting it.
+	lifeCtx    context.Context
+	lifeCancel context.CancelFunc
 }
 
 // BeginAttempt creates the next attempt of a container. It fails once the pod is
@@ -366,7 +376,9 @@ func (l *PodLifecycle) BeginAttempt(name string, init bool) (*Attempt, error) {
 	}
 	l.counter[name]++
 	ctx, cancel := context.WithCancel(l.ctx)
+	lifeCtx, lifeCancel := context.WithCancel(context.Background())
 	a := &Attempt{pl: l, Container: name, Init: init, ID: l.counter[name], ctx: ctx, cancel: cancel,
+		lifeCtx: lifeCtx, lifeCancel: lifeCancel,
 		logger: l.logger.WithValues("container", name, "attempt", l.counter[name])}
 	l.current[name] = a
 	return a, nil
@@ -376,15 +388,20 @@ func (l *PodLifecycle) BeginAttempt(name string, init bool) (*Attempt, error) {
 // to the attempt (probes, hooks, exec sessions) stops with it.
 func (a *Attempt) Context() context.Context { return a.ctx }
 
-// probeGates says which probes hold a container's Started and Ready statuses
-// back once it runs: a startup probe holds Started (and so Ready), a readiness
-// probe holds Ready.
+// probeGates says what holds a container's statuses back once its process has
+// started: a PostStart hook holds Running itself (the container stays Waiting
+// until the hook has succeeded, as the kubelet reports it), a startup probe holds
+// Started (and so Ready), a readiness probe holds Ready.
 type probeGates struct {
-	startup, readiness bool
+	postStart, startup, readiness bool
 }
 
 func gatesOf(spec *corev1.Container) probeGates {
-	return probeGates{startup: spec.StartupProbe != nil, readiness: spec.ReadinessProbe != nil}
+	return probeGates{
+		postStart: spec.Lifecycle != nil && spec.Lifecycle.PostStart != nil,
+		startup:   spec.StartupProbe != nil,
+		readiness: spec.ReadinessProbe != nil,
+	}
 }
 
 // Start makes the revocation check and the process start one transition, then
@@ -413,14 +430,36 @@ func (a *Attempt) Start(cmd *exec.Cmd, gates probeGates) error {
 	l.mu.Unlock()
 
 	a.logger.Info("container attempt started", "action", "start", "pid", a.pid)
+	if gates.postStart {
+		a.update(func(cs *corev1.ContainerStatus) bool {
+			beginAttempt(cs)
+			cs.ContainerID = runtime.FormatProcessJobID(a.pid, a.startTime)
+			cs.State.Running = nil
+			cs.State.Waiting = &corev1.ContainerStateWaiting{Reason: "PostStartHookPending", Message: "Waiting for the postStart hook"}
+			notStarted := false
+			cs.Started, cs.Ready = &notStarted, false
+			return true
+		})
+		return nil
+	}
+	a.SetRunning()
+	return nil
+}
+
+// SetRunning publishes the container as running, with the Started and Ready
+// statuses its probes leave open. Start does it for a container without a
+// PostStart hook; with one, the hook's success does.
+func (a *Attempt) SetRunning() {
 	a.update(func(cs *corev1.ContainerStatus) bool {
+		if cs.State.Running != nil {
+			return false
+		}
 		SetContainerRunning(cs, a.pid, a.startTime)
-		started := !gates.startup
+		started := !a.gates.startup
 		cs.Started = &started
-		cs.Ready = started && !gates.readiness
+		cs.Ready = started && !a.gates.readiness
 		return true
 	})
-	return nil
 }
 
 // Wait is the sole waiter for the process: it reaps it, ends the attempt's
@@ -433,6 +472,7 @@ func (a *Attempt) Wait(cmd *exec.Cmd) int {
 	close(a.done)
 	l.mu.Unlock()
 	a.cancel()
+	a.lifeCancel()
 
 	exitCode := 0
 	if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() >= 0 {
@@ -449,6 +489,7 @@ func (a *Attempt) Wait(cmd *exec.Cmd) int {
 // terminated with the given exit code.
 func (a *Attempt) Fail(exitCode int) {
 	a.cancel()
+	a.lifeCancel()
 	a.logger.Info("container attempt could not start", "action", "start", "reason", "launch failed", "exitCode", exitCode)
 	a.update(func(cs *corev1.ContainerStatus) bool { SetContainerTerminated(cs, exitCode); return true })
 }
@@ -459,6 +500,7 @@ func (a *Attempt) Fail(exitCode int) {
 // Failed, so a later reason would never arrive.
 func (a *Attempt) FailPod(exitCode int, reason, format string, args ...any) {
 	a.cancel()
+	a.lifeCancel()
 	a.logger.Info("container attempt could not start", "action", "start", "reason", reason, "exitCode", exitCode)
 	a.pl.apply(true, func(pod *corev1.Pod) bool {
 		if a.pl.current[a.Container] != a {
@@ -522,26 +564,53 @@ func (a *Attempt) update(fn func(cs *corev1.ContainerStatus) bool) bool {
 	})
 }
 
-// Stop ends the attempt's process the way the kubelet ends a container that
-// failed a probe: the termination signal first, then, if the process is still
-// there when grace has passed, a kill. Only the first call acts, so competing
-// paths cannot run two termination sequences for one attempt. A pod that is
-// being deleted is stopped by its own termination, which this yields to.
+// Stop ends the attempt's process the way the kubelet ends a container: the
+// PreStop hook first, if the container has one and there is time for it; then the
+// termination signal; then, if the process is still there when the grace period
+// has passed, a kill. The hook's time is part of the grace period, not added to
+// it, and the process always gets at least minKillGrace after the signal. The
+// container's own process is what a hook and the signal reach: the sandbox (and so
+// the network) stays up until every container has ended.
+//
+// Only the first call of an attempt runs the hook and sends the signal, so
+// competing paths (a failing probe, the pod's deletion) cannot run two termination
+// sequences; a later call only enforces its own deadline, and may shorten the wait.
 func (a *Attempt) Stop(grace time.Duration, reason string) {
-	if !a.stopping.CompareAndSwap(false, true) {
-		return
+	start := time.Now()
+	deadline := start.Add(max(grace, minKillGrace))
+	if a.stopping.CompareAndSwap(false, true) {
+		a.logger.Info("stopping the container", "action", "stop", "reason", reason, "grace", grace.String())
+		if hook := a.hook(hookPreStop); hook != nil && grace > 0 {
+			ctx, cancel := context.WithDeadline(a.lifeCtx, start.Add(grace))
+			if err := a.runHook(ctx, hookPreStop, hook, a.lifeCtx); err != nil {
+				a.event(corev1.EventTypeWarning, "FailedPreStopHook", "PreStop hook failed: %v", err)
+			}
+			cancel()
+			// What the hook used comes out of the grace period.
+			deadline = time.Now().Add(max(grace-time.Since(start), minKillGrace))
+		} else {
+			deadline = time.Now().Add(max(grace, minKillGrace))
+		}
+		a.signalTerm()
 	}
-	a.logger.Info("stopping the container", "action", "stop", "reason", reason, "grace", grace.String())
-	if !a.Signal(syscall.SIGTERM) {
-		return
-	}
-	timer := time.NewTimer(grace)
+	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	select {
 	case <-a.done:
-	case <-a.ctx.Done():
 	case <-timer.C:
-		a.Signal(syscall.SIGKILL)
+		a.logger.Info("the container did not stop in time; killing it", "action", "stop")
+		a.kill()
+	}
+}
+
+// signalTerm sends the termination signal to the launcher's process group, which
+// carries it to the container's main process.
+func (a *Attempt) signalTerm() {
+	if !a.verified() {
+		return
+	}
+	if syscall.Kill(-a.pid, syscall.SIGTERM) != nil {
+		_ = a.process.Signal(syscall.SIGTERM)
 	}
 }
 
@@ -692,29 +761,21 @@ func (l *PodLifecycle) ReleaseLiveResources(gracePeriod time.Duration) {
 		launchDone := l.launchDone
 		l.mu.Unlock()
 
+		// Every container is stopped by its own termination sequence, side by side,
+		// within the same grace period.
+		var stopped sync.WaitGroup
 		for _, a := range attempts {
-			if a.verified() {
-				if syscall.Kill(-a.pid, syscall.SIGTERM) != nil {
-					_ = a.process.Signal(syscall.SIGTERM)
-				}
-			}
-		}
-		deadline := time.Now().Add(gracePeriod)
-		for _, a := range attempts {
-			remaining := time.Until(deadline)
-			if remaining > 0 {
+			stopped.Add(1)
+			go func() {
+				defer stopped.Done()
+				a.Stop(gracePeriod, "the pod is being terminated")
 				select {
 				case <-a.done:
-					continue
-				case <-time.After(remaining):
+				case <-time.After(2 * time.Second):
 				}
-			}
-			a.kill()
-			select {
-			case <-a.done:
-			case <-time.After(2 * time.Second):
-			}
+			}()
 		}
+		stopped.Wait()
 		if launchDone != nil {
 			select {
 			case <-launchDone:

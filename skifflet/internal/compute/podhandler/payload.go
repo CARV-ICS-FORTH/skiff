@@ -35,9 +35,11 @@ func payloadPID(launcher int) int {
 }
 
 // processChildren maps each PID to its children, from one scan of the proc filesystem.
-func processChildren() map[int][]int {
+func processChildren() map[int][]int { return processChildrenIn(procRoot) }
+
+func processChildrenIn(root string) map[int][]int {
 	children := map[int][]int{}
-	entries, err := os.ReadDir(procRoot)
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		return children
 	}
@@ -46,7 +48,7 @@ func processChildren() map[int][]int {
 		if err != nil || pid <= 1 {
 			continue
 		}
-		if ppid := parentPID(pid); ppid > 0 {
+		if ppid := parentPIDIn(root, pid); ppid > 0 {
 			children[ppid] = append(children[ppid], pid)
 		}
 	}
@@ -57,7 +59,7 @@ func processChildren() map[int][]int {
 // collected first, so killing the parent does not hide the children. (A process
 // that detached itself and was adopted elsewhere is not below it any more.)
 func killProcessTree(root int) {
-	children := processChildren()
+	children := processChildrenIn("/proc") // the real processes, whatever tree payloads are looked up in
 	all := []int{root}
 	for i := 0; i < len(all); i++ {
 		all = append(all, children[all[i]]...)
@@ -75,8 +77,10 @@ func readNSpid(pid int) []int {
 	return parseNSpid(string(data))
 }
 
-func parentPID(pid int) int {
-	data, err := os.ReadFile(procRoot + "/" + strconv.Itoa(pid) + "/stat")
+func parentPID(pid int) int { return parentPIDIn(procRoot, pid) }
+
+func parentPIDIn(root string, pid int) int {
+	data, err := os.ReadFile(root + "/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
 		return 0
 	}

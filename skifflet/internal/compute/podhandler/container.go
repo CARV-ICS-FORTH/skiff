@@ -334,12 +334,19 @@ func (h *PodHandler) buildContainer(container *corev1.Container) (Container, err
 	return c, nil
 }
 
-// SetContainerRunning marks the container status as running.
-func SetContainerRunning(containerStatus *corev1.ContainerStatus, pid int, startTime uint64) {
+// beginAttempt starts a new attempt in the status of a container that ran
+// before: what it last did is its last termination state, and it counts as a restart.
+func beginAttempt(containerStatus *corev1.ContainerStatus) {
 	if containerStatus.State.Terminated != nil {
 		containerStatus.LastTerminationState = containerStatus.State
 		containerStatus.RestartCount++
+		containerStatus.State.Terminated = nil
 	}
+}
+
+// SetContainerRunning marks the container status as running.
+func SetContainerRunning(containerStatus *corev1.ContainerStatus, pid int, startTime uint64) {
+	beginAttempt(containerStatus)
 	containerStatus.ContainerID = runtime.FormatProcessJobID(pid, startTime)
 	containerStatus.State.Waiting = nil
 	containerStatus.State.Running = &corev1.ContainerStateRunning{

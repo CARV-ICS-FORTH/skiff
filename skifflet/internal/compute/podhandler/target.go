@@ -54,6 +54,18 @@ type Target struct {
 	EnvFromContainer bool
 
 	verify func() error // set by resolution; re-checked before a command starts
+
+	// bound is the context whose end stops what runs through this target: the
+	// attempt's own (ended by the container's exit or the pod's revocation), or,
+	// for a lifecycle hook, the process's lifetime.
+	bound context.Context
+}
+
+func (t *Target) boundContext() context.Context {
+	if t.bound != nil {
+		return t.bound
+	}
+	return t.Attempt.Context()
 }
 
 // ResolveTarget finds the running attempt of a container and verifies it.
@@ -68,10 +80,18 @@ func (l *PodLifecycle) ResolveTarget(ctx context.Context, container string) (*Ta
 // Target resolves and verifies the attempt as a place to run commands, waiting up
 // to wait for the container's main process to appear.
 func (a *Attempt) Target(ctx context.Context, wait time.Duration) (*Target, error) {
+	return a.target(ctx, wait, a.ctx)
+}
+
+// target is Target, giving up when the ended context ends instead of the
+// attempt's: a lifecycle hook still has a container to run in after the pod was
+// revoked, for as long as the process lives.
+func (a *Attempt) target(ctx context.Context, wait time.Duration, ended context.Context) (*Target, error) {
 	deadline := time.Now().Add(wait)
 	for {
 		t, err := a.resolveTarget()
 		if err == nil {
+			t.bound = ended
 			return t, nil
 		}
 		if !errors.Is(err, errPayloadPending) || !time.Now().Before(deadline) {
@@ -91,7 +111,7 @@ func (a *Attempt) Target(ctx context.Context, wait time.Duration) (*Target, erro
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-a.ctx.Done():
+		case <-ended.Done():
 			return nil, fmt.Errorf("%w: attempt %d ended", ErrContainerNotRunning, a.ID)
 		case <-time.After(50 * time.Millisecond):
 		}
@@ -275,7 +295,7 @@ func (t *Target) Command(ctx context.Context, argv []string) (cmd *exec.Cmd, rel
 		return nil, nil, fmt.Errorf("%w: attempt %d ended", ErrContainerNotRunning, t.Attempt.ID)
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(t.Attempt.Context(), cancel)
+	stop := context.AfterFunc(t.boundContext(), cancel)
 	args := append([]string{"-t", strconv.Itoa(t.Payload), "-m", "-n", "-p", "-r", "-w", "--"}, argv...)
 	cmd = exec.CommandContext(ctx, "nsenter", args...)
 	cmd.Env = t.Env
@@ -295,6 +315,11 @@ func (t *Target) Command(ctx context.Context, argv []string) (cmd *exec.Cmd, rel
 func (t *Target) Run(ctx context.Context, argv []string, timeout time.Duration) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	return t.run(ctx, argv)
+}
+
+// run is Run bounded by ctx alone.
+func (t *Target) run(ctx context.Context, argv []string) (int, error) {
 	cmd, release, err := t.Command(ctx, argv)
 	if err != nil {
 		return -1, err

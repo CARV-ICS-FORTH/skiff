@@ -504,6 +504,7 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 	var gates probeGates
 	if !init {
 		gates = gatesOf(spec)
+		a.spec = spec
 	}
 	if err := a.Start(cmd, gates); err != nil {
 		a.Fail(128)
@@ -511,7 +512,12 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 	}
 	h.savePIDs(0, a.pid)
 	if !init {
-		startProbes(a, h.lifecycle.GetPodStatus().PodIP, spec, a.execProbe)
+		podIP := h.lifecycle.GetPodStatus().PodIP
+		if gates.postStart {
+			go a.runPostStart(podIP, a.execProbe)
+		} else {
+			startProbes(a, podIP, spec, a.execProbe)
+		}
 	}
 	return a.Wait(cmd), attemptExited, nil
 }

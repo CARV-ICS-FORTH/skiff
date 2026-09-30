@@ -56,29 +56,38 @@ func TestValidatePodCapabilities(t *testing.T) {
 			}}}},
 		},
 		{
-			name: "postStart lifecycle hook rejected",
+			name: "exec postStart hook supported",
 			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
 				Name: "web", Lifecycle: &corev1.Lifecycle{PostStart: &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}},
 			}}}},
-			wantErrSub: "PostStart",
 		},
 		{
-			name: "preStop lifecycle hook rejected",
-			pod: &corev1.Pod{
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name: "web",
-							Lifecycle: &corev1.Lifecycle{
-								PreStop: &corev1.LifecycleHandler{
-									Exec: &corev1.ExecAction{Command: []string{"/bin/sh", "-c", "sleep 1"}},
-								},
-							},
-						},
-					},
-				},
-			},
-			wantErrSub: "PreStop",
+			name: "HTTP and sleep preStop hooks supported",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{
+				{Name: "a", Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{HTTPGet: &corev1.HTTPGetAction{Port: intstr.FromString("http"), Path: "/drain"}}}},
+				{Name: "b", Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Sleep: &corev1.SleepAction{Seconds: 5}}}},
+			}}},
+		},
+		{
+			name: "TCP hook handler rejected",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "web", Lifecycle: &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt(80)}}},
+			}}}},
+			wantErrSub: "Lifecycle.PreStop.TCPSocket",
+		},
+		{
+			name: "hook without a handler rejected",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "web", Lifecycle: &corev1.Lifecycle{PostStart: &corev1.LifecycleHandler{}},
+			}}}},
+			wantErrSub: "Lifecycle.PostStart (no handler)",
+		},
+		{
+			name: "hooks of init containers rejected",
+			pod: &corev1.Pod{Spec: corev1.PodSpec{InitContainers: []corev1.Container{{
+				Name: "setup", Lifecycle: &corev1.Lifecycle{PostStart: &corev1.LifecycleHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}},
+			}}}},
+			wantErrSub: "InitContainers[0].Lifecycle.PostStart",
 		},
 		{
 			name: "grpc probe rejected",

@@ -6,7 +6,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -490,7 +492,7 @@ func TestProbeKillGrace(t *testing.T) {
 		{"the Kubernetes default", pod(nil), &corev1.Probe{}, 30 * time.Second},
 		{"the pod's", pod(seconds(10)), &corev1.Probe{}, 10 * time.Second},
 		{"the probe's own", pod(seconds(10)), &corev1.Probe{TerminationGracePeriodSeconds: seconds(5)}, 5 * time.Second},
-		{"never less than the kubelet's minimum", pod(seconds(0)), &corev1.Probe{}, minProbeKillGrace},
+		{"never less than the kubelet's minimum", pod(seconds(0)), &corev1.Probe{}, minKillGrace},
 	} {
 		if got := probeKillGrace(c.pod, c.probe); got != c.want {
 			t.Errorf("%s: %v, want %v", c.name, got, c.want)
@@ -848,35 +850,28 @@ func TestAttemptStopEscalatesAfterGrace(t *testing.T) {
 	}
 }
 
-// Only the first Stop of an attempt runs a termination sequence.
+// Only the first Stop of an attempt runs a termination sequence: a second one
+// (the pod's deletion while a probe's stop waits out its grace) sends no second
+// signal and only enforces its own, shorter deadline.
 func TestAttemptStopRunsOnce(t *testing.T) {
-	run := startRunning(t, &corev1.Container{}, &rig{}, "trap '' TERM; sleep 30 & wait")
-	time.Sleep(100 * time.Millisecond)
-	go run.a.Stop(5*time.Second, "first")
-	time.Sleep(50 * time.Millisecond)
+	terms := filepath.Join(t.TempDir(), "terms")
+	run := startRunning(t, &corev1.Container{}, &rig{}, "trap 'echo t >> "+terms+"' TERM; while :; do sleep 0.1; done")
+	time.Sleep(200 * time.Millisecond) // let the shell install its trap
+	go run.a.Stop(time.Hour, "first")
+	time.Sleep(200 * time.Millisecond)
 	start := time.Now()
-	run.a.Stop(0, "second") // would kill at once if it acted
-	if time.Since(start) > time.Second {
-		t.Fatalf("a second Stop blocked for %v", time.Since(start))
+	run.a.Stop(0, "second") // its deadline is the kubelet's minimum, and it does not signal again
+	if took := time.Since(start); took < minKillGrace-200*time.Millisecond || took > minKillGrace+3*time.Second {
+		t.Fatalf("the second Stop took %v, want about %v", took, minKillGrace)
 	}
-	if !run.alive() {
-		t.Fatal("the second Stop killed the process")
-	}
-}
-
-// A pod that is being deleted is stopped by its own termination: a probe's Stop
-// waiting out its grace neither blocks on it nor signals afterwards.
-func TestAttemptStopYieldsToTheRevokedPod(t *testing.T) {
-	run := startRunning(t, &corev1.Container{}, &rig{}, "trap '' TERM; sleep 30 & wait")
-	time.Sleep(100 * time.Millisecond)
-	stopped := make(chan struct{})
-	go func() { run.a.Stop(time.Hour, "test"); close(stopped) }()
-	time.Sleep(50 * time.Millisecond)
-	run.pl.Revoke()
 	select {
-	case <-stopped:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Stop kept waiting after the pod was revoked")
+	case <-run.a.done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the second Stop did not kill the process at its deadline")
+	}
+	data, _ := os.ReadFile(terms)
+	if got := strings.Count(string(data), "t"); got != 1 {
+		t.Fatalf("the process was signalled %d times, want once", got)
 	}
 }
 

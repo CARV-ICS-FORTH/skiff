@@ -27,13 +27,25 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 	}
 
 	// Validate container-level capabilities
-	validateContainer := func(prefix string, c *corev1.Container) {
+	validateContainer := func(prefix string, c *corev1.Container, init bool) {
+		// PostStart and PreStop hooks run for application containers, through exec,
+		// HTTP GET or sleep handlers; TCP handlers, hooks of init containers, and
+		// handlers with nothing to run are unsupported.
 		if c.Lifecycle != nil {
-			if c.Lifecycle.PostStart != nil {
-				unsupported = append(unsupported, fmt.Sprintf("%s.Lifecycle.PostStart", prefix))
-			}
-			if c.Lifecycle.PreStop != nil {
-				unsupported = append(unsupported, fmt.Sprintf("%s.Lifecycle.PreStop", prefix))
+			for _, hook := range []struct {
+				name string
+				h    *corev1.LifecycleHandler
+			}{{"PostStart", c.Lifecycle.PostStart}, {"PreStop", c.Lifecycle.PreStop}} {
+				field := fmt.Sprintf("%s.Lifecycle.%s", prefix, hook.name)
+				switch h := hook.h; {
+				case h == nil:
+				case init:
+					unsupported = append(unsupported, field+" (hooks of init containers)")
+				case h.TCPSocket != nil:
+					unsupported = append(unsupported, field+".TCPSocket")
+				case h.Exec == nil && h.HTTPGet == nil && h.Sleep == nil:
+					unsupported = append(unsupported, field+" (no handler)")
+				}
 			}
 		}
 		// Startup, readiness and liveness probes over HTTP, TCP and exec (with named
@@ -49,10 +61,10 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 	}
 
 	for i := range pod.Spec.InitContainers {
-		validateContainer(fmt.Sprintf("Spec.InitContainers[%d]", i), &pod.Spec.InitContainers[i])
+		validateContainer(fmt.Sprintf("Spec.InitContainers[%d]", i), &pod.Spec.InitContainers[i], true)
 	}
 	for i := range pod.Spec.Containers {
-		validateContainer(fmt.Sprintf("Spec.Containers[%d]", i), &pod.Spec.Containers[i])
+		validateContainer(fmt.Sprintf("Spec.Containers[%d]", i), &pod.Spec.Containers[i], false)
 	}
 
 	if len(unsupported) > 0 {

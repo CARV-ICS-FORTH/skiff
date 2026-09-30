@@ -42,9 +42,9 @@ const (
 	defaultProbeSuccessThreshold = 1
 	defaultProbeFailureThreshold = 3
 
-	// minProbeKillGrace is the shortest time a container that failed a probe gets
-	// to stop before it is killed: the kubelet never grants less.
-	minProbeKillGrace = 2 * time.Second
+	// minKillGrace is the shortest time a container gets to stop after the
+	// termination signal before it is killed: the kubelet never grants less.
+	minKillGrace = 2 * time.Second
 
 	// probeUserAgent is what the kubelet's HTTP probes call themselves.
 	probeUserAgent = "kube-probe/1.35"
@@ -71,12 +71,21 @@ func startProbes(a *Attempt, podIP string, spec *corev1.Container, runExec execR
 
 	// stopOn stops the container for a liveness or startup probe that has failed.
 	stopOn := func(kind string, probe *corev1.Probe, detail string) {
+		a.event(corev1.EventTypeWarning, "Unhealthy", "%s probe failed: %s", capitalize(kind), detail)
+		if kind == "startup" {
+			a.event(corev1.EventTypeNormal, "Killing", "failed startup probe, will be restarted")
+		} else {
+			a.event(corev1.EventTypeNormal, "Killing", "failed %s probe, will be restarted", kind)
+		}
 		a.Stop(probeKillGrace(pod, probe), fmt.Sprintf("%s probe failed: %s", kind, detail))
 	}
 
 	runRest := func() {
 		if probe := spec.ReadinessProbe; probe != nil {
-			go pollProbe(ctx, settingsOf(probe), since, probeFailure, checkOf(probe), func(r probeResult, _ string) bool {
+			go pollProbe(ctx, settingsOf(probe), since, probeFailure, checkOf(probe), func(r probeResult, detail string) bool {
+				if r == probeFailure {
+					a.event(corev1.EventTypeWarning, "Unhealthy", "Readiness probe failed: %s", detail)
+				}
 				a.SetReady(r == probeSuccess)
 				return false
 			})
@@ -203,6 +212,8 @@ func pollProbe(ctx context.Context, s probeSettings, since time.Time, initial pr
 	}
 }
 
+func capitalize(s string) string { return strings.ToUpper(s[:1]) + s[1:] }
+
 // probeKillGrace is how long a container that failed a liveness or startup probe
 // gets to stop: the probe's own termination grace period when it has one, else the
 // pod's.
@@ -211,7 +222,7 @@ func probeKillGrace(pod *corev1.Pod, probe *corev1.Probe) time.Duration {
 	if g := probe.TerminationGracePeriodSeconds; g != nil && *g > 0 {
 		grace = time.Duration(*g) * time.Second
 	}
-	return max(grace, minProbeKillGrace)
+	return max(grace, minKillGrace)
 }
 
 // execProbe runs a command probe inside the container. A container that is not
