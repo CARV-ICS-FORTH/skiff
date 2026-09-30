@@ -428,6 +428,10 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 			fmt.Printf("[plaidd/k8s] Marked NodeNetworkUnavailable=False on node %s\n", d.k8sCtrl.NodeName())
 		}
 
+		if d.services != nil {
+			go d.k8sCtrl.RunServices(ctx, d.services)
+		}
+
 		gwMAC, _ := net.ParseMAC(d.cfg.GatewayMAC)
 		go d.k8sCtrl.Run(ctx,
 			func(nodeName string, sn *net.IPNet, hostIP net.IP) {

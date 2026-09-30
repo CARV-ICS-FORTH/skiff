@@ -106,6 +106,10 @@ func (d *PlaidDaemon) fillServiceStatus(resp *api.Response) {
 	if d.k8sCtrl != nil {
 		resp.ServiceManager = "kubernetes"
 	}
+	if d.k8sCtrl != nil {
+		w := d.k8sCtrl.ServiceStatus()
+		resp.ServiceWatch = &api.ServiceWatchStatus{Synced: w.Synced, Tables: w.Tables, Problems: w.Problems, WatchErrors: w.WatchErrors, LastWatchError: w.LastWatchError}
+	}
 	resp.ServiceEngine = &api.ServiceStats{
 		Synced: st.Synced, Services: st.Services, Backends: st.Backends, Flows: st.Flows,
 		FlowsCreated: st.FlowsCreated, FlowsExpired: st.FlowsExpired, FlowsPurged: st.FlowsPurged,

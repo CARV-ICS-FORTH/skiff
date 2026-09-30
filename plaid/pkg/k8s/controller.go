@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/record"
 )
 
 // Config configures the Kubernetes controller.
@@ -36,6 +38,10 @@ type RouteDeleteFunc func(nodeName string, subnet *net.IPNet)
 type Controller struct {
 	client   kubernetes.Interface
 	nodeName string
+
+	// The Service watch (RunServices) and the recorder of its events.
+	watch    atomic.Pointer[serviceWatch]
+	recorder record.EventRecorder
 }
 
 // NewController creates a Controller instance with a provided kubernetes.Interface.

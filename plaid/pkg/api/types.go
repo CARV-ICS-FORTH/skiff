@@ -38,6 +38,15 @@ type BackendEntry struct {
 	Eligible bool   `json:"eligible"`
 }
 
+// ServiceWatchStatus says how the Kubernetes watch that feeds the Service table is doing.
+type ServiceWatchStatus struct {
+	Synced         bool   `json:"synced"` // the first table was built from complete caches
+	Tables         uint64 `json:"tables"` // tables pushed to the engine
+	Problems       int    `json:"problems"`
+	WatchErrors    uint64 `json:"watch_errors"`
+	LastWatchError string `json:"last_watch_error,omitempty"`
+}
+
 // ServiceStats are the Service engine's gauges and counters.
 type ServiceStats struct {
 	Synced           bool   `json:"synced"`
@@ -125,9 +134,10 @@ type Response struct {
 
 	// The Service engine (tap mode): its address, range, counters and who writes its table
 	// ("kubernetes" or "api"); and, from list_services, the table.
-	ServiceAddress string         `json:"service_address,omitempty"`
-	ServiceCIDR    string         `json:"service_cidr,omitempty"`
-	ServiceEngine  *ServiceStats  `json:"service_engine,omitempty"`
-	ServiceManager string         `json:"service_manager,omitempty"`
-	Services       []ServiceEntry `json:"services,omitempty"`
+	ServiceAddress string              `json:"service_address,omitempty"`
+	ServiceCIDR    string              `json:"service_cidr,omitempty"`
+	ServiceEngine  *ServiceStats       `json:"service_engine,omitempty"`
+	ServiceManager string              `json:"service_manager,omitempty"`
+	ServiceWatch   *ServiceWatchStatus `json:"service_watch,omitempty"`
+	Services       []ServiceEntry      `json:"services,omitempty"`
 }
