@@ -34,6 +34,7 @@ import (
 	"golang.org/x/time/rate"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes/scheme"
+	typedcorev1 "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/client-go/util/workqueue"
@@ -256,6 +257,11 @@ func runRootCommand(ctx context.Context, c Opts) error {
 
 		eb := record.NewBroadcaster()
 		eb.StartLogging(logrus.Infof)
+		// Events reach the API server, where `kubectl describe` shows them. The
+		// runtime's own (failed hooks and probes, kills) come from "kubelet" on this
+		// node, as they would from a real one.
+		eb.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: compute.K8SClientset.CoreV1().Events("")})
+		compute.Events = eb.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "kubelet", Host: c.NodeName})
 
 		pc, err := node.NewPodController(node.PodControllerConfig{
 			PodClient:                            compute.K8SClientset.CoreV1(),

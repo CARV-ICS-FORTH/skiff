@@ -18,6 +18,7 @@ import (
 	"skifflet/internal/compute/endpoint"
 
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
@@ -59,6 +60,10 @@ var (
 	Environment  HostEnvironment
 	K8SClient    client.Client
 	K8SClientset *kubernetes.Clientset
+
+	// Events records the events of pods and their containers (failed hooks, failed
+	// probes, kills) with the API server. It may be nil, and then nothing is recorded.
+	Events record.EventRecorder
 
 	Skiff endpoint.SkiffPath
 )
