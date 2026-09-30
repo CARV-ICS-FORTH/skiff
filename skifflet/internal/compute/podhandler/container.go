@@ -328,7 +328,6 @@ func (h *PodHandler) buildContainer(container *corev1.Container) (Container, err
 		Command:       kubecontainer.ExpandContainerCommandOnlyStatic(container.Command, resolvedEnvs),
 		Args:          kubecontainer.ExpandContainerCommandOnlyStatic(container.Args, resolvedEnvs),
 		ExecutionMode: executionMode,
-		LogsPath:      containerPath.LogsPath(),
 	}
 
 	return c, nil

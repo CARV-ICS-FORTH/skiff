@@ -61,7 +61,6 @@ type Container struct {
 	Command       []string
 	Args          []string
 	ExecutionMode string
-	LogsPath      string
 }
 
 // BuildApptainerArgs constructs the CLI arguments for executing a container via Apptainer/plaidtainer.

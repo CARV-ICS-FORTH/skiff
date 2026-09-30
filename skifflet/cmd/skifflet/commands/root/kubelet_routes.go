@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/virtual-kubelet/virtual-kubelet/node/api"
 	"k8s.io/apimachinery/pkg/util/httpstream"
+
+	"skifflet/internal/provider"
 )
 
 // kubeletRoutes are the operations behind the kubelet HTTP surface. The
@@ -35,7 +38,7 @@ var unimplementedRoutes = map[string]string{
 	"/metrics/resource/": "resource metrics are not implemented by skifflet, so usage-based kubectl top and autoscaling are unavailable",
 }
 
-func newKubeletMux(r kubeletRoutes) *http.ServeMux {
+func newKubeletMux(r kubeletRoutes) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("/hello", http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -57,7 +60,19 @@ func newKubeletMux(r kubeletRoutes) *http.ServeMux {
 		PortForward:           r.PortForward,
 	}, mux, true)
 
-	return mux
+	return withLogQuery(mux)
+}
+
+// withLogQuery hands the query of a log request to the provider (see
+// provider.WithLogQuery): Virtual Kubelet's own parsing cannot tell an absent
+// tailLines from tailLines=0.
+func withLogQuery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/containerLogs/") {
+			r = r.WithContext(provider.WithLogQuery(r.Context(), r.URL.Query()))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func notImplemented(message string) http.Handler {

@@ -58,7 +58,6 @@ const (
 	ExtensionEnvironment = ".env"
 
 	// ExtensionLogs describes the file where container execution will write its logs.
-	ExtensionLogs = ".logs"
 
 	// ExtensionAttemptLog ends the name of the log file of one attempt.
 	ExtensionAttemptLog = ".log"
@@ -206,10 +205,6 @@ func (p PodPath) Container(containerName string) ContainerPath {
 type ContainerPath struct {
 	p             PodPath
 	containerName string
-}
-
-func (c ContainerPath) LogsPath() string {
-	return filepath.Join(c.p.LogDir(), c.containerName+ExtensionLogs)
 }
 
 // LogDir is the directory of the container's per-attempt logs.

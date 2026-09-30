@@ -1,9 +1,7 @@
 package provider
 
 import (
-	"bytes"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,7 +13,6 @@ import (
 	PodHandler "skifflet/internal/compute/podhandler"
 
 	"github.com/virtual-kubelet/virtual-kubelet/errdefs"
-	vkapi "github.com/virtual-kubelet/virtual-kubelet/node/api"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	corelisters "k8s.io/client-go/listers/core/v1"
@@ -170,92 +167,6 @@ func TestNodeNameFiltering(t *testing.T) {
 			t.Fatalf("reconcileNonTerminalPods processed pod-b which belongs to node-b")
 		}
 	}
-}
-
-func TestGetContainerLogs_OptionsAndErrors(t *testing.T) {
-	tmpDir := t.TempDir()
-	compute.Skiff = endpoint.SkiffWithPods(tmpDir, filepath.Join(tmpDir, ".skiff", ".pods"))
-
-	podKey := client.ObjectKey{Namespace: "default", Name: "log-pod"}
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: podKey.Namespace,
-			Name:      podKey.Name,
-			UID:       "log-generation",
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{Name: "app", Image: "alpine"},
-			},
-		},
-	}
-
-	podDir := compute.Skiff.PodWithUID(podKey, pod.GetUID())
-	_ = os.MkdirAll(podDir.LogDir(), 0755)
-	logFile := podDir.Container("app").LogsPath()
-	_ = os.WriteFile(logFile, []byte("line1\nline2\nline3\nline4\n"), 0644)
-
-	vk := &VirtualK8S{}
-	vk.pods.Store(podKey, pod)
-
-	// 1. Missing pod returns NotFound
-	_, err := vk.GetContainerLogs(context.Background(), "default", "nonexistent-pod", "app", vkapi.ContainerLogOpts{})
-	if err == nil || !errdefs.IsNotFound(err) {
-		t.Fatalf("expected NotFound for missing pod, got: %v", err)
-	}
-
-	// 2. Missing container returns NotFound
-	_, err = vk.GetContainerLogs(context.Background(), "default", "log-pod", "nonexistent-container", vkapi.ContainerLogOpts{})
-	if err == nil || !errdefs.IsNotFound(err) {
-		t.Fatalf("expected NotFound for missing container, got: %v", err)
-	}
-
-	// 3. Tail 0 returns all lines
-	rc, err := vk.GetContainerLogs(context.Background(), "default", "log-pod", "app", vkapi.ContainerLogOpts{Tail: 0})
-	if err != nil {
-		t.Fatalf("unexpected error with Tail 0: %v", err)
-	}
-	defer rc.Close()
-	data, _ := io.ReadAll(rc)
-	expectedAll := "line1\nline2\nline3\nline4\n"
-	if string(data) != expectedAll {
-		t.Fatalf("expected %q for Tail 0, got %q", expectedAll, string(data))
-	}
-
-	// 4. Tail 2 returns last 2 lines
-	rc, err = vk.GetContainerLogs(context.Background(), "default", "log-pod", "app", vkapi.ContainerLogOpts{Tail: 2})
-	if err != nil {
-		t.Fatalf("unexpected error with Tail 2: %v", err)
-	}
-	defer rc.Close()
-	data, _ = io.ReadAll(rc)
-	expectedTail := "line3\nline4\n"
-	if string(data) != expectedTail {
-		t.Fatalf("expected %q for Tail 2, got %q", expectedTail, string(data))
-	}
-
-	// 5. Follow streams new data until context cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	rc, err = vk.GetContainerLogs(ctx, "default", "log-pod", "app", vkapi.ContainerLogOpts{Follow: true, Tail: 1})
-	if err != nil {
-		t.Fatalf("unexpected error with Follow: %v", err)
-	}
-	defer rc.Close()
-
-	// Initial tail 1 line should be available
-	buf := make([]byte, 64)
-	n, err := rc.Read(buf)
-	if err != nil {
-		t.Fatalf("failed to read initial follow byte: %v", err)
-	}
-	if !bytes.Contains(buf[:n], []byte("line4")) {
-		t.Fatalf("expected initial line4, got %q", string(buf[:n]))
-	}
-
-	// Cancel context to stop follow
-	cancel()
-	time.Sleep(50 * time.Millisecond)
-	_, _ = rc.Read(buf) // Must unblock without hang
 }
 
 func TestProvider_UnsupportedOperations(t *testing.T) {
@@ -459,136 +370,6 @@ func TestProvider_ReplacementRejectsDelayedCallbackAndDelete(t *testing.T) {
 	}
 	if _, ok := v.cancelFuncs.Load(key); !ok || newCtx.Err() != nil || PodHandler.GlobalRegistry.GetByKey(key) != newOwner {
 		t.Fatal("delayed old work affected replacement cancellation or registry ownership")
-	}
-}
-
-func TestFollowLogReader_CloseUnblocksRead(t *testing.T) {
-	tmpDir := t.TempDir()
-	logPath := filepath.Join(tmpDir, "test.log")
-	if err := os.WriteFile(logPath, []byte("hello\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	reader, err := newFollowLogReader(context.Background(), logPath, nil, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Read initial data
-	buf := make([]byte, 64)
-	n, err := reader.Read(buf)
-	if err != nil || n == 0 {
-		t.Fatalf("expected to read initial bytes, got n=%d, err=%v", n, err)
-	}
-
-	// Now reader is at EOF and will wait. Call Close() in background and verify it unblocks Read().
-	readDone := make(chan struct{})
-	var readErr error
-	go func() {
-		_, readErr = reader.Read(buf)
-		close(readDone)
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	if err := reader.Close(); err != nil {
-		t.Fatalf("Close failed: %v", err)
-	}
-
-	select {
-	case <-readDone:
-		if readErr != io.EOF {
-			t.Fatalf("expected io.EOF after Close(), got %v", readErr)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("reader.Read() did not unblock after Close()")
-	}
-}
-
-func TestFollowLogReader_DelayedFileReopen(t *testing.T) {
-	tmpDir := t.TempDir()
-	logPath := filepath.Join(tmpDir, "delayed.log")
-
-	// Create reader BEFORE file exists
-	reader, err := newFollowLogReader(context.Background(), logPath, nil, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-
-	readDone := make(chan string)
-	go func() {
-		buf := make([]byte, 64)
-		for {
-			n, err := reader.Read(buf)
-			if n > 0 {
-				readDone <- string(buf[:n])
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-
-	time.Sleep(50 * time.Millisecond)
-	if err := os.WriteFile(logPath, []byte("delayed line\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	select {
-	case data := <-readDone:
-		if data != "delayed line\n" {
-			t.Fatalf("expected 'delayed line\\n', got %q", data)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("reader did not read delayed file after creation")
-	}
-}
-
-func TestFollowLogReader_PreservesHistoryWithoutTail(t *testing.T) {
-	tmpDir := t.TempDir()
-	logPath := filepath.Join(tmpDir, "history.log")
-	if err := os.WriteFile(logPath, []byte("line 1\nline 2\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	reader, err := newFollowLogReader(context.Background(), logPath, nil, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reader.Close()
-
-	buf := make([]byte, 128)
-	n, err := reader.Read(buf)
-	if err != nil {
-		t.Fatalf("failed to read initial history: %v", err)
-	}
-	if string(buf[:n]) != "line 1\nline 2\n" {
-		t.Fatalf("expected 'line 1\\nline 2\\n', got %q", string(buf[:n]))
-	}
-
-	// Now append a new line
-	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _ = f.WriteString("line 3\n")
-	_ = f.Close()
-
-	n2, err := reader.Read(buf)
-	if err != nil {
-		t.Fatalf("failed to read appended line: %v", err)
-	}
-	if string(buf[:n2]) != "line 3\n" {
-		t.Fatalf("expected 'line 3\\n', got %q", string(buf[:n2]))
-	}
-}
-
-func TestGetContainerLogs_RejectsPrevious(t *testing.T) {
-	vk := &VirtualK8S{}
-	_, err := vk.GetContainerLogs(context.Background(), "default", "pod-x", "container-y", vkapi.ContainerLogOpts{Previous: true})
-	if err == nil || !errdefs.IsInvalidInput(err) {
-		t.Fatalf("expected InvalidInput error when Previous=true, got %v", err)
 	}
 }
 

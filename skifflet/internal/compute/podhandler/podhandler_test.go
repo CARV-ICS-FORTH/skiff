@@ -125,7 +125,7 @@ func TestRunAttempt_UsesThePodTemporaryDirectory(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, "tmpdir")
 	launcher := filepath.Join(root, "launcher")
-	if err := os.WriteFile(launcher, []byte("#!/bin/sh\necho \"$APPTAINER_TMPDIR $SINGULARITY_TMPDIR\" > "+out+"\n"), 0755); err != nil {
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\necho \"$APPTAINER_TMPDIR $SINGULARITY_TMPDIR $APPTAINER_QUIET\" > "+out+"\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	old := compute.Environment.ApptainerBin
@@ -138,7 +138,7 @@ func TestRunAttempt_UsesThePodTemporaryDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &PodHandler{lifecycle: pl, podDirectory: pl.PodDir(), logger: pl.logger}
-	c := &Container{LogsPath: pl.PodDir().Container("app").LogsPath()}
+	c := &Container{}
 	spec := &corev1.Container{Name: "app"}
 	exit, result, err := h.runAttempt(c, spec, false, 0)
 	if err != nil || result != attemptExited || exit != 0 {
@@ -149,7 +149,7 @@ func TestRunAttempt_UsesThePodTemporaryDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := pl.PodDir().TmpDir()
-	if strings.TrimSpace(string(got)) != want+" "+want {
+	if strings.TrimSpace(string(got)) != want+" "+want+" true" {
 		t.Fatalf("launched process saw %q, want the pod temporary directory %q", got, want)
 	}
 }

@@ -354,6 +354,9 @@ type Attempt struct {
 	// PostStart and Stop run.
 	spec *corev1.Container
 
+	// log is the attempt's output, set before the process starts (guarded by pl.mu).
+	log *AttemptLog
+
 	// lifeCtx lasts as long as the process does, unlike ctx, which also ends when
 	// the pod is revoked. The termination sequence (PreStop hook, signals) runs on
 	// it: deleting the pod must not cancel the hook that is part of deleting it.
@@ -395,6 +398,9 @@ func (a *Attempt) Context() context.Context { return a.ctx }
 type probeGates struct {
 	postStart, startup, readiness bool
 }
+
+// NoProbes is the gates of a container without hooks or probes.
+var NoProbes = probeGates{}
 
 func gatesOf(spec *corev1.Container) probeGates {
 	return probeGates{
@@ -473,6 +479,9 @@ func (a *Attempt) Wait(cmd *exec.Cmd) int {
 	l.mu.Unlock()
 	a.cancel()
 	a.lifeCancel()
+	if a.log != nil {
+		a.log.Finish() // the container's last output is in its log before its exit is published
+	}
 
 	exitCode := 0
 	if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() >= 0 {

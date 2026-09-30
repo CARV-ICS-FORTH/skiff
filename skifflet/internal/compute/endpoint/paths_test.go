@@ -78,14 +78,13 @@ func TestPodPath_LayoutFollowsTheConfiguredPodsDirectory(t *testing.T) {
 		"resolv":    filepath.Join(base, "job", "resolv.conf"),
 		"hosts":     filepath.Join(base, "job", "hosts"),
 		"env":       filepath.Join(base, "job", "app.env"),
-		"logfile":   filepath.Join(base, "logs", "app.logs"),
 		"attempts":  filepath.Join(base, "logs", "app"),
 		"attempt3":  filepath.Join(base, "logs", "app", "3.log"),
 	}
 	got := map[string]string{
 		"job": pod.JobDir(), "volumes": pod.VolumeDir(), "logs": pod.LogDir(), "tmp": pod.TmpDir(),
 		"pids": pod.PidsFile(), "readiness": pod.ReadinessFile(), "resolv": pod.ResolvConf(), "hosts": pod.HostsFile(),
-		"env": pod.Container("app").EnvFilePath(), "logfile": pod.Container("app").LogsPath(),
+		"env":      pod.Container("app").EnvFilePath(),
 		"attempts": pod.Container("app").LogDir(), "attempt3": pod.Container("app").AttemptLogPath(3),
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -130,12 +129,9 @@ func TestAttemptLogs(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(attempts, []int{1, 2, 10}) {
 		t.Fatalf("attempts %v (error %v), want [1 2 10] in numeric order", attempts, err)
 	}
-	// The name round-trips, and a container's attempt logs cannot collide with the single-file log of another.
+	// The name round-trips.
 	if got, ok := ParseAttemptLogName(filepath.Base(container.AttemptLogPath(10))); !ok || got != 10 {
 		t.Fatalf("round trip: %d, %v", got, ok)
-	}
-	if filepath.Dir(container.AttemptLogPath(1)) == filepath.Dir(container.LogsPath()) && filepath.Base(container.LogsPath()) == filepath.Base(container.LogDir()) {
-		t.Fatal("the attempt log directory collides with the single log file")
 	}
 }
 

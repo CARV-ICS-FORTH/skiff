@@ -19,6 +19,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
+
+	"skifflet/internal/provider"
 )
 
 func podList(names ...string) api.PodListerFunc {
@@ -34,15 +36,17 @@ func podList(names ...string) api.PodListerFunc {
 type recordedLogs struct {
 	namespace, pod, container string
 	opts                      api.ContainerLogOpts
+	query                     url.Values // what the route handed the provider (nil if nothing)
 }
 
 func testRoutes(logs *recordedLogs) kubeletRoutes {
 	return kubeletRoutes{
 		GetRunningPods:  podList("running"),
 		GetAssignedPods: podList("assigned-a", "assigned-b"),
-		GetContainerLogs: func(_ context.Context, ns, pod, container string, opts api.ContainerLogOpts) (io.ReadCloser, error) {
+		GetContainerLogs: func(ctx context.Context, ns, pod, container string, opts api.ContainerLogOpts) (io.ReadCloser, error) {
 			if logs != nil {
-				*logs = recordedLogs{ns, pod, container, opts}
+				query, _ := provider.LogQueryFromContext(ctx)
+				*logs = recordedLogs{ns, pod, container, opts, query}
 			}
 			if pod == "missing" {
 				return nil, errdefs.NotFoundf("pod %s/%s not found", ns, pod)
@@ -142,6 +146,36 @@ func TestKubeletRoutes_LogsReachTheProvider(t *testing.T) {
 	if got.namespace != "ns1" || got.pod != "pod1" || got.container != "app" ||
 		got.opts.Tail != 5 || !got.opts.Timestamps || !got.opts.Previous {
 		t.Fatalf("provider received %+v", got)
+	}
+}
+
+// Virtual Kubelet's parsing makes an absent tailLines and tailLines=0 the same
+// value; the route hands the provider the query itself, so it can tell them apart
+// (an absent one is every line, an explicit 0 is none).
+func TestKubeletRoutes_LogQueryKeepsTailPresence(t *testing.T) {
+	var got recordedLogs
+	h := newKubeletMux(testRoutes(&got))
+	for _, c := range []struct {
+		target  string
+		present bool
+		value   string
+	}{
+		{"/containerLogs/ns/pod/app", false, ""},
+		{"/containerLogs/ns/pod/app?timestamps=true", false, ""},
+		{"/containerLogs/ns/pod/app?tailLines=0", true, "0"},
+		{"/containerLogs/ns/pod/app?tailLines=7", true, "7"},
+	} {
+		if code, _ := do(t, h, "GET", c.target); code != 200 {
+			t.Fatalf("%s = %d", c.target, code)
+		}
+		_, present := got.query["tailLines"]
+		if present != c.present || got.query.Get("tailLines") != c.value {
+			t.Errorf("%s: query %v, want tailLines present=%v value %q", c.target, got.query, c.present, c.value)
+		}
+	}
+	// Only log requests carry it.
+	if code, _ := do(t, h, "GET", "/pods"); code != 200 {
+		t.Fatal("/pods")
 	}
 }
 

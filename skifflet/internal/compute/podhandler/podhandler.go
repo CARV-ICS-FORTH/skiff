@@ -460,10 +460,13 @@ func (h *PodHandler) savePIDs(pausePID int, containerPID int) {
 }
 
 // launchEnv is the environment of every Apptainer process of this pod: the
-// process's own, with the temporary directory moved inside the pod directory.
+// process's own, with the temporary directory moved inside the pod directory, and
+// Apptainer quiet. Its informational messages ("Cleaning up image...") would
+// otherwise be taken for the container's own output and end up in its log; its
+// warnings and errors still appear.
 func (h *PodHandler) launchEnv() []string {
 	tmp := h.podDirectory.TmpDir()
-	return append(os.Environ(), "APPTAINER_TMPDIR="+tmp, "SINGULARITY_TMPDIR="+tmp)
+	return append(os.Environ(), "APPTAINER_TMPDIR="+tmp, "SINGULARITY_TMPDIR="+tmp, "APPTAINER_QUIET=true", "SINGULARITY_QUIET=true")
 }
 
 // attemptResult says how one run of a container ended.
@@ -484,22 +487,17 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 		return 128, attemptNotStarted, err
 	}
 
-	logFlags := os.O_CREATE | os.O_WRONLY | os.O_APPEND
-	if init {
-		logFlags = os.O_CREATE | os.O_WRONLY | os.O_TRUNC
-	}
-	logFile, err := os.OpenFile(c.LogsPath, logFlags, 0644)
+	logs, err := a.OpenLog(h.podDirectory.Container(spec.Name))
 	if err != nil {
-		a.FailPod(128, "LogFileError", "failed to open container log file %s: %v", c.LogsPath, err)
+		a.FailPod(128, "LogFileError", "failed to open the container log: %v", err)
 		return 128, attemptLogError, err
 	}
-	defer logFile.Close()
 
 	cmd := exec.Command(compute.Environment.ApptainerBin, c.BuildApptainerArgs(sandboxPID, h.podDirectory)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = h.launchEnv()
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	cmd.Stdout = logs.Stdout()
+	cmd.Stderr = logs.Stderr()
 
 	var gates probeGates
 	if !init {
@@ -507,9 +505,11 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 		a.spec = spec
 	}
 	if err := a.Start(cmd, gates); err != nil {
+		logs.Abort()
 		a.Fail(128)
 		return 128, attemptNotStarted, err
 	}
+	logs.Begin()
 	h.savePIDs(0, a.pid)
 	if !init {
 		podIP := h.lifecycle.GetPodStatus().PodIP
