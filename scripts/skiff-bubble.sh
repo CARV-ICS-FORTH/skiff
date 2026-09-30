@@ -5,10 +5,16 @@ BUBBLE_ID=${1:-1}
 
 NAME="bubble$BUBBLE_ID"
 
-CIDR="10.0.$((BUBBLE_ID + 1)).0"
-CIDR_PREFIX=$(echo "$CIDR" | awk -F. '{print $1"."$2"."$3}')
-DNS_ADDR="$CIDR_PREFIX.3"
-NS_ADDR="$CIDR_PREFIX.100"
+# The cluster configuration arrives in the environment from skiff.slurm; checking it
+# again here costs nothing and covers a bubble started by hand.
+# shellcheck source=skiff-config.sh
+source "$(dirname "$0")/skiff-config.sh"
+skiff_config_validate || exit 1
+skiff_config_export
+skiff_outer_network "$BUBBLE_ID"
+CIDR="$SKIFF_OUTER_CIDR"
+DNS_ADDR="$SKIFF_OUTER_DNS"
+NS_ADDR="$SKIFF_OUTER_ADDRESS"
 
 # Detect Host IP
 HOST_IP_DETECTED=""
@@ -134,6 +140,13 @@ apptainer instance run \
 	--env PLAID_UPLINK_ADDRESS="$NS_ADDR" \
 	--env SKIFF_ROLE="$SKIFF_ROLE" \
 	--env SKIFF_DEV="${SKIFF_DEV:-0}" \
+	--env SKIFF_POD_CIDR="$SKIFF_POD_CIDR" \
+	--env SKIFF_SERVICE_CIDR="$SKIFF_SERVICE_CIDR" \
+	--env SKIFF_CLUSTER_DOMAIN="$SKIFF_CLUSTER_DOMAIN" \
+	--env SKIFF_CLUSTER_DNS="$SKIFF_CLUSTER_DNS" \
+	--env SKIFF_API_SERVICE_IP="$SKIFF_API_SERVICE_IP" \
+	--env SKIFF_POD_MTU="$SKIFF_POD_MTU" \
+	--env SKIFF_PODS_DIR="$SKIFF_PODS_DIR" \
 	"$BUBBLE_IMAGE" \
 	"$NAME"
 
@@ -152,7 +165,7 @@ if [ -z "$PID" ] || [ "$PID" = "null" ]; then
 fi
 
 # Userlevel networking
-slirp4netns --configure --cidr="$CIDR/24" --mtu=1500 --api-socket "$SLIRP_SOCK" "$PID" tap0 &
+slirp4netns --configure --cidr="$CIDR/24" --mtu="$SKIFF_UPLINK_MTU" --api-socket "$SLIRP_SOCK" "$PID" tap0 &
 SLIRP_PID=$!
 
 # Forward ports based on Role

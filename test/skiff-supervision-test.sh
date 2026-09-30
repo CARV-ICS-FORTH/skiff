@@ -39,6 +39,7 @@ if [ "$TEST_CHILD_MODE" = term ]; then exec sleep 30; fi
 sleep 0.1
 exit "$TEST_CHILD_MODE"
 EOF
+cp "$script_dir/../scripts/skiff-config.sh" "$test_dir/repo/scripts/"
 chmod +x "$test_dir/bin/"* "$test_dir/repo/scripts/skiff-bubble.sh"
 export PATH="$test_dir/bin:$PATH"
 export SLURM_JOB_NODELIST=controller SLURM_SUBMIT_DIR="$test_dir/repo" SKIFF_DEV=0
@@ -50,6 +51,20 @@ check_result() {
         echo "$label: batch result marker lost exit status" >&2; exit 1;
     }
 }
+
+# An invalid configuration stops the job before any bubble starts, and says why.
+export SLURM_JOB_ID=8999 SKIFF_STATE_DIR="$test_dir/state-invalid" TEST_CHILD_MODE=0 SKIFF_DEV=0 TEST_EMPTY_NODES=0
+rc=0
+SKIFF_POD_MTU=1500 bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/invalid.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || { echo "invalid configuration: exit $rc, expected 1" >&2; exit 1; }
+grep -q 'SKIFF_POD_MTU (1500) leaves no room for VXLAN' "$test_dir/invalid.log" || { echo "invalid configuration: no reason given" >&2; cat "$test_dir/invalid.log" >&2; exit 1; }
+if grep -q 'Starting Controller' "$test_dir/invalid.log"; then echo "invalid configuration: a bubble was started" >&2; exit 1; fi
+# ... and so does scripts without the helper next to them.
+mv "$test_dir/repo/scripts/skiff-config.sh" "$test_dir/skiff-config.sh.away"
+rc=0
+SLURM_JOB_ID=8998 SKIFF_STATE_DIR="$test_dir/state-nohelper" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/nohelper.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && grep -q 'skiff-config.sh not found' "$test_dir/nohelper.log" || { echo "missing helper: exit $rc" >&2; cat "$test_dir/nohelper.log" >&2; exit 1; }
+mv "$test_dir/skiff-config.sh.away" "$test_dir/repo/scripts/skiff-config.sh"
 
 job=9000
 for mode in 7 0 early empty term; do

@@ -11,10 +11,28 @@ SKIFF_ROLE=${SKIFF_ROLE:-controller}
 PLAID_UPLINK=${PLAID_UPLINK:-tap0}
 : "${PLAID_UPLINK_ADDRESS:?outer slirp guest address is required}"
 
+# The cluster's network configuration is decided and checked once, by skiff.slurm,
+# and arrives here resolved (see scripts/skiff-config.sh). Everything below uses
+# these values; none is spelled out again.
+: "${SKIFF_POD_CIDR:?the pod network is required (SKIFF_POD_CIDR)}"
+: "${SKIFF_SERVICE_CIDR:?the Service network is required (SKIFF_SERVICE_CIDR)}"
+: "${SKIFF_CLUSTER_DOMAIN:?the cluster domain is required (SKIFF_CLUSTER_DOMAIN)}"
+: "${SKIFF_CLUSTER_DNS:?the cluster DNS address is required (SKIFF_CLUSTER_DNS)}"
+: "${SKIFF_API_SERVICE_IP:?the API Service address is required (SKIFF_API_SERVICE_IP)}"
+: "${SKIFF_POD_MTU:?the pod MTU is required (SKIFF_POD_MTU)}"
+# Optional: the pods directory. Empty means Skifflet's own default.
+SKIFF_PODS_DIR="${SKIFF_PODS_DIR:-}"
+
 echo "Starting Skiff Bubble..."
 echo "  Public IP:     ${HOST_IP}"
 echo "  Interface:     tap0"
 echo "  Role:          ${SKIFF_ROLE}"
+echo "Effective network configuration:"
+echo "  Pod network:      ${SKIFF_POD_CIDR}"
+echo "  Service network:  ${SKIFF_SERVICE_CIDR} (API ${SKIFF_API_SERVICE_IP}, DNS ${SKIFF_CLUSTER_DNS})"
+echo "  Cluster domain:   ${SKIFF_CLUSTER_DOMAIN}"
+echo "  Pod MTU:          ${SKIFF_POD_MTU}"
+echo "  Pods directory:   ${SKIFF_PODS_DIR:-(default)}"
 
 # Enable IP forwarding
 sysctl -w net.ipv4.ip_forward=1
@@ -55,9 +73,10 @@ if [ "$SKIFF_ROLE" = "controller" ]; then
       --tls-san 0.0.0.0 \
       --tls-san 127.0.0.1 \
       --tls-san localhost \
-      --cluster-cidr 10.244.0.0/16 \
-      --service-cidr 10.43.0.0/16 \
-      --cluster-domain cluster.local \
+      --cluster-cidr "$SKIFF_POD_CIDR" \
+      --service-cidr "$SKIFF_SERVICE_CIDR" \
+      --cluster-domain "$SKIFF_CLUSTER_DOMAIN" \
+      --cluster-dns "$SKIFF_CLUSTER_DNS" \
       --kube-controller-manager-arg=allocate-node-cidrs=true \
       --kube-controller-manager-arg=node-monitor-grace-period=10s \
       --kube-controller-manager-arg=node-monitor-period=2s \
@@ -264,6 +283,18 @@ while ! k3s kubectl get service -n kube-system kube-dns >/dev/null 2>&1; do
     DNS_WAIT=$((DNS_WAIT + 1))
 done
 
+# The addresses of the API and DNS Services were derived from the Service network
+# before anything started; the cluster is the authority, so check what it created.
+for service in "default kubernetes $SKIFF_API_SERVICE_IP" "kube-system kube-dns $SKIFF_CLUSTER_DNS"; do
+    read -r service_ns service_name service_want <<< "$service"
+    service_got="$(k3s kubectl get service -n "$service_ns" "$service_name" -o jsonpath='{.spec.clusterIP}')"
+    if [ "$service_got" != "$service_want" ]; then
+        echo "ERROR: Service $service_ns/$service_name has address $service_got, but the configuration says $service_want" >&2
+        exit 1
+    fi
+done
+echo "Service addresses verified: API ${SKIFF_API_SERVICE_IP}, DNS ${SKIFF_CLUSTER_DNS}"
+
 start_skifflet() {
     echo "Starting skifflet..."
     PAUSE_IMAGE_OPT=()
@@ -279,6 +310,8 @@ start_skifflet() {
       --apptainer=plaidtainer \
       --nodename="$(hostname)" \
       --disable-taint=true \
+      --cluster-domain="$SKIFF_CLUSTER_DOMAIN" \
+      ${SKIFF_PODS_DIR:+--pods-dir="$SKIFF_PODS_DIR"} \
       "${PAUSE_IMAGE_OPT[@]}" \
       >> /var/log/skifflet.log 2>&1 &
     SKIFFLET_PID=$!
@@ -291,12 +324,13 @@ start_plaidd() {
     plaidd \
       --kubeconfig=/var/lib/skiff/kubeconfig \
       --node-name="$(hostname)" \
-      --cluster-cidr=10.244.0.0/16 \
-      --service-cidr=10.43.0.0/16 \
+      --cluster-cidr="$SKIFF_POD_CIDR" \
+      --service-cidr="$SKIFF_SERVICE_CIDR" \
       --gateway-mode=tap \
       --uplink="$PLAID_UPLINK" \
       --uplink-address="$PLAID_UPLINK_ADDRESS" \
-      --resolver=10.43.0.10 \
+      --resolver="$SKIFF_CLUSTER_DNS" \
+      --mtu="$SKIFF_POD_MTU" \
       >> /var/log/plaidd.log 2>&1 &
     PLAIDD_PID=$!
 }
@@ -318,7 +352,7 @@ start_kube_proxy() {
     kube-proxy \
       --kubeconfig /var/lib/skiff/kubeconfig \
       --proxy-mode iptables \
-      --cluster-cidr 10.244.0.0/16 \
+      --cluster-cidr "$SKIFF_POD_CIDR" \
       --masquerade-all=true \
       --hostname-override "$(hostname)" \
       --conntrack-max-per-core=0 \
@@ -334,9 +368,9 @@ start_kube_proxy
 echo "Waiting for Kubernetes API Service and cluster DNS..."
 NETWORK_WAIT=0
 while true; do
-    API_CODE="$(curl -ksS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' https://10.43.0.1/version 2>/dev/null || true)"
-    DNS_ANSWER="$(timeout 3 drill -Q @10.43.0.10 kubernetes.default.svc.cluster.local A 2>/dev/null | awk '{print $NF}' || true)"
-    if [ "$API_CODE" != "000" ] && [ -n "$API_CODE" ] && printf '%s\n' "$DNS_ANSWER" | grep -qx '10.43.0.1'; then
+    API_CODE="$(curl -ksS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' "https://${SKIFF_API_SERVICE_IP}/version" 2>/dev/null || true)"
+    DNS_ANSWER="$(timeout 3 drill -Q "@${SKIFF_CLUSTER_DNS}" "kubernetes.default.svc.${SKIFF_CLUSTER_DOMAIN}" A 2>/dev/null | awk '{print $NF}' || true)"
+    if [ "$API_CODE" != "000" ] && [ -n "$API_CODE" ] && printf '%s\n' "$DNS_ANSWER" | grep -qx "$SKIFF_API_SERVICE_IP"; then
         echo "Kubernetes API Service and cluster DNS are ready"
         break
     fi

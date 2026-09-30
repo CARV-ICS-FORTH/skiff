@@ -18,6 +18,26 @@ export KUBECONFIG=${HOME}/.skiff/kubeconfig
 kubectl get nodes
 ```
 
+### Network configuration
+
+The defaults suit most sites. To change them (for example when a range overlaps your site's network), set the variables when submitting the job; they are checked together before anything starts, and every part of the cluster receives the same values:
+
+```bash
+sbatch --nodes=2 --export=ALL,SKIFF_POD_CIDR=10.200.0.0/16,SKIFF_SERVICE_CIDR=10.201.0.0/16,SKIFF_POD_MTU=1400 skiff.slurm
+```
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SKIFF_POD_CIDR` | `10.244.0.0/16` | Pod network; Kubernetes gives each node a /24 of it |
+| `SKIFF_SERVICE_CIDR` | `10.43.0.0/16` | Service network (the API Service is its first address) |
+| `SKIFF_CLUSTER_DNS` | 10th Service address (`10.43.0.10`) | Address of the cluster DNS Service, inside the Service network |
+| `SKIFF_CLUSTER_DOMAIN` | `cluster.local` | Cluster DNS domain |
+| `SKIFF_POD_MTU` | link MTU less 50 (`1450`) | MTU of pod interfaces; at most `SKIFF_UPLINK_MTU` - 50 |
+| `SKIFF_UPLINK_MTU` | `1500` | MTU of the links between the bubbles |
+| `SKIFF_PODS_DIR` | Skifflet's (`/tmp/.skiff/.pods`) | Where nodes keep the runtime state of pods (the bubbles share the host's `/tmp`) |
+
+Each bubble's log starts with the effective configuration.
+
 ## Architecture & Components
 
 Skiff is organized as a unified monorepo:

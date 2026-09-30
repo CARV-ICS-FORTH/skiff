@@ -12,6 +12,26 @@
 
 set -euo pipefail
 
+# Where the scripts are (a submitted job runs from a copy of this file).
+SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$HOME/skiff}"
+if [ -f "$SCRIPT_DIR/scripts/skiff-bubble.sh" ]; then
+    SCRIPT_DIR="$SCRIPT_DIR/scripts"
+elif [ -f "$HOME/skiff/scripts/skiff-bubble.sh" ]; then
+    SCRIPT_DIR="$HOME/skiff/scripts"
+elif [ ! -f "$SCRIPT_DIR/skiff-bubble.sh" ]; then
+    SCRIPT_DIR="$HOME/skiff"
+fi
+
+# The network configuration every part of the cluster must agree on. Its defaults
+# and the variables that override them are documented in skiff-config.sh; it is
+# checked as a whole here, before anything is started.
+if [ ! -f "$SCRIPT_DIR/skiff-config.sh" ]; then
+    echo "ERROR: skiff-config.sh not found in $SCRIPT_DIR; copy the whole scripts/ folder to the cluster." >&2
+    exit 1
+fi
+# shellcheck source=skiff-config.sh
+source "$SCRIPT_DIR/skiff-config.sh"
+
 SKIFF_STATE_DIR="${SKIFF_STATE_DIR:-$HOME/.skiff}"
 NODES=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
 NUM_NODES=${#NODES[@]}
@@ -40,6 +60,10 @@ fi
 echo "Cluster Setup:"
 echo "  Controller Node: $CONTROLLER_NODE ($CONTROLLER_IP)"
 echo "  Nodes: ${NODES[*]}"
+
+skiff_config_validate "$NUM_NODES" "$CONTROLLER_IP" || exit 1
+skiff_config_export
+skiff_config_print
 
 # --- Preflight Collision Checks (Single-Cluster Contract) ---
 echo "Running preflight checks..."
@@ -112,15 +136,6 @@ else
     echo "Production mode: pre-warming Apptainer cache..."
     apptainer exec docker://docker.io/chazapis/skiff-bubble:latest /bin/true 2>/dev/null || true
     apptainer exec docker://registry.k8s.io/pause:3.10 /bin/true 2>/dev/null || true
-fi
-
-SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$HOME/skiff}"
-if [ -f "$SCRIPT_DIR/scripts/skiff-bubble.sh" ]; then
-    SCRIPT_DIR="$SCRIPT_DIR/scripts"
-elif [ -f "$HOME/skiff/scripts/skiff-bubble.sh" ]; then
-    SCRIPT_DIR="$HOME/skiff/scripts"
-elif [ ! -f "$SCRIPT_DIR/skiff-bubble.sh" ]; then
-    SCRIPT_DIR="$HOME/skiff"
 fi
 
 BG_PIDS=()
