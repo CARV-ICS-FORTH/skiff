@@ -82,6 +82,73 @@ Unknown pods or containers, and malformed requests, keep their normal 404 and 40
 | probe events | implemented | `Unhealthy` (with the failure) for a failing readiness, liveness or startup probe and `Killing` when a container is stopped for one, recorded with the API server as from `kubelet` on the node | | T11 |
 | `grpc` probes | not supported | The pod is rejected at creation (`UnsupportedFeatures`) naming the field | `httpGet`, `tcpSocket` or `exec` | unit (capabilities) |
 
+## Examples
+
+A slow-starting application: the startup probe gives it up to five minutes; only then do the aggressive readiness and liveness probes begin, and a PostStart hook has to succeed before the container is reported Running. The PreStop hook runs before the termination signal and shares the pod's grace period.
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: slow-start
+spec:
+  terminationGracePeriodSeconds: 30
+  containers:
+  - name: app
+    image: registry.example/app:1.0
+    ports:
+    - {name: http, containerPort: 8080}
+    startupProbe:
+      httpGet: {path: /startup, port: http}
+      periodSeconds: 5
+      failureThreshold: 60
+    readinessProbe:
+      httpGet: {path: /ready, port: http}
+      periodSeconds: 2
+    livenessProbe:
+      httpGet: {path: /live, port: http}
+      periodSeconds: 2
+      failureThreshold: 2
+    lifecycle:
+      postStart:
+        exec: {command: ["/bin/sh", "-c", "echo started >> /tmp/hooks"]}
+      preStop:
+        httpGet: {path: /drain, port: http}
+```
+
+Logs and exec work as with any kubelet:
+
+```bash
+kubectl logs slow-start --tail=20 --timestamps      # current attempt
+kubectl logs slow-start --previous                  # the attempt that ended before it
+kubectl logs -f slow-start --since=1m
+kubectl exec slow-start -- ls /tmp                  # separate output and error streams, exit status kept
+kubectl exec -it slow-start -- sh                   # a pseudo-terminal that follows the window size
+```
+
+What to use where a request is not supported: `kubectl attach` is replaced by `kubectl logs -f` and `kubectl exec`; `kubectl top` has no data (no usage is invented); a running pod's image or resources cannot be changed, so delete the pod or roll out a Deployment; a `grpc` probe is replaced by an `httpGet`, `tcpSocket` or `exec` probe.
+
+## Where things live
+
+For those changing Skifflet. Each item owns its state, and everything else asks it.
+
+| What | Where | Owns |
+|---|---|---|
+| Pod admission | `podhandler/capabilities.go` | The list of fields Skifflet refuses, with the field named. A form leaves this list only when its behaviour and test exist |
+| Execution of one pod | `podhandler/lifecycle.go` (`PodLifecycle`) | The one owner per pod UID: launched spec (only labels and annotations follow later updates), observed status (one writer, published in order), process facts. `podhandler/registry.go` maps UID and name to it, so a pod with the same name and a new UID replaces the old one |
+| One launch of a container | `podhandler/lifecycle.go` (`Attempt`) | The attempt identity. Probes, hooks, exec sessions and log readers hold the attempt they were started for; once a newer attempt exists or it has ended, what they do is a no-op. The launcher is the only waiter for the process |
+| Running commands in a container | `podhandler/target.go` (`Target`) | Finding and verifying the live container process and its namespaces. Exec, exec probes and hooks all run through it |
+| Probes, hooks | `podhandler/probes.go`, `hooks.go` | Timing and thresholds, and the gates a container waits behind (`Started`, PostStart, readiness). They report to the attempt, never to the pod status directly |
+| Exec sessions | `podhandler/exec.go` | Streams, pseudo-terminal and cleanup of the session and its children |
+| Logs | `podhandler/logs.go`, `logread.go`, `internal/provider/logs.go` | One CRI-format file per attempt; the reader selects the attempt and applies the options; the provider layer keeps the presence of `tailLines` |
+| Downward API, environment | `pkg/fieldpath`, `podhandler/environment.go` | The single evaluation of `fieldRef` and `resourceFieldRef`, used by the environment and by the volumes |
+| Missing configuration | `podhandler/podhandler.go` (`prepareContainer`) | Per-container waiting and retry for configuration that is not there yet |
+| Update handling | `podhandler/updates.go`, `internal/provider/update.go` | Which differences are applied and which are reported (`UpdateNotApplied`), and the filter that drops Virtual Kubelet's misleading success event |
+| Network settings | `scripts/skiff-config.sh`, `plaid/pkg/netcfg` | The one definition of the pod and Service ranges, DNS address, MTU and cluster domain; the bubble entrypoint and Plaid read what it derives |
+| Cleanup | `podhandler/ledger.go` | A stack of cleanup actions for what the pod acquired, run once when the pod ends |
+
+Rules that the code comments hold and the tests enforce: nothing publishes status or signals a process except through the pod's owner and the current attempt; an operation that cannot be honoured says so, as the kubelet does, and does not warn and continue; no operation started for a pod outlives the pod or its attempt.
+
 ## Command Line Flags
 
 | Flag | Default | Description |

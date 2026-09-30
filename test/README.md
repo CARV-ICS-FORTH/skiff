@@ -55,9 +55,26 @@ bash test/e2e/network/test-tap-webhook.sh
 
 The qualification profile covers a dedicated two-node Slurm allocation with IPv4 TAP networking and kube-proxy Services. A required daemon failure stops the whole job; recovery uses a fresh job. Runtime qualification currently targets ARM64. Building for another architecture does not qualify its runtime behavior.
 
-The profile requires these checks: cases 01–12, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, and teardown with a second boot. They cover workload startup and completion, init containers, networking, readiness, environment/volumes, logs/exec/port-forward, restarts, graceful deletion, startup failures and cleanup. Standalone Plaid checks NET-1 and NET-2 are outside this profile.
+The profile requires these checks: cases 01–19, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, teardown with a second boot, and the named subcases listed in `test/e2e/lib/profile.sh`. They cover workload startup and completion, init containers, networking, readiness, environment and volumes, logs, exec and port-forward, restarts, graceful deletion, startup failures and cleanup, and the sprint 1 compatibility work:
 
-Supported probes are numeric-port HTTP/TCP readiness and liveness, plus command readiness. Startup probes, command liveness, gRPC/named-port probes and lifecycle hooks are rejected. Host namespaces and ephemeral containers are also rejected before local allocation.
+| Case | Acceptance groups |
+|---|---|
+| 06 | T04 (kubelet routes and their failures) |
+| 13 | T07, T08, T09 (startup, readiness and liveness probes, Service endpoints) |
+| 14 | T14, T17 (exec, pseudo-terminals, cancellation) |
+| 15 | T10, T11 (lifecycle hooks) |
+| 16 | T12, T13 (logs and their attempts) |
+| 17 | T18 (network settings that differ from the defaults, run as a fresh deployment) |
+| 18 | T05, T06, T15, T16 (refused forms, updates, environment and files, continuity) |
+| 19 | T20 (ten create/restart/delete cycles with probes, hooks, logs and exec, and what they leave behind) |
+
+T01–T03, T19 and the unit and race parts of the other groups are unit and Linux tests (`make test` in `skifflet/` and `plaid/`; the Linux-only ones run in the builder container) and shell tests (`test/skiff-config-test.sh`, `test/skiff-supervision-test.sh`), run by `regression.sh` and the module test targets.
+
+Supported probes are HTTP, TCP and exec (startup, readiness and liveness, with named ports); `grpc` probes, host namespaces, ephemeral containers, restartable init containers and the other forms in the support table of [skifflet/README.md](../skifflet/README.md) are refused at creation, and the refusal is tested with a healthy sentinel pod running beside them. Standalone Plaid checks NET-1 and NET-2 are outside this profile.
+
+The default profile runs with the standard lab network. The alternative-network scenario (case 17, T18) is a separate fresh deployment, not a mode of the aggregate: source a file that exports the `SKIFF_*` network variables described in the top-level README (for example `SKIFF_POD_CIDR=10.200.0.0/16 SKIFF_SERVICE_CIDR=10.201.0.0/16 SKIFF_CLUSTER_DNS=10.201.0.10 SKIFF_CLUSTER_DOMAIN=lab.test SKIFF_POD_MTU=1400`), submit a new job, run the aggregate against it, and restore the standard configuration by submitting a new job without them.
+
+T20 counts what disposable workloads can leave behind: application processes, the namespace's pod directories, IP leases, network namespaces, unpacked root filesystems, and the open descriptors of Skifflet and Plaidd (with an allowance of five). Volume data and image caches are retained on purpose and are not counted. Ten cycles is a regression run and not a measure of endurance.
 
 Cases can also report named subcases with `e2e_subcase ID RESULT` (or run a function as one with `e2e_subcase_run ID cmd...`). The aggregate records each as a result of its own, named after the acceptance group and variant, for example `T07-startup-http`. Subcases the profile requires are listed in `test/e2e/lib/profile.sh`; a required subcase that is missing, skipped or failed fails the run, and a reported failure fails it even for a label not yet listed.
 
