@@ -6,7 +6,7 @@
 # environment (for example `sbatch --export=ALL,SKIFF_POD_MTU=1400 skiff.slurm`);
 # the defaults below are the ones a deployment gets without saying anything.
 #
-# The resolved values are passed explicitly to what needs them: K3s, kube-proxy,
+# The resolved values are passed explicitly to what needs them: K3s,
 # Plaid's daemon (cluster and Service CIDRs, resolver, pod MTU), Skifflet (cluster
 # domain, pods directory) and the readiness checks. Nothing else spells them out.
 # Node PodCIDRs are not configured here: Kubernetes allocates them.

@@ -38,6 +38,10 @@ controller_cidr=$(kubectl get node controller -o jsonpath='{.spec.podCIDR}')
 node_cidr=$(kubectl get node node -o jsonpath='{.spec.podCIDR}')
 controller_gateway=$(printf '%s' "$controller_cidr" | awk -F. '{print $1 "." $2 "." $3 ".1"}')
 node_gateway=$(printf '%s' "$node_cidr" | awk -F. '{print $1 "." $2 "." $3 ".1"}')
+# Backends of a Service see the Service engine's address of the client's node (the .2),
+# not the client's own address.
+controller_engine=$(printf '%s' "$controller_cidr" | awk -F. '{print $1 "." $2 "." $3 ".2"}')
+node_engine=$(printf '%s' "$node_cidr" | awk -F. '{print $1 "." $2 "." $3 ".2"}')
 
 probe() {
     local pod=$1 mode=$2 target=$3 expected=$4
@@ -54,16 +58,16 @@ probe client-controller large "$node_echo" "$controller_ip"
 probe client-node large "$controller_echo" "$node_ip"
 
 echo "ClusterIP: local, remote, and self backend over TCP and UDP"
-probe client-controller http "$controller_service" "$controller_gateway"
-probe client-controller http "$node_service" "$controller_gateway"
-probe client-node http "$node_service" "$node_gateway"
-probe client-node http "$controller_service" "$node_gateway"
-probe echo-controller http "$controller_service" "$controller_gateway"
-probe echo-node http "$node_service" "$node_gateway"
-probe client-controller udp "$node_service" "$controller_gateway"
-probe client-node udp "$controller_service" "$node_gateway"
-probe echo-controller udp "$controller_service" "$controller_gateway"
-probe echo-node udp "$node_service" "$node_gateway"
+probe client-controller http "$controller_service" "$controller_engine"
+probe client-controller http "$node_service" "$controller_engine"
+probe client-node http "$node_service" "$node_engine"
+probe client-node http "$controller_service" "$node_engine"
+probe echo-controller http "$controller_service" "$controller_engine"
+probe echo-node http "$node_service" "$node_engine"
+probe client-controller udp "$node_service" "$controller_engine"
+probe client-node udp "$controller_service" "$node_engine"
+probe echo-controller udp "$controller_service" "$controller_engine"
+probe echo-node udp "$node_service" "$node_engine"
 
 echo "Cluster DNS and authorized API Service via IP and DNS name"
 kubectl -n kube-system wait --for=condition=Ready pod -l k8s-app=kube-dns --timeout=60s >/dev/null 2>&1 || true

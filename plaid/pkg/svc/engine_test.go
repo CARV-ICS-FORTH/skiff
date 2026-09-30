@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -354,8 +355,21 @@ func TestUnsupportedPacketsAreCounted(t *testing.T) {
 			t.Errorf("%s: %v", name, r.Verdict)
 		}
 	}
-	if e.Stats().DropsUnsupported != 4 {
-		t.Errorf("stats %+v", e.Stats())
+	st := e.Stats()
+	if st.DropsUnsupported != 4 || len(st.RecentDrops) != 4 {
+		t.Errorf("stats %+v", st)
+	}
+	joined := strings.Join(st.RecentDrops, "\n")
+	for _, want := range []string{"fragment of protocol 17", "ICMP type 0", "not an IPv4 packet", "protocol 132"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the drops do not say %q:\n%s", want, joined)
+		}
+	}
+	for i := 0; i < 40; i++ { // the memory is bounded
+		e.Process([]byte{1, 2, 3})
+	}
+	if n := len(e.Stats().RecentDrops); n != recentDropsKept {
+		t.Errorf("%d drops remembered, want %d", n, recentDropsKept)
 	}
 }
 

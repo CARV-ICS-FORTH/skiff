@@ -70,19 +70,6 @@ RUN if [ "${TARGETARCH}" = "amd64" ]; then \
     chmod +x /usr/local/bin/k3s
 RUN mkdir -p /var/lib/rancher/k3s /etc/rancher/k3s
 
-# kube-proxy
-ARG KUBE_VERSION=v1.35.0
-RUN if [ "${TARGETARCH}" = "amd64" ]; then \
-        KUBE_SHA="6489ece90b0400cc275204601126d797f86b4b3642672227460280ee659c8f54"; \
-    elif [ "${TARGETARCH}" = "arm64" ]; then \
-        KUBE_SHA="d7254f50c4aea1963c534dbdbae58ac16087667ebb129bfa781bcdd9f7920972"; \
-    else \
-        echo "Unsupported architecture: ${TARGETARCH}" && exit 1; \
-    fi && \
-    curl -L "https://dl.k8s.io/release/${KUBE_VERSION}/bin/linux/${TARGETARCH}/kube-proxy" -o /usr/local/bin/kube-proxy && \
-    echo "${KUBE_SHA}  /usr/local/bin/kube-proxy" | sha256sum -c - && \
-    chmod +x /usr/local/bin/kube-proxy
-
 COPY --from=builder /src/skifflet/bin/skifflet /usr/bin/skifflet
 COPY --from=builder /src/plaid/bin/plaidd /usr/local/bin/plaidd
 COPY --from=builder /src/plaid/bin/plaid /usr/local/bin/plaid

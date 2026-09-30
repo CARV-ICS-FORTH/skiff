@@ -77,9 +77,9 @@ skiff/
 
 ### Skiff Bubble (`images/skiff-bubble/`)
 
-A rootless Apptainer container runs on each allocated HPC node. One bubble hosts the [K3s](https://k3s.io/) control plane; every bubble runs Skifflet, Plaid and kube-proxy. [slirp4netns](https://github.com/rootless-containers/slirp4netns) provides external access.
+A rootless Apptainer container runs on each allocated HPC node. One bubble hosts the [K3s](https://k3s.io/) control plane; every bubble runs Skifflet and Plaid, which also translates Service traffic. [slirp4netns](https://github.com/rootless-containers/slirp4netns) provides external access.
 
-Plaid attaches a `plaid0` TAP to each bubble's kernel at the first address of its node PodCIDR, for example `10.244.1.1`. Pod-to-Pod traffic uses Plaid's overlay directly. Service traffic passes through the TAP and kube-proxy; external traffic uses bubble-local forwarding and SNAT through slirp.
+Plaid attaches a `plaid0` TAP to each bubble's kernel at the first address of its node PodCIDR, for example `10.244.1.1`. Pod-to-Pod traffic uses Plaid's overlay directly. Service traffic is translated by Plaid itself (there is no kube-proxy): destination NAT to a backend, source NAT to the node network's `.2`, which the backends answer; external traffic uses bubble-local forwarding and SNAT through slirp.
 
 Skifflet registers its Node, then waits for the TAP gateway before launching Pods. Startup checks the Kubernetes API Service and cluster DNS. The Service CIDR `10.43.0.0/16` and DNS domain `cluster.local` are fixed deployment assumptions.
 

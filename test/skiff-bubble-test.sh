@@ -59,6 +59,7 @@ export PATH="$test_dir/bin:$PATH" HOME="$test_dir/home" SKIFF_DEV=1 CONTROLLER_I
 export SKIFF_SLIRP_API_TIMEOUT=4
 # shellcheck source=../scripts/skiff-config.sh
 source "$repo_dir/scripts/skiff-config.sh"
+skiff_config_validate >/dev/null
 skiff_outer_network 1
 guest="$SKIFF_OUTER_ADDRESS"
 
@@ -110,6 +111,9 @@ grep -q 'started successfully' "$LOG" || fail "the controller bubble did not sta
 expected="tcp 127.0.0.1 10250 $guest 10250
 tcp 127.0.0.1 6443 $guest 6443"
 [ "$(requests)" = "$expected" ] || { requests >&2; fail "slirp4netns listeners differ from the expected ones (no UDP overlay forward)"; }
+
+# slirp4netns runs at the pod MTU, so that nothing it sends has to be fragmented on its way to pods.
+grep -q -- "--mtu=$SKIFF_POD_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&2; fail "slirp4netns was not started at the pod MTU"; }
 
 # The helper was started once, from the image, with the host address, the port and the
 # handoff socket under /tmp/.skiff; the bubble was told where it is.

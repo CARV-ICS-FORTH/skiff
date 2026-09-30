@@ -350,24 +350,10 @@ while ! plaidctl status >/dev/null 2>&1; do
     PLAID_WAIT=$((PLAID_WAIT + 1))
 done
 
-start_kube_proxy() {
-    echo "Starting kube-proxy..."
-    kube-proxy \
-      --kubeconfig /var/lib/skiff/kubeconfig \
-      --proxy-mode iptables \
-      --cluster-cidr "$SKIFF_POD_CIDR" \
-      --masquerade-all=true \
-      --hostname-override "$(hostname)" \
-      --conntrack-max-per-core=0 \
-      --conntrack-tcp-timeout-established=0 \
-      --conntrack-tcp-timeout-close-wait=0 \
-      >> /var/log/kube-proxy.log 2>&1 &
-    KUBE_PROXY_PID=$!
-}
-start_kube_proxy
-
 # Both the API Service and cluster DNS must work before the bubble reports
-# startup success. Neither check is needed for the direct API bootstrap above.
+# startup success. Plaidd translates Service traffic itself (there is no kube-proxy),
+# so these checks also prove that its Service table is current and reaches the API
+# server's endpoint. Neither is needed for the direct API bootstrap above.
 echo "Waiting for Kubernetes API Service and cluster DNS..."
 NETWORK_WAIT=0
 while true; do
@@ -377,7 +363,7 @@ while true; do
         echo "Kubernetes API Service and cluster DNS are ready"
         break
     fi
-    if ! kill -0 "$PLAIDD_PID" 2>/dev/null || ! kill -0 "$KUBE_PROXY_PID" 2>/dev/null || [ "$NETWORK_WAIT" -ge 180 ]; then
+    if ! kill -0 "$PLAIDD_PID" 2>/dev/null || [ "$NETWORK_WAIT" -ge 180 ]; then
         echo "ERROR: API Service or cluster DNS did not become ready (API=$API_CODE, DNS=$DNS_ANSWER)" >&2
         exit 1
     fi
@@ -388,7 +374,7 @@ done
 shutdown_daemons() {
     trap - EXIT INT TERM
     echo "Terminating cluster daemons..."
-    kill -TERM "$SKIFFLET_PID" "$PLAIDD_PID" "$KUBE_PROXY_PID" 2>/dev/null || true
+    kill -TERM "$SKIFFLET_PID" "$PLAIDD_PID" 2>/dev/null || true
     if [ -n "$K3S_PID" ]; then
         kill -TERM "$K3S_PID" 2>/dev/null || true
     fi
@@ -396,14 +382,14 @@ shutdown_daemons() {
         kill -TERM "$CSR_SIGN_PID" 2>/dev/null || true
     fi
     sleep 2
-    kill -KILL "$SKIFFLET_PID" "$PLAIDD_PID" "$KUBE_PROXY_PID" 2>/dev/null || true
+    kill -KILL "$SKIFFLET_PID" "$PLAIDD_PID" 2>/dev/null || true
     if [ -n "$K3S_PID" ]; then
         kill -KILL "$K3S_PID" 2>/dev/null || true
     fi
     if [ -n "$CSR_SIGN_PID" ]; then
         kill -KILL "$CSR_SIGN_PID" 2>/dev/null || true
     fi
-    wait "$SKIFFLET_PID" "$PLAIDD_PID" "$KUBE_PROXY_PID" 2>/dev/null || true
+    wait "$SKIFFLET_PID" "$PLAIDD_PID" 2>/dev/null || true
     if [ -n "$K3S_PID" ]; then
         wait "$K3S_PID" 2>/dev/null || true
     fi
@@ -434,10 +420,6 @@ while true; do
     fi
     if ! kill -0 "$PLAIDD_PID" 2>/dev/null; then
         echo "FATAL: plaidd (PID $PLAIDD_PID) exited unexpectedly!" >&2
-        exit 1
-    fi
-    if ! kill -0 "$KUBE_PROXY_PID" 2>/dev/null; then
-        echo "FATAL: kube-proxy (PID $KUBE_PROXY_PID) exited unexpectedly!" >&2
         exit 1
     fi
     sleep 2

@@ -23,6 +23,8 @@ if os.environ.get("FAKE_SLIRP_EXIT") == "1":
     sys.exit(3)
 
 args = sys.argv[1:]
+with open(os.path.join(directory, "args"), "w") as f:
+    f.write(" ".join(args))
 sock_path = args[args.index("--api-socket") + 1]
 signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 

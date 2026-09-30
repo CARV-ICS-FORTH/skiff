@@ -152,7 +152,12 @@ type Stats struct {
 	DropsFlowLimit   uint64 // a new flow would exceed MaxFlows
 	DropsPorts       uint64 // no source port left for the backend
 	DropsUnsupported uint64 // fragments, ICMP, other protocols, malformed packets
+	// RecentDrops describes the last few packets dropped, newest last.
+	RecentDrops []string
 }
+
+// recentDropsKept is how many dropped packets the engine remembers for diagnostics.
+const recentDropsKept = 16
 
 type fwdKey struct {
 	proto Proto
@@ -202,6 +207,7 @@ type Engine struct {
 	snatIP net.IP
 
 	mu       sync.Mutex
+	drops    []string
 	synced   bool
 	services map[svcKey]*Service
 	flows    map[fwdKey]*flow
@@ -326,6 +332,7 @@ func (e *Engine) Stats() Stats {
 	st := e.stats
 	st.Synced = e.synced
 	st.Flows = len(e.flows)
+	st.RecentDrops = append([]string(nil), e.drops...)
 	return st
 }
 
@@ -391,6 +398,7 @@ func (e *Engine) Process(pkt []byte) Result {
 	if err != nil || l.HasPorts() != nil || (l.Proto != packet.IPProtocolTCP && l.Proto != packet.IPProtocolUDP) {
 		e.mu.Lock()
 		e.stats.DropsUnsupported++
+		e.dropLocked(pkt, l, err)
 		e.mu.Unlock()
 		return Result{}
 	}
@@ -400,6 +408,25 @@ func (e *Engine) Process(pkt []byte) Result {
 		return e.reverseLocked(l)
 	}
 	return e.forwardLocked(l)
+}
+
+// dropLocked remembers what a dropped packet looked like, for diagnostics.
+func (e *Engine) dropLocked(pkt []byte, l packet.L3, parseErr error) {
+	var s string
+	switch {
+	case parseErr != nil:
+		s = fmt.Sprintf("%v: %d bytes", parseErr, len(pkt))
+	case l.Fragment:
+		s = fmt.Sprintf("fragment of protocol %d %s -> %s, %d bytes", l.Proto, net.IP(l.Src[:]), net.IP(l.Dst[:]), len(l.Pkt))
+	case l.Proto == packet.IPProtocolICMP && len(l.Transport()) >= 2:
+		s = fmt.Sprintf("ICMP type %d code %d %s -> %s, %d bytes", l.Transport()[0], l.Transport()[1], net.IP(l.Src[:]), net.IP(l.Dst[:]), len(l.Pkt))
+	default:
+		s = fmt.Sprintf("protocol %d %s -> %s, %d bytes", l.Proto, net.IP(l.Src[:]), net.IP(l.Dst[:]), len(l.Pkt))
+	}
+	if len(e.drops) == recentDropsKept {
+		e.drops = e.drops[1:]
+	}
+	e.drops = append(e.drops, s)
 }
 
 func (e *Engine) timeoutLocked(f *flow) time.Duration {

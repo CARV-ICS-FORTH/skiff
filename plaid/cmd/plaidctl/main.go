@@ -69,6 +69,9 @@ func main() {
 				status.ServiceCIDR, status.ServiceAddress, status.ServiceManager, e.Synced, e.Services, e.Backends, e.Flows)
 			fmt.Printf("              flows created=%d expired=%d purged=%d; packets out=%d back=%d refused=%d\n",
 				e.FlowsCreated, e.FlowsExpired, e.FlowsPurged, e.Forwarded, e.Returned, e.Rejected)
+			for _, d := range e.RecentDrops {
+				fmt.Printf("              dropped: %s\n", d)
+			}
 			if w := status.ServiceWatch; w != nil {
 				fmt.Printf("              watch: synced=%t, tables=%d, unsupported settings=%d, watch errors=%d %s\n",
 					w.Synced, w.Tables, w.Problems, w.WatchErrors, w.LastWatchError)

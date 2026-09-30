@@ -53,7 +53,7 @@ bash test/e2e/network/test-tap-webhook.sh
 
 ## Qualification Profile and Results
 
-The qualification profile covers a dedicated two-node Slurm allocation with IPv4 TAP networking and kube-proxy Services. A required daemon failure stops the whole job; recovery uses a fresh job. Runtime qualification currently targets ARM64. Building for another architecture does not qualify its runtime behavior.
+The qualification profile covers a dedicated two-node Slurm allocation with IPv4 TAP networking with Plaid translating Services. A required daemon failure stops the whole job; recovery uses a fresh job. Runtime qualification currently targets ARM64. Building for another architecture does not qualify its runtime behavior.
 
 The profile requires these checks: cases 01–21, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, teardown with a second boot, and the named subcases listed in `test/e2e/lib/profile.sh`. They cover workload startup and completion, init containers, networking, readiness, environment and volumes, logs, exec and port-forward, restarts, graceful deletion, startup failures and cleanup, and the sprint 1 compatibility work:
 

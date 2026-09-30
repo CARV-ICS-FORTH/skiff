@@ -64,6 +64,8 @@ type ServiceStats struct {
 	DropsFlowLimit   uint64 `json:"drops_flow_limit"`
 	DropsPorts       uint64 `json:"drops_ports"`
 	DropsUnsupported uint64 `json:"drops_unsupported"`
+	// RecentDrops describes the last packets the engine dropped as unsupported.
+	RecentDrops []string `json:"recent_drops,omitempty"`
 }
 
 // Request is the JSON request sent across the IPC socket.

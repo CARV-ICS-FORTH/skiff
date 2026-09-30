@@ -115,7 +115,7 @@ func (d *PlaidDaemon) fillServiceStatus(resp *api.Response) {
 		FlowsCreated: st.FlowsCreated, FlowsExpired: st.FlowsExpired, FlowsPurged: st.FlowsPurged,
 		Forwarded: st.Forwarded, Returned: st.Returned, Rejected: st.Rejected,
 		DropsNoService: st.DropsNoService, DropsNoFlow: st.DropsNoFlow, DropsFlowLimit: st.DropsFlowLimit,
-		DropsPorts: st.DropsPorts, DropsUnsupported: st.DropsUnsupported,
+		DropsPorts: st.DropsPorts, DropsUnsupported: st.DropsUnsupported, RecentDrops: st.RecentDrops,
 	}
 }
 

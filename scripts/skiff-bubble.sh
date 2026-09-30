@@ -188,8 +188,12 @@ if [ -z "$PID" ] || [ "$PID" = "null" ]; then
     exit 1
 fi
 
-# Userlevel networking
-slirp4netns --configure --cidr="$CIDR/24" --mtu="$SKIFF_UPLINK_MTU" --api-socket "$SLIRP_SOCK" "$PID" tap0 &
+# Userlevel networking. slirp4netns sends full-size packets to the bubble's kernel whatever
+# segment size a pod offered, and the kernel forwards them to pods through plaid0, whose MTU
+# is the pod MTU: a larger packet would be split into fragments, which Plaid's Service
+# engine does not reassemble. So slirp4netns runs at the pod MTU. (The overlay does not
+# pass through it: its socket is the host's.)
+slirp4netns --configure --cidr="$CIDR/24" --mtu="$SKIFF_POD_MTU" --api-socket "$SLIRP_SOCK" "$PID" tap0 &
 SLIRP_PID=$!
 
 # Forward ports based on Role

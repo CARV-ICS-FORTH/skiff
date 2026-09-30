@@ -12,13 +12,23 @@ Plaid is designed for HPC clusters and unprivileged Apptainer workloads. In a Sk
 
 | Mode | Gateway and DNS behavior |
 | --- | --- |
-| `tap` | Creates `plaid0` at the node PodCIDR `.1`, routes the cluster PodCIDR through it, and forwards non-PodCIDR pod traffic to the bubble kernel. Kube-proxy owns Service NAT; Plaid owns the `PLAID-EGRESS`, `PLAID-FORWARD`, and `PLAID-INPUT` chains. Pass `--uplink=tap0`, `--uplink-address=<outer slirp guest IP>`, and `--resolver=<cluster DNS Service IP>` in Skiff. |
+| `tap` | Creates `plaid0` at the node PodCIDR `.1`, routes the cluster PodCIDR through it, and forwards non-PodCIDR pod traffic to the bubble kernel. Plaid translates Service traffic itself (see below) and owns the `PLAID-EGRESS`, `PLAID-FORWARD`, and `PLAID-INPUT` chains. Pass `--uplink=tap0`, `--uplink-address=<outer slirp guest IP>`, and `--resolver=<cluster DNS Service IP>` in Skiff. |
 | `slirp` | Standalone userspace gateway with the `.2` host alias and `.3` DNS alias. This is the default for direct Plaid use outside a Skiff bubble. |
 | `none` | No outbound gateway backend. |
 
 In TAP mode, `plaid0` has a real MAC (`--bubble-mac`, default `02:00:00:00:00:02`). Plaid answers neighbor requests for reachable remote PodCIDRs with a separate synthetic MAC (`--gateway-mac`, default `02:00:00:00:00:01`). Pods use the real TAP MAC for their local `.1` gateway. Pod addresses continue to start at `.4`; `.1` is never allocated to a pod. The daemon reports attachment readiness and addresses through `plaidctl status`.
 
-The Service CIDR in Skiff is `10.43.0.0/16`, matching the K3s default. It is fixed in the Skiff deployment, while the standalone daemon still accepts `--service-cidr` for overlap validation.
+The Service CIDR is a deployment setting passed as `--service-cidr` (Skiff's default is `10.43.0.0/16`, the K3s default).
+
+### Service translation
+
+In TAP mode `plaidd` translates traffic to Service addresses itself; there is no kube-proxy. A packet to a Service address and port is translated to one of the Service's backends: the destination is replaced by the backend's and the source by the engine's own address, the `.2` of the node network (`--snat-address`; pods start at `.4`, `.1` is the gateway). The backends answer that address, which is delivered to the engine wherever the backend is (this node, another node over the overlay, or outside the pod network through the bubble's kernel, as with the API server's own address), and the engine restores the addresses the client expects. A backend therefore sees the engine's address, not the client's, as it did with kube-proxy's masquerade. Clients are pods and the bubble itself (the bubble's kernel reaches the Service range through a route via the engine's address on `plaid0`).
+
+Flows are pinned to their backend; a backend that stops being ready keeps the flows it has and takes no new ones, and one that disappears loses them. A TCP flow starts only with a SYN. A Service port with no eligible backend answers with an ICMP port unreachable, as kube-proxy does. The flow table is bounded (262144 flows) and exhaustion is counted in `plaidctl status`, which also shows the table and the watch that feeds it (`plaidctl service list`).
+
+The table comes from the Kubernetes connector inside `plaidd`, which watches Services and EndpointSlices (unless `--disable-kubernetes`, when `plaidctl service set` provides it).
+
+Supported: IPv4 ClusterIP Services with TCP and UDP ports, multiple and named ports, local, remote and hairpin backends, selectorless Services (the API Service), readiness and `publishNotReadyAddresses`, and, when no endpoint is ready, serving terminating endpoints (as kube-proxy 1.35). Headless and ExternalName Services have no cluster IP and are not translated. Not supported, with a Warning event on the Service and the Service (or port) not served: session affinity, `internalTrafficPolicy: Local`, SCTP, IPv6-only Services; `externalIPs` are ignored with an event. IP fragments, ICMP and other protocols addressed to a Service are dropped and counted; fragmented UDP and the translation of ICMP errors are future work.
 
 ### Overlay socket
 
