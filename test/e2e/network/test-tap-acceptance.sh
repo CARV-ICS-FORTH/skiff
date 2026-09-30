@@ -7,6 +7,10 @@ kubectl() {
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The cluster's configuration (run with the SKIFF_* variables the cluster was started with).
+# shellcheck source=../../../scripts/skiff-config.sh
+source "${E2E_CONFIG_SCRIPT:-$SCRIPT_DIR/../../../scripts/skiff-config.sh}"
+skiff_config_validate
 namespace=tap-acceptance
 manifest="${1:-}"
 if [ -z "$manifest" ]; then
@@ -18,7 +22,8 @@ if [ -z "$manifest" ]; then
         manifest="$HOME/.skiff/tap-acceptance.yaml"
     fi
 fi
-cat "$manifest" | kubectl apply -f -
+# The manifest's clients check the cluster's own addresses: fill in this deployment's.
+sed -e "s|@CLUSTER_DOMAIN@|${SKIFF_CLUSTER_DOMAIN}|g" -e "s|@API_SERVICE_IP@|${SKIFF_API_SERVICE_IP}|g" -e "s|@CLUSTER_DNS@|${SKIFF_CLUSTER_DNS}|g" "$manifest" | kubectl apply -f -
 for pod in client-controller client-node echo-controller echo-node; do
     kubectl -n "$namespace" wait --for=condition=Ready "pod/$pod" --timeout=180s
 done
@@ -63,19 +68,19 @@ probe echo-node udp "$node_service" "$node_gateway"
 echo "Cluster DNS and authorized API Service via IP and DNS name"
 kubectl -n kube-system wait --for=condition=Ready pod -l k8s-app=kube-dns --timeout=60s >/dev/null 2>&1 || true
 for i in $(seq 1 30); do
-    if kubectl -n "$namespace" exec client-controller -- python3 -c 'import socket; socket.gethostbyname("kubernetes.default.svc.cluster.local")' >/dev/null 2>&1; then
+    if kubectl -n "$namespace" exec client-controller -- python3 -c "import socket; socket.gethostbyname('kubernetes.default.svc.${SKIFF_CLUSTER_DOMAIN}')" >/dev/null 2>&1; then
         break
     fi
     sleep 1
 done
 for pod in client-controller client-node; do
     kubectl -n "$namespace" exec "$pod" -- python3 /srv/client.py dns
-    kubectl -n "$namespace" exec "$pod" -- python3 /srv/client.py api 10.43.0.1
-    kubectl -n "$namespace" exec "$pod" -- python3 /srv/client.py api kubernetes.default.svc.cluster.local
+    kubectl -n "$namespace" exec "$pod" -- python3 /srv/client.py api "$SKIFF_API_SERVICE_IP"
+    kubectl -n "$namespace" exec "$pod" -- python3 /srv/client.py api kubernetes.default.svc.${SKIFF_CLUSTER_DOMAIN}
 done
 
 echo "Unknown PodIP must fail promptly"
-kubectl -n "$namespace" exec client-controller -- python3 /srv/client.py unknown 10.244.2.200
+kubectl -n "$namespace" exec client-controller -- python3 /srv/client.py unknown "$(skiff_pod_address 712)"
 
 echo "Logs and gateway state"
 kubectl -n "$namespace" logs echo-node --tail=5

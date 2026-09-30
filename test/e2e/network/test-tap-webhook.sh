@@ -2,6 +2,11 @@
 # Run on the controller VM with test/tap-acceptance.yaml already applied.
 set -euo pipefail
 
+# The cluster's configuration (run with the SKIFF_* variables the cluster was started with).
+# shellcheck source=../../../scripts/skiff-config.sh
+source "${E2E_CONFIG_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../../scripts/skiff-config.sh}"
+skiff_config_validate
+
 kubectl() {
     apptainer exec --pwd / instance://bubble1 k3s kubectl --kubeconfig /var/lib/skiff/kubeconfig "$@"
 }
@@ -25,7 +30,7 @@ trap cleanup EXIT
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
     -keyout "$test_dir/tls.key" -out "$test_dir/tls.crt" \
     -subj /CN=admission.tap-acceptance.svc \
-    -addext 'subjectAltName=DNS:admission.tap-acceptance.svc,DNS:admission.tap-acceptance.svc.cluster.local' \
+    -addext "subjectAltName=DNS:admission.tap-acceptance.svc,DNS:admission.tap-acceptance.svc.${SKIFF_CLUSTER_DOMAIN}" \
     >/dev/null 2>&1
 cert_b64=$(base64 -w0 < "$test_dir/tls.crt")
 key_b64=$(base64 -w0 < "$test_dir/tls.key")

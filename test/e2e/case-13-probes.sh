@@ -232,7 +232,7 @@ spec:
   - name: client
     image: ${FIXTURE_IMAGE}
     command: ["sh", "-c"]
-    args: ["for i in \$(seq $1); do curl -sf --max-time 3 http://e2e13-svc.${NS}.svc.cluster.local:8080/hostname; echo; done"]
+    args: ["for i in \$(seq $1); do curl -sf --max-time 3 http://e2e13-svc.${NS}.svc.${SKIFF_CLUSTER_DOMAIN}:8080/hostname; echo; done"]
 EOF
     e2e_wait_pod_phase "$NS" "$name" Succeeded 90 >&2
     e2e_kubectl logs "$name" -n "$NS" | grep '^e2e13-b' | sort -u | tr '\n' ' '

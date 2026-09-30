@@ -83,9 +83,9 @@ runtime_parse_process_identities() {
     python3 -c 'import json,sys; p=json.load(sys.stdin); starts=p.get("container_start_times") or {}; ids=p.get("container_pids") or []; assert all(isinstance(pid,int) and pid>1 and int(starts.get(str(pid),0))>0 for pid in ids); print(",".join(str(pid)+":"+str(starts[str(pid)]) for pid in ids))'
 }
 
-# The pods directory of the nodes' Skifflet (its --pods-dir); override for a
-# deployment that configures a different one.
-_RT_PODS_DIR="${E2E_PODS_DIR:-/tmp/.skiff/.pods}"
+# The pods directory of the nodes' Skifflet (its --pods-dir): the deployment's
+# SKIFF_PODS_DIR when it configures one.
+_RT_PODS_DIR="${E2E_PODS_DIR:-${SKIFF_PODS_DIR:-/tmp/.skiff/.pods}}"
 
 # runtime_pod_dir NS POD UID: the runtime directory of one pod generation.
 runtime_pod_dir() {

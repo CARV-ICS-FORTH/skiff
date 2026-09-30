@@ -63,14 +63,14 @@ data:
         assert response == {"source": expected, "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}, response
         print(json.dumps(response))
     elif mode == "dns":
-        assert socket.gethostbyname("kubernetes.default.svc.cluster.local") == "10.43.0.1"
-        name = b"".join(bytes([len(label)]) + label.encode() for label in "kubernetes.default.svc.cluster.local".split(".")) + b"\0"
+        assert socket.gethostbyname("kubernetes.default.svc.@CLUSTER_DOMAIN@") == "@API_SERVICE_IP@"
+        name = b"".join(bytes([len(label)]) + label.encode() for label in "kubernetes.default.svc.@CLUSTER_DOMAIN@".split(".")) + b"\0"
         query = b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + name + b"\x00\x01\x00\x01"
-        with socket.create_connection(("10.43.0.10", 53), timeout=5) as sock:
+        with socket.create_connection(("@CLUSTER_DNS@", 53), timeout=5) as sock:
             sock.sendall(struct.pack("!H", len(query)) + query)
             length = struct.unpack("!H", sock.recv(2))[0]
             result = sock.recv(length)
-        assert b"\x0a\x2b\x00\x01" in result, result
+        assert socket.inet_aton("@API_SERVICE_IP@") in result, result
         print("cluster DNS UDP and TCP passed; resolver:", open("/etc/resolv.conf").read())
     elif mode == "api":
         target = sys.argv[2]

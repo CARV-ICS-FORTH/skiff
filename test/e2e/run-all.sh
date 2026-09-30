@@ -255,6 +255,7 @@ run_workload_cases() {
     run_case "14" "exec"
     run_case "15" "hooks"
     run_case "16" "logs"
+    run_case "17" "network-config"
     run_daemon_failure_matrix
 }
 
@@ -333,6 +334,7 @@ if [ -n "$ONLY_CASE" ]; then
             14) run_case "14" "exec" ;;
             15) run_case "15" "hooks" ;;
             16) run_case "16" "logs" ;;
+            17) run_case "17" "network-config" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

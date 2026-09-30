@@ -57,9 +57,9 @@ spec:
     args:
     - |
       set -ex
-      dig +short +notcp e2e04-svc.$NS.svc.cluster.local | grep $CLUSTER_IP
-      dig +short +tcp e2e04-svc.$NS.svc.cluster.local | grep $CLUSTER_IP
-      curl -sf http://e2e04-svc.$NS.svc.cluster.local:8080/
+      dig +short +notcp e2e04-svc.$NS.svc.${SKIFF_CLUSTER_DOMAIN} | grep $CLUSTER_IP
+      dig +short +tcp e2e04-svc.$NS.svc.${SKIFF_CLUSTER_DOMAIN} | grep $CLUSTER_IP
+      curl -sf http://e2e04-svc.$NS.svc.${SKIFF_CLUSTER_DOMAIN}:8080/
       curl -sf http://$CLUSTER_IP:8080/
       exit 0
 EOF
@@ -105,7 +105,7 @@ check_endpoint_ip() {
 }
 e2e_wait_condition 30 "Endpoint IP updated" check_endpoint_ip
 
-fixture_client_job $NS e2e04-client-job $NODE_B http://e2e04-svc.$NS.svc.cluster.local:8080/ | e2e_kubectl apply -f -
+fixture_client_job $NS e2e04-client-job $NODE_B http://e2e04-svc.$NS.svc.${SKIFF_CLUSTER_DOMAIN}:8080/ | e2e_kubectl apply -f -
 e2e_wait_job_complete $NS e2e04-client-job 60
 
 e2e_record_uid $NS e2e04-server-2
