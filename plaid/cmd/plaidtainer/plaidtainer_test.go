@@ -357,3 +357,51 @@ func TestRandomID(t *testing.T) {
 		t.Errorf("unexpected ID format: %q", id1)
 	}
 }
+
+// The wrapper's own settings follow the shared rules: an explicit value, then the
+// environment, then (for the socket) the default; an MTU nobody states stays unset
+// here, so that plaidd's applies.
+func TestEnsureDefaults_SocketAndMTUFollowTheSharedRules(t *testing.T) {
+	t.Setenv("PLAID_SOCKET_PATH", "")
+	t.Setenv("PLAID_MTU", "")
+	var opts PlaidOptions
+	opts.EnsureDefaults()
+	if opts.Socket != "/run/plaid/plaidd.sock" || opts.MTU != 0 {
+		t.Fatalf("defaults: socket %q, MTU %d", opts.Socket, opts.MTU)
+	}
+
+	t.Setenv("PLAID_SOCKET_PATH", "/run/lab/plaidd.sock")
+	t.Setenv("PLAID_MTU", "1400")
+	opts = PlaidOptions{}
+	opts.EnsureDefaults()
+	if opts.Socket != "/run/lab/plaidd.sock" || opts.MTU != 1400 {
+		t.Fatalf("environment: socket %q, MTU %d", opts.Socket, opts.MTU)
+	}
+
+	opts = PlaidOptions{Socket: "/explicit.sock", MTU: 1300}
+	opts.EnsureDefaults()
+	if opts.Socket != "/explicit.sock" || opts.MTU != 1300 {
+		t.Fatalf("explicit over environment: socket %q, MTU %d", opts.Socket, opts.MTU)
+	}
+}
+
+// Standalone slirp: without a stated resolver the container gets slirp's, the third
+// address of the gateway's network; an explicit one is taken as it is; and inside a
+// cluster (tap) a missing resolver is never made up.
+func TestResolveNetworkParams_StandaloneResolverAndOverrides(t *testing.T) {
+	slirp := &api.Response{GatewayMode: "slirp", GatewayIP: "10.0.2.2"}
+	if _, _, dns := resolveNetworkParams(slirp, "10.0.2.15/24", "", ""); dns != "10.0.2.3" {
+		t.Errorf("standalone default resolver %q, want 10.0.2.3", dns)
+	}
+	if _, _, dns := resolveNetworkParams(slirp, "10.0.2.15/24", "", "9.9.9.9"); dns != "9.9.9.9" {
+		t.Errorf("explicit resolver %q", dns)
+	}
+	slirp.Resolver = "192.0.2.53"
+	if _, _, dns := resolveNetworkParams(slirp, "10.0.2.15/24", "", ""); dns != "192.0.2.53" {
+		t.Errorf("resolver published by plaidd %q", dns)
+	}
+	tap := &api.Response{GatewayMode: "tap", GatewayIP: "10.200.3.1"}
+	if _, _, dns := resolveNetworkParams(tap, "10.200.3.4/24", "", ""); dns != "" {
+		t.Errorf("a cluster must state its resolver; got %q", dns)
+	}
+}

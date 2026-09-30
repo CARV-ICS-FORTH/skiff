@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"plaid/pkg/netcfg"
 	"strconv"
 	"strings"
 	"time"
@@ -674,12 +675,7 @@ func resolveNetworkParams(status *api.Response, ipStr, gwStr, dnsStr string) (st
 		if status != nil && status.Resolver != "" {
 			dnsStr = status.Resolver
 		} else if status == nil || status.GatewayMode == "slirp" || status.GatewayMode == "" {
-			if gwIP := net.ParseIP(gwStr); gwIP != nil && gwIP.To4() != nil {
-				dns := make(net.IP, len(gwIP.To4()))
-				copy(dns, gwIP.To4())
-				dns[3] = 3
-				dnsStr = dns.String()
-			}
+			dnsStr = netcfg.StandaloneResolver(gwStr)
 		}
 	}
 
@@ -796,7 +792,7 @@ Plaid-Specific Options (can be passed to execution commands):
   --ip <cidr>          Explicit container IP address (default: dynamic IPAM via host-local)
   --gateway <ip>       Gateway IP address (default: .1 of subnet)
   --dns <ip>           DNS nameserver IP address (default: .3 of subnet)
-  --socket <path>      Path to plaidd UNIX socket (default: /run/plaid/plaidd.sock)
+  --socket <path>      Path to plaidd UNIX socket (default: $PLAID_SOCKET_PATH, else /run/plaid/plaidd.sock)
   --bind <paths>       Additional bind mounts for Apptainer (comma-separated)
 
 All other Apptainer commands (build, pull, inspect, instance list, etc.) and flags are passed

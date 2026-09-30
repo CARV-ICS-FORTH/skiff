@@ -7,12 +7,13 @@ import (
 	"strconv"
 
 	"plaid/pkg/api"
+	"plaid/pkg/netcfg"
 	"plaid/pkg/version"
 )
 
 func main() {
 	var socketPath string
-	flag.StringVar(&socketPath, "socket", "/run/plaid/plaidd.sock", "Path to plaidd UNIX domain socket")
+	flag.StringVar(&socketPath, "socket", netcfg.SocketPath(""), "Path to plaidd UNIX domain socket (default: $PLAID_SOCKET_PATH, else "+netcfg.DefaultSocketPath+")")
 	flag.Parse()
 
 	args := flag.Args()
@@ -42,6 +43,10 @@ func main() {
 		if status.Uplink != "" {
 			fmt.Printf("Uplink:       %s (%s)\n", status.Uplink, status.UplinkAddress)
 		}
+		if status.Resolver != "" {
+			fmt.Printf("Resolver:     %s\n", status.Resolver)
+		}
+		fmt.Printf("MTU:          %d\n", status.MTU)
 		fmt.Printf("Endpoints:    %d\n", status.EndpointsCount)
 		for _, ep := range status.Endpoints {
 			fmt.Printf("  - %s\n", ep)

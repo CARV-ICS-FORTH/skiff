@@ -11,7 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
+	"plaid/pkg/netcfg"
 	"strings"
 	"syscall"
 	"time"
@@ -156,15 +156,9 @@ func cmdAdd() {
 		cniError(2, fmt.Sprintf("incompatible CNI version: %s (supported: 0.3.0, 0.3.1, 0.4.0, 1.0.0)", cniVersion), "")
 	}
 
-	if conf.SocketPath == "" {
-		conf.SocketPath = "/run/plaid/plaidd.sock"
-	}
-	if conf.MTU <= 0 {
-		if envMTU := os.Getenv("PLAID_MTU"); envMTU != "" {
-			if parsed, err := strconv.Atoi(envMTU); err == nil && parsed > 0 {
-				conf.MTU = parsed
-			}
-		}
+	conf.SocketPath = netcfg.SocketPath(conf.SocketPath)
+	if conf.MTU <= 0 && netcfg.MTUFromEnv() > 0 {
+		conf.MTU = netcfg.MTUFromEnv()
 	}
 	if conf.MTU <= 0 {
 		// Attempt to discover MTU from plaidd
@@ -173,9 +167,7 @@ func cmdAdd() {
 			conf.MTU = st.MTU
 		}
 	}
-	if conf.MTU <= 0 {
-		conf.MTU = 1450
-	}
+	conf.MTU = netcfg.EffectiveMTU(conf.MTU)
 
 	containerID := os.Getenv("CNI_CONTAINERID")
 	netnsPath := os.Getenv("CNI_NETNS")
@@ -386,9 +378,7 @@ func cmdDel() {
 
 	var conf CNIConfig
 	_ = json.Unmarshal(stdinData, &conf)
-	if conf.SocketPath == "" {
-		conf.SocketPath = "/run/plaid/plaidd.sock"
-	}
+	conf.SocketPath = netcfg.SocketPath(conf.SocketPath)
 
 	containerID := os.Getenv("CNI_CONTAINERID")
 	ifName := os.Getenv("CNI_IFNAME")
@@ -454,9 +444,7 @@ func cmdCheck() {
 		cniError(1, "Failed to parse CNI config JSON", err.Error())
 	}
 
-	if conf.SocketPath == "" {
-		conf.SocketPath = "/run/plaid/plaidd.sock"
-	}
+	conf.SocketPath = netcfg.SocketPath(conf.SocketPath)
 
 	containerID := os.Getenv("CNI_CONTAINERID")
 	if containerID == "" {
@@ -673,22 +661,14 @@ func runInit(args []string, verbose bool) {
 
 	fs.StringVar(&ipStr, "ip", os.Getenv("PLAID_IP"), "Container IP address (e.g. 10.244.1.10/24)")
 	fs.StringVar(&gwStr, "gateway", os.Getenv("PLAID_GATEWAY_IP"), "Gateway IP (defaults to .1 of subnet)")
-	fs.StringVar(&socketPath, "socket", os.Getenv("PLAID_SOCKET_PATH"), "Path to plaidd UNIX domain socket")
+	fs.StringVar(&socketPath, "socket", "", "Path to plaidd UNIX domain socket (default: $PLAID_SOCKET_PATH, else "+netcfg.DefaultSocketPath+")")
 	fs.StringVar(&ifName, "ifname", os.Getenv("PLAID_IFNAME"), "Interface name to create (default: eth0)")
-	defaultMTU := 1450
-	if envMTU := os.Getenv("PLAID_MTU"); envMTU != "" {
-		if parsed, err := strconv.Atoi(envMTU); err == nil && parsed > 0 {
-			defaultMTU = parsed
-		}
-	}
-	fs.IntVar(&mtu, "mtu", defaultMTU, "MTU for the interface")
+	fs.IntVar(&mtu, "mtu", netcfg.EffectiveMTU(0), "MTU for the interface")
 	fs.StringVar(&containerID, "container-id", os.Getenv("PLAID_CONTAINER_ID"), "Container identifier")
 
 	_ = fs.Parse(args)
 
-	if socketPath == "" {
-		socketPath = "/run/plaid/plaidd.sock"
-	}
+	socketPath = netcfg.SocketPath(socketPath)
 	if ifName == "" {
 		ifName = "eth0"
 	}
@@ -700,9 +680,7 @@ func runInit(args []string, verbose bool) {
 			containerID = fmt.Sprintf("plaid-%d", time.Now().UnixNano())
 		}
 	}
-	if mtu <= 0 {
-		mtu = defaultMTU
-	}
+	mtu = netcfg.EffectiveMTU(mtu)
 
 	if ipStr == "" {
 		fmt.Fprintf(os.Stderr, "Error: missing required IP address (--ip or PLAID_IP)\n")

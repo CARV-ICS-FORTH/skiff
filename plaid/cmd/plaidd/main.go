@@ -9,8 +9,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"plaid/pkg/netcfg"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -70,16 +70,16 @@ type Config struct {
 
 func main() {
 	var cfg Config
-	flag.StringVar(&cfg.SocketPath, "api-socket", "/run/plaid/plaidd.sock", "Path to plaidd UNIX domain socket")
+	flag.StringVar(&cfg.SocketPath, "api-socket", netcfg.SocketPath(""), "Path to plaidd UNIX domain socket (default: $PLAID_SOCKET_PATH, else "+netcfg.DefaultSocketPath+")")
 	flag.StringVar(&cfg.NodeCIDR, "node-cidr", "", "Pod CIDR allocated to this node (if provided, runs in static mode; if omitted, runs in Kubernetes mode)")
-	flag.StringVar(&cfg.ClusterCIDR, "cluster-cidr", "10.244.0.0/16", "Overall cluster pod CIDR")
+	flag.StringVar(&cfg.ClusterCIDR, "cluster-cidr", netcfg.DefaultClusterCIDR, "Overall cluster pod CIDR")
 	flag.StringVar(&cfg.GatewayIP, "gateway-ip", "", "Gateway IP (defaults to first IP of node-cidr, e.g. 10.244.1.1)")
 	flag.StringVar(&cfg.GatewayMAC, "gateway-mac", "02:00:00:00:00:01", "Gateway MAC address")
 	flag.StringVar(&cfg.BubbleMAC, "bubble-mac", "02:00:00:00:00:02", "Bubble TAP MAC address (distinct from gateway-mac)")
 	flag.StringVar(&cfg.GatewayMode, "gateway-mode", "slirp", "Gateway backend: tap, slirp, or none")
 	flag.StringVar(&cfg.Uplink, "uplink", "", "Bubble uplink interface for TAP mode")
 	flag.StringVar(&cfg.UplinkAddress, "uplink-address", "", "Outer slirp guest IPv4 address for TAP egress SNAT")
-	flag.StringVar(&cfg.ServiceCIDR, "service-cidr", "10.43.0.0/16", "Cluster Service CIDR")
+	flag.StringVar(&cfg.ServiceCIDR, "service-cidr", netcfg.DefaultServiceCIDR, "Cluster Service CIDR")
 	flag.StringVar(&cfg.Resolver, "resolver", "", "Resolver IP advertised to standalone plaidtainer")
 	flag.IntVar(&cfg.VXLANPort, "vxlan-port", packet.DefaultVXLANPort, "VXLAN UDP port")
 	flag.IntVar(&cfg.VXLANVNI, "vxlan-vni", packet.DefaultVNI, "VXLAN VNI")
@@ -92,7 +92,7 @@ func main() {
 	flag.StringVar(&cfg.Routes, "routes", "", "Initial overlay routes, comma-separated (e.g. '10.244.2.0/24=node.local')")
 	flag.StringVar(&cfg.Kubeconfig, "kubeconfig", "", "Path to kubeconfig file (Kubernetes mode only; defaults to in-cluster service account)")
 	flag.StringVar(&cfg.NodeName, "node-name", "", "Local node name (Kubernetes mode only; defaults to NODE_NAME env or hostname)")
-	flag.IntVar(&cfg.MTU, "mtu", 1450, "Effective MTU for container TAP interfaces and slirp (default: 1450, allowing 50B VXLAN overhead on 1500B host MTU)")
+	flag.IntVar(&cfg.MTU, "mtu", 0, "Effective MTU for container TAP interfaces and slirp (default: $PLAID_MTU, else 1450, allowing 50B VXLAN overhead on 1500B host MTU)")
 
 	flag.Parse()
 
@@ -172,7 +172,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		return nil, fmt.Errorf("IPv6 is not supported; cluster CIDR %q must be IPv4", cfg.ClusterCIDR)
 	}
 	if cfg.ServiceCIDR == "" {
-		cfg.ServiceCIDR = "10.43.0.0/16"
+		cfg.ServiceCIDR = netcfg.DefaultServiceCIDR
 	}
 	_, serviceNet, err := net.ParseCIDR(cfg.ServiceCIDR)
 	if err != nil || serviceNet.IP.To4() == nil {
@@ -198,6 +198,13 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		if serviceNet.Contains(net.ParseIP(cfg.UplinkAddress)) || clusterNet.Contains(net.ParseIP(cfg.UplinkAddress)) {
 			return nil, fmt.Errorf("uplink address overlaps pod or Service CIDR")
 		}
+		// In a cluster the resolver is the cluster DNS Service, an address of the
+		// Service network.
+		if cfg.Resolver != "" {
+			if err := netcfg.ValidateResolver(cfg.Resolver, serviceNet); err != nil {
+				return nil, err
+			}
+		}
 		if _, err := net.ParseMAC(cfg.BubbleMAC); err != nil {
 			return nil, fmt.Errorf("invalid bubble-mac: %w", err)
 		}
@@ -206,18 +213,9 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		}
 	}
 
-	if cfg.MTU <= 0 {
-		if envMTU := os.Getenv("PLAID_MTU"); envMTU != "" {
-			if parsed, err := strconv.Atoi(envMTU); err == nil && parsed > 0 {
-				cfg.MTU = parsed
-			}
-		}
-	}
-	if cfg.MTU <= 0 {
-		cfg.MTU = 1450
-	}
-	if cfg.MTU < 576 || cfg.MTU > 65535 {
-		return nil, fmt.Errorf("invalid MTU %d: must be between 576 and 65535", cfg.MTU)
+	cfg.MTU = netcfg.EffectiveMTU(cfg.MTU)
+	if err := netcfg.ValidateMTU(cfg.MTU); err != nil {
+		return nil, err
 	}
 
 	gwIP := net.ParseIP(cfg.GatewayIP)

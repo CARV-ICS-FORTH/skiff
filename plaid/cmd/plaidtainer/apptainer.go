@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"plaid/pkg/netcfg"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -48,9 +49,7 @@ type PlaidOptions struct {
 
 // EnsureDefaults sets default socket and binary paths if not explicitly configured.
 func (opts *PlaidOptions) EnsureDefaults() {
-	if opts.Socket == "" {
-		opts.Socket = "/run/plaid/plaidd.sock"
-	}
+	opts.Socket = netcfg.SocketPath(opts.Socket)
 	if opts.Binary == "" {
 		opts.Binary = "/usr/local/bin/plaid"
 	}
@@ -60,11 +59,7 @@ func (opts *PlaidOptions) EnsureDefaults() {
 		}
 	}
 	if opts.MTU <= 0 {
-		if envMTU := os.Getenv("PLAID_MTU"); envMTU != "" {
-			if parsed, err := strconv.Atoi(envMTU); err == nil && parsed > 0 {
-				opts.MTU = parsed
-			}
-		}
+		opts.MTU = netcfg.MTUFromEnv() // 0 when the environment says nothing: plaidd's MTU applies
 	}
 }
 
