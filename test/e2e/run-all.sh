@@ -239,6 +239,22 @@ run_daemon_failure_matrix() {
     record E2E-09 "$matrix_result" 0
 }
 
+# Case 21 replaces the running cluster with jobs of its own and leaves a fresh one; the
+# cases that follow use that job.
+run_overlay_startup_failures() {
+    if [ -n "$ONLY_CASE" ] && [ "$ONLY_CASE" != 21 ]; then
+        return 0
+    fi
+    rm -f "${E2E_LOGDIR}/overlay-job-id"
+    run_script "E2E-21" "$E2E_DIR/case-21-overlay-startup-failures.sh"
+    ingest_subresults
+    if [ -s "${E2E_LOGDIR}/overlay-job-id" ]; then
+        SKIFF_JOB_ID=$(cat "${E2E_LOGDIR}/overlay-job-id")
+        export SKIFF_JOB_ID
+        printf '%s\n' "$SKIFF_JOB_ID" >> "${E2E_LOGDIR}/matrix-job-ids"
+    fi
+}
+
 run_workload_cases() {
     echo "--- E2E CASES ---------------------------------------------------------"
     run_case "02" "init-shared-net"
@@ -258,6 +274,8 @@ run_workload_cases() {
     run_case "17" "network-config"
     run_case "18" "compatibility"
     run_case "19" "repetition"
+    run_case "20" "overlay-socket"
+    run_overlay_startup_failures
     run_daemon_failure_matrix
 }
 
@@ -339,6 +357,8 @@ if [ -n "$ONLY_CASE" ]; then
             17) run_case "17" "network-config" ;;
             18) run_case "18" "compatibility" ;;
             19) run_case "19" "repetition" ;;
+            20) run_case "20" "overlay-socket" ;;
+            21) run_overlay_startup_failures ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

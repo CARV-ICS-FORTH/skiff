@@ -27,7 +27,7 @@ runtime_ssh_node() {
 # class, instance and forwarded port. Observation errors are not absence.
 runtime_host_resources_gone() {
     runtime_ssh_node "$1" 'bash -euo pipefail -c '\''
-        pids=$(pgrep -x "skifflet|plaidd|slirp4netns|socat") || { rc=$?; [ "$rc" -eq 1 ] || exit "$rc"; }
+        pids=$(pgrep -x "skifflet|plaidd|slirp4netns|socat|plaidctl") || { rc=$?; [ "$rc" -eq 1 ] || exit "$rc"; }
         instances=$(apptainer instance list)
         sockets=$(ss -H -lntu)
         [ -z "$pids" ] &&

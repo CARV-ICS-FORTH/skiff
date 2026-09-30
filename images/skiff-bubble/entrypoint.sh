@@ -20,6 +20,7 @@ PLAID_UPLINK=${PLAID_UPLINK:-tap0}
 : "${SKIFF_CLUSTER_DNS:?the cluster DNS address is required (SKIFF_CLUSTER_DNS)}"
 : "${SKIFF_API_SERVICE_IP:?the API Service address is required (SKIFF_API_SERVICE_IP)}"
 : "${SKIFF_POD_MTU:?the pod MTU is required (SKIFF_POD_MTU)}"
+: "${SKIFF_OVERLAY_HANDOFF:?the overlay socket handoff path is required (SKIFF_OVERLAY_HANDOFF)}"
 # Optional: the pods directory. Empty means Skifflet's own default.
 SKIFF_PODS_DIR="${SKIFF_PODS_DIR:-}"
 
@@ -329,6 +330,8 @@ start_plaidd() {
       --gateway-mode=tap \
       --uplink="$PLAID_UPLINK" \
       --uplink-address="$PLAID_UPLINK_ADDRESS" \
+      --vxlan-bind="$HOST_IP" \
+      --overlay-handoff="$SKIFF_OVERLAY_HANDOFF" \
       --resolver="$SKIFF_CLUSTER_DNS" \
       --mtu="$SKIFF_POD_MTU" \
       >> /var/log/plaidd.log 2>&1 &

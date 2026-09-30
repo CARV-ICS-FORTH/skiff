@@ -69,5 +69,14 @@ type Response struct {
 	Resolver       string   `json:"resolver,omitempty"`
 	MTU            int      `json:"mtu,omitempty"`
 	Endpoints      []string `json:"endpoints,omitempty"`
-	FilterRules    []string `json:"filter_rules,omitempty"`
+
+	// The overlay transport: where its UDP socket came from, its address and counters.
+	OverlayTransport string   `json:"overlay_transport,omitempty"`
+	OverlayAddress   string   `json:"overlay_address,omitempty"`
+	OverlayTxPackets uint64   `json:"overlay_tx_packets"`
+	OverlayTxErrors  uint64   `json:"overlay_tx_errors"`
+	OverlayRxPackets uint64   `json:"overlay_rx_packets"`
+	OverlayRxInvalid uint64   `json:"overlay_rx_invalid"`
+	OverlayRxDropped uint64   `json:"overlay_rx_dropped"`
+	FilterRules      []string `json:"filter_rules,omitempty"`
 }

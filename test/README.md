@@ -55,7 +55,7 @@ bash test/e2e/network/test-tap-webhook.sh
 
 The qualification profile covers a dedicated two-node Slurm allocation with IPv4 TAP networking and kube-proxy Services. A required daemon failure stops the whole job; recovery uses a fresh job. Runtime qualification currently targets ARM64. Building for another architecture does not qualify its runtime behavior.
 
-The profile requires these checks: cases 01–19, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, teardown with a second boot, and the named subcases listed in `test/e2e/lib/profile.sh`. They cover workload startup and completion, init containers, networking, readiness, environment and volumes, logs, exec and port-forward, restarts, graceful deletion, startup failures and cleanup, and the sprint 1 compatibility work:
+The profile requires these checks: cases 01–21, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, teardown with a second boot, and the named subcases listed in `test/e2e/lib/profile.sh`. They cover workload startup and completion, init containers, networking, readiness, environment and volumes, logs, exec and port-forward, restarts, graceful deletion, startup failures and cleanup, and the sprint 1 compatibility work:
 
 | Case | Acceptance groups |
 |---|---|
@@ -67,8 +67,10 @@ The profile requires these checks: cases 01–19, four individual daemon failure
 | 17 | T18 (network settings that differ from the defaults, run as a fresh deployment) |
 | 18 | T05, T06, T15, T16 (refused forms, updates, environment and files, continuity) |
 | 19 | T20 (ten create/restart/delete cycles with probes, hooks, logs and exec, and what they leave behind) |
+| 20 | T21 (the overlay socket: held by plaidd in the host's network namespace, no slirp forward for it, no helper or handoff socket left, cross-node traffic moves the overlay counters) |
+| 21 | T22 (overlay socket startup failures, with jobs of its own: cancel while the helper holds the port, helper killed, port taken, and a fresh start afterwards) |
 
-T01–T03, T19 and the unit and race parts of the other groups are unit and Linux tests (`make test` in `skifflet/` and `plaid/`; the Linux-only ones run in the builder container) and shell tests (`test/skiff-config-test.sh`, `test/skiff-supervision-test.sh`, `test/skiff-bubble-test.sh`), run by `regression.sh` and the module test targets.
+T01–T03, T19 and the unit and race parts of the other groups are unit and Linux tests (`make test` in `skifflet/` and `plaid/`; the Linux-only ones run in the builder container) and shell tests (`test/skiff-config-test.sh`, `test/skiff-supervision-test.sh`, `test/skiff-bubble-test.sh`, which runs the bubble script against a fake slirp4netns API and a fake Apptainer), run by `regression.sh` and the module test targets.
 
 Supported probes are HTTP, TCP and exec (startup, readiness and liveness, with named ports); `grpc` probes, host namespaces, ephemeral containers, restartable init containers and the other forms in the support table of [skifflet/README.md](../skifflet/README.md) are refused at creation, and the refusal is tested with a healthy sentinel pod running beside them. Standalone Plaid checks NET-1 and NET-2 are outside this profile.
 

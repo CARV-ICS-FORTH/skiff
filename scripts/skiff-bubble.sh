@@ -39,6 +39,13 @@ SOCAT_PID_6443=""
 SOCAT_PID_10250=""
 SLIRP_PID=""
 SLIRP_SOCK="$HOME/.skiff/slirp-${NAME}.sock"
+# The overlay's UDP socket is opened here, on the physical host, and handed to plaidd
+# inside the bubble through this socket. It is node-local (the bubbles share the host's
+# /tmp; the home directory is shared between nodes, where a socket would not work), and
+# only its owner can connect to it.
+OVERLAY_HANDOFF="/tmp/.skiff/overlay.sock"
+OVERLAY_PORT=8472
+OVERLAY_HELPER_PID=""
 SKIFF_ROLE=${SKIFF_ROLE:-controller}
 
 start_socat_relays() {
@@ -81,12 +88,16 @@ cleanup() {
         wait "$SOCAT_PID_10250" 2>/dev/null || true
     fi
 
+    if [[ -n ${OVERLAY_HELPER_PID:-} ]]; then
+        kill "$OVERLAY_HELPER_PID" 2>/dev/null || true
+        wait "$OVERLAY_HELPER_PID" 2>/dev/null || true
+    fi
     if [[ -n ${SLIRP_PID:-} ]]; then
         kill "$SLIRP_PID" 2>/dev/null || true
         wait "$SLIRP_PID" 2>/dev/null || true
     fi
     apptainer instance stop "$NAME" 2>/dev/null || true
-    rm -f "$SLIRP_SOCK" 2>/dev/null || true
+    rm -f "$SLIRP_SOCK" "$OVERLAY_HANDOFF" 2>/dev/null || true
     exit "${EXIT_CODE:-0}"
 }
 
@@ -99,6 +110,7 @@ mkdir -p "$HOME/.skiff/.apptainer/tmp"
 mkdir -p "$HOME/.skiff/.apptainer/cache"
 mkdir -p "/tmp/.skiff/.apptainer/tmp"
 rm -f "$SLIRP_SOCK"
+rm -f "$OVERLAY_HANDOFF"
 
 echo "Starting Bubble $NAME..."
 echo "  Role: $SKIFF_ROLE"
@@ -121,6 +133,15 @@ else
     BUBBLE_IMAGE="docker://docker.io/chazapis/skiff-bubble:latest"
 fi
 
+# Open the overlay's UDP socket in the host's network namespace and pass it to plaidd
+# when plaidd asks (its startup waits for it). The helper runs from the same image, in
+# an ordinary Apptainer execution that keeps the host network, and exits once plaidd
+# has acknowledged: it forwards nothing. It starts before the bubble so that a port
+# that is already taken stops the startup early.
+apptainer exec "$BUBBLE_IMAGE" /usr/local/bin/plaidctl overlay-socket \
+    --bind "$HOST_IP_DETECTED" --port "$OVERLAY_PORT" --handoff "$OVERLAY_HANDOFF" --timeout 10m &
+OVERLAY_HELPER_PID=$!
+
 apptainer instance run \
 	--fakeroot \
 	--no-mount home \
@@ -138,6 +159,7 @@ apptainer instance run \
     --env SINGULARITY_TMPDIR=/tmp/.skiff/.apptainer/tmp \
     --env TMPDIR=/tmp/.skiff/.apptainer/tmp \
 	--env HOST_IP="$HOST_IP_DETECTED" \
+	--env SKIFF_OVERLAY_HANDOFF="$OVERLAY_HANDOFF" \
 	--env PLAID_UPLINK=tap0 \
 	--env PLAID_UPLINK_ADDRESS="$NS_ADDR" \
 	--env SKIFF_ROLE="$SKIFF_ROLE" \
@@ -171,11 +193,10 @@ slirp4netns --configure --cidr="$CIDR/24" --mtu="$SKIFF_UPLINK_MTU" --api-socket
 SLIRP_PID=$!
 
 # Forward ports based on Role
-# 8472: Plaid VXLAN (UDP) - All
 # 10250: Kubelet (TCP) - All
 # 6443: K3s API (TCP) - Controller
+# The overlay's UDP port is not forwarded: its socket lives on the host (see above).
 
-FWD_JSON_VXLAN='{"execute": "add_hostfwd", "arguments": {"proto": "udp", "host_addr": "0.0.0.0", "host_port": 8472, "guest_addr": "'$HOST_IP_DETECTED'", "guest_port": 8472}}'
 FWD_JSON_KUBELET='{"execute": "add_hostfwd", "arguments": {"proto": "tcp", "host_addr": "127.0.0.1", "host_port": 10250, "guest_addr": "'$NS_ADDR'", "guest_port": 10250}}'
 
 if [ "$SKIFF_ROLE" = "controller" ]; then
@@ -207,7 +228,6 @@ send_slirp_command() {
 }
 
 echo "Configuring slirp4netns host forwarding..."
-send_slirp_command "$FWD_JSON_VXLAN" "VXLAN (UDP 8472)" || exit 1
 send_slirp_command "$FWD_JSON_KUBELET" "Kubelet (TCP 10250)" || exit 1
 if [ "$SKIFF_ROLE" = "controller" ]; then
     send_slirp_command "$FWD_JSON_K3S" "K3s (TCP 6443)" || exit 1
@@ -217,8 +237,21 @@ start_socat_relays
 
 echo "Bubble $NAME started successfully."
 
-# Supervise slirp, container instance, and socat relays continuously
+# Supervise slirp, container instance, and socat relays continuously. The overlay
+# helper is not a daemon: it ends by itself once plaidd has its socket. Exiting cleanly
+# is success; failing (the port is taken, plaidd never asked, the handoff was refused)
+# is a failed startup.
 while true; do
+    if [[ -n ${OVERLAY_HELPER_PID:-} ]] && ! kill -0 "$OVERLAY_HELPER_PID" 2>/dev/null; then
+        if wait "$OVERLAY_HELPER_PID"; then
+            OVERLAY_HELPER_PID=""
+        else
+            echo "ERROR: the overlay socket helper (PID $OVERLAY_HELPER_PID) failed; plaidd did not get its overlay socket" >&2
+            OVERLAY_HELPER_PID=""
+            EXIT_CODE=1
+            exit 1
+        fi
+    fi
     if ! kill -0 "$SLIRP_PID" 2>/dev/null; then
         echo "ERROR: slirp4netns (PID $SLIRP_PID) terminated unexpectedly!" >&2
         EXIT_CODE=1

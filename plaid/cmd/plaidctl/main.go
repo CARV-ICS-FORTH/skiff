@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
+	"time"
 
 	"plaid/pkg/api"
+	"plaid/pkg/handoff"
 	"plaid/pkg/netcfg"
 	"plaid/pkg/version"
 )
@@ -25,6 +29,11 @@ func main() {
 	if args[0] == "version" || args[0] == "--version" || args[0] == "-v" {
 		fmt.Printf("plaidctl version %s (commit: %s, built: %s)\n", version.Version, version.GitCommit, version.BuildTime)
 		os.Exit(0)
+	}
+
+	if args[0] == "overlay-socket" {
+		overlaySocket(args[1:])
+		return
 	}
 
 	client := api.NewClient(socketPath)
@@ -47,6 +56,11 @@ func main() {
 			fmt.Printf("Resolver:     %s\n", status.Resolver)
 		}
 		fmt.Printf("MTU:          %d\n", status.MTU)
+		if status.OverlayTransport != "" {
+			fmt.Printf("Overlay:      %s socket %s (tx=%d, tx errors=%d, rx=%d, rx invalid=%d, rx dropped=%d)\n",
+				status.OverlayTransport, status.OverlayAddress, status.OverlayTxPackets, status.OverlayTxErrors,
+				status.OverlayRxPackets, status.OverlayRxInvalid, status.OverlayRxDropped)
+		}
 		fmt.Printf("Endpoints:    %d\n", status.EndpointsCount)
 		for _, ep := range status.Endpoints {
 			fmt.Printf("  - %s\n", ep)
@@ -159,6 +173,44 @@ func main() {
 	}
 }
 
+// overlaySocket is the helper the deployment runs in the physical host's network
+// namespace: it opens the overlay's UDP socket there and hands it to plaidd, which runs
+// inside the bubble. It forwards nothing and exits once plaidd has acknowledged.
+func overlaySocket(args []string) {
+	fs := flag.NewFlagSet("overlay-socket", flag.ExitOnError)
+	bind := fs.String("bind", "", "IPv4 address to bind on the host (the address the other nodes send to)")
+	port := fs.Int("port", 8472, "UDP port")
+	path := fs.String("handoff", "", "UNIX socket on which plaidd is waiting for the descriptor")
+	timeout := fs.Duration("timeout", 10*time.Minute, "how long to wait for plaidd to listen")
+	_ = fs.Parse(args)
+	ip := net.ParseIP(*bind)
+	if ip == nil || ip.To4() == nil || *path == "" {
+		fmt.Fprintln(os.Stderr, "Usage: plaidctl overlay-socket --bind <ipv4> [--port 8472] --handoff <socket> [--timeout 10m]")
+		os.Exit(2)
+	}
+
+	// Bind first: a port that is taken is a failure right away, and holding it while
+	// waiting reserves it for plaidd.
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip.To4(), Port: *port})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: cannot open the overlay socket %s:%d: %v\n", ip, *port, err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+	file, err := conn.File()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+	defer file.Close()
+	err = handoff.Send(context.Background(), *path, handoff.Request{Type: handoff.TypeOverlaySocket, Bind: ip.String(), Port: *port}, file, *timeout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: overlay socket handoff failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Overlay socket %s:%d handed to plaidd\n", ip, *port)
+}
+
 func printUsage() {
 	fmt.Print(`plaidctl - Control utility for Plaid daemon (plaidd)
 
@@ -168,6 +220,7 @@ Usage:
 Commands:
   version                                         Display version information
   status                                          Display daemon status & endpoints
+  overlay-socket --bind <ip> --handoff <socket>   Open the overlay UDP socket here and hand it to plaidd (host helper)
   endpoint del <endpoint-id>                      Remove a container endpoint
   route add <subnet> <remote-host> [vni] [port]   Add a cross-host overlay route
   route del <subnet>                              Remove an overlay route

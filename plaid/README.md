@@ -20,6 +20,14 @@ In TAP mode, `plaid0` has a real MAC (`--bubble-mac`, default `02:00:00:00:00:02
 
 The Service CIDR in Skiff is `10.43.0.0/16`, matching the K3s default. It is fixed in the Skiff deployment, while the standalone daemon still accepts `--service-cidr` for overlap validation.
 
+### Overlay socket
+
+Standalone, `plaidd` opens the VXLAN UDP port itself. In a Skiff bubble the bubble's network namespace is private, so the overlay's UDP socket is opened in the **physical host's** namespace and handed to `plaidd`, which then sends and receives overlay traffic directly, without going through the bubble's slirp4netns.
+
+- `plaidd --overlay-handoff=<socket> --vxlan-bind=<host address>` waits (up to two minutes, before it reports ready) for a socket on `<socket>`, a Unix socket (mode 0600) that only its user can use, and adopts the descriptor that arrives. It refuses anything that is not an unconnected IPv4 UDP socket bound to `--vxlan-bind` and `--vxlan-port`, with the reason, and the startup fails. A descriptor is accepted once; the handoff socket is then removed.
+- `plaidctl overlay-socket --bind <host address> --handoff <socket>` is the helper the deployment runs on the host (from the same image, in an Apptainer execution that keeps the host network). It binds the socket, waits for `plaidd` to listen, passes the descriptor, and exits when `plaidd` acknowledges; it forwards no packets, and a failure is a failure of the startup. Closing `plaidd` releases the port.
+- `plaidctl status` reports the socket in use, its address and the overlay's packet and error counters.
+
 ---
 
 ## Key Features

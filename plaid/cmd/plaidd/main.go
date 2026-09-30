@@ -19,6 +19,7 @@ import (
 	"plaid/pkg/bridge"
 	"plaid/pkg/filter"
 	"plaid/pkg/gateway"
+	"plaid/pkg/handoff"
 	"plaid/pkg/ipam"
 	"plaid/pkg/k8s"
 	"plaid/pkg/packet"
@@ -57,6 +58,7 @@ type Config struct {
 	VXLANPort         int
 	VXLANVNI          int
 	VXLANBind         string
+	OverlayHandoff    string
 	SlirpBin          string
 	SlirpSocket       string
 	SlirpDisableDNS   bool
@@ -83,7 +85,8 @@ func main() {
 	flag.StringVar(&cfg.Resolver, "resolver", "", "Resolver IP advertised to standalone plaidtainer")
 	flag.IntVar(&cfg.VXLANPort, "vxlan-port", packet.DefaultVXLANPort, "VXLAN UDP port")
 	flag.IntVar(&cfg.VXLANVNI, "vxlan-vni", packet.DefaultVNI, "VXLAN VNI")
-	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address")
+	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address (with --overlay-handoff: the address the handed-over socket must be bound to)")
+	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP socket, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
 	flag.StringVar(&cfg.SlirpBin, "slirp-bin", "slirp4netns", "Path to slirp4netns binary")
 	flag.StringVar(&cfg.SlirpSocket, "slirp-socket", "/run/plaid/slirp.sock", "UNIX socket path for slirp BESS mode")
 	flag.BoolVar(&cfg.SlirpDisableDNS, "slirp-disable-dns", false, "Disable slirp built-in DNS (default: false, enabling DNS forwarder at node-cidr base+3)")
@@ -366,11 +369,14 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 		fmt.Printf("[plaidd] TAP gateway ready: %s/%s, MAC=%s, uplink=%s, guest=%s, cluster route=%s\n", d.cfg.GatewayIP, d.cfg.NodeCIDR, mac, d.cfg.Uplink, d.cfg.UplinkAddress, d.cfg.ClusterCIDR)
 	}
 
-	if d.overlay != nil {
-		if err := d.overlay.Start(ctx); err != nil {
+	if d.cfg.OverlayHandoff != "" {
+		if err := d.receiveOverlaySocket(ctx); err != nil {
 			startErr = err
-			return fmt.Errorf("failed to start overlay: %w", err)
+			return fmt.Errorf("failed to attach the overlay socket: %w", err)
 		}
+	} else if err := d.overlay.Start(ctx); err != nil {
+		startErr = err
+		return fmt.Errorf("failed to start overlay: %w", err)
 	}
 
 	if d.slirpMgr != nil {
@@ -409,6 +415,50 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 	}
 
 	d.apiServer.MarkReady()
+	return nil
+}
+
+// overlayHandoffTimeout bounds the wait for the helper once plaidd is listening for it
+// (a variable so tests can shorten it).
+// The helper is already polling for the socket, so it arrives within a moment.
+var overlayHandoffTimeout = 2 * time.Minute
+
+// receiveOverlaySocket waits for the UDP socket opened on the physical host and adopts
+// it. It runs before the daemon reports Ready and does not depend on anything that
+// waits for Ready: the handoff has a socket of its own, apart from the API.
+func (d *PlaidDaemon) receiveOverlaySocket(ctx context.Context) error {
+	bind := net.ParseIP(d.cfg.VXLANBind)
+	if bind == nil || bind.To4() == nil {
+		return fmt.Errorf("--vxlan-bind %q is not an IPv4 address", d.cfg.VXLANBind)
+	}
+	if err := os.MkdirAll(filepath.Dir(d.cfg.OverlayHandoff), 0700); err != nil {
+		return err
+	}
+	fmt.Printf("[plaidd] Waiting for the overlay socket (%s:%d) on %s\n", bind, d.cfg.VXLANPort, d.cfg.OverlayHandoff)
+	err := handoff.Await(ctx, d.cfg.OverlayHandoff, overlayHandoffTimeout, func(req handoff.Request, files []*os.File) error {
+		if req.Type != handoff.TypeOverlaySocket {
+			return fmt.Errorf("unexpected request %q", req.Type)
+		}
+		if len(files) != 1 {
+			return fmt.Errorf("expected one descriptor, got %d", len(files))
+		}
+		if req.Port != d.cfg.VXLANPort || !net.ParseIP(req.Bind).Equal(bind) {
+			return fmt.Errorf("the sender bound %s:%d, plaidd is configured for %s:%d", req.Bind, req.Port, bind, d.cfg.VXLANPort)
+		}
+		conn, err := vxlan.SocketFromFile(files[0], bind, d.cfg.VXLANPort)
+		if err != nil {
+			return err
+		}
+		if err := d.overlay.Adopt(ctx, conn); err != nil {
+			_ = conn.Close()
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("[plaidd] Overlay socket attached: %s\n", d.overlay.Stats().Address)
 	return nil
 }
 
@@ -576,22 +626,30 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		mode = "static"
 	}
 
+	ov := d.overlay.Stats()
 	return &api.Response{
-		EndpointsCount: len(eps),
-		RoutesCount:    len(d.routes.Routes()),
-		Mode:           mode,
-		NodeCIDR:       d.cfg.NodeCIDR,
-		ClusterCIDR:    d.cfg.ClusterCIDR,
-		GatewayIP:      d.cfg.GatewayIP,
-		GatewayMode:    d.cfg.GatewayMode,
-		GatewayReady:   d.cfg.GatewayMode != "tap" || d.attachment != nil,
-		GatewayMAC:     d.cfg.GatewayMAC,
-		BubbleMAC:      d.cfg.BubbleMAC,
-		Uplink:         d.cfg.Uplink,
-		UplinkAddress:  d.cfg.UplinkAddress,
-		Resolver:       d.cfg.Resolver,
-		MTU:            d.cfg.MTU,
-		Endpoints:      epList,
+		OverlayTransport: ov.Transport,
+		OverlayAddress:   ov.Address,
+		OverlayTxPackets: ov.TxPackets,
+		OverlayTxErrors:  ov.TxErrors,
+		OverlayRxPackets: ov.RxPackets,
+		OverlayRxInvalid: ov.RxInvalid,
+		OverlayRxDropped: ov.RxDropped,
+		EndpointsCount:   len(eps),
+		RoutesCount:      len(d.routes.Routes()),
+		Mode:             mode,
+		NodeCIDR:         d.cfg.NodeCIDR,
+		ClusterCIDR:      d.cfg.ClusterCIDR,
+		GatewayIP:        d.cfg.GatewayIP,
+		GatewayMode:      d.cfg.GatewayMode,
+		GatewayReady:     d.cfg.GatewayMode != "tap" || d.attachment != nil,
+		GatewayMAC:       d.cfg.GatewayMAC,
+		BubbleMAC:        d.cfg.BubbleMAC,
+		Uplink:           d.cfg.Uplink,
+		UplinkAddress:    d.cfg.UplinkAddress,
+		Resolver:         d.cfg.Resolver,
+		MTU:              d.cfg.MTU,
+		Endpoints:        epList,
 	}, nil
 }
 

@@ -8,7 +8,7 @@ profile_required_cases() {
     printf '%s\n' \
         E2E-01 E2E-02 E2E-03 E2E-04 E2E-05 E2E-06 \
         E2E-07 E2E-08 E2E-09 E2E-09-skifflet E2E-09-plaidd \
-        E2E-09-slirp E2E-09-relay E2E-10 E2E-11 E2E-12 E2E-13 E2E-14 E2E-15 E2E-16 E2E-17 E2E-18 E2E-19 \
+        E2E-09-slirp E2E-09-relay E2E-10 E2E-11 E2E-12 E2E-13 E2E-14 E2E-15 E2E-16 E2E-17 E2E-18 E2E-19 E2E-20 E2E-21 \
         NET-3-tap-acceptance NET-4-tap-webhook CANDIDATE E2E-01-teardown \
         T04-logs T04-exec T04-portforward T04-pods-assigned T04-runningpods \
         T04-attach-501 T04-stats-501 T04-metrics-501 \
@@ -26,7 +26,9 @@ profile_required_cases() {
         T05-unsupported-forms T06-metadata-updates T06-unsupported-updates T06-rollout \
         T15-environment-and-files T15-missing-configuration T16-continuity \
         T20-cycles T20-no-leaks \
-        T18-services T18-node-networks T18-startup-report T18-pod-network T18-connectivity T18-runtime-path
+        T18-services T18-node-networks T18-startup-report T18-pod-network T18-connectivity T18-runtime-path \
+        T21-owner T21-no-forward T21-traffic \
+        T22-cancel-during-startup T22-helper-killed T22-port-taken T22-second-boot
 }
 
 profile_is_required() {
