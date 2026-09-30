@@ -55,6 +55,20 @@ Unknown pods or containers, and malformed requests, keep their normal 404 and 40
 | `tcpSocket` handler | not supported | The pod is rejected at creation (`UnsupportedFeatures`) naming the field (the API deprecates it) | `exec`, `httpGet` or `sleep` | unit (capabilities) |
 | hooks of init containers | not supported | The pod is rejected at creation (`UnsupportedFeatures`) naming the field | Use the entrypoint or a separate init container | unit (capabilities) |
 
+**Pod and container fields** (a pod that needs an unsupported form is refused at creation: it fails with the reason `UnsupportedFeatures` and a message naming each field, and nothing of it is launched):
+
+| Field | Status | Result | Alternative | Test |
+|---|---|---|---|---|
+| `emptyDir`, `configMap`, `secret`, `hostPath`, `downwardAPI`, `projected` (ConfigMap, Secret, Downward API, service account token) volumes | implemented | Mounted into the containers | | T15 |
+| `persistentVolumeClaim` volumes | partly | Claims bound to a `hostPath` or `local` volume in filesystem mode work; other volume types and block mode fail the pod at mount with the reason | Use `hostPath` or `local` volumes | unit |
+| Other volume sources (`nfs`, `csi`, `ephemeral`, cloud volumes, ...), projected `clusterTrustBundle` and `podCertificate`, `volumeDevices` (block devices) | not supported | Refused at creation, naming the field | `emptyDir`, `hostPath` or a `local` claim | T05 |
+| Restartable init containers (`restartPolicy: Always` on an init container), pod `activeDeadlineSeconds`, hooks of init containers, host namespaces, ephemeral containers | not supported | Refused at creation, naming the field | | T05 |
+| Environment: `env`, `envFrom`, `valueFrom` of a ConfigMap or Secret key (optional references that are absent are left out) | implemented | Resolved when the container starts | | T15 |
+| Downward API `fieldRef` (`metadata.name/namespace/uid/labels/annotations`, by key or whole, `spec.nodeName`, `spec.serviceAccountName`, `status.hostIP(s)`, `status.podIP(s)`) and `resourceFieldRef` (`limits.` and `requests.` of cpu, memory, ephemeral-storage, hugepages; divisors; a limit that is not set is the node's allocatable amount), in the environment and in `downwardAPI` and `projected` volumes | implemented | The same evaluation everywhere; a reference that cannot be honoured is an error, never an empty value. A reference to something Skifflet cannot resolve at all (an unknown field, `fileKeyRef`) is refused at creation | | T15 |
+| A ConfigMap or Secret a container needs is missing, or a reference cannot be resolved | implemented | Only that container waits, with the reason `CreateContainerConfigError` and the message, and a `Failed` event; it is tried again with a growing pause and starts when the configuration exists. Its siblings and the pod are not failed | | T15 |
+| Update of a running pod: labels and annotations | implemented | Applied without restarting anything or losing status | | T06 |
+| Update of a running pod: image, resources (including the resize subresource), `activeDeadlineSeconds`, ephemeral containers | not applied | The pod keeps running exactly as it is (its container statuses show the image and attempt that really run); a Warning event `UpdateNotApplied` says what was asked, what runs and what to do, once per difference; the pod is not marked failed and no "updated successfully" event is recorded for it | Delete the pod, or roll out a new one (for example with a Deployment): a replacement pod runs the new spec | T06, T16 |
+
 **Container probes** (`startupProbe`, `readinessProbe`, `livenessProbe`):
 
 | Field | Status | Result | Alternative | Test |
