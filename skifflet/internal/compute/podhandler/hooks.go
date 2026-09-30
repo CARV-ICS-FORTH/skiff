@@ -140,13 +140,26 @@ func (a *Attempt) runPostStart(podIP string, runExec execRunner) {
 
 // event records an event about the attempt's container, when events are recorded.
 func (a *Attempt) event(eventType, reason, format string, args ...any) {
+	a.pl.ContainerEvent(a.Container, eventType, reason, format, args...)
+}
+
+// podEvents records an event about a pod; it is compute.Events when there is one.
+var podEvents = func(pod *corev1.Pod, eventType, reason, message string) {
+	if compute.Events != nil {
+		compute.Events.Event(pod, eventType, reason, message)
+	}
+}
+
+// ContainerEvent records an event about one of the pod's containers, when events
+// are recorded.
+func (l *PodLifecycle) ContainerEvent(container, eventType, reason, format string, args ...any) {
 	if compute.Events == nil {
 		return
 	}
-	pod := a.pl.GetPod()
+	pod := l.GetPod()
 	ref := &corev1.ObjectReference{
 		Kind: "Pod", APIVersion: "v1", Namespace: pod.Namespace, Name: pod.Name, UID: pod.UID,
-		FieldPath: fmt.Sprintf("spec.containers{%s}", a.Container),
+		FieldPath: fmt.Sprintf("spec.containers{%s}", container),
 	}
 	compute.Events.Eventf(ref, eventType, reason, format, args...)
 }

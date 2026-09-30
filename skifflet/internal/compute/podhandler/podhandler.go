@@ -15,6 +15,7 @@
 package podhandler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -533,6 +534,56 @@ func backoffFor(attempt, maxShift int, floor time.Duration) time.Duration {
 	return backoff
 }
 
+// prepareContainer makes a container ready to run: its environment, mounts and
+// image. The pod's IP is known by now, so it can be in the environment.
+//
+// A container whose configuration cannot be resolved (a ConfigMap or Secret it
+// refers to does not exist, a key is missing, a Downward API reference cannot be
+// honoured) is not the pod's failure. As the kubelet reports it, the container is
+// Waiting with the reason CreateContainerConfigError and the message, an event says
+// so, and it is tried again with a growing pause, so that creating what was missing
+// lets it start; its siblings are not held back. Anything else (its image, its
+// mounts) fails the pod. ok is false when the container will not be started.
+func (h *PodHandler) prepareContainer(ctx context.Context, spec *corev1.Container, init bool, index int) (c Container, ok bool) {
+	pl := h.lifecycle
+	failReason, field := "MainContainerError", "Containers"
+	if init {
+		failReason, field = "InitContainerError", "InitContainers"
+	}
+	lastMessage := ""
+	for attempt := 0; ; attempt++ {
+		c, err := h.buildContainer(ctx, spec)
+		if err == nil {
+			pl.PrepareContainer(spec.Name, init, spec.Image, c.ImageFilePath, c.InstanceName)
+			return c, true
+		}
+		if ctx.Err() != nil {
+			return Container{}, false
+		}
+		if IsConfigError(err) {
+			if message := err.Error(); message != lastMessage {
+				lastMessage = message
+				h.logger.Info("container configuration cannot be resolved; waiting", "container", spec.Name, "reason", message)
+				pl.SetContainerWaiting(spec.Name, init, "CreateContainerConfigError", message)
+				pl.ContainerEvent(spec.Name, corev1.EventTypeWarning, "Failed", "Error: %s", message)
+			}
+			select {
+			case <-ctx.Done():
+				return Container{}, false
+			case <-time.After(backoffFor(attempt, 5, time.Second)):
+			}
+			continue
+		}
+		reason := "ErrImagePull"
+		if !strings.Contains(err.Error(), "ImagePull") && !strings.Contains(err.Error(), "image") {
+			reason = failReason
+		}
+		pl.SetContainerWaiting(spec.Name, init, reason, err.Error())
+		pl.Fail(reason, "failed to materialize pod.Spec.%s[%d]: %v", field, index, err)
+		return Container{}, false
+	}
+}
+
 // PreparePod launches the pod for its lifecycle owner, which the caller has
 // already registered. It never registers a generation, and closes startup
 // tracking on every return, including a panic.
@@ -785,49 +836,30 @@ func PreparePod(pl *PodLifecycle) {
 		return
 	}
 
-	// Prepare Containers (now that PodIP is known, .status.podIP env vars will have the correct IP)
-	build := func(specs []corev1.Container, init bool, failReason, field string) ([]Container, bool) {
-		var built []Container
-		for i := range specs {
-			spec := &specs[i]
-			c, err := h.buildContainer(spec)
-			if err != nil {
-				killPauseAndWait()
-				reason := "ErrImagePull"
-				if !strings.Contains(err.Error(), "ImagePull") && !strings.Contains(err.Error(), "image") {
-					reason = failReason
-				}
-				pl.SetContainerWaiting(spec.Name, init, reason, err.Error())
-				pl.Fail(reason, "failed to materialize pod.Spec.%s[%d]: %v", field, i, err)
-				return nil, false
-			}
-			pl.PrepareContainer(spec.Name, init, spec.Image, c.ImageFilePath, c.InstanceName)
-			built = append(built, c)
-		}
-		return built, true
-	}
-	initContainers, ok := build(pod.Spec.InitContainers, true, "InitContainerError", "InitContainers")
-	if !ok {
-		return
-	}
-	containers, ok := build(pod.Spec.Containers, false, "MainContainerError", "Containers")
-	if !ok {
-		return
-	}
-
 	// Publish the discovered IP and the containers' initial states
 	pl.Update(func(*corev1.PodStatus) {})
 
+	// Each container is prepared (its environment resolved, its mounts and image
+	// made ready) just before it first runs, as the kubelet does: an init container
+	// before it, the application containers after the init containers have
+	// finished. A container whose configuration cannot be resolved waits, and only
+	// it does (see prepareContainer).
+
 	// Execute Init Containers sequentially with retry policy support
-	for i := range initContainers {
-		c, spec := &initContainers[i], &pod.Spec.InitContainers[i]
+	for i := range pod.Spec.InitContainers {
+		spec := &pod.Spec.InitContainers[i]
+		c, ok := h.prepareContainer(ctx, spec, true, i)
+		if !ok {
+			killPauseAndWait() // the pod is failed with the reason, or is going away
+			return
+		}
 		initAttempt := 0
 		for {
 			if ctx.Err() != nil {
 				killPauseAndWait()
 				return
 			}
-			exitCode, result, _ := h.runAttempt(c, spec, true, containerPID)
+			exitCode, result, _ := h.runAttempt(&c, spec, true, containerPID)
 			if result == attemptLogError {
 				killPauseAndWait() // the pod is already failed with the reason
 				return
@@ -854,17 +886,27 @@ func PreparePod(pl *PodLifecycle) {
 
 	// Execute Main Containers concurrently with restart policy support
 	var appWg sync.WaitGroup
-	for i := range containers {
-		c, spec := &containers[i], &pod.Spec.Containers[i]
+	for i := range pod.Spec.Containers {
+		spec := &pod.Spec.Containers[i]
+		index := i
 		appWg.Add(1)
 		go func() {
 			defer appWg.Done()
+			c, ok := h.prepareContainer(ctx, spec, false, index)
+			if !ok {
+				if ctx.Err() == nil {
+					// A container that cannot be made ready for a reason other than its
+					// configuration (its image) fails the pod, with everything in it.
+					pl.ReleaseLiveResources(0)
+				}
+				return
+			}
 			restartAttempt := 0
 			for {
 				if ctx.Err() != nil {
 					return
 				}
-				exitCode, result, _ := h.runAttempt(c, spec, false, containerPID)
+				exitCode, result, _ := h.runAttempt(&c, spec, false, containerPID)
 				if result == attemptLogError {
 					return // the pod is already failed with the reason
 				}
