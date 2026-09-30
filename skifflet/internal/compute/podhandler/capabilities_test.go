@@ -159,3 +159,147 @@ func TestValidatePodCapabilities(t *testing.T) {
 		})
 	}
 }
+
+func podWith(mutate func(*corev1.PodSpec)) *corev1.Pod {
+	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}}}
+	mutate(&pod.Spec)
+	return pod
+}
+
+func always() *corev1.ContainerRestartPolicy {
+	p := corev1.ContainerRestartPolicyAlways
+	return &p
+}
+
+func TestValidatePodCapabilities_RemainingUnsupportedForms(t *testing.T) {
+	deadline := int64(60)
+	for _, tc := range []struct {
+		name string
+		pod  *corev1.Pod
+		want string // "" means accepted
+	}{
+		{"restartable init container", podWith(func(s *corev1.PodSpec) {
+			s.InitContainers = []corev1.Container{{Name: "sidecar", RestartPolicy: always()}}
+		}), "Spec.InitContainers[0].RestartPolicy"},
+		{"ordinary init container", podWith(func(s *corev1.PodSpec) { s.InitContainers = []corev1.Container{{Name: "setup"}} }), ""},
+		{"pod deadline", podWith(func(s *corev1.PodSpec) { s.ActiveDeadlineSeconds = &deadline }), "Spec.ActiveDeadlineSeconds"},
+		{"block device", podWith(func(s *corev1.PodSpec) {
+			s.Containers[0].VolumeDevices = []corev1.VolumeDevice{{Name: "raw", DevicePath: "/dev/xvda"}}
+		}), "Spec.Containers[0].VolumeDevices"},
+		{"NFS volume", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{{Name: "share", VolumeSource: corev1.VolumeSource{NFS: &corev1.NFSVolumeSource{Server: "nfs", Path: "/"}}}}
+		}), `volume "share": NFS volumes are not supported`},
+		{"CSI volume", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{{Name: "c", VolumeSource: corev1.VolumeSource{CSI: &corev1.CSIVolumeSource{Driver: "x"}}}}
+		}), "CSI volumes are not supported"},
+		{"generic ephemeral volume", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{{Name: "e", VolumeSource: corev1.VolumeSource{Ephemeral: &corev1.EphemeralVolumeSource{}}}}
+		}), "Ephemeral volumes are not supported"},
+		{"supported volumes", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{
+				{Name: "a", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+				{Name: "b", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}},
+				{Name: "c", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{}}},
+				{Name: "d", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/tmp"}}},
+				{Name: "e", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}},
+			}
+		}), ""},
+		{"projected cluster trust bundle", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{{Name: "p", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+				Sources: []corev1.VolumeProjection{{ConfigMap: &corev1.ConfigMapProjection{}}, {ClusterTrustBundle: &corev1.ClusterTrustBundleProjection{Path: "x"}}}}}}}
+		}), "Spec.Volumes[0].Projected.Sources[1] (ClusterTrustBundle"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePodCapabilities(tc.pod)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// Downward API references are checked wherever they are: the environment, a
+// downwardAPI volume and a projected one. What Skifflet cannot resolve is named
+// before the pod is launched, not turned into an empty value.
+func TestValidatePodCapabilities_DownwardAPIReferences(t *testing.T) {
+	env := func(name string, from corev1.EnvVarSource) corev1.EnvVar {
+		return corev1.EnvVar{Name: name, ValueFrom: &from}
+	}
+	file := func(path string, item corev1.DownwardAPIVolumeFile) corev1.DownwardAPIVolumeFile {
+		item.Path = path
+		return item
+	}
+	direct := func(items ...corev1.DownwardAPIVolumeFile) corev1.Volume {
+		return corev1.Volume{Name: "d", VolumeSource: corev1.VolumeSource{DownwardAPI: &corev1.DownwardAPIVolumeSource{Items: items}}}
+	}
+	projected := func(items ...corev1.DownwardAPIVolumeFile) corev1.Volume {
+		return corev1.Volume{Name: "p", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+			Sources: []corev1.VolumeProjection{{DownwardAPI: &corev1.DownwardAPIProjection{Items: items}}}}}}
+	}
+	for _, tc := range []struct {
+		name string
+		pod  *corev1.Pod
+		want string
+	}{
+		{"every supported env field", podWith(func(s *corev1.PodSpec) {
+			s.Containers[0].Env = []corev1.EnvVar{
+				env("A", corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}),
+				env("B", corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.labels['app']"}}),
+				env("C", corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIPs"}}),
+				env("D", corev1.EnvVarSource{ResourceFieldRef: &corev1.ResourceFieldSelector{Resource: "limits.memory"}}),
+			}
+		}), ""},
+		{"unsupported env field", podWith(func(s *corev1.PodSpec) {
+			s.Containers[0].Env = []corev1.EnvVar{env("PHASE", corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.phase"}})}
+		}), "Spec.Containers[0].Env[PHASE].ValueFrom.FieldRef"},
+		{"unsupported env resource", podWith(func(s *corev1.PodSpec) {
+			s.Containers[0].Env = []corev1.EnvVar{env("GPU", corev1.EnvVarSource{ResourceFieldRef: &corev1.ResourceFieldSelector{Resource: "limits.nvidia.com/gpu"}})}
+		}), "Env[GPU].ValueFrom.ResourceFieldRef"},
+		{"file key reference", podWith(func(s *corev1.PodSpec) {
+			s.Containers[0].Env = []corev1.EnvVar{env("F", corev1.EnvVarSource{FileKeyRef: &corev1.FileKeySelector{}})}
+		}), "FileKeyRef"},
+		{"unsupported init container env", podWith(func(s *corev1.PodSpec) {
+			s.InitContainers = []corev1.Container{{Name: "i", Env: []corev1.EnvVar{env("X", corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.hostname"}})}}}
+		}), "Spec.InitContainers[0].Env[X]"},
+		{"volume field", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{direct(file("name", corev1.DownwardAPIVolumeFile{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}))}
+		}), ""},
+		{"volume resource of a container of the pod", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{direct(file("mem", corev1.DownwardAPIVolumeFile{ResourceFieldRef: &corev1.ResourceFieldSelector{ContainerName: "app", Resource: "limits.memory"}}))}
+		}), ""},
+		{"volume resource of a container the pod lacks", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{direct(file("mem", corev1.DownwardAPIVolumeFile{ResourceFieldRef: &corev1.ResourceFieldSelector{ContainerName: "ghost", Resource: "limits.memory"}}))}
+		}), `Spec.Volumes[0].DownwardAPI.Items[0].ResourceFieldRef (resourceFieldRef names container "ghost"`},
+		{"volume field nothing implements", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{direct(file("x", corev1.DownwardAPIVolumeFile{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.phase"}}))}
+		}), "DownwardAPI.Items[0].FieldRef"},
+		{"volume item without a reference", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{direct(file("x", corev1.DownwardAPIVolumeFile{}))}
+		}), "neither fieldRef nor resourceFieldRef"},
+		{"projected field nothing implements", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{projected(file("x", corev1.DownwardAPIVolumeFile{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.phase"}}))}
+		}), "Spec.Volumes[0].Projected.Sources[0].DownwardAPI.Items[0].FieldRef"},
+		{"projected resource of a container the pod lacks", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{projected(file("x", corev1.DownwardAPIVolumeFile{ResourceFieldRef: &corev1.ResourceFieldSelector{ContainerName: "ghost", Resource: "limits.cpu"}}))}
+		}), "Projected.Sources[0].DownwardAPI.Items[0].ResourceFieldRef"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePodCapabilities(tc.pod)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %v, want one containing %q", err, tc.want)
+			}
+		})
+	}
+}

@@ -2,9 +2,12 @@ package podhandler
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+
+	"skifflet/pkg/fieldpath"
 )
 
 // ValidatePodCapabilities verifies that the requested pod specification is supported by skifflet
@@ -14,6 +17,12 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 
 	if len(pod.Spec.EphemeralContainers) > 0 {
 		unsupported = append(unsupported, "Spec.EphemeralContainers")
+	}
+
+	// The pod-level deadline is not enforced, so it is not accepted (a Job's own
+	// deadline is the Job controller's business and does not reach the pod).
+	if pod.Spec.ActiveDeadlineSeconds != nil {
+		unsupported = append(unsupported, "Spec.ActiveDeadlineSeconds (the pod deadline is not enforced)")
 	}
 
 	if pod.Spec.HostNetwork {
@@ -26,8 +35,22 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 		unsupported = append(unsupported, "Spec.HostIPC")
 	}
 
+	// Volumes: the sources Skifflet can provide. A claim is accepted here and its
+	// volume checked when it is bound (hostPath and local volumes only, no block mode).
+	for i := range pod.Spec.Volumes {
+		unsupported = append(unsupported, validateVolume(pod, fmt.Sprintf("Spec.Volumes[%d]", i), &pod.Spec.Volumes[i])...)
+	}
+
 	// Validate container-level capabilities
 	validateContainer := func(prefix string, c *corev1.Container, init bool) {
+		if init && c.RestartPolicy != nil {
+			unsupported = append(unsupported, prefix+".RestartPolicy (restartable init containers)")
+		}
+		if len(c.VolumeDevices) > 0 {
+			unsupported = append(unsupported, prefix+".VolumeDevices (block devices)")
+		}
+		unsupported = append(unsupported, validateEnvironment(pod, prefix, c)...)
+
 		// PostStart and PreStop hooks run for application containers, through exec,
 		// HTTP GET or sleep handlers; TCP handlers, hooks of init containers, and
 		// handlers with nothing to run are unsupported.
@@ -71,4 +94,94 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 		return fmt.Errorf("unsupported features: %s", strings.Join(unsupported, ", "))
 	}
 	return nil
+}
+
+// supportedVolumeSources are the volume sources a pod may use.
+var supportedVolumeSources = map[string]bool{
+	"EmptyDir": true, "ConfigMap": true, "Secret": true, "HostPath": true,
+	"DownwardAPI": true, "Projected": true, "PersistentVolumeClaim": true,
+}
+
+// volumeSourceName names the source of a volume (the field of VolumeSource that is set).
+func volumeSourceName(source *corev1.VolumeSource) string {
+	v := reflect.ValueOf(*source)
+	for i := 0; i < v.NumField(); i++ {
+		if f := v.Field(i); f.Kind() == reflect.Ptr && !f.IsNil() {
+			return v.Type().Field(i).Name
+		}
+	}
+	return ""
+}
+
+func validateVolume(pod *corev1.Pod, prefix string, vol *corev1.Volume) []string {
+	name := volumeSourceName(&vol.VolumeSource)
+	if !supportedVolumeSources[name] {
+		return []string{fmt.Sprintf("%s (volume %q: %s volumes are not supported)", prefix, vol.Name, name)}
+	}
+	var out []string
+	switch {
+	case vol.DownwardAPI != nil:
+		for j, item := range vol.DownwardAPI.Items {
+			out = append(out, validateDownwardItem(pod, fmt.Sprintf("%s.DownwardAPI.Items[%d]", prefix, j), item)...)
+		}
+	case vol.Projected != nil:
+		for j, source := range vol.Projected.Sources {
+			at := fmt.Sprintf("%s.Projected.Sources[%d]", prefix, j)
+			switch {
+			case source.ClusterTrustBundle != nil:
+				out = append(out, at+" (ClusterTrustBundle projections are not supported)")
+			case source.PodCertificate != nil:
+				out = append(out, at+" (PodCertificate projections are not supported)")
+			case source.DownwardAPI != nil:
+				for k, item := range source.DownwardAPI.Items {
+					out = append(out, validateDownwardItem(pod, fmt.Sprintf("%s.DownwardAPI.Items[%d]", at, k), item)...)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// validateDownwardItem checks a Downward API file: its reference is one Skifflet
+// can resolve, so the pod is not launched with a file that would be empty or wrong.
+func validateDownwardItem(pod *corev1.Pod, prefix string, item corev1.DownwardAPIVolumeFile) []string {
+	switch {
+	case item.FieldRef != nil:
+		if err := fieldpath.ValidateFieldPath(item.FieldRef.FieldPath); err != nil {
+			return []string{fmt.Sprintf("%s.FieldRef (%v)", prefix, err)}
+		}
+	case item.ResourceFieldRef != nil:
+		if err := fieldpath.ValidateResourceFieldRef(pod, item.ResourceFieldRef, true); err != nil {
+			return []string{fmt.Sprintf("%s.ResourceFieldRef (%v)", prefix, err)}
+		}
+	default:
+		return []string{prefix + " (neither fieldRef nor resourceFieldRef)"}
+	}
+	return nil
+}
+
+// validateEnvironment checks the Downward API references of a container's
+// environment, which are then evaluated at start by the same functions.
+func validateEnvironment(pod *corev1.Pod, prefix string, c *corev1.Container) []string {
+	var out []string
+	for _, env := range c.Env {
+		from := env.ValueFrom
+		if from == nil {
+			continue
+		}
+		at := fmt.Sprintf("%s.Env[%s].ValueFrom", prefix, env.Name)
+		switch {
+		case from.FieldRef != nil:
+			if err := fieldpath.ValidateFieldPath(from.FieldRef.FieldPath); err != nil {
+				out = append(out, fmt.Sprintf("%s.FieldRef (%v)", at, err))
+			}
+		case from.ResourceFieldRef != nil:
+			if err := fieldpath.ValidateResourceFieldRef(pod, from.ResourceFieldRef, false); err != nil {
+				out = append(out, fmt.Sprintf("%s.ResourceFieldRef (%v)", at, err))
+			}
+		case from.FileKeyRef != nil:
+			out = append(out, at+".FileKeyRef (file-based environment variables are not supported)")
+		}
+	}
+	return out
 }
