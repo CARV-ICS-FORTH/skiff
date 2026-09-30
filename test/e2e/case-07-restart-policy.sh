@@ -131,7 +131,7 @@ e2e_assert_eq "one server payload remains in the Pod namespace" "$POD_PROCS" "1"
 e2e_kubectl delete pod e2e07-always -n "$NS"
 runtime_verify_gone "$NS" "e2e07-always" 60
 
-# Lifecycle hooks are not supported yet and must be rejected before sandbox allocation.
+# A TCP hook handler is not supported and must be rejected before sandbox allocation.
 cat <<EOF | e2e_kubectl apply -f -
 apiVersion: v1
 kind: Pod
@@ -146,8 +146,8 @@ spec:
     command: ["sleep", "3600"]
     lifecycle:
       postStart:
-        exec:
-          command: ["/bin/true"]
+        tcpSocket:
+          port: 8080
 EOF
 e2e_wait_pod_phase "$NS" "e2e07-unsupported-hook" "Failed" 60
 reason=$(e2e_kubectl get pod "e2e07-unsupported-hook" -n "$NS" -o jsonpath='{.status.reason}')
