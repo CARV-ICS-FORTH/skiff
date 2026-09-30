@@ -24,14 +24,15 @@ func handoffDaemon(t *testing.T, bind net.IP, port int) (*PlaidDaemon, string) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	path := filepath.Join(dir, "overlay.sock")
 	d, err := NewPlaidDaemon(Config{
-		SocketPath:     filepath.Join(dir, "plaidd.sock"),
-		NodeCIDR:       "10.244.5.0/24",
-		ClusterCIDR:    "10.244.0.0/16",
-		GatewayMAC:     "02:00:00:00:00:01",
-		VXLANPort:      port,
-		VXLANBind:      bind.String(),
-		VXLANVNI:       1,
-		OverlayHandoff: path,
+		SocketPath:        filepath.Join(dir, "plaidd.sock"),
+		NodeCIDR:          "10.244.5.0/24",
+		DisableKubernetes: true,
+		ClusterCIDR:       "10.244.0.0/16",
+		GatewayMAC:        "02:00:00:00:00:01",
+		VXLANPort:         port,
+		VXLANBind:         bind.String(),
+		VXLANVNI:          1,
+		OverlayHandoff:    path,
 	})
 	if err != nil {
 		t.Fatal(err)

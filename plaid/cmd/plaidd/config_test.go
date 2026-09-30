@@ -10,19 +10,20 @@ import (
 // tapConfig is an integrated (cluster) configuration; tests change what they test.
 func tapConfig(change func(*Config)) Config {
 	cfg := Config{
-		SocketPath:    "/tmp/test-plaidd.sock",
-		NodeCIDR:      "10.244.5.0/24",
-		ClusterCIDR:   "10.244.0.0/16",
-		ServiceCIDR:   "10.43.0.0/16",
-		Resolver:      "10.43.0.10",
-		GatewayIP:     "10.244.5.1",
-		GatewayMAC:    "02:00:00:00:00:01",
-		BubbleMAC:     "02:00:00:00:00:02",
-		GatewayMode:   "tap",
-		Uplink:        "tap0",
-		UplinkAddress: "10.0.2.100",
-		VXLANPort:     8472,
-		VXLANVNI:      1,
+		SocketPath:        "/tmp/test-plaidd.sock",
+		NodeCIDR:          "10.244.5.0/24",
+		DisableKubernetes: true,
+		ClusterCIDR:       "10.244.0.0/16",
+		ServiceCIDR:       "10.43.0.0/16",
+		Resolver:          "10.43.0.10",
+		GatewayIP:         "10.244.5.1",
+		GatewayMAC:        "02:00:00:00:00:01",
+		BubbleMAC:         "02:00:00:00:00:02",
+		GatewayMode:       "tap",
+		Uplink:            "tap0",
+		UplinkAddress:     "10.0.2.100",
+		VXLANPort:         8472,
+		VXLANVNI:          1,
 	}
 	if change != nil {
 		change(&cfg)
@@ -108,14 +109,15 @@ func TestNewPlaidDaemon_StandaloneSlirpDefaultsAndOverrides(t *testing.T) {
 	t.Setenv(netcfg.EnvMTU, "")
 	standalone := func(change func(*Config)) Config {
 		cfg := Config{
-			SocketPath:  "/tmp/test-plaidd.sock",
-			NodeCIDR:    "10.244.1.0/24",
-			ClusterCIDR: netcfg.DefaultClusterCIDR,
-			GatewayIP:   "10.244.1.1",
-			GatewayMAC:  "02:00:00:00:00:01",
-			GatewayMode: "slirp",
-			VXLANPort:   8472,
-			VXLANVNI:    1,
+			SocketPath:        "/tmp/test-plaidd.sock",
+			NodeCIDR:          "10.244.1.0/24",
+			DisableKubernetes: true,
+			ClusterCIDR:       netcfg.DefaultClusterCIDR,
+			GatewayIP:         "10.244.1.1",
+			GatewayMAC:        "02:00:00:00:00:01",
+			GatewayMode:       "slirp",
+			VXLANPort:         8472,
+			VXLANVNI:          1,
 		}
 		if change != nil {
 			change(&cfg)

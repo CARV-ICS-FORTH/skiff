@@ -40,6 +40,12 @@ type FilterHandler interface {
 	HandleListFilterRules() (*Response, error)
 }
 
+// ServiceHandler handles SetServices and ListServices requests.
+type ServiceHandler interface {
+	HandleSetServices(req *Request) error
+	HandleListServices() (*Response, error)
+}
+
 // Server is the IPC server listening on a UNIX domain socket.
 type Server struct {
 	socketPath    string
@@ -47,6 +53,7 @@ type Server struct {
 	rtHandler     RouteHandler
 	statusProv    StatusProvider
 	filterHandler FilterHandler
+	svcHandler    ServiceHandler
 	listener      net.Listener
 	lockFile      *os.File
 	mu            sync.Mutex
@@ -75,6 +82,13 @@ func (s *Server) SetFilterHandler(fh FilterHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.filterHandler = fh
+}
+
+// SetServiceHandler registers a ServiceHandler with the server.
+func (s *Server) SetServiceHandler(h ServiceHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.svcHandler = h
 }
 
 // Start begins listening on the UNIX domain socket.
@@ -312,6 +326,29 @@ func (s *Server) handleConn(conn net.Conn) {
 			}
 		} else {
 			resp = Response{Success: true}
+		}
+	case ActionSetServices:
+		s.mu.Lock()
+		h := s.svcHandler
+		s.mu.Unlock()
+		if h == nil {
+			resp = Response{Success: false, Error: "this daemon has no Service engine"}
+		} else if err := h.HandleSetServices(&req); err != nil {
+			resp = Response{Success: false, Error: err.Error()}
+		} else {
+			resp = Response{Success: true}
+		}
+	case ActionListServices:
+		s.mu.Lock()
+		h := s.svcHandler
+		s.mu.Unlock()
+		if h == nil {
+			resp = Response{Success: false, Error: "this daemon has no Service engine"}
+		} else if listResp, err := h.HandleListServices(); err != nil {
+			resp = Response{Success: false, Error: err.Error()}
+		} else {
+			resp = *listResp
+			resp.Success = true
 		}
 	default:
 		resp = Response{Success: false, Error: fmt.Sprintf("unknown action: %s", req.Action)}

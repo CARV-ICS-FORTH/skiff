@@ -105,6 +105,7 @@ On node 1 (e.g. controller):
 ```bash
 plaidd \
   --api-socket=/run/plaid/plaidd.sock \
+  --disable-kubernetes \
   --node-cidr=10.244.1.0/24 \
   --cluster-cidr=10.244.0.0/16 \
   --gateway-ip=10.244.1.1 \

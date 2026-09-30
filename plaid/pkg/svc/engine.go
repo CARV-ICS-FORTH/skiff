@@ -338,6 +338,8 @@ type ServiceInfo struct {
 	Backends int
 	Eligible int
 	Flows    int
+	// Addresses are the backends themselves.
+	Addresses []Backend
 }
 
 // Services lists the table with the number of live flows of each entry.
@@ -350,7 +352,7 @@ func (e *Engine) Services() []ServiceInfo {
 	}
 	out := make([]ServiceInfo, 0, len(e.services))
 	for k, s := range e.services {
-		info := ServiceInfo{ID: s.ID, VIP: net.IP(k.vIP[:]).To4(), Port: k.vPort, Proto: k.proto, Backends: len(s.Backends), Flows: flows[k]}
+		info := ServiceInfo{ID: s.ID, VIP: net.IP(k.vIP[:]).To4(), Port: k.vPort, Proto: k.proto, Backends: len(s.Backends), Flows: flows[k], Addresses: append([]Backend(nil), s.Backends...)}
 		for _, b := range s.Backends {
 			if b.Eligible {
 				info.Eligible++

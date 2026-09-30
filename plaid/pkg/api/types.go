@@ -15,7 +15,47 @@ const (
 	ActionAddFilterRule    Action = "add_filter_rule"
 	ActionRemoveFilterRule Action = "remove_filter_rule"
 	ActionListFilterRules  Action = "list_filter_rules"
+	ActionSetServices      Action = "set_services"
+	ActionListServices     Action = "list_services"
 )
+
+// ServiceEntry is one Service address, port and protocol with its backends, as the
+// Service engine takes it.
+type ServiceEntry struct {
+	ID       string         `json:"id"`
+	VIP      string         `json:"vip"`
+	Port     uint16         `json:"port"`
+	Protocol string         `json:"protocol"` // "tcp" or "udp"
+	Backends []BackendEntry `json:"backends,omitempty"`
+	// Flows is the number of live flows of the entry (in listings).
+	Flows int `json:"flows,omitempty"`
+}
+
+// BackendEntry is one backend; only eligible backends take new flows.
+type BackendEntry struct {
+	IP       string `json:"ip"`
+	Port     uint16 `json:"port"`
+	Eligible bool   `json:"eligible"`
+}
+
+// ServiceStats are the Service engine's gauges and counters.
+type ServiceStats struct {
+	Synced           bool   `json:"synced"`
+	Services         int    `json:"services"`
+	Backends         int    `json:"backends"`
+	Flows            int    `json:"flows"`
+	FlowsCreated     uint64 `json:"flows_created"`
+	FlowsExpired     uint64 `json:"flows_expired"`
+	FlowsPurged      uint64 `json:"flows_purged"`
+	Forwarded        uint64 `json:"forwarded"`
+	Returned         uint64 `json:"returned"`
+	Rejected         uint64 `json:"rejected"`
+	DropsNoService   uint64 `json:"drops_no_service"`
+	DropsNoFlow      uint64 `json:"drops_no_flow"`
+	DropsFlowLimit   uint64 `json:"drops_flow_limit"`
+	DropsPorts       uint64 `json:"drops_ports"`
+	DropsUnsupported uint64 `json:"drops_unsupported"`
+}
 
 // Request is the JSON request sent across the IPC socket.
 type Request struct {
@@ -45,6 +85,9 @@ type Request struct {
 	RuleSrcPort  uint16 `json:"rule_src_port,omitempty"`
 	RuleDstPort  uint16 `json:"rule_dst_port,omitempty"`
 	RuleAction   string `json:"rule_action,omitempty"`
+
+	// SetServices params: the complete table of the Service engine.
+	Services []ServiceEntry `json:"services,omitempty"`
 }
 
 // Response is the JSON response returned by plaidd.
@@ -79,4 +122,12 @@ type Response struct {
 	OverlayRxInvalid uint64   `json:"overlay_rx_invalid"`
 	OverlayRxDropped uint64   `json:"overlay_rx_dropped"`
 	FilterRules      []string `json:"filter_rules,omitempty"`
+
+	// The Service engine (tap mode): its address, range, counters and who writes its table
+	// ("kubernetes" or "api"); and, from list_services, the table.
+	ServiceAddress string         `json:"service_address,omitempty"`
+	ServiceCIDR    string         `json:"service_cidr,omitempty"`
+	ServiceEngine  *ServiceStats  `json:"service_engine,omitempty"`
+	ServiceManager string         `json:"service_manager,omitempty"`
+	Services       []ServiceEntry `json:"services,omitempty"`
 }

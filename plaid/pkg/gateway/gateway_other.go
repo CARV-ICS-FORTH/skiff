@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Name, Uplink                       string
 	GuestAddress, GatewayIP            net.IP
+	ServiceNextHop                     net.IP
 	GatewayMAC                         net.HardwareAddr
 	NodeCIDR, ClusterCIDR, ServiceCIDR *net.IPNet
 	MTU                                int

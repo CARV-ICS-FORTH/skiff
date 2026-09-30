@@ -19,14 +19,17 @@ type Config struct {
 	GatewayIP                          net.IP
 	GatewayMAC                         net.HardwareAddr
 	NodeCIDR, ClusterCIDR, ServiceCIDR *net.IPNet
-	MTU                                int
+	// ServiceNextHop is the Service engine's address: the bubble reaches Service addresses
+	// through it, and Plaid answers for it.
+	ServiceNextHop net.IP
+	MTU            int
 }
 
 type Attachment struct {
 	File                                     *os.File
 	cfg                                      Config
 	sysctls                                  map[string]string
-	routeAdded                               bool
+	routeAdded, serviceRouteAdded            bool
 	natTouched, forwardTouched, inputTouched bool
 }
 
@@ -112,6 +115,13 @@ func Start(cfg Config) (_ *Attachment, err error) {
 		return nil, err
 	}
 	a.routeAdded = true
+	if cfg.ServiceNextHop != nil {
+		// Service addresses are not on the link: they go to the engine's address, which is.
+		if err = run("ip", "route", "add", cfg.ServiceCIDR.String(), "via", cfg.ServiceNextHop.String(), "dev", cfg.Name, "src", cfg.GatewayIP.String()); err != nil {
+			return nil, err
+		}
+		a.serviceRouteAdded = true
+	}
 	if err = sysctl(a, "net.ipv4.ip_forward", "1"); err != nil {
 		return nil, err
 	}
@@ -173,6 +183,9 @@ func (a *Attachment) Close() error {
 		_ = rule(item.table, "-D", item.parent, "-j", item.child)
 		_ = rule(item.table, "-F", item.child)
 		_ = rule(item.table, "-X", item.child)
+	}
+	if a.serviceRouteAdded {
+		_ = run("ip", "route", "del", a.cfg.ServiceCIDR.String(), "dev", a.cfg.Name)
 	}
 	if a.routeAdded && a.cfg.ClusterCIDR != nil {
 		_ = run("ip", "route", "del", a.cfg.ClusterCIDR.String(), "dev", a.cfg.Name)

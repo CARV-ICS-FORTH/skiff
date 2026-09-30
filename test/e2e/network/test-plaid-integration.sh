@@ -41,6 +41,7 @@ ip netns add testns2
 echo "=== 3. Starting plaidd in background ==="
 "${BIN_DIR}/plaidd" \
     --api-socket="${SOCKET_PATH}" \
+    --disable-kubernetes \
     --node-cidr="10.244.1.0/24" \
     --cluster-cidr="10.244.0.0/16" \
     --vxlan-port=8473 \

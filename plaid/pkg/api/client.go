@@ -207,3 +207,27 @@ func (c *Client) ListFilterRules() ([]string, error) {
 	}
 	return resp.FilterRules, nil
 }
+
+// SetServices replaces the Service engine's table.
+func (c *Client) SetServices(entries []ServiceEntry) error {
+	resp, err := c.Send(&Request{Action: ActionSetServices, Services: entries}, -1)
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("set_services failed: %s", resp.Error)
+	}
+	return nil
+}
+
+// ListServices returns the Service engine's table with the flows of each entry.
+func (c *Client) ListServices() (*Response, error) {
+	resp, err := c.Send(&Request{Action: ActionListServices}, -1)
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("list_services failed: %s", resp.Error)
+	}
+	return resp, nil
+}

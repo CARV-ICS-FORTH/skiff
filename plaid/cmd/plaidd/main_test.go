@@ -9,26 +9,27 @@ import (
 	"plaid/pkg/vxlan"
 )
 
-func TestNewPlaidDaemonStaticMode(t *testing.T) {
+func TestNewPlaidDaemonWithoutKubernetes(t *testing.T) {
 	cfg := Config{
-		SocketPath:  "/tmp/test-plaidd.sock",
-		NodeCIDR:    "10.244.5.0/24",
-		ClusterCIDR: "10.244.0.0/16",
-		GatewayIP:   "10.244.5.1",
-		GatewayMAC:  "02:00:00:00:00:01",
-		VXLANPort:   8472,
-		VXLANVNI:    1,
-		EnableSlirp: false,
-		Routes:      "10.244.6.0/24=192.168.1.60",
+		SocketPath:        "/tmp/test-plaidd.sock",
+		NodeCIDR:          "10.244.5.0/24",
+		DisableKubernetes: true,
+		ClusterCIDR:       "10.244.0.0/16",
+		GatewayIP:         "10.244.5.1",
+		GatewayMAC:        "02:00:00:00:00:01",
+		VXLANPort:         8472,
+		VXLANVNI:          1,
+		EnableSlirp:       false,
+		Routes:            "10.244.6.0/24=192.168.1.60",
 	}
 
 	daemon, err := NewPlaidDaemon(cfg)
 	if err != nil {
-		t.Fatalf("NewPlaidDaemon failed in static mode: %v", err)
+		t.Fatalf("NewPlaidDaemon without Kubernetes: %v", err)
 	}
 
 	if daemon.k8sCtrl != nil {
-		t.Errorf("expected k8sCtrl to be nil in static mode")
+		t.Errorf("expected k8sCtrl to be nil when Kubernetes is disabled")
 	}
 
 	if daemon.cfg.NodeCIDR != "10.244.5.0/24" {
@@ -51,20 +52,21 @@ func TestNewPlaidDaemonStaticMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleGetStatus failed: %v", err)
 	}
-	if status.Mode != "static" {
-		t.Errorf("expected status mode 'static', got %s", status.Mode)
+	if status.Mode != "no-kubernetes" {
+		t.Errorf("expected status mode 'no-kubernetes', got %s", status.Mode)
 	}
 }
 
 func TestPlaidDaemonK8sRouteCallbacks(t *testing.T) {
 	cfg := Config{
-		SocketPath:  "/tmp/test-plaidd-k8s.sock",
-		NodeCIDR:    "10.244.1.0/24", // initialize as static for daemon setup
-		ClusterCIDR: "10.244.0.0/16",
-		GatewayMAC:  "02:00:00:00:00:01",
-		VXLANPort:   8472,
-		VXLANVNI:    1,
-		EnableSlirp: false,
+		SocketPath:        "/tmp/test-plaidd-k8s.sock",
+		NodeCIDR:          "10.244.1.0/24", // the node network is given; the connector is attached below
+		DisableKubernetes: true,
+		ClusterCIDR:       "10.244.0.0/16",
+		GatewayMAC:        "02:00:00:00:00:01",
+		VXLANPort:         8472,
+		VXLANVNI:          1,
+		EnableSlirp:       false,
 	}
 
 	daemon, err := NewPlaidDaemon(cfg)

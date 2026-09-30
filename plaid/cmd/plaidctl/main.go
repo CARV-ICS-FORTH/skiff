@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -61,11 +63,73 @@ func main() {
 				status.OverlayTransport, status.OverlayAddress, status.OverlayTxPackets, status.OverlayTxErrors,
 				status.OverlayRxPackets, status.OverlayRxInvalid, status.OverlayRxDropped)
 		}
+		if status.ServiceEngine != nil {
+			e := status.ServiceEngine
+			fmt.Printf("Services:     %s via %s, table from %s (synced=%t): %d entries, %d backends, %d flows\n",
+				status.ServiceCIDR, status.ServiceAddress, status.ServiceManager, e.Synced, e.Services, e.Backends, e.Flows)
+			fmt.Printf("              flows created=%d expired=%d purged=%d; packets out=%d back=%d refused=%d\n",
+				e.FlowsCreated, e.FlowsExpired, e.FlowsPurged, e.Forwarded, e.Returned, e.Rejected)
+			fmt.Printf("              drops: no service=%d, no flow=%d, flow limit=%d, no port=%d, unsupported=%d\n",
+				e.DropsNoService, e.DropsNoFlow, e.DropsFlowLimit, e.DropsPorts, e.DropsUnsupported)
+		}
 		fmt.Printf("Endpoints:    %d\n", status.EndpointsCount)
 		for _, ep := range status.Endpoints {
 			fmt.Printf("  - %s\n", ep)
 		}
 		fmt.Printf("Routes Count: %d\n", status.RoutesCount)
+
+	case "service":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: plaidctl service <list|set> ...")
+			os.Exit(1)
+		}
+		switch args[1] {
+		case "list":
+			resp, err := client.ListServices()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error listing services: %v\n", err)
+				os.Exit(1)
+			}
+			for _, s := range resp.Services {
+				fmt.Printf("%s:%d/%s  %s  flows=%d\n", s.VIP, s.Port, s.Protocol, s.ID, s.Flows)
+				for _, b := range s.Backends {
+					state := "eligible"
+					if !b.Eligible {
+						state = "not eligible"
+					}
+					fmt.Printf("  -> %s:%d (%s)\n", b.IP, b.Port, state)
+				}
+			}
+		case "set":
+			if len(args) != 3 {
+				fmt.Fprintln(os.Stderr, "Usage: plaidctl service set <file.json|->  (a JSON array of services; plaidd must run with --disable-kubernetes)")
+				os.Exit(1)
+			}
+			var data []byte
+			var err error
+			if args[2] == "-" {
+				data, err = io.ReadAll(os.Stdin)
+			} else {
+				data, err = os.ReadFile(args[2])
+			}
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", args[2], err)
+				os.Exit(1)
+			}
+			var entries []api.ServiceEntry
+			if err := json.Unmarshal(data, &entries); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s is not a JSON array of services: %v\n", args[2], err)
+				os.Exit(1)
+			}
+			if err := client.SetServices(entries); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Service table set: %d entries\n", len(entries))
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown service command: %s\n", args[1])
+			os.Exit(1)
+		}
 
 	case "route":
 		if len(args) < 2 {
@@ -222,6 +286,8 @@ Commands:
   status                                          Display daemon status & endpoints
   overlay-socket --bind <ip> --handoff <socket>   Open the overlay UDP socket here and hand it to plaidd (host helper)
   endpoint del <endpoint-id>                      Remove a container endpoint
+  service list                                    List the Service engine's table and flows
+  service set <file.json|->                       Replace the Service table (plaidd --disable-kubernetes only)
   route add <subnet> <remote-host> [vni] [port]   Add a cross-host overlay route
   route del <subnet>                              Remove an overlay route
   filter list                                     List active packet filter rules

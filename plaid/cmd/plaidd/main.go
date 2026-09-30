@@ -24,6 +24,7 @@ import (
 	"plaid/pkg/k8s"
 	"plaid/pkg/packet"
 	"plaid/pkg/slirp"
+	"plaid/pkg/svc"
 	"plaid/pkg/tap"
 	"plaid/pkg/vxlan"
 )
@@ -41,6 +42,7 @@ type PlaidDaemon struct {
 	apiServer    *api.Server
 	cancelFunc   context.CancelFunc
 	k8sCtrl      *k8s.Controller
+	services     *svc.Engine // tap mode only
 }
 
 type Config struct {
@@ -68,12 +70,20 @@ type Config struct {
 	Kubeconfig        string
 	NodeName          string
 	MTU               int
+	// DisableKubernetes keeps plaidd away from the Kubernetes API altogether: no Node,
+	// Service or EndpointSlice watches, no Node condition.
+	DisableKubernetes bool
+	// SNATAddress is the Service engine's address (tap mode): empty means the node
+	// network's .2.
+	SNATAddress string
 }
 
 func main() {
 	var cfg Config
 	flag.StringVar(&cfg.SocketPath, "api-socket", netcfg.SocketPath(""), "Path to plaidd UNIX domain socket (default: $PLAID_SOCKET_PATH, else "+netcfg.DefaultSocketPath+")")
-	flag.StringVar(&cfg.NodeCIDR, "node-cidr", "", "Pod CIDR allocated to this node (if provided, runs in static mode; if omitted, runs in Kubernetes mode)")
+	flag.StringVar(&cfg.NodeCIDR, "node-cidr", "", "Pod CIDR of this node (default: the one Kubernetes allocated to the Node; required with --disable-kubernetes)")
+	flag.BoolVar(&cfg.DisableKubernetes, "disable-kubernetes", false, "Never contact the Kubernetes API: no Node, Service or EndpointSlice watches (standalone Plaid; requires --node-cidr)")
+	flag.StringVar(&cfg.SNATAddress, "snat-address", "", "Address of the Service engine in tap mode, which backends see as the source of Service traffic and answer (default: the .2 of the node network)")
 	flag.StringVar(&cfg.ClusterCIDR, "cluster-cidr", netcfg.DefaultClusterCIDR, "Overall cluster pod CIDR")
 	flag.StringVar(&cfg.GatewayIP, "gateway-ip", "", "Gateway IP (defaults to first IP of node-cidr, e.g. 10.244.1.1)")
 	flag.StringVar(&cfg.GatewayMAC, "gateway-mac", "02:00:00:00:00:01", "Gateway MAC address")
@@ -118,7 +128,7 @@ func main() {
 
 	mode := "kubernetes"
 	if daemon.k8sCtrl == nil {
-		mode = "static"
+		mode = "no-kubernetes"
 	}
 	fmt.Printf("plaidd is running [Mode=%s, NodeCIDR=%s, ClusterCIDR=%s, VXLANPort=%d, APISocket=%s]\n",
 		mode, daemon.cfg.NodeCIDR, daemon.cfg.ClusterCIDR, daemon.cfg.VXLANPort, daemon.cfg.SocketPath)
@@ -137,8 +147,12 @@ func main() {
 func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 	var k8sCtrl *k8s.Controller
 
-	if cfg.NodeCIDR == "" {
-		// Kubernetes Mode (default)
+	if cfg.DisableKubernetes {
+		if cfg.NodeCIDR == "" {
+			return nil, fmt.Errorf("--disable-kubernetes needs --node-cidr: there is no Node to take it from")
+		}
+		fmt.Printf("[plaidd] Kubernetes disabled [NodeCIDR=%s]\n", cfg.NodeCIDR)
+	} else {
 		var err error
 		k8sCtrl, err = k8s.NewControllerFromConfig(k8s.Config{
 			Kubeconfig: cfg.Kubeconfig,
@@ -147,19 +161,19 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize Kubernetes controller: %w", err)
 		}
-
-		fmt.Printf("[plaidd] Kubernetes mode active. Discovering pod CIDR for node %q...\n", k8sCtrl.NodeName())
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		_, podNet, hostIP, err := k8sCtrl.GetLocalNode(ctx)
-		cancel()
-		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve local node CIDR from Kubernetes: %w", err)
+		if cfg.NodeCIDR == "" {
+			fmt.Printf("[plaidd] Kubernetes active. Discovering pod CIDR for node %q...\n", k8sCtrl.NodeName())
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			_, podNet, hostIP, err := k8sCtrl.GetLocalNode(ctx)
+			cancel()
+			if err != nil {
+				return nil, fmt.Errorf("failed to retrieve local node CIDR from Kubernetes: %w", err)
+			}
+			cfg.NodeCIDR = podNet.String()
+			fmt.Printf("[plaidd] Discovered node CIDR from Kubernetes: %s (host IP: %s)\n", cfg.NodeCIDR, hostIP)
+		} else {
+			fmt.Printf("[plaidd] Kubernetes active [NodeCIDR=%s]\n", cfg.NodeCIDR)
 		}
-
-		cfg.NodeCIDR = podNet.String()
-		fmt.Printf("[plaidd] Discovered node CIDR from Kubernetes: %s (host IP: %s)\n", cfg.NodeCIDR, hostIP)
-	} else {
-		fmt.Printf("[plaidd] Static mode active [NodeCIDR=%s]\n", cfg.NodeCIDR)
 	}
 
 	nodeNet, err := ipam.ValidateNodeCIDR(cfg.NodeCIDR)
@@ -299,6 +313,20 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		}, b)
 	}
 
+	var services *svc.Engine
+	if cfg.GatewayMode == "tap" {
+		snat, err := serviceAddress(cfg.SNATAddress, nodeNet)
+		if err != nil {
+			return nil, err
+		}
+		cfg.SNATAddress = snat.String()
+		services, err = svc.New(svc.Config{ServiceCIDR: serviceNet, SNATAddr: snat})
+		if err != nil {
+			return nil, err
+		}
+		b.SetServiceEngine(services)
+	}
+
 	filterEngine := filter.NewEngine(filter.ActionAccept)
 	b.SetFilterHandler(filterEngine.Filter)
 
@@ -310,6 +338,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		slirpMgr:     slirpMgr,
 		filterEngine: filterEngine,
 		k8sCtrl:      k8sCtrl,
+		services:     services,
 		healthErr:    make(chan error, 1),
 	}
 
@@ -321,6 +350,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 
 	d.apiServer = api.NewServer(cfg.SocketPath, d, d, d)
 	d.apiServer.SetFilterHandler(d)
+	d.apiServer.SetServiceHandler(d)
 	return d, nil
 }
 
@@ -358,7 +388,7 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 		_, serviceNet, _ := net.ParseCIDR(d.cfg.ServiceCIDR)
 		mac, _ := net.ParseMAC(d.cfg.BubbleMAC)
 		var err error
-		d.attachment, err = gateway.Start(gateway.Config{Name: "plaid0", Uplink: d.cfg.Uplink, GuestAddress: net.ParseIP(d.cfg.UplinkAddress), GatewayIP: net.ParseIP(d.cfg.GatewayIP), GatewayMAC: mac, NodeCIDR: nodeNet, ClusterCIDR: clusterNet, ServiceCIDR: serviceNet, MTU: d.cfg.MTU})
+		d.attachment, err = gateway.Start(gateway.Config{Name: "plaid0", Uplink: d.cfg.Uplink, GuestAddress: net.ParseIP(d.cfg.UplinkAddress), ServiceNextHop: net.ParseIP(d.cfg.SNATAddress), GatewayIP: net.ParseIP(d.cfg.GatewayIP), GatewayMAC: mac, NodeCIDR: nodeNet, ClusterCIDR: clusterNet, ServiceCIDR: serviceNet, MTU: d.cfg.MTU})
 		if err != nil {
 			startErr = err
 			return fmt.Errorf("gateway setup: %w", err)
@@ -367,6 +397,10 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 		d.bridge.SetBubbleEndpoint(d.bubbleEP)
 		go d.readBubble(ctx)
 		fmt.Printf("[plaidd] TAP gateway ready: %s/%s, MAC=%s, uplink=%s, guest=%s, cluster route=%s\n", d.cfg.GatewayIP, d.cfg.NodeCIDR, mac, d.cfg.Uplink, d.cfg.UplinkAddress, d.cfg.ClusterCIDR)
+	}
+
+	if d.services != nil {
+		go d.sweepServices(ctx)
 	}
 
 	if d.cfg.OverlayHandoff != "" {
@@ -623,11 +657,11 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 
 	mode := "kubernetes"
 	if d.k8sCtrl == nil {
-		mode = "static"
+		mode = "no-kubernetes"
 	}
 
 	ov := d.overlay.Stats()
-	return &api.Response{
+	resp := &api.Response{
 		OverlayTransport: ov.Transport,
 		OverlayAddress:   ov.Address,
 		OverlayTxPackets: ov.TxPackets,
@@ -650,7 +684,9 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		Resolver:         d.cfg.Resolver,
 		MTU:              d.cfg.MTU,
 		Endpoints:        epList,
-	}, nil
+	}
+	d.fillServiceStatus(resp)
+	return resp, nil
 }
 
 func (d *PlaidDaemon) HandleAddFilterRule(req *api.Request) error {
