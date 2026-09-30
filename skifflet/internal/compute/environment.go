@@ -41,6 +41,21 @@ type HostEnvironment struct {
 
 	// PlaidSocket is the API socket of plaidd; empty means endpoint.DefaultPlaidSocket.
 	PlaidSocket string
+
+	// ClusterDomain is the cluster's DNS domain, the tail of the search path of a
+	// pod that uses the cluster DNS; empty means DefaultClusterDomain.
+	ClusterDomain string
+}
+
+// DefaultClusterDomain is the domain Kubernetes gives a cluster unless told otherwise.
+const DefaultClusterDomain = "cluster.local"
+
+// ClusterDomainOrDefault is the cluster domain in effect.
+func (e HostEnvironment) ClusterDomainOrDefault() string {
+	if e.ClusterDomain == "" {
+		return DefaultClusterDomain
+	}
+	return e.ClusterDomain
 }
 
 // PlaidSocketPath is the API socket of plaidd that every part of Skifflet talks to.

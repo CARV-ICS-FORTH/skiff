@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
 
 	corev1 "k8s.io/api/core/v1"
@@ -85,7 +86,7 @@ func TestPrepareDNS(t *testing.T) {
 		},
 	}
 
-	err := PrepareDNS(pod, podDir, "10.43.0.10", "10.244.0.5")
+	err := PrepareDNS(pod, podDir, "10.43.0.10", "cluster.local", "10.244.0.5")
 	if err != nil {
 		t.Fatalf("PrepareDNS failed: %v", err)
 	}
@@ -97,6 +98,9 @@ func TestPrepareDNS(t *testing.T) {
 	if !strings.Contains(string(resolvContent), "10.43.0.10") {
 		t.Errorf("resolv.conf missing kubeDNS IP: %s", string(resolvContent))
 	}
+	if !strings.Contains(string(resolvContent), "search default.svc.cluster.local svc.cluster.local cluster.local\n") {
+		t.Errorf("resolv.conf search path: %s", string(resolvContent))
+	}
 
 	hostsContent, err := os.ReadFile(filepath.Join(podDir.JobDir(), "hosts"))
 	if err != nil {
@@ -104,6 +108,38 @@ func TestPrepareDNS(t *testing.T) {
 	}
 	if !strings.Contains(string(hostsContent), "10.244.0.5 my-pod") {
 		t.Errorf("hosts missing podIP mapping: %s", string(hostsContent))
+	}
+}
+
+// The search path follows the cluster's domain, and nothing of the default remains.
+func TestPrepareDNS_ClusterDomain(t *testing.T) {
+	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "team"},
+		Spec:       corev1.PodSpec{DNSPolicy: corev1.DNSClusterFirst},
+	}
+	if err := PrepareDNS(pod, podDir, "10.201.0.10", "lab.test", "10.200.0.5"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(podDir.JobDir(), "resolv.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "search team.svc.lab.test svc.lab.test lab.test\nnameserver 10.201.0.10\noptions ndots:5\n"
+	if string(got) != want {
+		t.Fatalf("resolv.conf\n got %q\nwant %q", got, want)
+	}
+	if strings.Contains(string(got), "cluster.local") {
+		t.Fatal("the default domain is still in the search path")
+	}
+}
+
+func TestClusterDomainOrDefault(t *testing.T) {
+	if got := (compute.HostEnvironment{}).ClusterDomainOrDefault(); got != "cluster.local" {
+		t.Fatalf("default %q", got)
+	}
+	if got := (compute.HostEnvironment{ClusterDomain: "lab.test"}).ClusterDomainOrDefault(); got != "lab.test" {
+		t.Fatalf("explicit %q", got)
 	}
 }
 

@@ -618,7 +618,7 @@ func PreparePod(pl *PodLifecycle) {
 		return
 	}
 	h.expectedSubnet = expectedSubnet
-	if err := PrepareDNS(pod, h.podDirectory, compute.Environment.KubeDNS, ""); err != nil {
+	if err := PrepareDNS(pod, h.podDirectory, compute.Environment.KubeDNS, compute.Environment.ClusterDomainOrDefault(), ""); err != nil {
 		pl.Fail("DNSError", "failed to prepare pause DNS: %v", err)
 		return
 	}
@@ -779,7 +779,7 @@ func PreparePod(pl *PodLifecycle) {
 	netnsFile = nil
 
 	// Prepare DNS files in job directory
-	if err := PrepareDNS(pod, h.podDirectory, compute.Environment.KubeDNS, podIP); err != nil {
+	if err := PrepareDNS(pod, h.podDirectory, compute.Environment.KubeDNS, compute.Environment.ClusterDomainOrDefault(), podIP); err != nil {
 		killPauseAndWait()
 		pl.Fail("DNSError", "failed to prepare DNS: %v", err)
 		return

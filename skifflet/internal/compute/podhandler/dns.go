@@ -59,8 +59,10 @@ func getHostResolvConf(kubeDNSIP string, resolvConfPath string) string {
 	return strings.Join(validLines, "\n") + "\n"
 }
 
-// PrepareDNS generates resolv.conf and hosts in the pod's job directory.
-func PrepareDNS(pod *corev1.Pod, podDir endpoint.PodPath, kubeDNSIP string, podIP string) error {
+// PrepareDNS generates resolv.conf and hosts in the pod's job directory. A pod
+// that uses the cluster DNS searches its namespace, then the cluster, in the
+// cluster's domain.
+func PrepareDNS(pod *corev1.Pod, podDir endpoint.PodPath, kubeDNSIP, clusterDomain, podIP string) error {
 	var resolvConfContent string
 	isCoreDNS := strings.HasPrefix(pod.Name, "coredns") || (pod.Labels != nil && pod.Labels["k8s-app"] == "kube-dns")
 
@@ -73,8 +75,8 @@ func PrepareDNS(pod *corev1.Pod, podDir endpoint.PodPath, kubeDNSIP string, podI
 		resolvConfContent = ""
 	} else {
 		resolvConfContent = fmt.Sprintf(
-			"search %s.svc.cluster.local svc.cluster.local cluster.local\nnameserver %s\noptions ndots:5\n",
-			pod.Namespace, kubeDNSIP,
+			"search %s.svc.%s svc.%s %s\nnameserver %s\noptions ndots:5\n",
+			pod.Namespace, clusterDomain, clusterDomain, clusterDomain, kubeDNSIP,
 		)
 	}
 

@@ -78,6 +78,7 @@ Unknown pods or containers, and malformed requests, keep their normal 404 and 40
 | `--pause-image` | `registry.k8s.io/pause:3.10` | OCI image for the Pod pause container |
 | `--working-dir` | `$HOME` | Base working directory for Skiff runtime files (`~/.skiff`) |
 | `--pods-dir` | `/tmp/.skiff/.pods` | Ephemeral directory for pod job state and volume mounts |
+| `--cluster-domain` | `$SKIFF_CLUSTER_DOMAIN`, else `cluster.local` | DNS domain of the cluster, for the search path of pods that use the cluster DNS |
 | `--plaid-socket` | `$PLAID_SOCKET_PATH`, else `/run/plaid/plaidd.sock` | API socket of `plaidd` |
 | `--disable-taint` | `false` | Whether to disable the default `virtual-kubelet.io/provider=skiff` taint |
 | `--certificate` | `$APISERVER_CERT_LOCATION` | Server TLS certificate for Kubelet HTTPS serving endpoint (logs/exec) |

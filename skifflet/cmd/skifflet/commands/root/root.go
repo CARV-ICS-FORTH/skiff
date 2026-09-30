@@ -97,6 +97,10 @@ func NewCommand(ctx context.Context, name string, c Opts) *cobra.Command {
 				merr = multierror.Append(merr, fmt.Errorf("empty key path. Use flags or set %s", EnvAPIKeyLocation))
 			}
 
+			if err := validateClusterDomain(c.DefaultHostEnvironment.ClusterDomainOrDefault()); err != nil {
+				merr = multierror.Append(merr, err)
+			}
+
 			if merr.ErrorOrNil() != nil {
 				return merr.ErrorOrNil()
 			}

@@ -15,7 +15,9 @@
 package root
 
 import (
+	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"skifflet/internal/compute"
@@ -23,6 +25,7 @@ import (
 
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // Opts stores all the options for configuring the root virtual-kubelet command.
@@ -70,7 +73,18 @@ const (
 	EnvAPIKeyLocation  = "APISERVER_KEY_LOCATION"
 	// EnvPlaidSocket is the variable the Plaid tools read the same setting from.
 	EnvPlaidSocket = "PLAID_SOCKET_PATH"
+	// EnvClusterDomain is where a deployment states the cluster's DNS domain.
+	EnvClusterDomain = "SKIFF_CLUSTER_DOMAIN"
 )
+
+// validateClusterDomain refuses a cluster domain that is not a DNS name, before
+// it is written into every pod's search path.
+func validateClusterDomain(domain string) error {
+	if errs := validation.IsDNS1123Subdomain(domain); len(errs) > 0 {
+		return fmt.Errorf("invalid cluster domain %q: %s", domain, strings.Join(errs, "; "))
+	}
+	return nil
+}
 
 func envOrDefault(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
@@ -95,6 +109,8 @@ func installFlags(flags *pflag.FlagSet, c *Opts) {
 	flags.StringVar(&c.DefaultHostEnvironment.WorkingDirectory, "working-dir", GetUserHomeDir(), "sets up the Skiff working directory")
 	flags.StringVar(&c.DefaultHostEnvironment.PodsDirectory, "pods-dir", endpoint.DefaultPodsDir, "sets up the Skiff pods directory")
 	flags.StringVar(&c.DefaultHostEnvironment.PlaidSocket, "plaid-socket", envOrDefault(EnvPlaidSocket, endpoint.DefaultPlaidSocket), "API socket of plaidd")
+
+	flags.StringVar(&c.DefaultHostEnvironment.ClusterDomain, "cluster-domain", envOrDefault(EnvClusterDomain, compute.DefaultClusterDomain), "DNS domain of the cluster, for the search path of pods")
 
 	flags.IntVar(&c.PodSyncWorkers, "pod-sync-workers", 1, `set the number of pod synchronization workers`)
 	flags.DurationVar(&c.InformerResyncPeriod, "full-resync-period", 0, "how often to perform a full resync of pods between kubernetes and the provider")

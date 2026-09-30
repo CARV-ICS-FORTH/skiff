@@ -46,6 +46,7 @@ func Initialize(pauseImage string) error {
 		"WorkingDirectory", compute.Skiff.String(),
 		"PodsDirectory", compute.Skiff.PodsDir(),
 		"PlaidSocket", compute.Environment.PlaidSocketPath(),
+		"ClusterDomain", compute.Environment.ClusterDomainOrDefault(),
 	)
 
 	return nil
