@@ -8,7 +8,7 @@ profile_required_cases() {
     printf '%s\n' \
         E2E-01 E2E-02 E2E-03 E2E-04 E2E-05 E2E-06 \
         E2E-07 E2E-08 E2E-09 E2E-09-skifflet E2E-09-plaidd \
-        E2E-09-slirp E2E-09-relay E2E-10 E2E-11 E2E-12 E2E-13 E2E-14 E2E-15 \
+        E2E-09-slirp E2E-09-relay E2E-10 E2E-11 E2E-12 E2E-13 E2E-14 E2E-15 E2E-16 \
         NET-3-tap-acceptance NET-4-tap-webhook CANDIDATE E2E-01-teardown \
         T04-logs T04-exec T04-portforward T04-pods-assigned T04-runningpods \
         T04-attach-501 T04-stats-501 T04-metrics-501 \
@@ -20,7 +20,9 @@ profile_required_cases() {
         T17-exec-streams T17-exec-tty T17-exec-right-after-start T17-exec-init-running T17-exec-init-finished \
         T14-exec-client-cancel T14-exec-target-ends T14-exec-resources \
         T10-exec-hooks T10-http-hook T10-completed T11-poststart-failure T11-prestop-failure \
-        T11-prestop-hang T11-zero-grace T11-liveness-prestop
+        T11-prestop-hang T11-zero-grace T11-liveness-prestop \
+        T12-default-and-tail T12-partial-line T12-timestamps T12-since T12-limit-bytes T12-invalid T12-follow-tail \
+        T13-previous-missing T13-attempts T13-init-attempts
 }
 
 profile_is_required() {

@@ -105,6 +105,14 @@ class AppTest(unittest.TestCase):
         exits = [e for e in self.events() if e[2] == "event=exit"]
         self.assertEqual([e[3] for e in exits], ["code=17", "code=3"])
 
+    def test_exit_attempts_limits_the_exit_to_the_first_attempts(self):
+        p = self.start("--exit-after", "0.2", "--exit-code", "1", "--exit-attempts", "1")
+        self.assertEqual(p.wait(timeout=10), 1)
+        p = self.start("--exit-after", "0.2", "--exit-code", "1", "--exit-attempts", "1")
+        wait_for(lambda: fetch(self.port, "/live")[0] == 200, "listening")
+        time.sleep(0.6)
+        self.assertIsNone(p.poll(), "the second attempt must not exit")
+
     def test_term_records_marker_and_honours_delay(self):
         p = self.start("--term-delay", "0.3")
         wait_for(lambda: fetch(self.port, "/live")[0] == 200, "listening")

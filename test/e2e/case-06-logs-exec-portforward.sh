@@ -60,9 +60,9 @@ e2e_assert_contains "follow contains initial line-1" "$FOLLOW_CONTENT" "log-line
 e2e_assert_contains "follow contains initial line-2" "$FOLLOW_CONTENT" "log-line-2"
 e2e_assert_contains "follow contains streamed line-4" "$FOLLOW_CONTENT" "log-line-4"
 
-# Verify rejection of unsupported --previous option
+# A container that has run once has no previous attempt (T13 covers restarts).
 PREV_ERR=$(e2e_kubectl logs e2e06-pod -n $NS --previous 2>&1 || true)
-e2e_assert_contains "reject previous option" "$PREV_ERR" "previous"
+e2e_assert_contains "previous of a single attempt" "$PREV_ERR" "previous terminated container"
 
 OUT=$(e2e_kubectl exec e2e06-pod -n $NS -- cat /workdir/marker.txt)
 e2e_assert_eq "exec cat marker" "$OUT" "e2e06-marker"

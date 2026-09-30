@@ -2,7 +2,7 @@
 """Controllable application for the compatibility e2e cases.
 
   app.py serve [--port P] [--control-dir D] [--listen-delay S]
-               [--exit-after S] [--exit-code N] [--term-delay S]
+               [--exit-after S] [--exit-code N] [--exit-attempts N] [--term-delay S]
                [--log-records N] [--log-interval S] [--log-partial]
   app.py hook NAME [--control-dir D] [--sleep S] [--fail]
 
@@ -18,6 +18,7 @@ and /ctl/<probe>/off flip a switch; /counters returns request counts per path;
 /headers?path=/x returns the headers of the last request to that path;
 /hostname returns the container's hostname (which backend answered);
 /hook/<name> records a hook call; /exit/<code> exits with that code.
+--exit-attempts N limits --exit-after to the first N attempts (0: every attempt).
 Before --listen-delay elapses nothing listens, so every network probe fails.
 SIGTERM records "term", waits --term-delay, records "exit" and exits 0.
 """
@@ -170,7 +171,7 @@ class App:
         signal.signal(signal.SIGTERM, self.on_term)
         signal.signal(signal.SIGINT, self.on_term)
         self.event("start", pid=os.getpid())
-        if a.exit_after > 0:
+        if a.exit_after > 0 and (a.exit_attempts == 0 or self.attempt <= a.exit_attempts):
             threading.Timer(a.exit_after, self.terminate, args=(a.exit_code,)).start()
         if a.log_records > 0:
             threading.Thread(target=self.emit_logs, daemon=True).start()
@@ -199,6 +200,7 @@ def main(argv):
     serve.add_argument("--control-dir", default="/ctl")
     serve.add_argument("--listen-delay", type=float, default=0)
     serve.add_argument("--exit-after", type=float, default=0)
+    serve.add_argument("--exit-attempts", type=int, default=0)
     serve.add_argument("--exit-code", type=int, default=0)
     serve.add_argument("--term-delay", type=float, default=0)
     serve.add_argument("--log-records", type=int, default=0)

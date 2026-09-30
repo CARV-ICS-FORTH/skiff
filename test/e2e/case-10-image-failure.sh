@@ -109,8 +109,8 @@ EOF
 e2e_wait_condition 30 "log failure fixture held in init" "test -n \"\$(e2e_kubectl get pod e2e10-log-failure -n $NS -o jsonpath='{.status.initContainerStatuses[0].state.running}')\""
 runtime_record_pod "$NS" e2e10-log-failure
 IFS='|' read -r _ _ _ _ _ _ _ _ log_failure_dir _ _ _ <<< "${_RT_IDENTITY[$NS/e2e10-log-failure]}"
-e2e_log "Injecting application log-open failure at ${log_failure_dir}/logs/app.logs"
-runtime_bubble_exec "$NODE_A" "mkdir '${log_failure_dir}/logs/app.logs'; touch '${log_failure_dir}/volumes/gate/release'"
+e2e_log "Injecting application log-open failure at ${log_failure_dir}/logs/app/1.log"
+runtime_bubble_exec "$NODE_A" "mkdir -p '${log_failure_dir}/logs/app/1.log'; touch '${log_failure_dir}/volumes/gate/release'"
 e2e_wait_pod_phase "$NS" e2e10-log-failure Failed 30
 reason=$(e2e_kubectl get pod e2e10-log-failure -n "$NS" -o jsonpath='{.status.reason}')
 e2e_assert_eq "log-open failure remains visible" "$reason" LogFileError
