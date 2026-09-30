@@ -80,9 +80,21 @@ func startProbes(a *Attempt, podIP string, spec *corev1.Container, runExec execR
 		a.Stop(probeKillGrace(pod, probe), fmt.Sprintf("%s probe failed: %s", kind, detail))
 	}
 
+	// The settings are read here, once, and not by the polling goroutines.
+	var startupSettings, readinessSettings, livenessSettings probeSettings
+	if spec.StartupProbe != nil {
+		startupSettings = settingsOf(spec.StartupProbe)
+	}
+	if spec.ReadinessProbe != nil {
+		readinessSettings = settingsOf(spec.ReadinessProbe)
+	}
+	if spec.LivenessProbe != nil {
+		livenessSettings = settingsOf(spec.LivenessProbe)
+	}
+
 	runRest := func() {
 		if probe := spec.ReadinessProbe; probe != nil {
-			go pollProbe(ctx, settingsOf(probe), since, probeFailure, checkOf(probe), func(r probeResult, detail string) bool {
+			go pollProbe(ctx, readinessSettings, since, probeFailure, checkOf(probe), func(r probeResult, detail string) bool {
 				if r == probeFailure {
 					a.event(corev1.EventTypeWarning, "Unhealthy", "Readiness probe failed: %s", detail)
 				}
@@ -91,7 +103,7 @@ func startProbes(a *Attempt, podIP string, spec *corev1.Container, runExec execR
 			})
 		}
 		if probe := spec.LivenessProbe; probe != nil {
-			go pollProbe(ctx, settingsOf(probe), since, probeSuccess, checkOf(probe), func(r probeResult, detail string) bool {
+			go pollProbe(ctx, livenessSettings, since, probeSuccess, checkOf(probe), func(r probeResult, detail string) bool {
 				if r == probeSuccess {
 					return false
 				}
@@ -106,7 +118,7 @@ func startProbes(a *Attempt, podIP string, spec *corev1.Container, runExec execR
 		runRest()
 		return
 	}
-	go pollProbe(ctx, settingsOf(probe), since, probeUnknown, checkOf(probe), func(r probeResult, detail string) bool {
+	go pollProbe(ctx, startupSettings, since, probeUnknown, checkOf(probe), func(r probeResult, detail string) bool {
 		if r == probeSuccess {
 			a.SetStarted()
 			runRest()
