@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"plaid/pkg/packet"
+	"plaid/pkg/svc"
 )
 
 var (
@@ -83,6 +84,12 @@ type Bridge struct {
 	overlayHandler  OverlayHandler
 	outboundHandler OutboundHandler
 	filterHandler   FilterHandler
+
+	// services translates traffic to Service addresses (tap mode). It owns two kinds of
+	// destination: the Service range and its own source address, to which the backends
+	// answer. Packets to either are handed to it before anything else decides where they
+	// go, including the guard against the bubble sending non-cluster traffic back.
+	services *svc.Engine
 }
 
 // NewBridge creates and initializes a Bridge.
@@ -152,6 +159,19 @@ func (b *Bridge) writeBubble(frame *packet.EthernetFrame) error {
 		return err
 	}
 	return ep.Write(raw)
+}
+
+// SetServiceEngine attaches the Service engine (tap mode).
+func (b *Bridge) SetServiceEngine(e *svc.Engine) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.services = e
+}
+
+func (b *Bridge) serviceEngine() *svc.Engine {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.services
 }
 
 // SetOverlayHandler sets the handler for cross-host overlay packets.
@@ -305,6 +325,19 @@ func (b *Bridge) handleBroadcast(srcEP Endpoint, frame *packet.EthernetFrame, ra
 
 			// 2. Check if asking for Gateway IP, slirp host/DNS alias, or remote overlay pod
 			if b.gatewayMAC != nil {
+				// The Service engine's address answers for the engine, whoever asks: the
+				// bubble's kernel routes Service addresses through it, and backends on
+				// this node reply to it on-link.
+				if eng := b.serviceEngine(); eng != nil && b.gatewayMode == "tap" && arpPkt.TargetIP.Equal(eng.SNATAddr()) {
+					replyFrame, err := packet.NewARPReply(arpPkt, b.gatewayMAC, arpPkt.TargetIP)
+					if err == nil {
+						replyBytes, err := replyFrame.Marshal()
+						if err == nil && srcEP != nil {
+							return srcEP.Write(replyBytes)
+						}
+					}
+				}
+
 				// Gateway ARP
 				if b.gatewayIP != nil && arpPkt.TargetIP.Equal(b.gatewayIP) && srcEP != b.BubbleEndpoint() {
 					arpMAC := b.gatewayMAC
@@ -435,6 +468,13 @@ func (b *Bridge) handleUnicast(srcEP Endpoint, frame *packet.EthernetFrame, raw 
 }
 
 func (b *Bridge) routeTapTraffic(srcEP Endpoint, frame *packet.EthernetFrame, dstIP net.IP) error {
+	if eng := b.serviceEngine(); eng != nil {
+		var dst [4]byte
+		copy(dst[:], dstIP.To4())
+		if eng.Owns(dst) {
+			return b.serviceTraffic(eng, frame.Payload)
+		}
+	}
 	b.mu.RLock()
 	local := b.ipToEp[dstIP.String()]
 	overlay := b.overlayHandler
@@ -468,6 +508,50 @@ func (b *Bridge) routeTapTraffic(srcEP Endpoint, frame *packet.EthernetFrame, ds
 	if srcEP == b.BubbleEndpoint() {
 		return fmt.Errorf("bubble emitted non-overlay destination %s", dstIP)
 	}
+	return b.writeBubble(frame)
+}
+
+// serviceTraffic hands a packet to the Service engine and sends what comes out: the
+// translated packet towards its backend (or back to the client), or an ICMP refusal to
+// the client. Everything the engine emits is routed here by where its destination is,
+// never through the checks for packets that come from the bubble or from pods, which it
+// is not.
+func (b *Bridge) serviceTraffic(eng *svc.Engine, ipPacket []byte) error {
+	res := eng.Process(ipPacket)
+	if res.Verdict == svc.Drop {
+		return nil
+	}
+	return b.routeEngineOutput(res.Packet, net.IP(res.Dst[:]))
+}
+
+func (b *Bridge) routeEngineOutput(ipPacket []byte, dstIP net.IP) error {
+	frame := &packet.EthernetFrame{SrcMAC: b.gatewayMAC, EtherType: packet.EtherTypeIPv4, Payload: ipPacket}
+	b.mu.RLock()
+	local := b.ipToEp[dstIP.String()]
+	overlay := b.overlayHandler
+	b.mu.RUnlock()
+	switch {
+	case local != nil:
+		frame.DstMAC = local.MAC()
+		raw, err := frame.Marshal()
+		if err != nil {
+			return err
+		}
+		return local.Write(raw)
+	case b.gatewayIP != nil && dstIP.Equal(b.gatewayIP):
+		// The client is the bubble itself.
+		return b.writeBubble(frame)
+	case b.knownRemote(dstIP):
+		if overlay == nil {
+			return fmt.Errorf("overlay unavailable for %s", dstIP)
+		}
+		return overlay(frame, dstIP)
+	case b.clusterCIDR != nil && b.clusterCIDR.Contains(dstIP):
+		// A pod address that is not here and not routed: nowhere to go.
+		return nil
+	}
+	// Not a pod: a Service backend outside the pod network (the API server, say), for
+	// the bubble's kernel to route.
 	return b.writeBubble(frame)
 }
 
@@ -549,6 +633,10 @@ func (b *Bridge) InjectFrame(frame *packet.EthernetFrame) error {
 		if b.gatewayIP != nil && ipPkt.Header.DstIP.Equal(b.gatewayIP) {
 			frame.SrcMAC = b.gatewayMAC
 			return b.writeBubble(frame)
+		}
+		// A backend on another node answering the Service engine's address.
+		if eng := b.serviceEngine(); eng != nil && eng.SNATAddr().Equal(ipPkt.Header.DstIP) {
+			return b.serviceTraffic(eng, frame.Payload)
 		}
 		if b.nodeCIDR == nil || !b.nodeCIDR.Contains(ipPkt.Header.DstIP) {
 			return nil
