@@ -68,7 +68,7 @@ The profile requires these checks: cases 01–19, four individual daemon failure
 | 18 | T05, T06, T15, T16 (refused forms, updates, environment and files, continuity) |
 | 19 | T20 (ten create/restart/delete cycles with probes, hooks, logs and exec, and what they leave behind) |
 
-T01–T03, T19 and the unit and race parts of the other groups are unit and Linux tests (`make test` in `skifflet/` and `plaid/`; the Linux-only ones run in the builder container) and shell tests (`test/skiff-config-test.sh`, `test/skiff-supervision-test.sh`), run by `regression.sh` and the module test targets.
+T01–T03, T19 and the unit and race parts of the other groups are unit and Linux tests (`make test` in `skifflet/` and `plaid/`; the Linux-only ones run in the builder container) and shell tests (`test/skiff-config-test.sh`, `test/skiff-supervision-test.sh`, `test/skiff-bubble-test.sh`), run by `regression.sh` and the module test targets.
 
 Supported probes are HTTP, TCP and exec (startup, readiness and liveness, with named ports); `grpc` probes, host namespaces, ephemeral containers, restartable init containers and the other forms in the support table of [skifflet/README.md](../skifflet/README.md) are refused at creation, and the refusal is tested with a healthy sentinel pod running beside them. Standalone Plaid checks NET-1 and NET-2 are outside this profile.
 

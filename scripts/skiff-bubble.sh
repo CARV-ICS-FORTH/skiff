@@ -3,6 +3,13 @@ set -euo pipefail
 
 BUBBLE_ID=${1:-1}
 
+# The API and kubelet are published on the host address through socat relays; without
+# them the other nodes cannot reach this one, so refuse to start.
+if ! command -v socat >/dev/null 2>&1; then
+    echo "Error: socat is required on the allocated nodes and was not found in PATH." >&2
+    exit 1
+fi
+
 NAME="bubble$BUBBLE_ID"
 
 # The cluster configuration arrives in the environment from skiff.slurm; checking it
@@ -35,11 +42,6 @@ SLIRP_SOCK="$HOME/.skiff/slirp-${NAME}.sock"
 SKIFF_ROLE=${SKIFF_ROLE:-controller}
 
 start_socat_relays() {
-    if ! command -v socat >/dev/null 2>&1; then
-        echo "socat command not found; skipping host-ip relay setup"
-        return 0
-    fi
-
     # Only controller relays K3s 6443
     if [ "$SKIFF_ROLE" = "controller" ]; then
         socat TCP4-LISTEN:6443,bind="${HOST_IP_DETECTED}",reuseaddr,fork TCP4:127.0.0.1:6443 &

@@ -8,6 +8,7 @@ python3 test/e2e/images/fixture/app_test.py
 python3 test/e2e/lib/pty_client.py --self-test
 bash test/skiff-supervision-test.sh
 bash test/skiff-config-test.sh >/dev/null
+bash test/skiff-bubble-test.sh
 if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
     for suite in runtime-observer profile common; do
         bash "test/e2e/lib/${suite}-test.sh"
