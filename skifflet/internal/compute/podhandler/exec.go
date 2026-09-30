@@ -109,9 +109,15 @@ func (t *Target) runTerminal(cmd *exec.Cmd, s ExecStreams) (int, error) {
 	}
 	tty.Close() // the command holds the only slave descriptors now
 
+	// The terminal is closed only after the goroutine that resizes it has ended.
 	stop := make(chan struct{})
-	defer close(stop)
+	resizing := make(chan struct{})
+	defer func() {
+		close(stop)
+		<-resizing
+	}()
 	go func() {
+		defer close(resizing)
 		for {
 			select {
 			case size, ok := <-s.Resize:
