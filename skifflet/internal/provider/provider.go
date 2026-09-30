@@ -86,6 +86,10 @@ type VirtualK8S struct {
 
 	// assigned lists the pods the API server has assigned to this node.
 	assigned atomic.Pointer[corelisters.PodLister]
+
+	// What updates could not apply (see update.go).
+	lastUnapplied   sync.Map // client.ObjectKey -> the changes last reported
+	suppressSuccess sync.Map // client.ObjectKey -> the next success event is to be dropped
 }
 
 // NewVirtualK8S reads a kubeconfig file and sets up a client to interact
@@ -233,10 +237,16 @@ func (v *VirtualK8S) updatePodLocked(ctx context.Context, pod *corev1.Pod) (func
 	}
 
 	if pl := PodHandler.GlobalRegistry.Get(pod.GetUID()); pl != nil {
+		changes := PodHandler.UnappliedUpdates(pl.GetPod(), pod)
 		pl.UpdateFromAPI(pod)
 		v.stateMu.Lock()
 		v.pods.Store(podKey, pl.GetPod())
 		v.stateMu.Unlock()
+		if len(changes) > 0 {
+			v.reportUnapplied(pl, podKey, changes)
+		} else {
+			v.lastUnapplied.Delete(podKey)
+		}
 		return nil, nil
 	}
 
@@ -310,6 +320,7 @@ func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) (func
 
 	v.activeUIDs.Delete(podKey)
 	v.pods.Delete(podKey)
+	v.clearUnapplied(podKey)
 	v.stateMu.Unlock()
 
 	if pl != nil {

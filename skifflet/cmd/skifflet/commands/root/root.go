@@ -270,7 +270,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 		pc, err := node.NewPodController(node.PodControllerConfig{
 			PodClient:                            compute.K8SClientset.CoreV1(),
 			PodInformer:                          podInformer,
-			EventRecorder:                        eb.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "skifflet-controller"}),
+			EventRecorder:                        provider.NewUpdateEventFilter(eb.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "skifflet-controller"}), virtualk8s),
 			Provider:                             virtualk8s,
 			ConfigMapInformer:                    configMapInformer,
 			SecretInformer:                       secretInformer,
