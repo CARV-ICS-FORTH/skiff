@@ -67,7 +67,7 @@ e2e_subcase_run T18-node-networks node_networks
 startup_report() {
     local node log
     for node in "$NODE_A" "$NODE_B"; do
-        log=$(runtime_bubble_exec "$node" "grep -A6 'Effective network configuration' /var/log/entrypoint.log | head -7")
+        log=$(runtime_bubble_exec "$node" "grep -A6 'Effective network configuration' /var/log/entrypoint.log | sed -n 1,7p")
         e2e_assert_contains "report of $node: pod network" "$log" "Pod network:      ${SKIFF_POD_CIDR}"
         e2e_assert_contains "report of $node: Service network" "$log" "Service network:  ${SKIFF_SERVICE_CIDR} (API ${SKIFF_API_SERVICE_IP}, DNS ${SKIFF_CLUSTER_DNS})"
         e2e_assert_contains "report of $node: domain" "$log" "Cluster domain:   ${SKIFF_CLUSTER_DOMAIN}"
@@ -175,14 +175,14 @@ scratch_files() {
     local node ip uid pod_dir seen=0 samples=0 left state out="${SKIFF_TMP_DIR}/e2e32-conversion"
     for node in "$NODE_A" "$NODE_B"; do
         e2e_assert_eq "Skifflet's Apptainer scratch directory on $node" \
-            "$(runtime_bubble_exec "$node" "tr '\0' '\n' < /proc/\$(pgrep -x skifflet | head -1)/environ | grep '^APPTAINER_TMPDIR='")" "APPTAINER_TMPDIR=${SKIFF_APPTAINER_TMP}"
+            "$(runtime_bubble_exec "$node" "tr '\0' '\n' < /proc/\$(pgrep -o -x skifflet)/environ | grep '^APPTAINER_TMPDIR='")" "APPTAINER_TMPDIR=${SKIFF_APPTAINER_TMP}"
         e2e_assert_eq "the scratch directory exists on $node" "$(runtime_ssh_node "$(runtime_node_ip "$node")" "test -d '${SKIFF_APPTAINER_TMP}' && echo yes || echo no")" yes
     done
     ip=$(runtime_node_ip "$NODE_A")
     # Convert the fixture's image archive with Skifflet's environment, in the background.
     runtime_bubble_exec "$NODE_A" "rm -f '${out}.sif' '${out}.log'
 nohup setsid bash -c 'set -a
-while IFS= read -r -d \"\" entry; do export \"\$entry\"; done < /proc/\$(pgrep -x skifflet | head -1)/environ
+while IFS= read -r -d \"\" entry; do export \"\$entry\"; done < /proc/\$(pgrep -o -x skifflet)/environ
 apptainer build --force ${out}.sif docker-archive:///var/lib/skiff/images/skiff-e2e-fixture.tar' > '${out}.log' 2>&1 < /dev/null &
 echo started" > /dev/null
     while [ $samples -lt 600 ]; do

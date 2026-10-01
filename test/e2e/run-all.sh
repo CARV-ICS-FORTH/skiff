@@ -8,7 +8,6 @@
 #   --job-id SLURM_JOB_ID   Use an already-running Skiff job (skip E2E-01 startup)
 #   --artifact-dir DIR       Path to candidate binaries/manifest (sets SKIFF_ARTIFACT_DIR)
 #   --registry HOST:PORT     Local registry for fixture images (sets FIXTURE_REGISTRY)
-#   --recovery-policy POLICY Recovery policy for E2E-09 (fail-and-replace|adopt)
 #   --daemon-class CLASS    Target one daemon class with --case 09
 #   --case N                 Run only case N (1–10; for development)
 #   --no-teardown            Skip cluster cancellation at the end
@@ -29,14 +28,12 @@ NETWORK_DIR="$E2E_DIR/network"
 ONLY_CASE=""
 export NO_TEARDOWN=0
 NETWORK_ONLY=0
-export SKIFF_RECOVERY_POLICY="${SKIFF_RECOVERY_POLICY:-fail-the-job}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --job-id)          export SKIFF_JOB_ID="$2"; shift 2 ;;
         --artifact-dir)    export SKIFF_ARTIFACT_DIR="$2"; shift 2 ;;
         --registry)        export FIXTURE_REGISTRY="$2"; shift 2 ;;
-        --recovery-policy) export SKIFF_RECOVERY_POLICY="$2"; shift 2 ;;
         --daemon-class)   export E2E_DAEMON_CLASS="$2"; shift 2 ;;
         --case)            ONLY_CASE="$2"; shift 2 ;;
         --no-teardown)     export NO_TEARDOWN=1; shift ;;
@@ -251,7 +248,7 @@ matrix_ready() {
     local count
     count=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c '^True$' || true)
     [ "$count" -ge 2 ] || return 1
-    e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -q '^True$'
+    e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | e2e_grep_q '^True$'
 }
 
 run_daemon_failure_matrix() {

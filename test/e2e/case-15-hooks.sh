@@ -57,11 +57,11 @@ EOF
 
 recorded() { runtime_bubble_exec "$NODE_A" "cat ${CTL_ROOT}/$1/events 2>/dev/null || true"; }
 # first_ms POD PATTERN: when the first recorded line matching PATTERN happened (empty if none)
-first_ms() { recorded "$1" | grep -E -- "$2" | head -1 | awk '{print $1}' || true; }
+first_ms() { recorded "$1" | grep -E -- "$2" | sed -n 1p | awk '{print $1}' || true; }
 before() { [ -n "$1" ] && [ -n "$2" ] && [ "$1" -lt "$2" ]; }
 field() { e2e_kubectl get pod "$1" -n "$NS" -o "jsonpath={.status.containerStatuses[0].$2}"; }
 reasons() { e2e_kubectl get events -n "$NS" --field-selector "involvedObject.name=$1" -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}'; }
-has_reason() { reasons "$1" | grep -qx "$2"; }
+has_reason() { reasons "$1" | e2e_grep_q -x "$2"; }
 
 # ---------------------------------------------------------------------------
 # T10-exec-hooks: exec PostStart and PreStop run in the intended attempt. The

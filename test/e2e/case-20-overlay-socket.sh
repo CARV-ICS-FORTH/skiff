@@ -37,7 +37,7 @@ owner() {
         e2e_assert_contains "the listener is bound to the node address" "$line" " ${ip}:8472 "
         inode=$(printf '%s' "$line" | sed -n 's/.*ino:\([0-9]*\).*/\1/p')
         e2e_assert_nonempty "socket inode of $node's overlay listener" "$inode"
-        held=$(runtime_bubble_exec "$node" "for f in /proc/\$(pgrep -x plaidd | head -1)/fd/*; do readlink \"\$f\"; done | grep -Fx 'socket:[${inode}]' || true")
+        held=$(runtime_bubble_exec "$node" "for f in /proc/\$(pgrep -o -x plaidd)/fd/*; do readlink \"\$f\"; done | grep -Fx 'socket:[${inode}]' || true")
         e2e_assert_eq "plaidd on $node holds the host's overlay socket" "$held" "socket:[${inode}]"
     done
 }

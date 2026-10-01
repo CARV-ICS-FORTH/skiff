@@ -26,6 +26,8 @@ pass() { echo "[PASS] $1"; }
 fail() { echo "[FAIL] $1" >&2; exit 1; }
 info() { echo ">>> $1"; }
 peer() { ssh -i "${E2E_SSH_KEY:-/home/vagrant/.ssh/id_ed25519}" -o StrictHostKeyChecking=no -o ConnectTimeout=10 "vagrant@${PEER_IP}" "$@"; }
+# grep -q for the end of a pipeline under pipefail: an early exit would kill the writer with SIGPIPE.
+grep_q() { local input; input=$(cat); grep -q "$@" <<< "$input"; }
 ip_of() { apptainer exec "instance://$1" ip -4 addr show eth0 | awk '/inet / {print $2}' | cut -d/ -f1; }
 leases() { ls /run/plaid/ipam/plaid-ipam 2>/dev/null | grep -c -E '^10\.' || true; }
 endpoints() { plaidctl status | grep -c -i 'endpoint' || true; }
@@ -74,7 +76,7 @@ pass "TCP data from u2 to u1"
 leases_with_two=$(leases)
 plaidtainer instance stop u2 > /dev/null
 [ "$(leases)" -lt "$leases_with_two" ] || fail "stopping u2 did not release its address ($leases_with_two leases before, $(leases) after)"
-plaidctl status | grep -q "$U2_IP" && fail "the endpoint of u2 ($U2_IP) is still registered after it stopped"
+plaidctl status | grep_q "$U2_IP" && fail "the endpoint of u2 ($U2_IP) is still registered after it stopped"
 pass "stopping u2 released its address and endpoint"
 
 plaidtainer instance start --host-networking "$IMAGE" u_host > /dev/null
@@ -113,18 +115,18 @@ echo PLAID_HOST_ACCESS_OK > "$TEST_TMP/host_flag.txt"
 python3 -m http.server 9092 --bind 127.0.0.1 --directory "$TEST_TMP" > /dev/null 2>&1 &
 HOST_HTTP_PIDS+=($!)
 sleep 1
-apptainer exec instance://u1 wget -q -T 4 -O - "http://${HOST_ALIAS}:9092/host_flag.txt" 2>/dev/null | grep -q PLAID_HOST_ACCESS_OK || fail "u1 cannot reach the host's 127.0.0.1 through ${HOST_ALIAS}"
+apptainer exec instance://u1 wget -q -T 4 -O - "http://${HOST_ALIAS}:9092/host_flag.txt" 2>/dev/null | grep_q PLAID_HOST_ACCESS_OK || fail "u1 cannot reach the host's 127.0.0.1 through ${HOST_ALIAS}"
 pass "u1 reaches a service on the host's 127.0.0.1 through ${HOST_ALIAS}"
 
 # ---------------------------------------------------------------------------
 info "=== 4. Outbound connectivity through slirp's NAT ==="
-HOST_LAN=$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')
+HOST_LAN=$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") a=$(i+1)} END {print a}')
 [ -n "$HOST_LAN" ] || fail "no network address for this host"
 echo PLAID_OUTBOUND_OK > "$TEST_TMP/out_flag.txt"
 python3 -m http.server 9093 --bind 0.0.0.0 --directory "$TEST_TMP" > /dev/null 2>&1 &
 HOST_HTTP_PIDS+=($!)
 sleep 1
-apptainer exec instance://u1 wget -q -T 5 -O - "http://${HOST_LAN}:9093/out_flag.txt" 2>/dev/null | grep -q PLAID_OUTBOUND_OK || fail "u1 cannot reach ${HOST_LAN}:9093 from its own network"
+apptainer exec instance://u1 wget -q -T 5 -O - "http://${HOST_LAN}:9093/out_flag.txt" 2>/dev/null | grep_q PLAID_OUTBOUND_OK || fail "u1 cannot reach ${HOST_LAN}:9093 from its own network"
 pass "u1 reaches ${HOST_LAN}:9093 outside its network through slirp"
 
 # ---------------------------------------------------------------------------
@@ -145,7 +147,7 @@ grep -q PLAID_OVERLAY_TCP_OK "$TEST_TMP/overlay_rx.txt" || fail "no TCP data acr
 pass "TCP data across the overlay (UDP port ${VXLAN_PORT})"
 [ "$(plaidctl status | awk '/Routes Count/ {print $3}')" -ge 1 ] || fail "the daemon has no route to the other node's network"
 peer "plaidtainer instance stop u3 > /dev/null"
-peer "plaidctl status | grep -q '$U3_IP'" && fail "the endpoint of u3 is still registered on its node"
+peer "plaidctl status" | grep_q "$U3_IP" && fail "the endpoint of u3 is still registered on its node"
 pass "u3 stopped and its endpoint is gone"
 
 plaidtainer instance stop u1 > /dev/null

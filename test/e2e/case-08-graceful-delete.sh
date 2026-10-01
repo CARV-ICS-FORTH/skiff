@@ -57,7 +57,7 @@ sleep 1
 
 e2e_kubectl delete pod e2e08-term -n "$NS" --grace-period=20 --timeout=30s &
 
-e2e_wait_condition 10 "SIGTERM received in logs" "grep -q 'SIGTERM received' '$LOG_FILE' 2>/dev/null || (e2e_kubectl logs e2e08-term -n '$NS' 2>/dev/null | grep -q 'SIGTERM received')" || true
+e2e_wait_condition 10 "SIGTERM received in logs" "grep -q 'SIGTERM received' '$LOG_FILE' 2>/dev/null || (e2e_kubectl logs e2e08-term -n '$NS' 2>/dev/null | e2e_grep_q 'SIGTERM received')" || true
 e2e_wait_condition 15 "network work completed during termination grace" "grep -q 'network completion succeeded' '$LOG_FILE'"
 
 kill "$LOG_PID" 2>/dev/null || true

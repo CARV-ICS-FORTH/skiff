@@ -138,7 +138,7 @@ delayed_provisioning() {
     e2e_assert_eq "and the pod is Pending too, not failed" "$(e2e_kubectl get pod e2e25-late-pod -n "$NS" -o jsonpath='{.status.phase}')" Pending
     reason=$(e2e_kubectl get pod e2e25-late-pod -n "$NS" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}: {.status.containerStatuses[0].state.waiting.message}')
     e2e_assert_contains "its container is in ContainerCreating with the reason" "$reason" "ContainerCreating: MountVolume"
-    event_reasons e2e25-late-pod | grep -qx FailedMount || e2e_fail "no FailedMount event for the waiting pod"
+    event_reasons e2e25-late-pod | e2e_grep_q -x FailedMount || e2e_fail "no FailedMount event for the waiting pod"
     provisioner_replicas 1
     e2e_wait_pod_phase "$NS" e2e25-late-pod Running 120
     e2e_assert_eq "the claim is bound after all" "$(claim_phase e2e25-late)" Bound
@@ -161,7 +161,7 @@ create_failure() {
     runtime_ssh_node "$SHARED_HOME_HOST" "sudo chattr +i '$jobdir'"
     claim e2e25-refused
     pod e2e25-refused-pod "$NODE_A" e2e25-refused nodeName
-    failed_event() { event_reasons e2e25-refused | grep -qx ProvisioningFailed; }
+    failed_event() { event_reasons e2e25-refused | e2e_grep_q -x ProvisioningFailed; }
     e2e_wait_condition 240 "the provisioner reports the failure" failed_event
     e2e_assert_eq "the claim is still Pending" "$(claim_phase e2e25-refused)" Pending
     e2e_assert_eq "the pod waits" "$(e2e_kubectl get pod e2e25-refused-pod -n "$NS" -o jsonpath='{.status.phase}')" Pending
@@ -349,7 +349,7 @@ cleanup_retry() {
     runtime_ssh_node "$SHARED_HOME_HOST" "sudo chattr +i '$locked'"
     e2e_kubectl delete pod e2e25-stuck-pod -n "$NS" --timeout=60s > /dev/null
     e2e_kubectl delete pvc e2e25-stuck -n "$NS" --timeout=60s > /dev/null
-    failed_delete() { e2e_kubectl get events -A --field-selector "involvedObject.name=$pvname,reason=VolumeFailedDelete" -o name | grep -q .; }
+    failed_delete() { e2e_kubectl get events -A --field-selector "involvedObject.name=$pvname,reason=VolumeFailedDelete" -o name | e2e_grep_q .; }
     e2e_wait_condition 240 "the failed deletion is reported" failed_delete
     e2e_assert_eq "the volume is still there, Released" "$(e2e_kubectl get pv "$pvname" -o jsonpath='{.status.phase}')" Released
     host_has "$dir" || e2e_fail "the directory was removed although its deletion failed"

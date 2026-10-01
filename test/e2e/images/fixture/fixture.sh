@@ -216,11 +216,11 @@ check)
     # MY_POD_IP FieldRef
     MY_IP=$(hostname -i 2>/dev/null | awk '{print $1}')
     if [ -z "$MY_IP" ] || [ "$MY_IP" = "127.0.0.1" ] || [ "$MY_IP" != "${MY_POD_IP:-}" ]; then
-        IFACE_IP=$(ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | head -n1)
+        IFACE_IP=$(ip -4 addr show dev eth0 2>/dev/null | awk '/inet / {print $2}' | cut -d/ -f1 | sed -n 1p)
         if [ -n "$IFACE_IP" ]; then
             MY_IP="$IFACE_IP"
         else
-            FALLBACK_IP=$(ip -4 addr show 2>/dev/null | awk '/inet / && !/127.0.0.1/ {print $2}' | cut -d/ -f1 | head -n1)
+            FALLBACK_IP=$(ip -4 addr show 2>/dev/null | awk '/inet / && !/127.0.0.1/ {print $2}' | cut -d/ -f1 | sed -n 1p)
             [ -n "$FALLBACK_IP" ] && MY_IP="$FALLBACK_IP"
         fi
     fi

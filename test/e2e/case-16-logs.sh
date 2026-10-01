@@ -104,14 +104,14 @@ e2e_subcase_run T12-timestamps timestamps
 # ---------------------------------------------------------------------------
 since() {
     local stamped moment
-    stamped=$(logs e2e16-known --timestamps | grep 'seq=6 out' | head -1 | cut -d' ' -f1)
+    stamped=$(logs e2e16-known --timestamps | grep 'seq=6 out' | sed -n 1p | cut -d' ' -f1)
     e2e_assert_nonempty "timestamp of record 6" "$stamped"
     # kubectl sends whole seconds: the next whole second after record 6
     moment=$(date -u -d "${stamped%.*}Z + 1 second" +%Y-%m-%dT%H:%M:%SZ)
     local out
     out=$(logs e2e16-known --since-time="$moment")
     e2e_assert_contains "the records after it" "$out" "seq=8 out"
-    if printf '%s' "$out" | grep -q 'seq=5 out'; then e2e_fail "records before the time are in the output"; fi
+    if printf '%s' "$out" | e2e_grep_q 'seq=5 out'; then e2e_fail "records before the time are in the output"; fi
     e2e_assert_eq "a long enough duration is everything" "$(logs e2e16-known --since=1h)" "$ALL"
     sleep 3
     e2e_assert_eq "a short duration, long after the end, is nothing" "$(logs e2e16-known --since=2s)" ""
@@ -184,9 +184,9 @@ attempts() {
     current=$(logs e2e16-restart)
     previous=$(logs e2e16-restart --previous)
     e2e_assert_contains "current logs are the second attempt's" "$current" "attempt=2 seq=1 out"
-    if printf '%s' "$current" | grep -q 'attempt=1'; then e2e_fail "current logs contain the first attempt"; fi
+    if printf '%s' "$current" | e2e_grep_q 'attempt=1'; then e2e_fail "current logs contain the first attempt"; fi
     e2e_assert_contains "previous logs are the first attempt's" "$previous" "attempt=1 seq=3 out"
-    if printf '%s' "$previous" | grep -q 'attempt=2'; then e2e_fail "previous logs contain the second attempt"; fi
+    if printf '%s' "$previous" | e2e_grep_q 'attempt=2'; then e2e_fail "previous logs contain the second attempt"; fi
 }
 e2e_subcase_run T13-attempts attempts
 
@@ -206,9 +206,9 @@ init_attempts() {
     current=$(logs e2e16-init -c setup)
     previous=$(logs e2e16-init -c setup --previous)
     e2e_assert_contains "current is the retry" "$current" "second attempt"
-    if printf '%s' "$current" | grep -q 'first attempt'; then e2e_fail "current init logs contain the first attempt"; fi
+    if printf '%s' "$current" | e2e_grep_q 'first attempt'; then e2e_fail "current init logs contain the first attempt"; fi
     e2e_assert_contains "previous is the first attempt" "$previous" "first attempt"
-    if printf '%s' "$previous" | grep -q 'second attempt'; then e2e_fail "previous init logs contain the second attempt"; fi
+    if printf '%s' "$previous" | e2e_grep_q 'second attempt'; then e2e_fail "previous init logs contain the second attempt"; fi
 }
 e2e_subcase_run T13-init-attempts init_attempts
 
@@ -223,7 +223,7 @@ follow_tail() {
     sleep 4
     local out
     out=$(timeout 6 kubectl --kubeconfig "${KUBECONFIG:-$HOME/.skiff/kubeconfig}" logs -f --tail=0 e2e16-live -n "$NS" 2>&1 || true)
-    if printf '%s' "$out" | grep -q 'seq=1 out'; then e2e_fail "tail 0 with follow replayed the past: $out"; fi
+    if printf '%s' "$out" | e2e_grep_q 'seq=1 out'; then e2e_fail "tail 0 with follow replayed the past: $out"; fi
     e2e_assert_contains "new records arrive" "$out" "out"
 }
 e2e_subcase_run T12-follow-tail follow_tail

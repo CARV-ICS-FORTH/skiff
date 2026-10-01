@@ -175,7 +175,7 @@ unsupported_updates() {
     e2e_assert_ne "the pod is still not declared failed" "$(field e2e18-sentinel .status.reason)" ProviderFailed
 }
 has_reason() { [ "$(count_reason e2e18-sentinel "$1")" -ge 1 ]; }
-has_message() { e2e_kubectl get events -n "$NS" --field-selector involvedObject.name=e2e18-sentinel,reason=UpdateNotApplied -o jsonpath='{.items[*].message}' | grep -q -- "$1"; }
+has_message() { e2e_kubectl get events -n "$NS" --field-selector involvedObject.name=e2e18-sentinel,reason=UpdateNotApplied -o jsonpath='{.items[*].message}' | e2e_grep_q -- "$1"; }
 e2e_subcase_run T06-unsupported-updates unsupported_updates
 
 # ---------------------------------------------------------------------------

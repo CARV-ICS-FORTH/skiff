@@ -8,6 +8,17 @@ cd "$repo_dir"
 for script in scripts/*.sh scripts/skiff.slurm images/skiff-bubble/entrypoint.sh test/*.sh test/e2e/*.sh test/e2e/lib/*.sh test/e2e/network/*.sh; do
     bash -n "$script"
 done
+# No pipeline in a pipefail script may end in a reader that stops early (it kills its writer
+# with SIGPIPE), and the guard itself must see one when it is planted.
+bash test/pipefail-guard.sh
+planted=$(mktemp)
+printf 'set -o pipefail\nproducer | grep -q pattern\n' > "$planted" # pipefail-ok: the planted line
+if bash test/pipefail-guard.sh "$planted" 2>/dev/null; then
+    rm -f "$planted"
+    echo "pipefail-guard did not report a planted grep -q" >&2
+    exit 1
+fi
+rm -f "$planted"
 python3 test/e2e/lib/candidate.py --self-test
 python3 test/e2e/images/fixture/app_test.py
 python3 test/e2e/lib/pty_client.py --self-test

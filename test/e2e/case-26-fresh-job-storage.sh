@@ -33,7 +33,7 @@ all_released() {
 cluster_ready() {
     local n
     n=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c '^True$' || true)
-    [ "$n" -ge 2 ] && e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -q '^True$'
+    [ "$n" -ge 2 ] && e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | e2e_grep_q '^True$'
 }
 host_path() { echo "${HOME}/.skiff${1#/root/.skiff}"; }
 use_claim() { # use_claim POD: a claim of the shared name, and a pod that has it

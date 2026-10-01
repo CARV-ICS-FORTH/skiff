@@ -16,7 +16,7 @@ fail() { echo "storage-manifest-test: $*" >&2; exit 1; }
 expr=$(grep -o 'sed "s|@VOLUMES_BASE@|[^"]*|g"' "$entrypoint") || fail "the entrypoint does not substitute the placeholder"
 SKIFF_VOLUMES_BASE="/root/.skiff/volumes/4711-0123abcd"
 substituted=$(eval "$expr" < "$manifest")
-echo "$substituted" | grep -q '@' && fail "a placeholder is left: $(echo "$substituted" | grep '@')"
+[[ "$substituted" != *@* ]] || fail "a placeholder is left: $(echo "$substituted" | grep '@')"
 
 python3 - "$substituted" <<'PY'
 import json, re, sys

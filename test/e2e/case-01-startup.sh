@@ -61,7 +61,7 @@ check_nodes_ready() {
 
 TARGET_JOB="\${SKIFF_JOB_ID:-${SKIFF_JOB_ID:-}}"
 if [ -z "\$TARGET_JOB" ]; then
-    TARGET_JOB=\$(squeue -u \$(whoami) -h -o "%i" | head -n1 || true)
+    TARGET_JOB=\$(squeue -u \$(whoami) -h -o "%i" | sed -n 1p || true)
 fi
 
 if [ "\${NO_TEARDOWN:-0}" != "1" ]; then

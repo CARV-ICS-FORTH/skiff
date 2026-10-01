@@ -7,7 +7,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 repo_dir=$(cd "$script_dir/.." && pwd)
 test_dir=$(mktemp -d)
-trap 'kill "$(cat "$test_dir"/fake/pid 2>/dev/null)" 2>/dev/null || true; rm -rf "$test_dir"' EXIT
+trap 'kill "$(cat "$test_dir"/fake/pid 2>/dev/null)" "$(cat "$test_dir"/fake/inst-pid 2>/dev/null)" 2>/dev/null || true; rm -rf "$test_dir"' EXIT
 
 LOG=""
 fail() { echo "skiff-bubble-test: $*" >&2; [ -z "$LOG" ] || sed 's/^/  | /' "$LOG" >&2; exit 1; }
@@ -36,7 +36,21 @@ case "$*" in
             *) exec sleep 300 ;;
         esac ;;
     "instance run"*) echo "$*" > "$FAKE_DIR/instance-run"; exit 0 ;;
-    "instance list"*) [ -e "$FAKE_DIR/instance-gone" ] || printf 'INSTANCE NAME PID\nbubble1 4242\n' ;;
+    "instance list"*)
+        # The instance is one of many on the node (the user's others: 400 rows after it, more
+        # than a pipe holds, so a reader that stops at the first match makes this die of
+        # SIGPIPE); its PID is a real process the test controls.
+        [ -e "$FAKE_DIR/instance-gone" ] && exit 0
+        if [ -e "$FAKE_DIR/list-flap" ]; then rm -f "$FAKE_DIR/list-flap"; exit 0; fi
+        if [ -e "$FAKE_DIR/list-fails" ]; then echo "FATAL: cannot read the instance directory" >&2; exit 1; fi
+        printf 'INSTANCE NAME PID IP IMAGE\nbubble1 %s /x/skiff-bubble.sif\n' "$(cat "$FAKE_DIR/inst-pid")"
+        for n in $(seq 1 400); do printf 'other%s %s /home/user/.apptainer/some/long/path/to/an/image/that/is/not/the/bubble.sif\n' "$n" "$((100000 + n))"; done ;;
+    *pgrep*)
+        # Is the entrypoint of the bubble running? pgrep says 1 for "no match".
+        [ -e "$FAKE_DIR/entrypoint-gone" ] && exit 1
+        if [ -e "$FAKE_DIR/entrypoint-flap" ]; then rm -f "$FAKE_DIR/entrypoint-flap"; exit 1; fi
+        [ -e "$FAKE_DIR/exec-fails" ] && exit 255
+        exit 0 ;;
     "instance stop"*) echo stop >> "$FAKE_DIR/instance-stop" ;;
 esac
 exit 0
@@ -80,7 +94,13 @@ guest="$SKIFF_OUTER_ADDRESS"
 run_bubble() {
     local role="$1"; shift
     export FAKE_DIR="$test_dir/fake"
+    kill "$(cat "$FAKE_DIR/inst-pid" 2>/dev/null)" 2>/dev/null || true
     rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR"
+    rm -f "$HOME"/.skiff/job-results/*.cause
+    # The bubble's instance: a process that lives until the test ends it.
+    sleep 600 > /dev/null 2>&1 < /dev/null &
+    echo $! > "$FAKE_DIR/inst-pid"
+    disown
     export FAKE_SLIRP_DIR="$FAKE_DIR"
     LOG="$test_dir/bubble.log"
     env SKIFF_ROLE="$role" "$@" bash "$repo_dir/scripts/skiff.sh" bubble 1 > "$LOG" 2>&1 &
@@ -190,11 +210,51 @@ log_dir="$HOME/.apptainer/instances/logs/$(hostname)/$(id -un)"
 mkdir -p "$log_dir"
 printf 'earlier line\nFATAL: k3s server (PID 99) exited unexpectedly!\n' > "$log_dir/bubble1.out"
 run_bubble controller FAKE_HELPER=ok
-touch "$FAKE_DIR/instance-gone"
+sleep 3
+kill -0 "$BUBBLE_PID" 2>/dev/null || fail "the bubble stopped while its instance was running among 400 others"
+touch "$FAKE_DIR/instance-gone"; kill "$(cat "$FAKE_DIR/inst-pid")"
 wait_exit
 [ "$EXIT_RC" -eq 1 ] || fail "an instance that ended: exit $EXIT_RC, expected 1"
 grep -q "FATAL: k3s server (PID 99) exited unexpectedly" "$LOG" || fail "the job output does not carry the bubble's own log"
+# The cause is recorded: the process, what was seen, and the bubble's own last FATAL line.
+cause="$HOME/.skiff/job-results/unknown.cause"
+[ -f "$cause" ] || fail "no cause was recorded when the instance ended"
+grep -q '^process:  Apptainer instance bubble1' "$cause" && grep -q '^observed: gone: not in the instance listing and its PID is not running' "$cause" \
+    && grep -q '^detail:   FATAL: k3s server (PID 99)' "$cause" || { cat "$cause" >&2; fail "the recorded cause does not say what ended"; }
+grep -q 'Shutdown cause:' "$LOG" || fail "the cause is not in the job output"
 rm -f "$log_dir/bubble1.out"
+
+# One bad sample is not a death. A listing that lacks the instance once, a listing that
+# fails for a while, a pgrep that misses once, an exec that fails: the instance and its
+# PID are alive, the bubble goes on, and the disagreement is logged.
+run_bubble controller FAKE_HELPER=ok
+touch "$FAKE_DIR/list-flap"; sleep 5
+kill -0 "$BUBBLE_PID" 2>/dev/null || fail "one listing without the instance ended the bubble"
+grep -q 'probes of Apptainer instance bubble1 disagree' "$LOG" || fail "the disagreeing probes were not logged"
+touch "$FAKE_DIR/list-fails"; sleep 9
+kill -0 "$BUBBLE_PID" 2>/dev/null || fail "a failing listing ended a bubble whose instance was running"
+rm -f "$FAKE_DIR/list-fails"
+touch "$FAKE_DIR/entrypoint-flap"; sleep 6
+kill -0 "$BUBBLE_PID" 2>/dev/null || fail "one miss of pgrep ended the bubble"
+grep -q 'no entrypoint.sh in instance bubble1; checking again' "$LOG" || fail "the first miss of the entrypoint was not logged"
+touch "$FAKE_DIR/exec-fails"; sleep 6
+kill -0 "$BUBBLE_PID" 2>/dev/null || fail "a failing apptainer exec ended the bubble"
+rm -f "$FAKE_DIR/exec-fails"
+[ ! -e "$HOME/.skiff/job-results/unknown.cause" ] || fail "a cause was recorded for something that was not a failure"
+# Persistent: the entrypoint really is gone (twice in a row), the bubble ends and says why.
+touch "$FAKE_DIR/entrypoint-gone"
+wait_exit
+[ "$EXIT_RC" -eq 1 ] || fail "a missing entrypoint: exit $EXIT_RC, expected 1"
+grep -q '^process:  bubble entrypoint (in instance bubble1)' "$HOME/.skiff/job-results/unknown.cause" || fail "the cause does not name the entrypoint"
+released
+
+# slirp4netns killed: the cause carries how it ended.
+run_bubble controller FAKE_HELPER=ok
+kill -KILL "$(cat "$FAKE_DIR/pid")"
+wait_exit
+[ "$EXIT_RC" -eq 1 ] || fail "slirp4netns killed: exit $EXIT_RC, expected 1"
+grep -q '^process:  slirp4netns' "$HOME/.skiff/job-results/unknown.cause" && grep -q 'exited with status 137 (signal KILL' "$HOME/.skiff/job-results/unknown.cause" \
+    || { cat "$HOME/.skiff/job-results/unknown.cause" >&2; fail "the cause does not say that slirp4netns was killed"; }
 
 # A scratch directory that cannot be created stops the bubble before anything starts,
 # with the reason; no slirp4netns, helper or instance was started.

@@ -26,7 +26,7 @@ for node in "${NODES[@]}"; do
 done
 OTHER[$NODE_A]=$NODE_B
 OTHER[$NODE_B]=$NODE_A
-API_HOST=$(sed -n 's|.*server: https://\([^:]*\):6443.*|\1|p' "${HOME}/.skiff/kubeconfig" | head -1)
+API_HOST=$(sed -n 's|.*server: https://\([^:]*\):6443.*|\1|p' "${HOME}/.skiff/kubeconfig" | sed -n 1p)
 CONTROLLER=""
 for node in "${NODES[@]}"; do [ "${IPS[$node]}" != "$API_HOST" ] || CONTROLLER=$node; done
 
@@ -259,10 +259,10 @@ e2e_subcase_run T25-drain drain
 # leaves the other node ports alone; when the holder is gone, B publishes it.
 # ---------------------------------------------------------------------------
 taken_event() {
-    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=taken,reason=NodePortBindFailed -o name | grep -q .
+    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=taken,reason=NodePortBindFailed -o name | e2e_grep_q .
 }
 published_event() {
-    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=taken,reason=NodePortPublished -o name | grep -q .
+    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=taken,reason=NodePortPublished -o name | e2e_grep_q .
 }
 bind_collision() {
     local port=31999
@@ -297,10 +297,10 @@ e2e_subcase_run T25-bind-collision bind_collision
 # published, each with an event; their cluster IPs work.
 # ---------------------------------------------------------------------------
 policy_event() {
-    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=local,reason=ExternalTrafficPolicyNotSupported -o name | grep -q .
+    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=local,reason=ExternalTrafficPolicyNotSupported -o name | e2e_grep_q .
 }
 lb_event() {
-    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=lb,reason=LoadBalancerNotPublished -o name | grep -q .
+    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=lb,reason=LoadBalancerNotPublished -o name | e2e_grep_q .
 }
 unsupported() {
     e2e_kubectl -n "$NS" apply -f - >/dev/null <<'YAML'
@@ -340,7 +340,7 @@ e2e_subcase_run T25-unsupported unsupported
 # make for a port nobody wants is removed; a forward of another shape is left alone.
 # ---------------------------------------------------------------------------
 forward_id() {  # forward_id NODE PORT: the ID of the forward of a host port, empty if none
-    forwards "$1" | awk -v want="${IPS[$1]}:$2->" 'index($2, want) == 1 {print $3}' | head -1
+    forwards "$1" | awk -v want="${IPS[$1]}:$2->" 'index($2, want) == 1 {print $3}' | sed -n 1p
 }
 reconcile() {
     local node=$NODE_B id
@@ -351,7 +351,7 @@ reconcile() {
     # Another shape (a loopback listener) and a stale forward of Plaid's shape.
     slirp_api "$node" '{"execute":"add_hostfwd","arguments":{"proto":"tcp","host_addr":"127.0.0.1","host_port":31777,"guest_addr":"10.0.3.100","guest_port":31777}}' >/dev/null
     local guest
-    guest=$(forwards "$node" | awk -v want="${IPS[$node]}:$(nodeport np http)->" 'index($2, want) == 1 {print $2}' | head -1 | sed 's/.*->\(.*\):.*/\1/')
+    guest=$(forwards "$node" | awk -v want="${IPS[$node]}:$(nodeport np http)->" 'index($2, want) == 1 {print $2}' | sed -n 1p | sed 's/.*->\(.*\):.*/\1/')
     slirp_api "$node" "{\"execute\":\"add_hostfwd\",\"arguments\":{\"proto\":\"tcp\",\"host_addr\":\"${IPS[$node]}\",\"host_port\":31778,\"guest_addr\":\"${guest:-10.0.3.100}\",\"guest_port\":31778}}" >/dev/null
     e2e_wait_condition 90 "the removed forward is made again" answers "$NODE_A" "$node" "$HTTP"
     stale_gone() { [ "$(published "$node" 31778)" = 0 ]; }
@@ -360,7 +360,7 @@ reconcile() {
     e2e_assert_contains "the kubelet's forward is left alone" "$(forwards "$node")" ":10250->"
     slirp_api "$node" "{\"execute\":\"remove_hostfwd\",\"arguments\":{\"id\":$(forward_id_loopback "$node")}}" >/dev/null
 }
-forward_id_loopback() { forwards "$1" | awk 'index($2, "127.0.0.1:31777->") == 1 {print $3}' | head -1; }
+forward_id_loopback() { forwards "$1" | awk 'index($2, "127.0.0.1:31777->") == 1 {print $3}' | sed -n 1p; }
 e2e_subcase_run T25-reconcile reconcile
 
 # ---------------------------------------------------------------------------

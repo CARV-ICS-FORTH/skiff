@@ -24,6 +24,16 @@ _E2E_CONFIG="${E2E_CONFIG_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
 source "$_E2E_CONFIG"
 skiff_config_validate || { echo "invalid cluster configuration for the tests" >&2; exit 1; }
 
+# e2e_grep_q GREP_ARGS...: `grep -q` for the end of a pipeline. Under pipefail an early
+# exit of grep -q makes the command that feeds it die of SIGPIPE (it still has output to
+# write) and the pipeline fails although the pattern was found: the input is read
+# completely first.
+e2e_grep_q() {
+    local input
+    input=$(cat)
+    grep -q "$@" <<< "$input"
+}
+
 # ---------------------------------------------------------------------------
 # Colours
 # ---------------------------------------------------------------------------
@@ -126,7 +136,7 @@ e2e_kubectl() {
 # there (the documented setup), inside the bubble otherwise.
 e2e_curl() {
     if ! command -v "${E2E_KUBECTL:-kubectl}" >/dev/null 2>&1 &&
-        command -v apptainer >/dev/null 2>&1 && apptainer instance list 2>/dev/null | grep -q "bubble1"; then
+        command -v apptainer >/dev/null 2>&1 && skiff_listed "bubble1" apptainer instance list; then
         apptainer exec --pwd / instance://bubble1 curl "$@"
     else
         curl "$@"

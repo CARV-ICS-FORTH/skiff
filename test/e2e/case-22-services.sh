@@ -23,7 +23,7 @@ for node in "${NODES[@]}"; do
     cidr=$(e2e_kubectl get node "$node" -o jsonpath='{.spec.podCIDR}')
     ENGINE[$node]="${cidr%.*}.2" # the .2 of the /24 node network: what backends see as the source
 done
-API_HOST=$(sed -n 's|.*server: https://\([^:]*\):6443.*|\1|p' "${HOME}/.skiff/kubeconfig" | head -1)
+API_HOST=$(sed -n 's|.*server: https://\([^:]*\):6443.*|\1|p' "${HOME}/.skiff/kubeconfig" | sed -n 1p)
 
 e2e_kubectl create namespace "$NS"
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --grace-period=2 --timeout=90s"
@@ -80,7 +80,7 @@ both_backends_listed() {
 }
 e2e_wait_condition 60 "both backends in the endpoints" both_backends_listed
 engine_has() {  # engine_has NODE PATTERN: the node's Service table has a line matching
-    runtime_plaidctl "$1" service list | grep -q "$2"
+    runtime_plaidctl "$1" service list | e2e_grep_q "$2"
 }
 e2e_wait_condition 30 "the engine of each node has the Service" engine_has "$NODE_A" "^${VIP}:80/tcp"
 e2e_wait_condition 30 "the engine of each node has the Service" engine_has "$NODE_B" "^${VIP}:80/tcp"
@@ -345,7 +345,7 @@ e2e_subcase_run T24-refusal refusal
 # Warning event says why; the other Services go on; fixing the Service serves it.
 # ---------------------------------------------------------------------------
 affinity_event() {
-    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=sticky,reason=SessionAffinityNotSupported -o name | grep -q .
+    e2e_kubectl -n "$NS" get events --field-selector involvedObject.name=sticky,reason=SessionAffinityNotSupported -o name | e2e_grep_q .
 }
 sticky_served() { [ "$(get c-a "http://${STICKY}:80/" 2>/dev/null | field port 2>/dev/null)" = 8080 ]; }
 unsupported() {

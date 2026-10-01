@@ -282,6 +282,35 @@ skiff_listed() {
     grep -q -- "$word" <<< "$out"
 }
 
+# skiff_describe_status STATUS: how a process that was waited for ended. A shell reports
+# death by a signal as 128 plus the signal number.
+skiff_describe_status() {
+    local status="$1" name
+    if [ "$status" -gt 128 ] && [ "$status" -lt 160 ]; then
+        name=$(kill -l $((status - 128)) 2>/dev/null || true)
+        echo "exited with status $status (signal ${name:-$((status - 128))} if it was killed)"
+    else
+        echo "exited with status $status"
+    fi
+}
+
+# skiff_record_cause PROCESS OBSERVED [DETAIL]: say why the job is ending, in the output
+# (stderr) and in $SKIFF_STATE_DIR/job-results/JOB.cause. The first failure is the cause
+# and is written first; what follows from it (the other bubbles ending as the job is
+# torn down) is appended under a marker, so the file always starts with what happened first.
+skiff_record_cause() {
+    local process="$1" observed="$2" detail="${3:-}" block dir file
+    block=$(printf 'time:     %s\nhost:     %s\nprocess:  %s\nobserved: %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(hostname)" "$process" "$observed")
+    [ -z "$detail" ] || block=$(printf '%s\ndetail:   %s' "$block" "$detail")
+    printf 'Shutdown cause:\n%s\n' "$(sed 's/^/  /' <<< "$block")" >&2
+    dir="$SKIFF_STATE_DIR/job-results"
+    file="$dir/${SLURM_JOB_ID:-unknown}.cause"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    if ! (set -C; printf '%s\n' "$block" > "$file") 2>/dev/null; then
+        printf '\nafter the first failure:\n%s\n' "$block" >> "$file" 2>/dev/null || true
+    fi
+}
+
 # skiff_config_export: make the resolved values available to what is started.
 skiff_config_export() {
     export SKIFF_POD_CIDR SKIFF_SERVICE_CIDR SKIFF_CLUSTER_DOMAIN SKIFF_CLUSTER_DNS \
@@ -363,6 +392,16 @@ bubble_show_log() {
         echo "--- the last lines of the log of bubble $NAME ($log):" >&2
         tail -n 8 "$log" >&2 || true
     fi
+}
+
+# The last line of the bubble's own log that says what ended (the entrypoint writes FATAL
+# lines, the daemons ERROR lines); empty when there is none.
+bubble_log_detail() {
+    local log="$HOME/.apptainer/instances/logs/$(hostname)/$(id -un)/$NAME.out" line=""
+    if [ -f "$log" ]; then
+        line=$(grep -E 'FATAL|ERROR' "$log" 2>/dev/null | tail -n 1 || true)
+    fi
+    printf '%s' "$line"
 }
 
 bubble_handle_term() {
@@ -452,10 +491,10 @@ skiff_bubble() {
     # Detect Host IP
     HOST_IP_DETECTED=""
     if [ -n "${CONTROLLER_IP:-}" ]; then
-        HOST_IP_DETECTED=$(ip route get "$CONTROLLER_IP" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}' || true)
+        HOST_IP_DETECTED=$(ip route get "$CONTROLLER_IP" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") a=$(i+1)} END {print a}' || true)
     fi
     if [ -z "${HOST_IP_DETECTED:-}" ]; then
-        HOST_IP_DETECTED=$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}' || true)
+        HOST_IP_DETECTED=$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") a=$(i+1)} END {print a}' || true)
     fi
     if [ -z "${HOST_IP_DETECTED:-}" ]; then
         HOST_IP_DETECTED=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
@@ -603,42 +642,95 @@ skiff_bubble() {
     # helper is not a daemon: it ends by itself once plaidd has its socket. Exiting cleanly
     # is success; failing (the port is taken, plaidd never asked, the handoff was refused)
     # is a failed startup.
+    #
+    # Ending the job is what a death costs, so a death is decided on evidence and not on
+    # one sample. The children of this script (slirp4netns, the relays, the helper) are
+    # known by their PIDs, and their exit status says how they ended. The bubble's instance
+    # is judged by two independent observations, the listing (read completely) and its
+    # recorded PID, both of which must say it is gone on two checks in a row; when they
+    # disagree (a listing that fails while the process lives), that is logged and is not a
+    # death. The entrypoint inside is judged by pgrep's own answer (no match), twice in a
+    # row; a failed or hung `apptainer exec` proves nothing. With the 2 s interval a real
+    # death is noticed within about three intervals.
+    local gone=0 missing=0 listed alive rc
     while true; do
         if [[ -n ${OVERLAY_HELPER_PID:-} ]] && ! kill -0 "$OVERLAY_HELPER_PID" 2>/dev/null; then
-            if wait "$OVERLAY_HELPER_PID"; then
+            rc=0
+            wait "$OVERLAY_HELPER_PID" || rc=$?
+            if [ "$rc" -eq 0 ]; then
                 OVERLAY_HELPER_PID=""
             else
                 echo "ERROR: the overlay socket helper (PID $OVERLAY_HELPER_PID) failed; plaidd did not get its overlay socket" >&2
+                skiff_record_cause "overlay socket helper (plaidctl overlay-socket)" "$(skiff_describe_status "$rc")" "plaidd did not get its overlay socket"
                 OVERLAY_HELPER_PID=""
                 EXIT_CODE=1
                 exit 1
             fi
         fi
         if ! kill -0 "$SLIRP_PID" 2>/dev/null; then
+            rc=0
+            wait "$SLIRP_PID" || rc=$?
             echo "ERROR: slirp4netns (PID $SLIRP_PID) terminated unexpectedly!" >&2
+            skiff_record_cause "slirp4netns (PID $SLIRP_PID)" "$(skiff_describe_status "$rc")"
+            SLIRP_PID=""
             EXIT_CODE=1
             exit 1
         fi
-        if ! skiff_listed "\b$NAME\b" apptainer instance list; then
-            echo "ERROR: Apptainer instance $NAME terminated unexpectedly!" >&2
-            bubble_show_log
-            EXIT_CODE=1
-            exit 1
+
+        listed=0
+        alive=0
+        if skiff_listed "\b$NAME\b" apptainer instance list; then listed=1; fi
+        if kill -0 "$PID" 2>/dev/null; then alive=1; fi
+        if [ "$listed" -eq 0 ] && [ "$alive" -eq 0 ]; then
+            gone=$((gone + 1))
+            if [ "$gone" -ge 2 ]; then
+                echo "ERROR: Apptainer instance $NAME terminated unexpectedly!" >&2
+                bubble_show_log
+                skiff_record_cause "Apptainer instance $NAME (PID $PID)" "gone: not in the instance listing and its PID is not running, on $gone checks in a row" "$(bubble_log_detail)"
+                EXIT_CODE=1
+                exit 1
+            fi
+            echo "note: Apptainer instance $NAME is not listed and its PID $PID is not running; checking again" >&2
+        else
+            if [ "$listed" -ne "$alive" ]; then
+                echo "note: the probes of Apptainer instance $NAME disagree (listed: $listed, PID $PID running: $alive); not treated as a failure" >&2
+            fi
+            gone=0
+            rc=0
+            timeout 10 apptainer exec --pwd / instance://"$NAME" pgrep -f 'entrypoint.sh' >/dev/null 2>&1 || rc=$?
+            if [ "$rc" -eq 0 ]; then
+                missing=0
+            elif [ "$rc" -eq 1 ]; then
+                missing=$((missing + 1))
+                if [ "$missing" -ge 2 ]; then
+                    echo "ERROR: Bubble entrypoint process terminated in instance $NAME!" >&2
+                    bubble_show_log
+                    skiff_record_cause "bubble entrypoint (in instance $NAME)" "not running: pgrep found no entrypoint.sh on $missing checks in a row" "$(bubble_log_detail)"
+                    apptainer instance stop "$NAME" 2>/dev/null || true
+                    EXIT_CODE=1
+                    exit 1
+                fi
+                echo "note: no entrypoint.sh in instance $NAME; checking again" >&2
+            else
+                echo "note: could not look for the entrypoint in instance $NAME (status $rc); not treated as a failure" >&2
+            fi
         fi
-        if ! apptainer exec --pwd / instance://"$NAME" pgrep -f 'entrypoint.sh' >/dev/null 2>&1; then
-            echo "ERROR: Bubble entrypoint process terminated in instance $NAME!" >&2
-            bubble_show_log
-            apptainer instance stop "$NAME" 2>/dev/null || true
-            EXIT_CODE=1
-            exit 1
-        fi
+
         if [[ -n ${SOCAT_PID_6443:-} ]] && ! kill -0 "$SOCAT_PID_6443" 2>/dev/null; then
+            rc=0
+            wait "$SOCAT_PID_6443" || rc=$?
             echo "ERROR: Socat relay 6443 (PID $SOCAT_PID_6443) terminated unexpectedly!" >&2
+            skiff_record_cause "socat relay 6443 (PID $SOCAT_PID_6443)" "$(skiff_describe_status "$rc")"
+            SOCAT_PID_6443=""
             EXIT_CODE=1
             exit 1
         fi
         if [[ -n ${SOCAT_PID_10250:-} ]] && ! kill -0 "$SOCAT_PID_10250" 2>/dev/null; then
+            rc=0
+            wait "$SOCAT_PID_10250" || rc=$?
             echo "ERROR: Socat relay 10250 (PID $SOCAT_PID_10250) terminated unexpectedly!" >&2
+            skiff_record_cause "socat relay 10250 (PID $SOCAT_PID_10250)" "$(skiff_describe_status "$rc")"
+            SOCAT_PID_10250=""
             EXIT_CODE=1
             exit 1
         fi

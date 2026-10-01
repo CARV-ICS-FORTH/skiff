@@ -6,7 +6,7 @@ mkdir -p /var/log
 exec > >(tee -a /var/log/entrypoint.log) 2>&1
 
 # Default values if not provided
-HOST_IP=${HOST_IP:-$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}' || echo "127.0.0.1")}
+HOST_IP=${HOST_IP:-$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") a=$(i+1)} END {print a}' || echo "127.0.0.1")}
 SKIFF_ROLE=${SKIFF_ROLE:-controller}
 PLAID_UPLINK=${PLAID_UPLINK:-tap0}
 : "${PLAID_UPLINK_ADDRESS:?outer slirp guest address is required}"
@@ -65,7 +65,10 @@ ip link set tap0 up
 
 # Add Host IP as secondary address to tap0
 ip addr add "${HOST_IP}/32" dev tap0 2>/dev/null || true
-if ! ip -4 addr show dev "$PLAID_UPLINK" | grep -Fq "$PLAID_UPLINK_ADDRESS/"; then
+# (A string test, not `ip | grep -q`: an early-exit reader makes the writer die of SIGPIPE
+# under pipefail.)
+UPLINK_ADDRESSES=$(ip -4 addr show dev "$PLAID_UPLINK" 2>/dev/null || true)
+if [[ "$UPLINK_ADDRESSES" != *"$PLAID_UPLINK_ADDRESS/"* ]]; then
     echo "ERROR: uplink $PLAID_UPLINK does not have $PLAID_UPLINK_ADDRESS" >&2
     exit 1
 fi
@@ -375,7 +378,7 @@ NETWORK_WAIT=0
 while true; do
     API_CODE="$(curl -ksS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' "https://${SKIFF_API_SERVICE_IP}/version" 2>/dev/null || true)"
     DNS_ANSWER="$(timeout 3 drill -Q "@${SKIFF_CLUSTER_DNS}" "kubernetes.default.svc.${SKIFF_CLUSTER_DOMAIN}" A 2>/dev/null | awk '{print $NF}' || true)"
-    if [ "$API_CODE" != "000" ] && [ -n "$API_CODE" ] && printf '%s\n' "$DNS_ANSWER" | grep -qx "$SKIFF_API_SERVICE_IP"; then
+    if [ "$API_CODE" != "000" ] && [ -n "$API_CODE" ] && [[ $'\n'"$DNS_ANSWER"$'\n' == *$'\n'"$SKIFF_API_SERVICE_IP"$'\n'* ]]; then
         echo "Kubernetes API Service and cluster DNS are ready"
         break
     fi
@@ -422,20 +425,32 @@ if [ "$#" -gt 0 ]; then
     exec "$@"
 fi
 
+# daemon_ended NAME PID: say which daemon ended and how (its exit status, which a shell
+# reports as 128 plus the signal number when it was killed); the host script shows the last
+# lines of this log in the job's output and records this line as the detail of the cause.
+daemon_ended() {
+    local name="$1" pid="$2" rc=0 signal=""
+    wait "$pid" || rc=$?
+    if [ "$rc" -gt 128 ] && [ "$rc" -lt 160 ]; then
+        signal=" (signal $(kill -l $((rc - 128)) 2>/dev/null || echo "$((rc - 128))") if it was killed)"
+    fi
+    echo "FATAL: $name (PID $pid) exited unexpectedly with status ${rc}${signal}!" >&2
+}
+
 echo "All daemons started successfully. Supervising cluster processes..."
 while true; do
     if [ "$SKIFF_ROLE" = "controller" ] && [ -n "$K3S_PID" ]; then
         if ! kill -0 "$K3S_PID" 2>/dev/null; then
-            echo "FATAL: k3s server (PID $K3S_PID) exited unexpectedly!" >&2
+            daemon_ended "k3s server" "$K3S_PID"
             exit 1
         fi
     fi
     if ! kill -0 "$SKIFFLET_PID" 2>/dev/null; then
-        echo "FATAL: skifflet (PID $SKIFFLET_PID) exited unexpectedly!" >&2
+        daemon_ended "skifflet" "$SKIFFLET_PID"
         exit 1
     fi
     if ! kill -0 "$PLAIDD_PID" 2>/dev/null; then
-        echo "FATAL: plaidd (PID $PLAIDD_PID) exited unexpectedly!" >&2
+        daemon_ended "plaidd" "$PLAIDD_PID"
         exit 1
     fi
     sleep 2

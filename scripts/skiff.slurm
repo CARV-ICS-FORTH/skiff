@@ -49,6 +49,8 @@ record_job_exit() {
     mv -f "$tmp" "$JOB_RESULT_DIR/${SLURM_JOB_ID:-unknown}.exit"
 }
 trap 'record_job_exit $?' EXIT
+# The cause of a shutdown (skiff_record_cause) belongs to this job only.
+rm -f "$JOB_RESULT_DIR/${SLURM_JOB_ID:-unknown}.cause"
 
 if [ "$NUM_NODES" -eq 0 ]; then
     echo "This script must be run via sbatch/srun." >&2
@@ -56,9 +58,9 @@ if [ "$NUM_NODES" -eq 0 ]; then
 fi
 
 CONTROLLER_NODE=${NODES[0]}
-CONTROLLER_IP=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash -c "getent ahostsv4 ${CONTROLLER_NODE}.local 2>/dev/null | awk '{print \$1; exit}'" || true)
+CONTROLLER_IP=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash -c "getent ahostsv4 ${CONTROLLER_NODE}.local 2>/dev/null | awk 'NR == 1 {print \$1}'" || true)
 if [ -z "$CONTROLLER_IP" ]; then
-    CONTROLLER_IP=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash -c "ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(\$i==\"src\") print \$(i+1); exit}'" || true)
+    CONTROLLER_IP=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash -c "ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(\$i==\"src\") a=\$(i+1)} END {print a}'" || true)
 fi
 
 echo "Cluster Setup:"
@@ -164,14 +166,17 @@ else
 fi
 
 BG_PIDS=()
+BG_NODES=()
 
 SLURM_EXIT_CODE=0
 handle_term() {
     SLURM_EXIT_CODE=143
+    skiff_record_cause "skiff.slurm (the job)" "received SIGTERM: the job was cancelled or reached its time limit"
     exit $SLURM_EXIT_CODE
 }
 handle_int() {
     SLURM_EXIT_CODE=130
+    skiff_record_cause "skiff.slurm (the job)" "received SIGINT"
     exit $SLURM_EXIT_CODE
 }
 
@@ -209,6 +214,9 @@ cleanup_slurm() {
     rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
     wait 2>/dev/null || true
     echo "Cluster cleanup complete."
+    if [ -f "$JOB_RESULT_DIR/${SLURM_JOB_ID:-unknown}.cause" ]; then
+        echo "The cause of the shutdown is recorded in $JOB_RESULT_DIR/${SLURM_JOB_ID:-unknown}.cause"
+    fi
     record_job_exit "${SLURM_EXIT_CODE:-1}"
     exit "${SLURM_EXIT_CODE:-0}"
 }
@@ -224,6 +232,11 @@ fail_exited_step() {
         status=$?
     fi
     echo "ERROR: A Skiff bubble process (PID $pid) terminated unexpectedly with exit code $status!" >&2
+    # The bubble's own script records what it saw first; this is the cause only when it
+    # could not (it was killed before it noticed anything).
+    local i node=""
+    for i in "${!BG_PIDS[@]}"; do [ "${BG_PIDS[$i]}" = "$pid" ] && node="${BG_NODES[$i]}"; done
+    skiff_record_cause "the job step of the bubble on ${node:-a node} (PID $pid)" "$(skiff_describe_status "$status")" "this is the first failure recorded; see the output above for the bubble's own account"
     SLURM_EXIT_CODE="$status"
     exit "$status"
 }
@@ -237,6 +250,7 @@ echo "Starting Controller on $CONTROLLER_NODE..."
     exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive "$SKIFF_SCRIPT" bubble 1
 ) &
 BG_PIDS+=($!)
+BG_NODES+=("$CONTROLLER_NODE")
 
 # Wait for Controller initialization (kubeconfig & server-ca)
 echo "Waiting for Controller initialization..."
@@ -268,6 +282,7 @@ for ((i=1; i<NUM_NODES; i++)); do
         exec srun --nodes=1 -w "$NODE" --exclusive "$SKIFF_SCRIPT" bubble "$BUBBLE_ID"
     ) &
     BG_PIDS+=($!)
+    BG_NODES+=("$NODE")
     
     ((BUBBLE_ID++))
 done

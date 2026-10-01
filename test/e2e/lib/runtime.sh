@@ -336,7 +336,7 @@ runtime_get_pid() {
     local node_ip
     node_ip=$(runtime_node_ip "$node")
     runtime_ssh_node "$node_ip" \
-        "pgrep -x '${process}' 2>/dev/null | head -1" 2>/dev/null || echo ""
+        "pgrep -o -x '${process}' 2>/dev/null" 2>/dev/null || echo ""
 }
 
 # ---------------------------------------------------------------------------

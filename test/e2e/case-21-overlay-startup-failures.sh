@@ -20,7 +20,7 @@ e2e_require_nodes 2
 NODES=("$(e2e_node_a)" "$(e2e_node_b)")
 declare -A IPS
 for node in "${NODES[@]}"; do IPS[$node]=$(runtime_node_ip "$node"); done
-CONTROLLER_IP=$(sed -n 's|.*server: https://\([^:]*\):6443.*|\1|p' "${HOME}/.skiff/kubeconfig" | head -1)
+CONTROLLER_IP=$(sed -n 's|.*server: https://\([^:]*\):6443.*|\1|p' "${HOME}/.skiff/kubeconfig" | sed -n 1p)
 e2e_assert_nonempty "controller address" "$CONTROLLER_IP"
 WORKER_IP=""
 for node in "${NODES[@]}"; do [ "${IPS[$node]}" = "$CONTROLLER_IP" ] || WORKER_IP="${IPS[$node]}"; done
@@ -50,7 +50,7 @@ job_output() {  # the job's standard output file
 cluster_ready() {
     local n
     n=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c '^True$' || true)
-    [ "$n" -ge 2 ] && e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -q '^True$'
+    [ "$n" -ge 2 ] && e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | e2e_grep_q '^True$'
 }
 # Start from nothing: the running cluster goes away (it carries no state this case needs).
 scancel "$CURRENT_JOB"
