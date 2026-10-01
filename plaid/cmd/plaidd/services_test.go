@@ -170,3 +170,39 @@ func TestTheTableIsSetAndListedThroughTheSocket(t *testing.T) {
 		t.Errorf("status %+v %v", st, err)
 	}
 }
+
+func TestNodePortsNeedTheTapGatewayAValidHostAddressAndRange(t *testing.T) {
+	with := func(c *Config) {
+		c.NodePortSlirpSocket = "/tmp/slirp.sock"
+		c.NodePortHostAddress = "192.168.64.3"
+		c.NodePortRange = "30000-32767"
+	}
+	d := tapDaemon(t, with)
+	if d.nodePorts == nil || d.nodePortRules == nil {
+		t.Fatal("no NodePort reconciler with valid settings")
+	}
+	st, _ := d.HandleGetStatus()
+	if st.NodePorts == nil || st.NodePorts.Desired != 0 || st.NodePorts.Exposed != 0 {
+		t.Errorf("status %+v", st.NodePorts)
+	}
+	without := tapDaemon(t, nil)
+	if without.nodePorts != nil {
+		t.Error("NodePorts are published without being asked to")
+	}
+	if st, _ := without.HandleGetStatus(); st.NodePorts != nil {
+		t.Error("NodePort status without NodePorts")
+	}
+	for name, mutate := range map[string]func(*Config){
+		"not IPv4":        func(c *Config) { with(c); c.NodePortHostAddress = "fd00::1" },
+		"no address":      func(c *Config) { with(c); c.NodePortHostAddress = "" },
+		"bad range":       func(c *Config) { with(c); c.NodePortRange = "30000" },
+		"reversed range":  func(c *Config) { with(c); c.NodePortRange = "32767-30000" },
+		"range too large": func(c *Config) { with(c); c.NodePortRange = "30000-70000" },
+		"slirp gateway":   func(c *Config) { with(c); c.GatewayMode = "slirp" },
+	} {
+		cfg := tapConfig(func(c *Config) { c.DisableKubernetes = true; mutate(c) })
+		if _, err := NewPlaidDaemon(cfg); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}

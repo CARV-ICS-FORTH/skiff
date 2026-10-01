@@ -8,6 +8,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 
+	"plaid/pkg/nodeport"
 	"plaid/pkg/svc"
 )
 
@@ -28,6 +29,8 @@ const (
 	ReasonProtocol             = "ProtocolNotSupported"
 	ReasonNoIPv4ClusterIP      = "NoIPv4ClusterIP"
 	ReasonExternalIPs          = "ExternalIPsNotSupported"
+	ReasonExternalPolicy       = "ExternalTrafficPolicyNotSupported"
+	ReasonLoadBalancer         = "LoadBalancerNotPublished"
 	serviceNameLabel           = discoveryv1.LabelServiceName
 	defaultProtocol            = v1.ProtocolTCP
 	unsupportedSessionAffinity = "sessionAffinity %s: Plaid does not keep a client on one backend; the Service is not served"
@@ -250,4 +253,72 @@ func firstIPv4(addresses []string) net.IP {
 		}
 	}
 	return nil
+}
+
+// served reports whether the Service engine serves the Service's cluster IP at all (and so
+// whether anything may be translated to it), with that address.
+func served(s *v1.Service) (net.IP, bool) {
+	if s.Spec.ClusterIP == "" || s.Spec.ClusterIP == v1.ClusterIPNone || s.Spec.Type == v1.ServiceTypeExternalName {
+		return nil, false
+	}
+	vip := clusterIPv4(s)
+	if vip == nil || s.Spec.SessionAffinity == v1.ServiceAffinityClientIP {
+		return nil, false
+	}
+	if p := s.Spec.InternalTrafficPolicy; p != nil && *p == v1.ServiceInternalTrafficPolicyLocal {
+		return nil, false
+	}
+	return vip, true
+}
+
+// BuildNodePorts lists the NodePorts to publish: the TCP and UDP node ports of NodePort
+// Services that the engine serves. Plaid does not publish what it cannot honor: with an
+// external traffic policy of Local (which promises the client's address and only local
+// backends, neither of which survives the forwarding through slirp4netns and the source
+// translation) the node ports are not published, and neither are those of a LoadBalancer
+// Service; the Service's cluster IP is served in both cases. Each comes with a Problem.
+func BuildNodePorts(services []*v1.Service) ([]nodeport.Mapping, []Problem) {
+	var out []nodeport.Mapping
+	var problems []Problem
+	for _, s := range services {
+		if s.Spec.Type != v1.ServiceTypeNodePort && s.Spec.Type != v1.ServiceTypeLoadBalancer {
+			continue
+		}
+		vip, ok := served(s)
+		if !ok {
+			continue // the table builder has said why
+		}
+		if s.Spec.Type == v1.ServiceTypeLoadBalancer {
+			problems = append(problems, Problem{Service: s, Reason: ReasonLoadBalancer, Skipped: true,
+				Message: "Plaid does not publish LoadBalancer Services or their node ports; the cluster IP is served"})
+			continue
+		}
+		if s.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyLocal {
+			problems = append(problems, Problem{Service: s, Reason: ReasonExternalPolicy, Skipped: true,
+				Message: "externalTrafficPolicy Local: Plaid cannot keep the client's address or restrict to local backends; the node ports are not published (the cluster IP is served)"})
+			continue
+		}
+		for _, port := range s.Spec.Ports {
+			if port.NodePort <= 0 {
+				continue
+			}
+			proto := port.Protocol
+			if proto == "" {
+				proto = defaultProtocol
+			}
+			if proto != v1.ProtocolTCP && proto != v1.ProtocolUDP {
+				continue // the table builder has said so
+			}
+			m := nodeport.Mapping{Proto: lower(proto), Port: int(port.NodePort), ServicePort: uint16(port.Port), Ref: s}
+			copy(m.ClusterIP[:], vip)
+			out = append(out, m)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Port != out[j].Port {
+			return out[i].Port < out[j].Port
+		}
+		return out[i].Proto < out[j].Proto
+	})
+	return out, problems
 }

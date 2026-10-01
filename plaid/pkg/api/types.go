@@ -47,6 +47,26 @@ type ServiceWatchStatus struct {
 	LastWatchError string `json:"last_watch_error,omitempty"`
 }
 
+// NodePortStatus says how publishing the NodePorts is going: how many are wanted and exposed,
+// which are not and why.
+type NodePortStatus struct {
+	Desired   int              `json:"desired"`
+	Exposed   int              `json:"exposed"`
+	Failed    []NodePortFailed `json:"failed,omitempty"`
+	Passes    uint64           `json:"passes"`
+	Removed   uint64           `json:"removed"`
+	Repaired  uint64           `json:"repaired"`
+	LastError string           `json:"last_error,omitempty"`
+}
+
+// NodePortFailed is a node port that is not published.
+type NodePortFailed struct {
+	Proto    string `json:"proto"`
+	Port     int    `json:"port"`
+	Reason   string `json:"reason"`
+	Attempts int    `json:"attempts"`
+}
+
 // ServiceStats are the Service engine's gauges and counters.
 type ServiceStats struct {
 	Synced           bool   `json:"synced"`
@@ -141,5 +161,6 @@ type Response struct {
 	ServiceEngine  *ServiceStats       `json:"service_engine,omitempty"`
 	ServiceManager string              `json:"service_manager,omitempty"`
 	ServiceWatch   *ServiceWatchStatus `json:"service_watch,omitempty"`
+	NodePorts      *NodePortStatus     `json:"node_ports,omitempty"`
 	Services       []ServiceEntry      `json:"services,omitempty"`
 }

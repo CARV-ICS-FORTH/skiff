@@ -83,7 +83,7 @@ func startWith(t *testing.T, client *fake.Clientset) *harness {
 	h.c.SetEventRecorder(h.recorder)
 	ctx, cancel := context.WithCancel(context.Background())
 	h.cancel = cancel
-	go func() { h.c.RunServices(ctx, h.sink); close(h.done) }()
+	go func() { h.c.RunServices(ctx, h.sink, nil); close(h.done) }()
 	t.Cleanup(func() {
 		cancel()
 		select {

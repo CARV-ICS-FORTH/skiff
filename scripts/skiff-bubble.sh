@@ -160,6 +160,7 @@ apptainer instance run \
     --env TMPDIR=/tmp/.skiff/.apptainer/tmp \
 	--env HOST_IP="$HOST_IP_DETECTED" \
 	--env SKIFF_OVERLAY_HANDOFF="$OVERLAY_HANDOFF" \
+	--env SKIFF_SLIRP_API="/root/.skiff/slirp-${NAME}.sock" \
 	--env PLAID_UPLINK=tap0 \
 	--env PLAID_UPLINK_ADDRESS="$NS_ADDR" \
 	--env SKIFF_ROLE="$SKIFF_ROLE" \

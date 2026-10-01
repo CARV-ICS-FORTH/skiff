@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"plaid/pkg/api"
+	"plaid/pkg/k8s"
 	"plaid/pkg/svc"
 )
 
@@ -106,6 +107,14 @@ func (d *PlaidDaemon) fillServiceStatus(resp *api.Response) {
 	if d.k8sCtrl != nil {
 		resp.ServiceManager = "kubernetes"
 	}
+	if d.nodePorts != nil {
+		st := d.nodePorts.Status()
+		np := &api.NodePortStatus{Desired: st.Desired, Exposed: st.Exposed, Passes: st.Passes, Removed: st.Removed, Repaired: st.Repaired, LastError: st.LastError}
+		for _, f := range st.Failed {
+			np.Failed = append(np.Failed, api.NodePortFailed{Proto: f.Proto, Port: f.Port, Reason: f.Reason, Attempts: f.Attempts})
+		}
+		resp.NodePorts = np
+	}
 	if d.k8sCtrl != nil {
 		w := d.k8sCtrl.ServiceStatus()
 		resp.ServiceWatch = &api.ServiceWatchStatus{Synced: w.Synced, Tables: w.Tables, Problems: w.Problems, WatchErrors: w.WatchErrors, LastWatchError: w.LastWatchError}
@@ -165,4 +174,12 @@ func tableFromEntries(entries []api.ServiceEntry, serviceNet *net.IPNet) ([]svc.
 		table = append(table, s)
 	}
 	return table, nil
+}
+
+// nodePortSink is the NodePort reconciler, or nil when NodePorts are not published.
+func (d *PlaidDaemon) nodePortSink() k8s.NodePortSink {
+	if d.nodePorts == nil {
+		return nil
+	}
+	return d.nodePorts
 }

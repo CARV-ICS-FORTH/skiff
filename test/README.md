@@ -55,7 +55,7 @@ bash test/e2e/network/test-tap-webhook.sh
 
 The qualification profile covers a dedicated two-node Slurm allocation with IPv4 TAP networking with Plaid translating Services. A required daemon failure stops the whole job; recovery uses a fresh job. Runtime qualification currently targets ARM64. Building for another architecture does not qualify its runtime behavior.
 
-The profile requires these checks: cases 01–22, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, teardown with a second boot, and the named subcases listed in `test/e2e/lib/profile.sh`. They cover workload startup and completion, init containers, networking, readiness, environment and volumes, logs, exec and port-forward, restarts, graceful deletion, startup failures and cleanup, and the sprint 1 compatibility work:
+The profile requires these checks: cases 01–23, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, teardown with a second boot, and the named subcases listed in `test/e2e/lib/profile.sh`. They cover workload startup and completion, init containers, networking, readiness, environment and volumes, logs, exec and port-forward, restarts, graceful deletion, startup failures and cleanup, and the sprint 1 compatibility work:
 
 | Case | Acceptance groups |
 |---|---|
@@ -70,6 +70,7 @@ The profile requires these checks: cases 01–22, four individual daemon failure
 | 20 | T21 (the overlay socket: held by plaidd in the host's network namespace, no slirp forward for it, no helper or handoff socket left, cross-node traffic moves the overlay counters) |
 | 21 | T22 (overlay socket startup failures, with jobs of its own: cancel while the helper holds the port, helper killed, port taken, and a fresh start afterwards) |
 | 22 | T23, T24 (Service translation by Plaid with no kube-proxy: TCP and UDP, named ports, local, remote, hairpin and non-pod backends, DNS over UDP and TCP and a moved CoreDNS, the bubbles as clients, large responses, headless and ExternalName left alone, flows pinned through endpoint changes, refusals, unsupported settings, nothing dropped as unsupported) |
+| 23 | T25 (NodePort Services published through slirp4netns on every node, from the other node's host: TCP, UDP, a node without a local backend, the forwards and the fixed ones, port changes and recreated Services, no backends, a node port another process holds and its recovery, the Local policy and LoadBalancer Services refused with events, drift repaired, nothing left behind) |
 
 T01–T03, T19 and the unit and race parts of the other groups are unit and Linux tests (`make test` in `skifflet/` and `plaid/`; the Linux-only ones run in the builder container) and shell tests (`test/skiff-config-test.sh`, `test/skiff-supervision-test.sh`, `test/skiff-bubble-test.sh`, which runs the bubble script against a fake slirp4netns API and a fake Apptainer), run by `regression.sh` and the module test targets.
 

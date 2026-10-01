@@ -226,3 +226,73 @@ e2e_assert_podip_in_node_cidr() {
         e2e_fail "${label}: PodIP ${ip} not in node CIDR ${cidr}"
     fi
 }
+
+# ---------------------------------------------------------------------------
+# A backend that serves TCP 8080 and 8081 and UDP 5353 and says who it is and who called
+# (used by the Service and NodePort cases), and a client pod that only sleeps.
+# ---------------------------------------------------------------------------
+
+# fixture_backend_apply NS: the ConfigMap with the backend's program.
+fixture_backend_apply() {
+    e2e_kubectl -n "$1" apply -f - <<'YAML'
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: backend}
+data:
+  backend.py: |
+    import json, socket, threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    HOST = socket.gethostname()
+    class H(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def do_GET(self):
+            p = self.path.strip("/")
+            body = json.dumps({"host": HOST, "src": self.client_address[0], "port": self.server.server_port,
+                               "pad": "x" * (int(p) if p.isdigit() else 0)}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
+            self.wfile.write(body)
+        def log_message(self, *a): pass
+    def serve(port): ThreadingHTTPServer(("", port), H).serve_forever()
+    for port in (8080, 8081): threading.Thread(target=serve, args=(port,), daemon=True).start()
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("", 5353))
+    while True:
+        data, addr = s.recvfrom(65535)
+        s.sendto(json.dumps({"host": HOST, "src": addr[0], "echo": data.decode(errors="replace")}).encode(), addr)
+YAML
+}
+
+# fixture_backend_pod NS NAME NODE [ROLE]: the backend as a pod labelled app=backend (and
+# role=ROLE, default "any"); its readiness is a marker the test can create: /run/unready.
+fixture_backend_pod() {
+    local ns="$1" name="$2" node="$3" role="${4:-any}"
+    cat <<POD
+apiVersion: v1
+kind: Pod
+metadata: {name: ${name}, namespace: ${ns}, labels: {app: backend, role: ${role}}}
+spec:
+  nodeName: ${node}
+  terminationGracePeriodSeconds: 1
+  volumes: [{name: code, configMap: {name: backend}}]
+  containers:
+  - name: backend
+    image: ${FIXTURE_IMAGE}
+    imagePullPolicy: IfNotPresent
+    command: ["python3", "/code/backend.py"]
+    volumeMounts: [{name: code, mountPath: /code}]
+    ports: [{name: web, containerPort: 8080}, {name: echo, containerPort: 5353, protocol: UDP}]
+    readinessProbe: {exec: {command: ["sh", "-c", "test ! -e /run/unready"]}, periodSeconds: 1}
+POD
+}
+
+# fixture_client_pod NS NAME NODE: a pod with the fixture's tools that sleeps.
+fixture_client_pod() {
+    cat <<POD
+apiVersion: v1
+kind: Pod
+metadata: {name: $2, namespace: $1}
+spec:
+  nodeName: $3
+  terminationGracePeriodSeconds: 1
+  containers: [{name: c, image: ${FIXTURE_IMAGE}, imagePullPolicy: IfNotPresent, command: ["sleep", "3600"]}]
+POD
+}

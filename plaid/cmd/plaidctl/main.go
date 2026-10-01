@@ -69,6 +69,12 @@ func main() {
 				status.ServiceCIDR, status.ServiceAddress, status.ServiceManager, e.Synced, e.Services, e.Backends, e.Flows)
 			fmt.Printf("              flows created=%d expired=%d purged=%d; packets out=%d back=%d refused=%d\n",
 				e.FlowsCreated, e.FlowsExpired, e.FlowsPurged, e.Forwarded, e.Returned, e.Rejected)
+			if np := status.NodePorts; np != nil {
+				fmt.Printf("              node ports: %d wanted, %d published (removed=%d repaired=%d passes=%d) %s\n", np.Desired, np.Exposed, np.Removed, np.Repaired, np.Passes, np.LastError)
+				for _, f := range np.Failed {
+					fmt.Printf("              not published: %s %d after %d attempts: %s\n", f.Proto, f.Port, f.Attempts, f.Reason)
+				}
+			}
 			for _, d := range e.RecentDrops {
 				fmt.Printf("              dropped: %s\n", d)
 			}

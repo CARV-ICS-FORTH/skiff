@@ -276,6 +276,7 @@ run_workload_cases() {
     run_case "19" "repetition"
     run_case "20" "overlay-socket"
     run_case "22" "services"
+    run_case "23" "nodeports"
     run_overlay_startup_failures
     run_daemon_failure_matrix
 }
@@ -361,6 +362,7 @@ if [ -n "$ONLY_CASE" ]; then
             20) run_case "20" "overlay-socket" ;;
             21) run_overlay_startup_failures ;;
             22) run_case "22" "services" ;;
+            23) run_case "23" "nodeports" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

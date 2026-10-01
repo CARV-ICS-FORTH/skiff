@@ -33,65 +33,11 @@ e2e_cleanup_register "e2e_preserve_failure $NS"
 # The workload: two backends (one per node) serving TCP 8080 and 8081 and UDP 5353, a client
 # pod on each node, and the Services.
 # ---------------------------------------------------------------------------
-e2e_kubectl -n "$NS" apply -f - <<'YAML'
-apiVersion: v1
-kind: ConfigMap
-metadata: {name: backend}
-data:
-  backend.py: |
-    import json, socket, threading
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    HOST = socket.gethostname()
-    class H(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
-        def do_GET(self):
-            p = self.path.strip("/")
-            body = json.dumps({"host": HOST, "src": self.client_address[0], "port": self.server.server_port,
-                               "pad": "x" * (int(p) if p.isdigit() else 0)}).encode()
-            self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers()
-            self.wfile.write(body)
-        def log_message(self, *a): pass
-    def serve(port): ThreadingHTTPServer(("", port), H).serve_forever()
-    for port in (8080, 8081): threading.Thread(target=serve, args=(port,), daemon=True).start()
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("", 5353))
-    while True:
-        data, addr = s.recvfrom(65535)
-        s.sendto(json.dumps({"host": HOST, "src": addr[0], "echo": data.decode(errors="replace")}).encode(), addr)
-YAML
-backend_pod() {  # backend_pod NAME NODE
-    cat <<POD
-apiVersion: v1
-kind: Pod
-metadata: {name: $1, namespace: $NS, labels: {app: backend}}
-spec:
-  nodeName: $2
-  terminationGracePeriodSeconds: 1
-  volumes: [{name: code, configMap: {name: backend}}]
-  containers:
-  - name: backend
-    image: ${FIXTURE_IMAGE}
-    imagePullPolicy: IfNotPresent
-    command: ["python3", "/code/backend.py"]
-    volumeMounts: [{name: code, mountPath: /code}]
-    ports: [{name: web, containerPort: 8080}, {name: echo, containerPort: 5353, protocol: UDP}]
-    readinessProbe: {exec: {command: ["sh", "-c", "test ! -e /run/unready"]}, periodSeconds: 1}
-POD
-}
-client_pod() {  # client_pod NAME NODE
-    cat <<POD
-apiVersion: v1
-kind: Pod
-metadata: {name: $1, namespace: $NS}
-spec:
-  nodeName: $2
-  terminationGracePeriodSeconds: 1
-  containers: [{name: c, image: ${FIXTURE_IMAGE}, imagePullPolicy: IfNotPresent, command: ["sleep", "3600"]}]
-POD
-}
-backend_pod b-a "$NODE_A" | e2e_kubectl apply -f -
-backend_pod b-b "$NODE_B" | e2e_kubectl apply -f -
-client_pod c-a "$NODE_A" | e2e_kubectl apply -f -
-client_pod c-b "$NODE_B" | e2e_kubectl apply -f -
+fixture_backend_apply "$NS"
+fixture_backend_pod "$NS" b-a "$NODE_A" | e2e_kubectl apply -f -
+fixture_backend_pod "$NS" b-b "$NODE_B" | e2e_kubectl apply -f -
+fixture_client_pod "$NS" c-a "$NODE_A" | e2e_kubectl apply -f -
+fixture_client_pod "$NS" c-b "$NODE_B" | e2e_kubectl apply -f -
 e2e_kubectl -n "$NS" apply -f - <<'YAML'
 apiVersion: v1
 kind: Service
@@ -347,7 +293,7 @@ PY
     in_pod c-a pkill -f stream.py || true
     # Restore the backend for what follows.
     node=$NODE_A; [ "$pinned" = b-b ] && node=$NODE_B
-    backend_pod "$pinned" "$node" | e2e_kubectl apply -f -
+    fixture_backend_pod "$NS" "$pinned" "$node" | e2e_kubectl apply -f -
     e2e_wait_pod_ready "$NS" "$pinned" 120
     e2e_wait_condition 60 "both backends are served again" both_backends_served
 }

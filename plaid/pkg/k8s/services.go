@@ -15,6 +15,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 
+	"plaid/pkg/nodeport"
 	"plaid/pkg/svc"
 )
 
@@ -22,6 +23,37 @@ import (
 // engine; the connector does not know more of it than that.
 type ServiceSink interface {
 	SetServices(table []svc.Service)
+}
+
+// NodePortSink receives the complete set of NodePorts to publish when it changes. It is the
+// NodePort reconciler.
+type NodePortSink interface {
+	SetDesired(m []nodeport.Mapping)
+}
+
+// Reporter returns the reporter of events for the NodePort reconciler: it records them
+// with the recorder of the Service watch.
+func (c *Controller) Reporter() nodeport.Reporter { return reporter{c} }
+
+type reporter struct{ c *Controller }
+
+func (r reporter) Event(ref any, warning bool, reason, message string) {
+	obj, ok := ref.(*v1.Service)
+	if !ok || obj == nil {
+		return
+	}
+	rec := r.c.recorder
+	if w := r.c.watch.Load(); rec == nil && w != nil {
+		rec = w.recorder
+	}
+	if rec == nil {
+		return
+	}
+	typ := v1.EventTypeNormal
+	if warning {
+		typ = v1.EventTypeWarning
+	}
+	rec.Event(obj, typ, reason, message)
 }
 
 // ServiceStatus says how the Service watch is doing: whether the first table was built
@@ -38,9 +70,10 @@ type ServiceStatus struct {
 
 // serviceWatch is the state of RunServices.
 type serviceWatch struct {
-	c        *Controller
-	sink     ServiceSink
-	recorder record.EventRecorder
+	c         *Controller
+	sink      ServiceSink
+	nodePorts NodePortSink // may be nil
+	recorder  record.EventRecorder
 
 	synced      atomic.Bool
 	tables      atomic.Uint64
@@ -52,6 +85,7 @@ type serviceWatch struct {
 	svcStore, sliceStore cache.Store
 	reported             map[string]bool
 	last                 []svc.Service // the table last pushed (only the watch goroutine uses it)
+	lastNodePorts        []nodePortKey
 }
 
 // serviceWatchDebounce gathers a burst of changes (a rollout touches many slices) into one table.
@@ -84,8 +118,8 @@ func (c *Controller) ServiceStatus() ServiceStatus {
 // never sees a partial one; after that, a table is pushed whenever it differs from the
 // last. A watch that fails leaves the last table in place (and is counted), and the
 // informers' relist brings the cache, and so the table, back in line.
-func (c *Controller) RunServices(ctx context.Context, sink ServiceSink) {
-	w := &serviceWatch{c: c, sink: sink, recorder: c.recorder, reported: map[string]bool{}}
+func (c *Controller) RunServices(ctx context.Context, sink ServiceSink, nodePorts NodePortSink) {
+	w := &serviceWatch{c: c, sink: sink, nodePorts: nodePorts, recorder: c.recorder, reported: map[string]bool{}}
 	c.watch.Store(w)
 	if w.recorder == nil {
 		broadcaster := record.NewBroadcaster()
@@ -161,9 +195,19 @@ func (w *serviceWatch) rebuild(first bool) {
 		}
 	}
 	table, problems := BuildTable(services, slices)
+	npMappings, npProblems := BuildNodePorts(services)
+	problems = append(problems, npProblems...)
 	w.services.Store(int64(len(table)))
 	w.problems.Store(int64(len(problems)))
 	w.report(problems)
+	if w.nodePorts != nil {
+		// A change of the Service object that leaves the node ports as they are (a label) is not pushed.
+		keys := nodePortKeys(npMappings)
+		if first || !reflect.DeepEqual(w.lastNodePorts, keys) {
+			w.lastNodePorts = keys
+			w.nodePorts.SetDesired(npMappings)
+		}
+	}
 
 	if !first && reflect.DeepEqual(w.last, table) {
 		return
@@ -191,4 +235,26 @@ func (w *serviceWatch) report(problems []Problem) {
 			delete(w.reported, key)
 		}
 	}
+}
+
+// nodePortKey is what makes a NodePort mapping different from another, without the object
+// it came from.
+type nodePortKey struct {
+	Proto       string
+	Port        int
+	ClusterIP   [4]byte
+	ServicePort uint16
+	UID         string
+}
+
+func nodePortKeys(m []nodeport.Mapping) []nodePortKey {
+	out := make([]nodePortKey, 0, len(m))
+	for _, x := range m {
+		k := nodePortKey{Proto: x.Proto, Port: x.Port, ClusterIP: x.ClusterIP, ServicePort: x.ServicePort}
+		if s, ok := x.Ref.(*v1.Service); ok && s != nil {
+			k.UID = string(s.UID)
+		}
+		out = append(out, k)
+	}
+	return out
 }

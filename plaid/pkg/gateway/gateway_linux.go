@@ -148,6 +148,8 @@ func Start(cfg Config) (_ *Attachment, err error) {
 		{"-i", cfg.Name, "-o", cfg.Name, "-j", "ACCEPT"},
 		{"-i", cfg.Name, "-o", cfg.Uplink, "-j", "ACCEPT"},
 		{"-i", cfg.Uplink, "-o", cfg.Name, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
+		// New connections that the NodePort destination NAT (PLAID-NODEPORT) has redirected to a Service.
+		{"-i", cfg.Uplink, "-o", cfg.Name, "-m", "conntrack", "--ctstate", "DNAT", "-j", "ACCEPT"},
 	} {
 		if err = rule("filter", "-A", "PLAID-FORWARD", spec...); err != nil {
 			return nil, err

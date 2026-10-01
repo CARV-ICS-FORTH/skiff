@@ -121,6 +121,7 @@ grep -q -- "--mtu=$SKIFF_POD_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&
 grep -q -- "$HOME/.skiff/images/skiff-bubble.sif /usr/local/bin/plaidctl overlay-socket --bind 192.0.2.10 --port 8472 --handoff /tmp/.skiff/overlay.sock" "$FAKE_DIR/helper-args" \
     || { cat "$FAKE_DIR/helper-args" >&2; fail "unexpected helper command line"; }
 grep -q -- "--env SKIFF_OVERLAY_HANDOFF=/tmp/.skiff/overlay.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told the handoff path"
+grep -q -- "--env SKIFF_SLIRP_API=/root/.skiff/slirp-bubble1.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told slirp4netns's API socket"
 
 # A helper that is still waiting is not a failure, and terminating the bubble stops it.
 sleep 3

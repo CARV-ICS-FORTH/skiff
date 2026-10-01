@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"plaid/pkg/netcfg"
+	"plaid/pkg/nodeport"
 	"sort"
 	"strings"
 	"syscall"
@@ -24,25 +25,28 @@ import (
 	"plaid/pkg/k8s"
 	"plaid/pkg/packet"
 	"plaid/pkg/slirp"
+	"plaid/pkg/slirpapi"
 	"plaid/pkg/svc"
 	"plaid/pkg/tap"
 	"plaid/pkg/vxlan"
 )
 
 type PlaidDaemon struct {
-	cfg          Config
-	bridge       *bridge.Bridge
-	routes       *vxlan.RouteTable
-	overlay      *vxlan.OverlayEngine
-	slirpMgr     *slirp.SlirpManager
-	attachment   *gateway.Attachment
-	bubbleEP     *tap.TapEndpoint
-	healthErr    chan error
-	filterEngine *filter.Engine
-	apiServer    *api.Server
-	cancelFunc   context.CancelFunc
-	k8sCtrl      *k8s.Controller
-	services     *svc.Engine // tap mode only
+	cfg           Config
+	bridge        *bridge.Bridge
+	routes        *vxlan.RouteTable
+	overlay       *vxlan.OverlayEngine
+	slirpMgr      *slirp.SlirpManager
+	attachment    *gateway.Attachment
+	bubbleEP      *tap.TapEndpoint
+	healthErr     chan error
+	filterEngine  *filter.Engine
+	apiServer     *api.Server
+	cancelFunc    context.CancelFunc
+	k8sCtrl       *k8s.Controller
+	services      *svc.Engine // tap mode only
+	nodePorts     *nodeport.Reconciler
+	nodePortRules *nodeport.Iptables
 }
 
 type Config struct {
@@ -76,6 +80,11 @@ type Config struct {
 	// SNATAddress is the Service engine's address (tap mode): empty means the node
 	// network's .2.
 	SNATAddress string
+	// NodePorts: the API socket of the slirp4netns that serves the bubble (empty: NodePorts are
+	// not published), the physical host's address the forwards listen on, and the NodePort range.
+	NodePortSlirpSocket string
+	NodePortHostAddress string
+	NodePortRange       string
 }
 
 func main() {
@@ -83,6 +92,9 @@ func main() {
 	flag.StringVar(&cfg.SocketPath, "api-socket", netcfg.SocketPath(""), "Path to plaidd UNIX domain socket (default: $PLAID_SOCKET_PATH, else "+netcfg.DefaultSocketPath+")")
 	flag.StringVar(&cfg.NodeCIDR, "node-cidr", "", "Pod CIDR of this node (default: the one Kubernetes allocated to the Node; required with --disable-kubernetes)")
 	flag.BoolVar(&cfg.DisableKubernetes, "disable-kubernetes", false, "Never contact the Kubernetes API: no Node, Service or EndpointSlice watches (standalone Plaid; requires --node-cidr)")
+	flag.StringVar(&cfg.NodePortSlirpSocket, "nodeport-slirp-socket", "", "API socket of the slirp4netns that serves this bubble: NodePort Services are published through it on --nodeport-host-address (tap mode; empty: not published)")
+	flag.StringVar(&cfg.NodePortHostAddress, "nodeport-host-address", "", "Physical host address on which NodePorts are published")
+	flag.StringVar(&cfg.NodePortRange, "nodeport-range", "30000-32767", "The Kubernetes NodePort range Plaid publishes")
 	flag.StringVar(&cfg.SNATAddress, "snat-address", "", "Address of the Service engine in tap mode, which backends see as the source of Service traffic and answer (default: the .2 of the node network)")
 	flag.StringVar(&cfg.ClusterCIDR, "cluster-cidr", netcfg.DefaultClusterCIDR, "Overall cluster pod CIDR")
 	flag.StringVar(&cfg.GatewayIP, "gateway-ip", "", "Gateway IP (defaults to first IP of node-cidr, e.g. 10.244.1.1)")
@@ -327,19 +339,44 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		b.SetServiceEngine(services)
 	}
 
+	var nodePorts *nodeport.Reconciler
+	var nodePortRules *nodeport.Iptables
+	if cfg.NodePortSlirpSocket != "" {
+		if cfg.GatewayMode != "tap" {
+			return nil, fmt.Errorf("--nodeport-slirp-socket needs the tap gateway")
+		}
+		host := net.ParseIP(cfg.NodePortHostAddress)
+		if host == nil || host.To4() == nil {
+			return nil, fmt.Errorf("--nodeport-host-address %q is not an IPv4 address", cfg.NodePortHostAddress)
+		}
+		var low, high int
+		if n, err := fmt.Sscanf(cfg.NodePortRange, "%d-%d", &low, &high); err != nil || n != 2 || low < 1 || high > 65535 || low > high {
+			return nil, fmt.Errorf("--nodeport-range %q is not a range of ports like 30000-32767", cfg.NodePortRange)
+		}
+		var reporter nodeport.Reporter
+		if k8sCtrl != nil {
+			reporter = k8sCtrl.Reporter()
+		}
+		nodePortRules = nodeport.NewIptables(cfg.Uplink, cfg.UplinkAddress)
+		nodePorts = nodeport.New(nodeport.Config{HostAddr: host.String(), GuestAddr: cfg.UplinkAddress, RangeLow: low, RangeHigh: high},
+			slirpapi.New(cfg.NodePortSlirpSocket), nodePortRules, reporter)
+	}
+
 	filterEngine := filter.NewEngine(filter.ActionAccept)
 	b.SetFilterHandler(filterEngine.Filter)
 
 	d := &PlaidDaemon{
-		cfg:          cfg,
-		bridge:       b,
-		routes:       routes,
-		overlay:      overlay,
-		slirpMgr:     slirpMgr,
-		filterEngine: filterEngine,
-		k8sCtrl:      k8sCtrl,
-		services:     services,
-		healthErr:    make(chan error, 1),
+		cfg:           cfg,
+		bridge:        b,
+		routes:        routes,
+		overlay:       overlay,
+		slirpMgr:      slirpMgr,
+		filterEngine:  filterEngine,
+		k8sCtrl:       k8sCtrl,
+		services:      services,
+		nodePorts:     nodePorts,
+		nodePortRules: nodePortRules,
+		healthErr:     make(chan error, 1),
 	}
 
 	// Connect bridge handlers
@@ -402,6 +439,9 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 	if d.services != nil {
 		go d.sweepServices(ctx)
 	}
+	if d.nodePorts != nil {
+		go d.nodePorts.Run(ctx)
+	}
 
 	if d.cfg.OverlayHandoff != "" {
 		if err := d.receiveOverlaySocket(ctx); err != nil {
@@ -429,7 +469,7 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 		}
 
 		if d.services != nil {
-			go d.k8sCtrl.RunServices(ctx, d.services)
+			go d.k8sCtrl.RunServices(ctx, d.services, d.nodePortSink())
 		}
 
 		gwMAC, _ := net.ParseMAC(d.cfg.GatewayMAC)
@@ -503,6 +543,11 @@ func (d *PlaidDaemon) receiveOverlaySocket(ctx context.Context) error {
 func (d *PlaidDaemon) Stop() {
 	if d.cancelFunc != nil {
 		d.cancelFunc()
+	}
+	if d.nodePortRules != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		d.nodePortRules.Close(ctx)
+		cancel()
 	}
 	if d.apiServer != nil {
 		_ = d.apiServer.Close()
