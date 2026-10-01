@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -231,6 +232,33 @@ func SafeRemovePodDirectory(podDir string) error {
 		return os.RemoveAll(podDir)
 	}
 	return removeErr
+}
+
+// prepareAttemptScratch gives attempt N of a container its own /tmp and /var/tmp, empty
+// (a container's temporary files are gone when it is restarted, as in Kubernetes, where
+// they are part of the writable layer of the container that ran). What the attempts
+// before it left is removed first, so a pod keeps one set per container, and a restart
+// can never see its predecessor's files. They are world-writable with the sticky bit,
+// like a /tmp, whatever user the container runs as.
+func prepareAttemptScratch(container endpoint.ContainerPath, attempt int) error {
+	attempts, err := container.ScratchAttempts()
+	if err != nil {
+		return err
+	}
+	for _, old := range attempts {
+		if err := SafeRemovePodDirectory(container.AttemptScratchDir(old)); err != nil {
+			return fmt.Errorf("cannot remove the temporary files of attempt %d: %w", old, err)
+		}
+	}
+	for _, dir := range []string{container.AttemptTmp(attempt), container.AttemptVarTmp(attempt)} {
+		if err := os.MkdirAll(dir, 0o1777); err != nil {
+			return err
+		}
+		if err := os.Chmod(dir, os.ModeSticky|0o777); err != nil { // the umask would have trimmed the mode
+			return err
+		}
+	}
+	return nil
 }
 
 // podPIDsRecord is the on-disk record of a pod's processes (pids.json in the job
@@ -460,14 +488,28 @@ func (h *PodHandler) savePIDs(pausePID int, containerPID int) {
 	}
 }
 
+// bindVariables are the environment variables with which Apptainer takes bind mounts
+// from its caller. The bubble was started with binds, and Apptainer puts them in the
+// environment of what runs in it, so a container launched with them would mount the
+// bubble's directories (the user's ~/.skiff with the cluster's credentials among them).
+var bindVariables = []string{"APPTAINER_BIND", "SINGULARITY_BIND", "APPTAINER_BINDPATH", "SINGULARITY_BINDPATH"}
+
 // launchEnv is the environment of every Apptainer process of this pod: the
-// process's own, with the temporary directory moved inside the pod directory, and
-// Apptainer quiet. Its informational messages ("Cleaning up image...") would
-// otherwise be taken for the container's own output and end up in its log; its
+// process's own, without the bubble's bind mounts (a container gets the volumes of
+// its pod and nothing else), with the temporary directory moved inside the pod
+// directory, and Apptainer quiet. Its informational messages ("Cleaning up image...")
+// would otherwise be taken for the container's own output and end up in its log; its
 // warnings and errors still appear.
 func (h *PodHandler) launchEnv() []string {
 	tmp := h.podDirectory.TmpDir()
-	return append(os.Environ(), "APPTAINER_TMPDIR="+tmp, "SINGULARITY_TMPDIR="+tmp, "APPTAINER_QUIET=true", "SINGULARITY_QUIET=true")
+	env := make([]string, 0, len(os.Environ())+4)
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if !slices.Contains(bindVariables, name) {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "APPTAINER_TMPDIR="+tmp, "SINGULARITY_TMPDIR="+tmp, "APPTAINER_QUIET=true", "SINGULARITY_QUIET=true")
 }
 
 // attemptResult says how one run of a container ended.
@@ -476,7 +518,7 @@ type attemptResult int
 const (
 	attemptExited     attemptResult = iota // the process ran and exited
 	attemptNotStarted                      // it could not start (or the pod was revoked); reported as exit code 128
-	attemptLogError                        // its log file could not be opened; fatal for the pod
+	attemptFilesError                      // its log file or its /tmp could not be created; fatal for the pod
 )
 
 // runAttempt launches one attempt of a container in the pod's sandbox and waits
@@ -491,11 +533,18 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 	logs, err := a.OpenLog(h.podDirectory.Container(spec.Name))
 	if err != nil {
 		a.FailPod(128, "LogFileError", "failed to open the container log: %v", err)
-		return 128, attemptLogError, err
+		return 128, attemptFilesError, err
 	}
 
-	cmd := exec.Command(compute.Environment.ApptainerBin, c.BuildApptainerArgs(sandboxPID, h.podDirectory)...)
+	if err := prepareAttemptScratch(h.podDirectory.Container(spec.Name), a.ID); err != nil {
+		logs.Abort()
+		a.FailPod(128, "TmpDirError", "failed to create the container's /tmp: %v", err)
+		return 128, attemptFilesError, err
+	}
+
+	cmd := exec.Command(compute.Environment.ApptainerBin, c.BuildApptainerArgs(sandboxPID, h.podDirectory, a.ID)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Dir = "/" // the container starts in /, as in Kubernetes without a working directory
 	cmd.Env = h.launchEnv()
 	cmd.Stdout = logs.Stdout()
 	cmd.Stderr = logs.Stderr()
@@ -696,13 +745,14 @@ func PreparePod(pl *PodLifecycle) {
 		"--nv",
 		"--cleanenv",
 		"--writable-tmpfs",
-		"--no-mount", "home,bind-paths",
+		"--no-mount", NoMounts,
 		pauseImage.Filepath,
 		"/pause",
 	)
 
 	pauseCmd := exec.Command(compute.Environment.ApptainerBin, pauseArgs...)
 	pauseCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	pauseCmd.Dir = "/" // the launcher's own directory is not the container's (see NoMounts)
 	pauseCmd.Env = append(h.launchEnv(), "PLAIDTAINER_READINESS_FILE="+readinessFile)
 
 	if err := pauseCmd.Start(); err != nil {
@@ -860,7 +910,7 @@ func PreparePod(pl *PodLifecycle) {
 				return
 			}
 			exitCode, result, _ := h.runAttempt(&c, spec, true, containerPID)
-			if result == attemptLogError {
+			if result == attemptFilesError {
 				killPauseAndWait() // the pod is already failed with the reason
 				return
 			}
@@ -907,7 +957,7 @@ func PreparePod(pl *PodLifecycle) {
 					return
 				}
 				exitCode, result, _ := h.runAttempt(&c, spec, false, containerPID)
-				if result == attemptLogError {
+				if result == attemptFilesError {
 					return // the pod is already failed with the reason
 				}
 				if ctx.Err() != nil {

@@ -138,7 +138,7 @@ func TestRunAttempt_UsesThePodTemporaryDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &PodHandler{lifecycle: pl, podDirectory: pl.PodDir(), logger: pl.logger}
-	c := &Container{}
+	c := &Container{Name: "app"}
 	spec := &corev1.Container{Name: "app"}
 	exit, result, err := h.runAttempt(c, spec, false, 0)
 	if err != nil || result != attemptExited || exit != 0 {
@@ -151,5 +151,82 @@ func TestRunAttempt_UsesThePodTemporaryDirectory(t *testing.T) {
 	want := pl.PodDir().TmpDir()
 	if strings.TrimSpace(string(got)) != want+" "+want+" true" {
 		t.Fatalf("launched process saw %q, want the pod temporary directory %q", got, want)
+	}
+}
+
+// Through the launch path: every attempt of a container gets /tmp and /var/tmp of its own
+// that exist, are empty and are not the node's when the container starts, and a restart
+// finds nothing of the attempt before it.
+func TestRunAttempt_EveryAttemptGetsItsOwnTmp(t *testing.T) {
+	root := t.TempDir()
+	results := filepath.Join(root, "results")
+	launcher := filepath.Join(root, "launcher")
+	script := `#!/bin/sh
+bind=""
+nomount=""
+while [ $# -gt 0 ]; do
+    [ "$1" = --bind ] && bind="$2"
+    [ "$1" = --no-mount ] && nomount="$2"
+    shift
+done
+tmp=$(printf '%s' "$bind" | tr ',' '\n' | grep ':/tmp:rw$' | cut -d: -f1)
+vartmp=$(printf '%s' "$bind" | tr ',' '\n' | grep ':/var/tmp:rw$' | cut -d: -f1)
+echo "$tmp $vartmp $nomount $(ls -A "$tmp" | wc -l | tr -d ' ') $(ls -A "$vartmp" | wc -l | tr -d ' ') $(pwd) bind=${APPTAINER_BIND-unset}${SINGULARITY_BIND-unset}${APPTAINER_BINDPATH-unset}${SINGULARITY_BINDPATH-unset}" >> ` + results + `
+touch "$tmp/marker" "$vartmp/marker"
+`
+	if err := os.WriteFile(launcher, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	old := compute.Environment.ApptainerBin
+	compute.Environment.ApptainerBin = launcher
+	defer func() { compute.Environment.ApptainerBin = old }()
+
+	// The bubble's own binds are in its environment (Apptainer puts them there).
+	for _, name := range bindVariables {
+		t.Setenv(name, "/var/lib/skiff,/root/.skiff")
+	}
+	pl := testLifecycle(t, nil, "app")
+	if err := os.MkdirAll(pl.PodDir().LogDir(), 0755); err != nil {
+		t.Fatal(err)
+	}
+	h := &PodHandler{lifecycle: pl, podDirectory: pl.PodDir(), logger: pl.logger}
+	spec := &corev1.Container{Name: "app"}
+	for i := 0; i < 2; i++ {
+		if _, result, err := h.runAttempt(&Container{Name: "app"}, spec, false, 0); err != nil || result != attemptExited {
+			t.Fatalf("attempt %d: %v %v", i+1, result, err)
+		}
+	}
+	data, err := os.ReadFile(results)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("the launcher ran %d times: %q", len(lines), data)
+	}
+	own := pl.PodDir().Container("app")
+	for i, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) != 7 {
+			t.Fatalf("attempt %d: %q", i+1, line)
+		}
+		if fields[0] != own.AttemptTmp(i+1) || fields[1] != own.AttemptVarTmp(i+1) {
+			t.Errorf("attempt %d got /tmp %s and /var/tmp %s, want %s and %s", i+1, fields[0], fields[1], own.AttemptTmp(i+1), own.AttemptVarTmp(i+1))
+		}
+		if fields[2] != NoMounts || !strings.Contains(NoMounts, "tmp") || !strings.Contains(NoMounts, "cwd") {
+			t.Errorf("attempt %d: --no-mount %s, want %s (the node's /tmp and the launcher's directory must not be mounted)", i+1, fields[2], NoMounts)
+		}
+		if fields[6] != "bind=unsetunsetunsetunset" {
+			t.Errorf("attempt %d got the bubble's bind mounts from its environment: %s", i+1, fields[6])
+		}
+		if fields[5] != "/" {
+			t.Errorf("attempt %d was launched from %s, want /", i+1, fields[5])
+		}
+		if fields[3] != "0" || fields[4] != "0" {
+			t.Errorf("attempt %d started with files in its /tmp (%s) or /var/tmp (%s)", i+1, fields[3], fields[4])
+		}
+	}
+	if attempts, _ := own.ScratchAttempts(); len(attempts) != 1 || attempts[0] != 2 {
+		t.Errorf("after the restart the pod holds temporary files of attempts %v, want only [2]", attempts)
 	}
 }

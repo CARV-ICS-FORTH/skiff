@@ -44,6 +44,9 @@ import (
 //	volumes/<volume>     the pod's volumes
 //	logs/                container logs (see ContainerPath)
 //	tmp/                 the pod's Apptainer temporary directory (see TmpDir)
+//	scratch/<container>/<attempt>/{tmp,var-tmp}
+//	                     what a container sees as /tmp and /var/tmp, one pair per
+//	                     attempt (see ContainerPath.AttemptTmp)
 //
 // Everything that launches, reads, execs into or cleans up a pod builds these
 // paths here, from the scratch root it was configured with (SkiffPath); no
@@ -228,6 +231,13 @@ func (p PodPath) LogDir() string {
 	return filepath.Join(string(p), "logs")
 }
 
+// ScratchDir holds the containers' own /tmp and /var/tmp (see ContainerPath.AttemptTmp).
+// It is separate from TmpDir, which is Apptainer's: what an application writes and
+// what the runtime unpacks never share a directory, and a container sees only its own.
+func (p PodPath) ScratchDir() string {
+	return filepath.Join(string(p), "scratch")
+}
+
 func (p PodPath) Container(containerName string) ContainerPath {
 	return ContainerPath{
 		p:             p,
@@ -282,6 +292,48 @@ func ParseAttemptLogName(name string) (attempt int, ok bool) {
 		return 0, false
 	}
 	return attempt, true
+}
+
+// ScratchDir is the directory of the container's per-attempt /tmp and /var/tmp.
+func (c ContainerPath) ScratchDir() string {
+	return filepath.Join(c.p.ScratchDir(), c.containerName)
+}
+
+// AttemptTmp is what attempt N of the container sees as /tmp, and AttemptVarTmp as
+// /var/tmp. As in Kubernetes, where they are part of the container's own writable
+// layer, they belong to one container (init containers included), start empty with
+// every attempt, and go with the pod. They are on the node's disk, not in memory, and
+// not shared with another container (an emptyDir volume is how containers share files).
+func (c ContainerPath) AttemptTmp(attempt int) string {
+	return filepath.Join(c.ScratchDir(), strconv.Itoa(attempt), "tmp")
+}
+
+func (c ContainerPath) AttemptVarTmp(attempt int) string {
+	return filepath.Join(c.ScratchDir(), strconv.Itoa(attempt), "var-tmp")
+}
+
+// AttemptScratchDir is the directory that holds both of attempt N.
+func (c ContainerPath) AttemptScratchDir(attempt int) string {
+	return filepath.Join(c.ScratchDir(), strconv.Itoa(attempt))
+}
+
+// ScratchAttempts lists the attempts that have a scratch directory.
+func (c ContainerPath) ScratchAttempts() ([]int, error) {
+	entries, err := os.ReadDir(c.ScratchDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var attempts []int
+	for _, entry := range entries {
+		if attempt, err := strconv.Atoi(entry.Name()); err == nil && attempt > 0 && entry.IsDir() {
+			attempts = append(attempts, attempt)
+		}
+	}
+	sort.Ints(attempts)
+	return attempts, nil
 }
 
 func (c ContainerPath) EnvFilePath() string {

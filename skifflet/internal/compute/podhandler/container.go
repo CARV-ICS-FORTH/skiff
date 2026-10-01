@@ -182,6 +182,7 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 	}
 
 	c := Container{
+		Name:          container.Name,
 		InstanceName:  containerID,
 		Hostname:      hostname,
 		RunAsUser:     uid,

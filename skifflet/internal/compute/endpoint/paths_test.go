@@ -204,3 +204,30 @@ func TestSkiffPath_CheckVolumePath(t *testing.T) {
 		}
 	}
 }
+
+// The directories a container sees as /tmp and /var/tmp are its own and its attempt's, and
+// are listed in attempt order.
+func TestContainerPath_AttemptTmp(t *testing.T) {
+	pod := SkiffWithTmp(t.TempDir(), t.TempDir()).PodWithUID(client.ObjectKey{Namespace: "ns", Name: "web"}, types.UID("u1"))
+	app := pod.Container("app")
+	if got, want := app.AttemptTmp(2), filepath.Join(pod.String(), "scratch", "app", "2", "tmp"); got != want {
+		t.Errorf("AttemptTmp %s, want %s", got, want)
+	}
+	if got, want := app.AttemptVarTmp(2), filepath.Join(pod.String(), "scratch", "app", "2", "var-tmp"); got != want {
+		t.Errorf("AttemptVarTmp %s, want %s", got, want)
+	}
+	for _, dir := range []string{app.AttemptTmp(10), app.AttemptTmp(2), app.AttemptTmp(9)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = os.WriteFile(filepath.Join(app.ScratchDir(), "7"), nil, 0o644) // not a directory
+	_ = os.MkdirAll(filepath.Join(app.ScratchDir(), "x"), 0o755)       // not an attempt
+	attempts, err := app.ScratchAttempts()
+	if err != nil || !reflect.DeepEqual(attempts, []int{2, 9, 10}) {
+		t.Errorf("ScratchAttempts %v, %v; want [2 9 10]", attempts, err)
+	}
+	if attempts, err := pod.Container("none").ScratchAttempts(); err != nil || attempts != nil {
+		t.Errorf("a container without any: %v, %v", attempts, err)
+	}
+}

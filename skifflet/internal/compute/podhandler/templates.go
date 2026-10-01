@@ -17,6 +17,7 @@ package podhandler
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"al.essio.dev/pkg/shellescape"
@@ -51,7 +52,9 @@ func strval(v interface{}) string {
 
 // Container holds definition and execution metadata for a container within a Pod.
 type Container struct {
-	InstanceName  string
+	InstanceName string
+	// Name is the container's name in the pod.
+	Name          string
 	Hostname      string
 	RunAsUser     int64
 	RunAsGroup    int64
@@ -63,8 +66,20 @@ type Container struct {
 	ExecutionMode string
 }
 
-// BuildApptainerArgs constructs the CLI arguments for executing a container via Apptainer/plaidtainer.
-func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath) []string {
+// NoMounts are what Apptainer would mount into a container by default and Skiff does not:
+// the user's home, the paths the site configured, the node's /tmp and /var/tmp (a
+// container has its own, see prepareAttemptScratch) and the working directory of the
+// launcher, which is the bubble's /root with the state directory (credentials included)
+// below it. A container sees its image, the volumes of its pod and nothing else.
+const NoMounts = "home,bind-paths,tmp,cwd"
+
+// BuildApptainerArgs constructs the CLI arguments for executing attempt N of a
+// container via Apptainer/plaidtainer. The node's /tmp and /var/tmp are not mounted
+// (Apptainer would do it by default, giving every container, and the pod directories
+// below it, the whole node's /tmp): the container's own directories for the attempt
+// (prepareAttemptScratch creates them) take their place, unless the pod mounts a
+// volume there itself.
+func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, attempt int) []string {
 	args := []string{
 		"--host-networking",
 		c.ExecutionMode,
@@ -74,7 +89,7 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath) []
 		"--cleanenv",
 		"--no-eval",
 		"--writable-tmpfs",
-		"--no-mount", "home,bind-paths",
+		"--no-mount", NoMounts,
 		"--unsquash",
 	}
 
@@ -94,6 +109,15 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath) []
 	}
 	if _, err := os.Stat(hostsPath); err == nil {
 		binds = append(binds, hostsPath+":/etc/hosts")
+	}
+	own := podDir.Container(c.Name)
+	for _, tmp := range []struct{ host, mountPath string }{
+		{own.AttemptTmp(attempt), "/tmp"},
+		{own.AttemptVarTmp(attempt), "/var/tmp"},
+	} {
+		if !c.mounts(tmp.mountPath) {
+			binds = append(binds, tmp.host+":"+tmp.mountPath+":rw")
+		}
 	}
 	binds = append(binds, c.Binds...)
 	if len(binds) > 0 {
@@ -115,4 +139,14 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath) []
 	args = append(args, c.Args...)
 
 	return args
+}
+
+// mounts says whether one of the container's volume mounts is at path.
+func (c *Container) mounts(path string) bool {
+	for _, bind := range c.Binds {
+		if parts := strings.Split(bind, ":"); len(parts) >= 2 && filepath.Clean(parts[1]) == path {
+			return true
+		}
+	}
+	return false
 }
