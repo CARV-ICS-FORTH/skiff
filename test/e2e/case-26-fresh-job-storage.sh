@@ -75,9 +75,50 @@ OLD_JOB_DIR=$(dirname "$OLD_DIR")
 e2e_assert_eq "the file is on the filesystem" "$(cat "$OLD_DIR/file" 2>/dev/null || true)" from-the-first-job
 e2e_cleanup_register "rm -rf '$OLD_JOB_DIR'"
 
-# It ends (cancelled, as a user would); the cluster goes, the data stays.
-scancel "$CURRENT_JOB"
-e2e_wait_condition 90 "the job stopped" job_gone "$CURRENT_JOB"
+# A pod that handles the end of its life: a preStop hook and a SIGTERM handler that each leave a
+# marker on the host (below ~/.skiff, which a pod sees as /root/.skiff), the handler after
+# a few seconds' work. Both pods of the job have one, on each node.
+TERM_DIR="${HOME}/.skiff/e2e26-term"
+rm -rf "$TERM_DIR"; mkdir -p "$TERM_DIR"; chmod 777 "$TERM_DIR"
+e2e_cleanup_register "rm -rf '$TERM_DIR'"
+for node in "${NODES[@]}"; do
+    cat <<EOF2 | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: term-${node}, namespace: ${NS}}
+spec:
+  nodeName: ${node}
+  terminationGracePeriodSeconds: 30
+  volumes: [{name: h, hostPath: {path: /root/.skiff/e2e26-term, type: Directory}}]
+  containers:
+  - name: app
+    image: ${FIXTURE_IMAGE}
+    command: ["sh", "-c", "trap 'sleep 3; echo handled > /h/term-${node}; exit 0' TERM; echo started > /h/started-${node}; sleep 3600 & wait"]
+    lifecycle: {preStop: {exec: {command: ["sh", "-c", "echo hook > /h/prestop-${node}"]}}}
+    volumeMounts: [{name: h, mountPath: /h}]
+EOF2
+done
+started_both() { [ -e "$TERM_DIR/started-${NODES[0]}" ] && [ -e "$TERM_DIR/started-${NODES[1]}" ]; }
+e2e_wait_condition 120 "both pods that handle their end are running" started_both
+
+# The job is told to end (what Slurm does a minute before the time limit, and what
+# `scancel --batch --signal=TERM` does): the pods of both nodes are stopped first, by their
+# own termination sequence, and then the cluster goes; the data stays.
+graceful_end() {
+    local began now
+    began=$(date +%s)
+    scancel --batch --signal=TERM "$CURRENT_JOB"
+    e2e_wait_condition 90 "the job stopped" job_gone "$CURRENT_JOB"
+    now=$(date +%s)
+    for node in "${NODES[@]}"; do
+        e2e_assert_eq "the preStop hook of the pod on $node ran" "$(cat "$TERM_DIR/prestop-${node}" 2>/dev/null || true)" hook
+        e2e_assert_eq "and its SIGTERM handler, which takes a few seconds, finished" "$(cat "$TERM_DIR/term-${node}" 2>/dev/null || true)" handled
+    done
+    e2e_assert_eq "the job ended in the time Slurm leaves (30 s) and a little more" "$([ $((now - began)) -lt 45 ] && echo yes || echo "no ($((now - began)) s)")" yes
+    e2e_assert_eq "the job's exit status says it was told to end" "$(cat "${HOME}/.skiff/job-results/${CURRENT_JOB}.exit" 2>/dev/null || true)" 143
+    e2e_assert_contains "and the recorded cause says why" "$(cat "${HOME}/.skiff/job-results/${CURRENT_JOB}.cause" 2>/dev/null || true)" "received SIGTERM"
+}
+e2e_subcase_run T39-graceful-job-end graceful_end
 e2e_wait_condition 90 "the nodes are released" all_released
 
 # ---------------------------------------------------------------------------

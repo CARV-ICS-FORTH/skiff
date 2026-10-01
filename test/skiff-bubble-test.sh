@@ -28,6 +28,12 @@ cat > "$test_dir/bin/apptainer" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
     --version) echo "apptainer version 1.5.4" ;;
+    *"kill -TERM"*)
+        # The request to stop the bubble gracefully (to its entrypoint): it stops, taking its
+        # instance with it.
+        echo drain >> "$FAKE_DIR/drain-requests"
+        kill "$(cat "$FAKE_DIR/inst-pid")" 2>/dev/null
+        exit 0 ;;
     *overlay-socket*)
         echo "$*" >> "$FAKE_DIR/helper-args"
         echo $$ > "$FAKE_DIR/helper-pid"
@@ -173,6 +179,10 @@ kill -0 "$BUBBLE_PID" 2>/dev/null || fail "the bubble stopped while the helper w
 kill -TERM "$BUBBLE_PID"; wait_exit
 [ "$EXIT_RC" -eq 143 ] || fail "SIGTERM: exit $EXIT_RC"
 released
+# Told to end (not failing), the bubble first asked its entrypoint to stop the pods, and
+# only then took the relays and slirp4netns away.
+[ "$(wc -l < "$FAKE_DIR/drain-requests" 2>/dev/null | tr -d ' ')" = 1 ] || fail "the bubble did not ask its entrypoint to stop gracefully"
+grep -q 'Stopping the pods of bubble bubble1' "$LOG" || fail "the graceful stop is not in the log"
 [ ! -e "$SKIFF_TMP_DIR/overlay.sock" ] || fail "the handoff socket was left behind"
 [ ! -e "$HOME/.skiff/slirp-bubble1.sock" ] || fail "the API socket was left behind"
 
@@ -254,6 +264,8 @@ run_bubble controller FAKE_HELPER=ok
 kill -KILL "$(cat "$FAKE_DIR/pid")"
 wait_exit
 [ "$EXIT_RC" -eq 1 ] || fail "slirp4netns killed: exit $EXIT_RC, expected 1"
+# A failure does not wait for the pods: nothing is asked of the entrypoint.
+[ ! -e "$FAKE_DIR/drain-requests" ] || fail "a failing bubble waited for its pods to stop"
 grep -q '^process:  slirp4netns' "$HOME/.skiff/job-results/unknown.cause" && grep -q 'exited with status 137 (signal KILL' "$HOME/.skiff/job-results/unknown.cause" \
     || { cat "$HOME/.skiff/job-results/unknown.cause" >&2; fail "the cause does not say that slirp4netns was killed"; }
 

@@ -5,6 +5,10 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --exclusive
 #SBATCH --mem=0
+# Told to stop a minute before the time limit (and by `scancel --batch --signal=TERM`), the
+# job stops its pods gracefully (their PreStop hooks and grace periods) before it ends: a
+# plain scancel signals every process of the job at once and leaves 30 s (Slurm's KillWait).
+#SBATCH --signal=B:TERM@60
 # The job gets whole nodes: the fixed ports and the scratch directory (/tmp/.skiff, which
 # has no user in its path) are the job's alone, and so are the node's resources, which are
 # the pods' too: Skifflet advertises what the job grants (the Slurm memory and CPU of the
@@ -176,8 +180,9 @@ cleanup_slurm() {
     for pid in "${BG_PIDS[@]}"; do
         kill -TERM "$pid" 2>/dev/null || true
     done
+    # The bubbles stop their pods first (see bubble_drain in skiff.sh): about 30 s.
     local wait_count=0
-    while [ $wait_count -lt 10 ]; do
+    while [ $wait_count -lt 40 ]; do
         local any_alive=0
         for pid in "${BG_PIDS[@]}"; do
             if kill -0 "$pid" 2>/dev/null; then

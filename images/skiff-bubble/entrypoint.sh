@@ -391,10 +391,25 @@ while true; do
     NETWORK_WAIT=$((NETWORK_WAIT + 2))
 done
 
+# The pid file lets the host ask this script to stop gracefully (skiff.sh bubble_drain).
+echo $$ > /run/skiff-entrypoint.pid
+
+# How long Skifflet is given to stop the pods of the node (their PreStop hooks and grace
+# periods; it caps them itself at 20 s) before the daemons go: below the 30 s Slurm leaves a
+# job between the signal that ends it and the kill.
+DRAIN_WAIT=25
+
 shutdown_daemons() {
     trap - EXIT INT TERM
     echo "Terminating cluster daemons..."
-    kill -TERM "$SKIFFLET_PID" "$PLAIDD_PID" 2>/dev/null || true
+    # Skifflet first: it stops the pods, which need the network and the API server while
+    # they do. The others follow once it is done (or has not been in time).
+    kill -TERM "$SKIFFLET_PID" 2>/dev/null || true
+    for _ in $(seq 1 $((DRAIN_WAIT * 2))); do
+        kill -0 "$SKIFFLET_PID" 2>/dev/null || break
+        sleep 0.5
+    done
+    kill -TERM "$PLAIDD_PID" 2>/dev/null || true
     if [ -n "$K3S_PID" ]; then
         kill -TERM "$K3S_PID" 2>/dev/null || true
     fi

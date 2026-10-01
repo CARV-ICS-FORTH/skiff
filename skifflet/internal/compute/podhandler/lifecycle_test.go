@@ -492,3 +492,60 @@ func TestPodLifecycle_RunningContainers(t *testing.T) {
 		t.Errorf("a container whose process ended is still listed: %+v", got)
 	}
 }
+
+// Telling the node to stop stops what runs in every pod at once, by the pod's own grace
+// period but never longer than the budget: a container that ends at the signal ends at
+// once, one that ignores it is killed when its grace period (or the budget) is out, and
+// the pods are not deleted.
+func TestPodRegistry_DrainAll(t *testing.T) {
+	registry := NewPodRegistry()
+	start := func(name string, uid types.UID, grace int64, script string) (*PodLifecycle, *exec.Cmd) {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: uid},
+			Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: &grace,
+				Containers: []corev1.Container{{Name: "app", Image: "unused"}}},
+		}
+		pl := NewPodLifecycle(pod, endpoint.PodPath(filepath.Join(t.TempDir(), name)), nil)
+		pl.InitializeStatuses()
+		registry.Register(pl)
+		a, err := pl.BeginAttempt("app", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("sh", "-c", script)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := a.Start(cmd, NoProbes); err != nil {
+			t.Fatal(err)
+		}
+		go a.Wait(cmd)
+		return pl, cmd
+	}
+	// Ends at the signal; ignores the signal for a pod whose grace is 1 s; ignores it
+	// for a pod whose grace (30 s) is longer than the budget.
+	polite, politeCmd := start("polite", "u1", 30, "trap 'exit 0' TERM; sleep 60 & wait")
+	stubborn, stubbornCmd := start("stubborn", "u2", 1, "trap '' TERM; while :; do sleep 1; done")
+	long, longCmd := start("long", "u3", 30, "trap '' TERM; while :; do sleep 1; done")
+	time.Sleep(300 * time.Millisecond) // the shells set their traps
+
+	began := time.Now()
+	if n := registry.DrainAll(3 * time.Second); n != 3 {
+		t.Fatalf("drained %d pods, want 3", n)
+	}
+	took := time.Since(began)
+	if took > 8*time.Second {
+		t.Errorf("draining took %v: a pod was waited for beyond the budget", took)
+	}
+	for name, cmd := range map[string]*exec.Cmd{"polite": politeCmd, "stubborn": stubbornCmd, "long": longCmd} {
+		if err := cmd.Process.Signal(syscall.Signal(0)); err == nil && !cmd.ProcessState.Exited() {
+			// the process is gone or a zombie that Wait has reaped by now; give it a moment
+			time.Sleep(500 * time.Millisecond)
+		}
+		if running := len(map[string]*PodLifecycle{"polite": polite, "stubborn": stubborn, "long": long}[name].RunningContainers()); running != 0 {
+			t.Errorf("%s still has %d container(s) running after the drain", name, running)
+		}
+	}
+	// The pods are still known (the Kubernetes objects are not deleted).
+	if registry.Get("u1") == nil || registry.Get("u2") == nil || registry.Get("u3") == nil {
+		t.Error("draining removed pods from the registry")
+	}
+}

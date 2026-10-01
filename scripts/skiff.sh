@@ -567,12 +567,29 @@ bubble_handle_int() {
     exit $EXIT_CODE
 }
 
+# bubble_drain: when the job is told to end (SIGTERM or SIGINT, not a failure), the bubble
+# stops its pods by their own termination sequence before anything is taken from under them:
+# its entrypoint is asked to shut down (it stops Skifflet first, which stops the pods, then
+# the other daemons), which needs the relays and slirp4netns still up, and this waits for the
+# instance to end, for no more than Slurm leaves between that signal and the kill.
+bubble_drain() {
+    [[ "${PID:-}" =~ ^[0-9]+$ ]] && kill -0 "$PID" 2>/dev/null || return 0
+    echo "Stopping the pods of bubble $NAME..."
+    timeout 10 apptainer exec --pwd / "instance://$NAME" sh -c 'kill -TERM "$(cat /run/skiff-entrypoint.pid)"' >/dev/null 2>&1 || return 0
+    local i
+    for i in $(seq 1 56); do
+        kill -0 "$PID" 2>/dev/null || return 0
+        sleep 0.5
+    done
+}
+
 bubble_cleanup() {
     local original_status=$?
     trap - EXIT INT TERM
     if [ "$EXIT_CODE" -eq 0 ] && [ "$original_status" -ne 0 ]; then
         EXIT_CODE=$original_status
     fi
+    case "$EXIT_CODE" in 143|130) bubble_drain ;; esac
     echo "Cleaning up Bubble $NAME..."
     if [[ -n ${SOCAT_PID_6443:-} ]]; then
         kill "$SOCAT_PID_6443" 2>/dev/null || true

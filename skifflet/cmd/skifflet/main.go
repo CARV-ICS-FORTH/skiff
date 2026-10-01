@@ -25,6 +25,7 @@ import (
 
 	"skifflet/cmd/skifflet/commands"
 	"skifflet/cmd/skifflet/commands/root"
+	"skifflet/internal/compute/podhandler"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -75,6 +76,12 @@ func main() {
 
 	go func() {
 		<-sig
+		// The node is told to stop (the job ends): its pods stop first, by their own
+		// termination sequence (PreStop hooks, SIGTERM, their grace period, within what
+		// the job's end allows), and only then does the rest.
+		if n := podhandler.GlobalRegistry.DrainAll(podhandler.DrainBudget); n > 0 {
+			log.G(ctx).Infof("stopped the %d pod(s) of this node", n)
+		}
 		cancel()
 	}()
 

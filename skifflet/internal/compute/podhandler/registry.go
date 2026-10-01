@@ -2,6 +2,7 @@ package podhandler
 
 import (
 	"sync"
+	"time"
 
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -121,4 +122,31 @@ func (r *PodRegistry) All() []*PodLifecycle {
 		res = append(res, l)
 	}
 	return res
+}
+
+// DrainBudget is the longest a stop of the whole node waits for pods to terminate: below the
+// 30 s Slurm gives a job between the signal that ends it and the kill (its KillWait).
+const DrainBudget = 20 * time.Second
+
+// DrainAll stops what runs in every pod by the pod's own termination sequence (PreStop
+// hook, SIGTERM, then the kill after the pod's grace period, at most budget), all pods at
+// once, and returns how many there were when the last is done. It is what the node does
+// when it is told to stop (the job ends): the Kubernetes objects stay as they are, since
+// the claims and the data of a job are not for the job to delete.
+func (r *PodRegistry) DrainAll(budget time.Duration) int {
+	lifecycles := r.All()
+	var drained sync.WaitGroup
+	for _, l := range lifecycles {
+		drained.Add(1)
+		go func() {
+			defer drained.Done()
+			grace := TerminationGrace(l.GetPod(), l.GetPod())
+			if grace > budget {
+				grace = budget
+			}
+			l.ReleaseLiveResources(grace)
+		}()
+	}
+	drained.Wait()
+	return len(lifecycles)
 }
