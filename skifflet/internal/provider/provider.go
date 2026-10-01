@@ -68,6 +68,13 @@ func isPodOwnedByNode(pod *corev1.Pod, ownNode string) bool {
 }
 
 // VirtualK8S implements the virtual-kubelet provider interface and stores pods in memory.
+// DefaultPodSyncWorkers is how many pods Virtual Kubelet's controller works on at the
+// same time. A pod is deleted synchronously inside the worker that took it, for as long
+// as its PreStop hook and termination grace period take (30 s by default), so this is
+// also how many pods can be terminating before one that arrives has to wait. The queue
+// hands a pod to one worker at a time, so a pod's own operations stay serialized.
+const DefaultPodSyncWorkers = 8
+
 type VirtualK8S struct {
 	InitConfig
 

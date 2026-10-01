@@ -160,6 +160,7 @@ Rules that the code comments hold and the tests enforce: nothing publishes statu
 | `--working-dir` | `$HOME` | Base working directory for Skiff runtime files (`~/.skiff`) |
 | `--pods-dir` | `/tmp/.skiff/.pods` | Ephemeral directory for pod job state and volume mounts |
 | `--cluster-domain` | `$SKIFF_CLUSTER_DOMAIN`, else `cluster.local` | DNS domain of the cluster, for the search path of pods that use the cluster DNS |
+| `--pod-sync-workers` | `8` | Pods Virtual Kubelet's controller works on at once. A pod is deleted inside the worker that took it, for as long as its PreStop hook and grace period take, so this is also how many pods can be terminating before one that arrives has to wait (T26) |
 | `--plaid-socket` | `$PLAID_SOCKET_PATH`, else `/run/plaid/plaidd.sock` | API socket of `plaidd` |
 | `--disable-taint` | `false` | Whether to disable the default `virtual-kubelet.io/provider=skiff` taint |
 | `--certificate` | `$APISERVER_CERT_LOCATION` | Server TLS certificate for Kubelet HTTPS serving endpoint (logs/exec) |

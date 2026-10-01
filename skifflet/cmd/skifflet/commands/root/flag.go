@@ -22,6 +22,7 @@ import (
 
 	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
+	"skifflet/internal/provider"
 
 	"github.com/spf13/pflag"
 	corev1 "k8s.io/api/core/v1"
@@ -112,7 +113,7 @@ func installFlags(flags *pflag.FlagSet, c *Opts) {
 
 	flags.StringVar(&c.DefaultHostEnvironment.ClusterDomain, "cluster-domain", envOrDefault(EnvClusterDomain, compute.DefaultClusterDomain), "DNS domain of the cluster, for the search path of pods")
 
-	flags.IntVar(&c.PodSyncWorkers, "pod-sync-workers", 1, `set the number of pod synchronization workers`)
+	flags.IntVar(&c.PodSyncWorkers, "pod-sync-workers", provider.DefaultPodSyncWorkers, `set the number of pod synchronization workers (a terminating pod occupies one until it is gone)`)
 	flags.DurationVar(&c.InformerResyncPeriod, "full-resync-period", 0, "how often to perform a full resync of pods between kubernetes and the provider")
 
 	flags.DurationVar(&c.StartupTimeout, "startup-timeout", 30*time.Second, "How long to wait for the virtual-kubelet to start")

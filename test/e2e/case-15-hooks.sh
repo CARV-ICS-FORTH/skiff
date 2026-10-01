@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Case 15: lifecycle hooks (T10, T11).
+# Case 15: lifecycle hooks (T10, T11) and deletion progress (T26).
 #
 # The fixture application records its own events (start, term, exit) and its hooks
 # record theirs, with timestamps, in /ctl/events. /ctl is a host directory, so the
@@ -223,5 +223,53 @@ liveness_prestop() {
     has_reason e2e15-live Killing || e2e_fail "no Killing event: $(reasons e2e15-live | tr '\n' ' ')"
 }
 e2e_subcase_run T11-liveness-prestop liveness_prestop
+
+# ---------------------------------------------------------------------------
+# T26-deletion-progress: pods that are being deleted (each one inside a PreStop hook
+# that takes most of its grace period) do not hold up an unrelated pod on the same
+# node. Several deletions run at the same time; the bystander is created and ready
+# long before any of them has ended, and each of them still ends by itself with its
+# resources released.
+# ---------------------------------------------------------------------------
+deletion_progress() {
+    local slow
+    local slow_pods="e2e15-slow-a e2e15-slow-b e2e15-slow-c"
+    for slow in $slow_pods; do
+        hook_pod "$slow" Always 90 "" '    lifecycle:
+      preStop:
+        exec: {command: ["'"$FIXTURE"'", "app", "hook", "prestop", "--control-dir", "/ctl", "--sleep", "60"]}' '    readinessProbe:
+      httpGet: {path: /ready, port: http}
+      periodSeconds: 1'
+    done
+    for slow in $slow_pods; do
+        e2e_wait_pod_ready "$NS" "$slow" 90
+        runtime_record_pod "$NS" "$slow"
+    done
+    local start=$SECONDS
+    for slow in $slow_pods; do
+        e2e_kubectl delete pod "$slow" -n "$NS" --wait=false > /dev/null
+    done
+    # Each deletion is inside its hook before the bystander is submitted.
+    hook_started() { [ -n "$(first_ms "$1" 'event=hook name=prestop')" ]; }
+    for slow in $slow_pods; do e2e_wait_condition 30 "the PreStop hook of $slow started" hook_started "$slow"; done
+
+    hook_pod e2e15-bystander Always 5 "" "" '    readinessProbe:
+      httpGet: {path: /ready, port: http}
+      periodSeconds: 1'
+    e2e_wait_pod_ready "$NS" e2e15-bystander 45
+    local ready_after=$((SECONDS - start))
+    for slow in $slow_pods; do
+        e2e_kubectl get pod "$slow" -n "$NS" > /dev/null 2>&1 \
+            || e2e_fail "$slow was gone when the bystander became ready (after ${ready_after}s): the deletion did not take its PreStop time"
+    done
+    e2e_log "T26: the bystander was ready ${ready_after}s after the deletions began, while all three were still terminating"
+
+    for slow in $slow_pods; do
+        e2e_kubectl wait --for=delete pod "$slow" -n "$NS" --timeout=120s > /dev/null
+        runtime_verify_gone "$NS" "$slow" 60
+    done
+    e2e_kubectl delete pod e2e15-bystander -n "$NS" --timeout=60s > /dev/null
+}
+e2e_subcase_run T26-deletion-progress deletion_progress
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

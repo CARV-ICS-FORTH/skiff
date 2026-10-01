@@ -64,7 +64,7 @@ The profile requires these checks: cases 01–23, four individual daemon failure
 | 06 | T04 (kubelet routes and their failures) |
 | 13 | T07, T08, T09 (startup, readiness and liveness probes, Service endpoints) |
 | 14 | T14, T17 (exec, pseudo-terminals, cancellation) |
-| 15 | T10, T11 (lifecycle hooks) |
+| 15 | T10, T11, T26 (lifecycle hooks; unrelated pods are created while several pods are inside a long PreStop hook) |
 | 16 | T12, T13 (logs and their attempts) |
 | 17 | T18 (network settings that differ from the defaults, run as a fresh deployment) |
 | 18 | T05, T06, T15, T16 (refused forms, updates, environment and files, continuity) |

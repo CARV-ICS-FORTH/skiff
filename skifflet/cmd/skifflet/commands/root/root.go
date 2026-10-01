@@ -285,6 +285,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 		}
 
 		// Start the Pod controller.
+		DefaultLogger.Info("Pod controller", "syncWorkers", c.PodSyncWorkers)
 		go func() {
 			if err := pc.Run(ctx, c.PodSyncWorkers); err != nil && !errors.Is(err, context.Canceled) {
 				DefaultLogger.Error(err, "Pod Controller Has failed")
