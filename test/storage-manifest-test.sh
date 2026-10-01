@@ -2,7 +2,7 @@
 # The default storage manifest the controller installs (images/skiff-bubble/storage.yaml):
 # what the entrypoint does to it (replace the placeholder with the job's volume directory)
 # gives a configuration the provisioner can read, and the settings the design depends on
-# are there. The entrypoint's own sed is the one used here.
+# are there (one default class, Delete). The entrypoint's own sed is the one used here.
 set -euo pipefail
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 manifest="$repo_dir/images/skiff-bubble/storage.yaml"
@@ -31,12 +31,11 @@ for d in docs:
     if "kind: StorageClass" in d:
         name = re.search(r"^  name: (\S+)", d, re.M).group(1)
         classes[name] = d
-assert set(classes) == {"local-path", "local-path-retain"}, classes.keys()
+assert set(classes) == {"local-path"}, classes.keys()
 for name, d in classes.items():
     assert "volumeBindingMode: Immediate" in d, name
     assert 'defaultVolumeType: "hostPath"' in d, name + ": a local volume needs node affinity, a shared directory has none"
 assert "reclaimPolicy: Delete" in classes["local-path"] and "storageclass.kubernetes.io/is-default-class: \"true\"" in classes["local-path"]
-assert "reclaimPolicy: Retain" in classes["local-path-retain"] and "is-default-class" not in classes["local-path-retain"]
 assert text.count("rancher/local-path-provisioner:v0.0.32") == 1 and text.count("rancher/mirrored-library-busybox:1.37.0") == 1
 PY
 echo "storage-manifest-test: ok"

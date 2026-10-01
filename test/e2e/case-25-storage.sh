@@ -95,11 +95,14 @@ default_class() {
     exec_in e2e25-default-pod sh -c 'echo written > /data/file'
     e2e_assert_eq "what the pod wrote is on the host" "$(cat "$dir/file" 2>/dev/null || true)" written
 
-    # An explicit class, and the class that retains.
-    claim e2e25-explicit "storageClassName: local-path-retain"
-    e2e_wait_condition 60 "a claim of the retaining class is bound" bound e2e25-explicit
-    e2e_assert_eq "the retaining class was honoured" "$(e2e_kubectl get pv "$(volume_of e2e25-explicit)" -o jsonpath='{.spec.persistentVolumeReclaimPolicy}')" Retain
-    e2e_cleanup_register "e2e_kubectl delete pv $(volume_of e2e25-explicit) --ignore-not-found --wait=false; rm -rf $(host_path "$(volume_path e2e25-explicit)")"
+    # An explicit class is honoured, one that does not exist is not satisfied.
+    claim e2e25-explicit "storageClassName: local-path"
+    e2e_wait_condition 60 "a claim of the class named explicitly is bound" bound e2e25-explicit
+    e2e_assert_eq "it has that class's reclaim policy" "$(e2e_kubectl get pv "$(volume_of e2e25-explicit)" -o jsonpath='{.spec.persistentVolumeReclaimPolicy}')" Delete
+    claim e2e25-nosuch "storageClassName: no-such-class"
+    sleep 15
+    e2e_assert_eq "a class that does not exist is not provisioned" "$(claim_phase e2e25-nosuch)" Pending
+    e2e_kubectl delete pvc e2e25-nosuch e2e25-explicit -n "$NS" --wait=false > /dev/null
     # An explicitly empty class asks for no provisioning at all.
     claim e2e25-none 'storageClassName: ""'
     sleep 15
@@ -273,7 +276,8 @@ e2e_subcase_run T28-local-control local_control
 # ---------------------------------------------------------------------------
 # T29-delete-and-retain: with the Delete policy the directory is removed from the
 # filesystem when the claim goes (and only that one: others are untouched); a claim that is
-# in use stays until its pods are gone (protection); with Retain the volume is Released and
+# in use stays until its pods are gone (protection); and when a user sets the reclaim policy
+# of a volume to Retain (standard Kubernetes: a patch of the volume) the volume is Released and
 # the data stays.
 # ---------------------------------------------------------------------------
 delete_and_retain() {
@@ -305,10 +309,11 @@ delete_and_retain() {
     e2e_assert_eq "another claim's data is untouched" "$(runtime_ssh_node "$SHARED_HOME_HOST" "cat '$dir_other/payload'")" other
     e2e_kubectl delete pod e2e25-other-pod -n "$NS" --timeout=60s > /dev/null
 
-    # Retain: a claim of the retaining class and its data.
-    claim e2e25-keep "storageClassName: local-path-retain"
-    e2e_wait_condition 60 "the retaining claim is bound" bound e2e25-keep
+    # Retain: the user patches the volume's reclaim policy, as in any Kubernetes cluster.
+    claim e2e25-keep
+    e2e_wait_condition 60 "the claim is bound" bound e2e25-keep
     keep_pv=$(volume_of e2e25-keep)
+    e2e_kubectl patch pv "$keep_pv" -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}' > /dev/null
     pod e2e25-keep-pod "$NODE_A" e2e25-keep
     e2e_wait_pod_phase "$NS" e2e25-keep-pod Running 120
     exec_in e2e25-keep-pod sh -c 'echo kept > /data/result'

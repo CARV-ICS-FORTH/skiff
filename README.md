@@ -83,7 +83,7 @@ kubectl delete pvc results         # the standard Delete reclaim policy: the dir
 What to know:
 
 - The data of a job's claims is in `~/.skiff/volumes/<job ID>-<random>/pvc-<claim UID>_<namespace>_<claim>/`. Each job has a directory of its own (the random part keeps a reused Slurm job ID from finding an old one) and a new cluster starts without the old claims, so a claim of the same name in a new job gets a new, empty directory. **Ending a job does not delete claims**: whatever you did not delete stays there for you to collect or remove (`rm -rf ~/.skiff/volumes/<job>`).
-- `storageClassName: local-path-retain` keeps the directory when the claim is deleted (the volume becomes `Released`). `storageClassName: ""` asks for no provisioning, as in Kubernetes.
+- `storageClassName: ""` asks for no provisioning, as in Kubernetes.
 - The requested size is **not a limit**: the shared filesystem decides, and nothing reserves or checks space.
 - To use data that already exists, give a pod a `hostPath` volume or create a PersistentVolume (`hostPath` or `local`) for a directory below `~/.skiff` (`/root/.skiff` in the cluster) or the scratch directory; those paths are the user's and are never removed by Skiff.
 - Pods placed with `nodeName` work too, because claims are bound without waiting for a pod. The first claim of a cluster pulls two small images (the provisioner and its helper) from Docker Hub onto the nodes that need them, as CoreDNS is pulled.

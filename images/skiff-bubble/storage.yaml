@@ -8,13 +8,14 @@
 # local-path) is given a directory @VOLUMES_BASE@/pvc-<claim UID>_<namespace>_<claim>
 # on the shared home, a hostPath volume without node affinity, so any node of the job can
 # use it and any access mode is accepted. Deleting the claim deletes the directory
-# (reclaimPolicy Delete); the class local-path-retain keeps it. The requested size is not
-# a limit: the shared filesystem is the authority and is not asked for a quota.
+# (reclaimPolicy Delete). Nothing deletes claims when a job ends, so what a user did not
+# delete is kept anyway. The requested size is not a limit: the shared filesystem is the
+# authority and is not asked for a quota.
 #
 # Differences from K3s's manifest: the shared filesystem in the configuration; the volume
 # type hostPath (a local volume needs node affinity, which a shared directory has not);
 # volumes are bound at once (Immediate), which also suits pods placed with nodeName; no
-# registry prefix on the images; a second class that retains.
+# registry prefix on the images.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -114,15 +115,6 @@ provisioner: rancher.io/local-path
 volumeBindingMode: Immediate
 reclaimPolicy: Delete
 ---
-apiVersion: storage.k8s.io/v1
-kind: StorageClass
-metadata:
-  name: local-path-retain
-  annotations:
-    defaultVolumeType: "hostPath"
-provisioner: rancher.io/local-path
-volumeBindingMode: Immediate
-reclaimPolicy: Retain
 ---
 kind: ConfigMap
 apiVersion: v1
