@@ -40,6 +40,12 @@
 # with the bubbles about it.
 SKIFF_STATE_DIR="$HOME/.skiff"
 
+# The data of the PersistentVolumeClaims of every job lives below the state directory, in
+# a directory of its own per job (see skiff_new_instance_id), so that identically named
+# claims of different jobs never share files and what a job left can be told from what
+# another left. Like the state directory it is fixed.
+SKIFF_VOLUMES_DIR="$SKIFF_STATE_DIR/volumes"
+
 # What VXLAN adds to every packet of the pod network.
 SKIFF_VXLAN_OVERHEAD=50
 
@@ -201,6 +207,11 @@ skiff_config_validate() {
         errors=$((errors + 1))
     fi
 
+    if [ -n "${SKIFF_JOB_INSTANCE:-}" ] && ! [[ "$SKIFF_JOB_INSTANCE" =~ ^[0-9]+-[0-9a-f]{8}$ ]]; then
+        echo "SKIFF_JOB_INSTANCE: \"$SKIFF_JOB_INSTANCE\" is not a job instance name (job ID, a dash and eight hexadecimal digits)" >&2
+        errors=$((errors + 1))
+    fi
+
     if ! [[ "$SKIFF_UPLINK_MTU" =~ ^[0-9]+$ ]] || [ "$SKIFF_UPLINK_MTU" -lt 576 ] || [ "$SKIFF_UPLINK_MTU" -gt 9000 ]; then
         echo "SKIFF_UPLINK_MTU: \"$SKIFF_UPLINK_MTU\" is not an MTU between 576 and 9000" >&2
         errors=$((errors + 1))
@@ -246,10 +257,18 @@ skiff_pod_address() {
     _skiff_int2ip $(( _NET + $1 ))
 }
 
+# skiff_new_instance_id: the name of a job's volume directory: the Slurm job ID, which
+# helps to recognise leftovers, and eight random hexadecimal digits, because Slurm reuses
+# job IDs and a reused ID must not find the directory of the job that had it before.
+skiff_new_instance_id() {
+    echo "${SLURM_JOB_ID:-0}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+}
+
 # skiff_config_export: make the resolved values available to what is started.
 skiff_config_export() {
     export SKIFF_POD_CIDR SKIFF_SERVICE_CIDR SKIFF_CLUSTER_DOMAIN SKIFF_CLUSTER_DNS \
         SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_TMP_DIR
+    [ -z "${SKIFF_JOB_INSTANCE:-}" ] || export SKIFF_JOB_INSTANCE
 }
 
 # The programs the scripts run on the allocated nodes themselves, outside the bubble.
@@ -290,6 +309,7 @@ skiff_config_print() {
     echo "  Cluster domain:   $SKIFF_CLUSTER_DOMAIN"
     echo "  MTU:              pods $SKIFF_POD_MTU, bubble link $SKIFF_UPLINK_MTU"
     echo "  Directories:      state $SKIFF_STATE_DIR (fixed, /root/.skiff in the cluster), scratch $SKIFF_TMP_DIR (node-local)"
+    [ -z "${SKIFF_JOB_INSTANCE:-}" ] || echo "  Volume data:      $SKIFF_VOLUMES_DIR/$SKIFF_JOB_INSTANCE (claims of this job)"
 }
 
 # skiff_outer_network BUBBLE_ID: the network of the link that joins a bubble to its

@@ -65,6 +65,8 @@ echo "Cluster Setup:"
 echo "  Controller Node: $CONTROLLER_NODE ($CONTROLLER_IP)"
 echo "  Nodes: ${NODES[*]}"
 
+# The job's own volume directory (see skiff-config.sh); a cluster gets a new one every time.
+SKIFF_JOB_INSTANCE=$(skiff_new_instance_id)
 skiff_config_validate "$NUM_NODES" "$CONTROLLER_IP" || exit 1
 skiff_config_export
 skiff_config_print

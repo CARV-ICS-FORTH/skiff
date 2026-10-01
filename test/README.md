@@ -57,7 +57,7 @@ bash test/e2e/network/test-tap-webhook.sh
 
 The qualification profile covers a dedicated two-node Slurm allocation with IPv4 TAP networking with Plaid translating Services. A required daemon failure stops the whole job; recovery uses a fresh job. Runtime qualification currently targets ARM64. Building for another architecture does not qualify its runtime behavior.
 
-The profile requires these checks: cases 01–24, four individual daemon failure scenarios, TAP networking and admission checks, candidate identity, teardown with a second boot, and the named subcases listed in `test/e2e/lib/profile.sh`. They cover workload startup and completion, init containers, networking, readiness, environment and volumes, logs, exec and port-forward, restarts, graceful deletion, startup failures and cleanup, and the sprint 1 compatibility work:
+The profile requires these checks: cases 01–26, five individual daemon failure scenarios (the controller's K3s too; each also checks that the data of a claim survives the failed job), TAP networking and admission checks, candidate identity, teardown with a second boot, and the named subcases listed in `test/e2e/lib/profile.sh`. They cover workload startup and completion, init containers, networking, readiness, environment and volumes, logs, exec and port-forward, restarts, graceful deletion, startup failures and cleanup, and the sprint 1 compatibility work:
 
 | Case | Acceptance groups |
 |---|---|
@@ -69,6 +69,8 @@ The profile requires these checks: cases 01–24, four individual daemon failure
 | 16 | T12, T13 (logs and their attempts) |
 | 17 | T18, T32 (network and scratch-directory settings that differ from the defaults, run as a fresh deployment; where Apptainer's scratch really is during an image pull, and where a volume may be) |
 | 18 | T05, T06, T15, T16 (refused forms, updates, environment and files, continuity) |
+| 25 | T27, T28, T29 (the default StorageClass: a claim without a class is bound, its directory is below the job's own on the shared home and what a pod writes is there; explicit and empty classes; no quota; a provisioner that is away for longer than the old wait; a refused creation and its recovery; replacement pods on the other node and a ReadWriteMany claim; a local volume keeps its pod on its node; Delete removes the directory, a claim in use is protected, Retain keeps it, a failed deletion is retried, a user's own paths are never touched) |
+| 26 | T30 (a new job, with jobs of its own: the old data is still there below a directory named after the old job, the new cluster has none of the old objects, and a claim of the same namespace and name gets an empty directory of its own) |
 | 24 | T31 (the temporary files of a container: its own `/tmp` and `/var/tmp` on the node's disk, empty at every attempt, not shared with another container, not the node's, gone with the pod; emptyDir volumes share files, also across a restart) |
 | 19 | T20 (ten create/restart/delete cycles with probes, hooks, logs and exec, and what they leave behind) |
 | 20 | T21 (the overlay socket: held by plaidd in the host's network namespace, no slirp forward for it, no helper or handoff socket left, cross-node traffic moves the overlay counters) |

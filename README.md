@@ -47,6 +47,47 @@ Skiff uses two locations, and nothing else on the host:
 
 A volume may use only these two locations. A `hostPath`, or a PersistentVolume bound by a claim, anywhere else is refused with a message naming the two (the bubble does not see the rest of the host, so a directory created there would be lost with it).
 
+### Storage
+
+A PersistentVolumeClaim just works: the cluster has a default StorageClass, `local-path` ([Local Path Provisioner](https://github.com/rancher/local-path-provisioner) on your shared home directory), so a claim that names no class gets a directory of its own, bound at once and usable from any node of the job:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: results}
+spec:
+  accessModes: [ReadWriteOnce]       # ReadWriteMany works too: the directory is on the shared home
+  resources: {requests: {storage: 10Gi}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: writer}
+spec:
+  containers:
+  - name: app
+    image: busybox
+    command: ["sh", "-c", "echo done > /data/result; sleep 3600"]
+    volumeMounts: [{name: data, mountPath: /data}]
+  volumes:
+  - name: data
+    persistentVolumeClaim: {claimName: results}
+```
+
+```bash
+kubectl apply -f results.yaml
+kubectl delete pod writer          # the data stays with the claim: a new pod on any node finds it
+cat ~/.skiff/volumes/*/pvc-*_default_results/result      # and so can you, on the host
+kubectl delete pvc results         # the standard Delete reclaim policy: the directory is removed
+```
+
+What to know:
+
+- The data of a job's claims is in `~/.skiff/volumes/<job ID>-<random>/pvc-<claim UID>_<namespace>_<claim>/`. Each job has a directory of its own (the random part keeps a reused Slurm job ID from finding an old one) and a new cluster starts without the old claims, so a claim of the same name in a new job gets a new, empty directory. **Ending a job does not delete claims**: whatever you did not delete stays there for you to collect or remove (`rm -rf ~/.skiff/volumes/<job>`).
+- `storageClassName: local-path-retain` keeps the directory when the claim is deleted (the volume becomes `Released`). `storageClassName: ""` asks for no provisioning, as in Kubernetes.
+- The requested size is **not a limit**: the shared filesystem decides, and nothing reserves or checks space.
+- To use data that already exists, give a pod a `hostPath` volume or create a PersistentVolume (`hostPath` or `local`) for a directory below `~/.skiff` (`/root/.skiff` in the cluster) or the scratch directory; those paths are the user's and are never removed by Skiff.
+- Pods placed with `nodeName` work too, because claims are bound without waiting for a pod. The first claim of a cluster pulls two small images (the provisioner and its helper) from Docker Hub onto the nodes that need them, as CoreDNS is pulled.
+
 ## Architecture & Components
 
 Skiff is organized as a unified monorepo:

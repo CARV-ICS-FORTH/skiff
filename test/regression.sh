@@ -3,12 +3,18 @@
 set -euo pipefail
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_dir"
+# Every shell script that runs somewhere no test reaches (the bubble's entrypoint runs
+# only inside a bubble) at least parses.
+for script in scripts/*.sh scripts/skiff.slurm images/skiff-bubble/entrypoint.sh; do
+    bash -n "$script"
+done
 python3 test/e2e/lib/candidate.py --self-test
 python3 test/e2e/images/fixture/app_test.py
 python3 test/e2e/lib/pty_client.py --self-test
 bash test/skiff-supervision-test.sh
 bash test/skiff-config-test.sh >/dev/null
 bash test/skiff-bubble-test.sh
+bash test/storage-manifest-test.sh
 if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
     for suite in runtime-observer profile common; do
         bash "test/e2e/lib/${suite}-test.sh"

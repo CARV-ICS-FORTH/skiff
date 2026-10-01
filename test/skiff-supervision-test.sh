@@ -39,6 +39,7 @@ cat > "$test_dir/repo/scripts/skiff-bubble.sh" <<'EOF'
 #!/usr/bin/env bash
 if [ "$TEST_CHILD_MODE" = early ]; then exit 9; fi
 mkdir -p "$HOME/.skiff/tls"
+echo "$SKIFF_JOB_INSTANCE" >> "$HOME/.skiff/instances"
 touch "$HOME/.skiff/kubeconfig" "$HOME/.skiff/tls/server-ca.crt"
 if [ "$TEST_CHILD_MODE" = term ]; then exec sleep 30; fi
 sleep 0.1
@@ -111,6 +112,10 @@ for mode in 7 0 early empty term; do
         case "$mode" in 7) expected=7 ;; early) expected=9 ;; *) expected=1 ;; esac
     fi
     check_result "$mode" "$expected" "$rc"
+    # Every job's bubbles are told the job's own volume directory name.
+    if [ "$mode" != empty ] && [ "$mode" != early ]; then
+        grep -Eq "^${SLURM_JOB_ID}-[0-9a-f]{8}\$" "$HOME/.skiff/instances" || { echo "$mode: the bubble was not given this job's volume directory name: $(cat "$HOME/.skiff/instances" 2>&1)" >&2; exit 1; }
+    fi
     if [ "$mode" = 7 ] && [ ! -f "$HOME/.skiff/published-image-used" ]; then
         echo "Default deployment did not select the published image" >&2; exit 1
     fi

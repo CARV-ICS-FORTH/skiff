@@ -37,7 +37,7 @@ case "$*" in
         esac ;;
     "instance run"*) echo "$*" > "$FAKE_DIR/instance-run"; exit 0 ;;
     "instance list -j"*) echo '{"instances":[{"instance":"bubble1","pid":4242}]}' ;;
-    "instance list"*) printf 'INSTANCE NAME PID\nbubble1 4242\n' ;;
+    "instance list"*) [ -e "$FAKE_DIR/instance-gone" ] || printf 'INSTANCE NAME PID\nbubble1 4242\n' ;;
     "instance stop"*) echo stop >> "$FAKE_DIR/instance-stop" ;;
 esac
 exit 0
@@ -128,6 +128,8 @@ grep -q -- "$HOME/.skiff/images/skiff-bubble.sif /usr/local/bin/plaidctl overlay
 grep -q -- "--env SKIFF_OVERLAY_HANDOFF=$SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told the handoff path"
 grep -q -- "--bind $SKIFF_TMP_DIR:$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not given the scratch directory at the same path"
 grep -q -- "--env SKIFF_TMP_DIR=$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not told the scratch directory"
+# A bubble started by hand makes the job's volume directory name; one that is given is kept.
+grep -Eq -- "--env SKIFF_JOB_INSTANCE=0-[0-9a-f]{8} " "$FAKE_DIR/instance-run" || { cat "$FAKE_DIR/instance-run" >&2; fail "the bubble was not given a job instance name"; }
 for variable in APPTAINER_TMPDIR SINGULARITY_TMPDIR TMPDIR; do
     grep -q -- "--env $variable=$SKIFF_TMP_DIR/.apptainer/tmp " "$FAKE_DIR/instance-run" || fail "$variable is not below the scratch directory"
 done
@@ -144,6 +146,9 @@ released
 [ ! -e "$SKIFF_TMP_DIR/overlay.sock" ] || fail "the handoff socket was left behind"
 [ ! -e "$HOME/.skiff/slirp-bubble1.sock" ] || fail "the API socket was left behind"
 
+run_bubble controller SKIFF_JOB_INSTANCE=4711-0123abcd
+grep -q -- "--env SKIFF_JOB_INSTANCE=4711-0123abcd " "$FAKE_DIR/instance-run" || fail "the job instance name that skiff.slurm made was not passed on"
+kill -TERM "$BUBBLE_PID"; wait_exit; released
 # A worker forwards no API port.
 run_bubble node FAKE_HELPER=ok
 grep -q 'started successfully' "$LOG" || fail "the node bubble did not start"
@@ -169,6 +174,18 @@ wait_exit
 [ "$EXIT_RC" -ne 0 ] || fail "a forward that could not bind did not stop the bubble"
 grep -qi 'kubelet' "$LOG" && grep -q 'Address already in use' "$LOG" || fail "the failure does not name the forward and the reason"
 released
+
+# When the bubble's instance ends by itself, the job's output carries the end of the
+# bubble's own log, which says which daemon it was.
+log_dir="$HOME/.apptainer/instances/logs/$(hostname)/$(id -un)"
+mkdir -p "$log_dir"
+printf 'earlier line\nFATAL: k3s server (PID 99) exited unexpectedly!\n' > "$log_dir/bubble1.out"
+run_bubble controller FAKE_HELPER=ok
+touch "$FAKE_DIR/instance-gone"
+wait_exit
+[ "$EXIT_RC" -eq 1 ] || fail "an instance that ended: exit $EXIT_RC, expected 1"
+grep -q "FATAL: k3s server (PID 99) exited unexpectedly" "$LOG" || fail "the job output does not carry the bubble's own log"
+rm -f "$log_dir/bubble1.out"
 
 # A scratch directory that cannot be created stops the bubble before anything starts,
 # with the reason; no slirp4netns, helper or instance was started.

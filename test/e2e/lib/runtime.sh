@@ -227,7 +227,7 @@ runtime_verify_gone() {
     e2e_log "Verifying runtime cleanup for UID ${uid} on node ${node} (${node_ip})..."
 
     while true; do
-        local lingering=() observation process_cmd record pid start
+        local lingering=() unknown=() observation process_cmd record pid start
 
         process_cmd="set -e; for rec in '${pause_pid}:${pause_start}'"
         IFS=',' read -ra process_records <<< "$processes"
@@ -241,23 +241,25 @@ runtime_verify_gone() {
         done
         process_cmd+="; do pid=\${rec%%:*}; start=\${rec#*:}; if [ -r /proc/\$pid/stat ]; then observed=\$(awk '{print \$22}' /proc/\$pid/stat); if [ \"\$observed\" = \"\$start\" ]; then echo 1; exit 0; fi; fi; done; echo 0"
         observation=$(runtime_observe "$node" "$process_cmd")
-        case "$observation" in ABSENT) ;; PRESENT) lingering+=(process) ;; *) e2e_fail "runtime_verify_gone: UNKNOWN process observation for ${key}"; return 1 ;; esac
+        case "$observation" in ABSENT) ;; PRESENT) lingering+=(process) ;; *) unknown+=(process) ;; esac
 
         observation=$(runtime_observe "$node" "set -e; for p in /proc/[0-9]*/ns/net; do [ -e \$p ] || continue; inode=\$(stat -Lc %i \$p); if [ \"\$inode\" = '${netns_inode}' ]; then echo 1; exit 0; fi; done; echo 0")
-        case "$observation" in ABSENT) ;; PRESENT) lingering+=(namespace) ;; *) e2e_fail "runtime_verify_gone: UNKNOWN namespace observation for ${key}"; return 1 ;; esac
+        case "$observation" in ABSENT) ;; PRESENT) lingering+=(namespace) ;; *) unknown+=(namespace) ;; esac
 
         observation=$(runtime_observe "$node" "set -e; status=\$(plaidctl status); case \"\$status\" in *'${endpoint_id}'*) echo 1;; *) echo 0;; esac")
-        case "$observation" in ABSENT) ;; PRESENT) lingering+=(endpoint) ;; *) e2e_fail "runtime_verify_gone: UNKNOWN endpoint observation for ${key}"; return 1 ;; esac
+        case "$observation" in ABSENT) ;; PRESENT) lingering+=(endpoint) ;; *) unknown+=(endpoint) ;; esac
 
         observation=$(runtime_observe "$node" "if [ -e '${lease_path}' ]; then echo 1; else echo 0; fi")
-        case "$observation" in ABSENT) ;; PRESENT) lingering+=(lease) ;; *) e2e_fail "runtime_verify_gone: UNKNOWN lease observation for ${key}"; return 1 ;; esac
+        case "$observation" in ABSENT) ;; PRESENT) lingering+=(lease) ;; *) unknown+=(lease) ;; esac
 
         if [ "$mode" = deleted ]; then
             observation=$(runtime_observe "$node" "if [ -e '${pod_dir}' ]; then echo 1; else echo 0; fi")
-            case "$observation" in ABSENT) ;; PRESENT) lingering+=(pod_dir) ;; *) e2e_fail "runtime_verify_gone: UNKNOWN directory observation for ${key}"; return 1 ;; esac
+            case "$observation" in ABSENT) ;; PRESENT) lingering+=(pod_dir) ;; *) unknown+=(directory) ;; esac
         fi
 
-        if [ "${#lingering[@]}" -eq 0 ]; then
+        # An observation that could not be made (an SSH or bubble command that timed out, as
+        # happens while a node is busy) is repeated; it is never taken for "gone".
+        if [ "${#lingering[@]}" -eq 0 ] && [ "${#unknown[@]}" -eq 0 ]; then
             e2e_pass "Runtime cleanup verified for ${ns}/${pod} (UID ${uid})"
             return 0
         fi
@@ -265,7 +267,11 @@ runtime_verify_gone() {
         now=$(date +%s)
         elapsed=$((now - start_time))
         if [ "$elapsed" -ge "$deadline" ]; then
-            e2e_fail "runtime_verify_gone: timed out after ${deadline}s; lingering on ${node}: ${lingering[*]:-unknown}"
+            if [ "${#unknown[@]}" -gt 0 ]; then
+                e2e_fail "runtime_verify_gone: UNKNOWN ${unknown[*]} observation for ${key} after ${deadline}s"
+            else
+                e2e_fail "runtime_verify_gone: timed out after ${deadline}s; lingering on ${node}: ${lingering[*]:-unknown}"
+            fi
             return 1
         fi
 

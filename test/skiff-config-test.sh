@@ -72,6 +72,10 @@ check "DNS that is not an address" 1 'not an IPv4 address' 2 -- SKIFF_CLUSTER_DN
 check "DNS with a leading zero" 1 'not an IPv4 address' 2 -- SKIFF_CLUSTER_DNS=10.43.0.010
 check "domain with capitals" 1 'SKIFF_CLUSTER_DOMAIN.*not a DNS domain' 2 -- SKIFF_CLUSTER_DOMAIN=Cluster.Local
 check "domain with an underscore" 1 'SKIFF_CLUSTER_DOMAIN' 2 -- SKIFF_CLUSTER_DOMAIN=my_cluster
+check "a job instance name" 0 "" 2 -- SKIFF_JOB_INSTANCE=4711-0123abcd
+check "a job instance without the random part" 1 'SKIFF_JOB_INSTANCE.*not a job instance name' 2 -- SKIFF_JOB_INSTANCE=4711
+check "a job instance with upper case digits" 1 'SKIFF_JOB_INSTANCE.*not a job instance name' 2 -- SKIFF_JOB_INSTANCE=4711-0123ABCD
+check "a job instance that is a path" 1 'SKIFF_JOB_INSTANCE.*not a job instance name' 2 -- SKIFF_JOB_INSTANCE=../x-0123abcd
 check "an empty setting means the default" 0 "" 2 -- SKIFF_CLUSTER_DOMAIN= SKIFF_POD_CIDR=
 check "MTU that is not a number" 1 'SKIFF_POD_MTU.*not an MTU' 2 -- SKIFF_POD_MTU=big
 check "MTU below the minimum" 1 'SKIFF_POD_MTU.*at least 576' 2 -- SKIFF_POD_MTU=500
@@ -99,6 +103,12 @@ expect "the scratch directory defaults to /tmp/.skiff" "$(derived SKIFF_TMP_DIR)
 expect "what is below it follows" "$(derived SKIFF_APPTAINER_TMP SKIFF_TMP_DIR=/scratch/s) $(derived SKIFF_OVERLAY_HANDOFF SKIFF_TMP_DIR=/scratch/s)" "/scratch/s/.apptainer/tmp /scratch/s/overlay.sock"
 expect "the state directory is the home's ~/.skiff" "$(derived SKIFF_STATE_DIR HOME=/home/u)" /home/u/.skiff
 expect "and cannot be overridden" "$(derived SKIFF_STATE_DIR HOME=/home/u SKIFF_STATE_DIR=/elsewhere)" /home/u/.skiff
+expect "the volumes are below the state directory" "$(derived SKIFF_VOLUMES_DIR HOME=/home/u)" /home/u/.skiff/volumes
+id1=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff-config.sh")
+id2=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff-config.sh")
+[[ "$id1" =~ ^4711-[0-9a-f]{8}$ ]] && echo "PASS an instance name is the job ID and eight hexadecimal digits" || { echo "FAIL instance name '$id1'"; failures=$((failures + 1)); }
+[ "$id1" != "$id2" ] && echo "PASS a reused job ID gets another name" || { echo "FAIL the same job ID got the same name twice: $id1"; failures=$((failures + 1)); }
+expect "outside Slurm the job ID is 0" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff-config.sh" | cut -d- -f1)" 0
 expect "outer network of bubble 3" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_outer_network 3; echo "$SKIFF_OUTER_CIDR $SKIFF_OUTER_DNS $SKIFF_OUTER_ADDRESS"' _ "$repo_dir/scripts/skiff-config.sh")" "10.0.4.0 10.0.4.3 10.0.4.100"
 
 in_cidr() { env -i PATH="$PATH" bash -c 'source "$1"; skiff_ip_in_cidr "$2" "$3" && echo yes || echo no' _ "$repo_dir/scripts/skiff-config.sh" "$1" "$2"; }

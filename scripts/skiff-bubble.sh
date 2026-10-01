@@ -20,6 +20,8 @@ skiff_config_export
 # the scratch directory; skiff.slurm has checked them already, this covers a bubble
 # started by hand.
 skiff_check_node || exit 1
+# The job's volume directory comes from skiff.slurm; a bubble started by hand makes one.
+if [ -z "${SKIFF_JOB_INSTANCE:-}" ]; then SKIFF_JOB_INSTANCE=$(skiff_new_instance_id); export SKIFF_JOB_INSTANCE; fi
 skiff_outer_network "$BUBBLE_ID"
 CIDR="$SKIFF_OUTER_CIDR"
 DNS_ADDR="$SKIFF_OUTER_DNS"
@@ -62,6 +64,16 @@ start_socat_relays() {
     socat TCP4-LISTEN:10250,bind="${HOST_IP_DETECTED}",reuseaddr,fork TCP4:127.0.0.1:10250 &
     SOCAT_PID_10250=$!
     echo "Started kubelet socat relay on ${HOST_IP_DETECTED}:10250/tcp"
+}
+
+# When the bubble dies, why is in its own log (the entrypoint says which daemon ended):
+# the last lines are shown in the job's output.
+show_bubble_log() {
+    local log="$HOME/.apptainer/instances/logs/$(hostname)/$(id -un)/$NAME.out"
+    if [ -f "$log" ]; then
+        echo "--- the last lines of the log of bubble $NAME ($log):" >&2
+        tail -n 8 "$log" >&2 || true
+    fi
 }
 
 EXIT_CODE=0
@@ -177,6 +189,7 @@ apptainer instance run \
 	--env SKIFF_API_SERVICE_IP="$SKIFF_API_SERVICE_IP" \
 	--env SKIFF_POD_MTU="$SKIFF_POD_MTU" \
 	--env SKIFF_TMP_DIR="$SKIFF_TMP_DIR" \
+	--env SKIFF_JOB_INSTANCE="$SKIFF_JOB_INSTANCE" \
 	"$BUBBLE_IMAGE" \
 	"$NAME"
 
@@ -269,11 +282,13 @@ while true; do
     fi
     if ! apptainer instance list 2>/dev/null | grep -q "\b$NAME\b"; then
         echo "ERROR: Apptainer instance $NAME terminated unexpectedly!" >&2
+        show_bubble_log
         EXIT_CODE=1
         exit 1
     fi
     if ! apptainer exec --pwd / instance://"$NAME" pgrep -f 'entrypoint.sh' >/dev/null 2>&1; then
         echo "ERROR: Bubble entrypoint process terminated in instance $NAME!" >&2
+        show_bubble_log
         apptainer instance stop "$NAME" 2>/dev/null || true
         EXIT_CODE=1
         exit 1

@@ -22,6 +22,11 @@ PLAID_UPLINK=${PLAID_UPLINK:-tap0}
 : "${SKIFF_POD_MTU:?the pod MTU is required (SKIFF_POD_MTU)}"
 : "${SKIFF_OVERLAY_HANDOFF:?the overlay socket handoff path is required (SKIFF_OVERLAY_HANDOFF)}"
 : "${SKIFF_SLIRP_API:?the slirp4netns API socket is required (SKIFF_SLIRP_API)}"
+# The job's volume directory (the claims' data), named by skiff.slurm; the controller
+# configures the default storage with it.
+: "${SKIFF_JOB_INSTANCE:?the volume directory name of the job is required (SKIFF_JOB_INSTANCE)}"
+SKIFF_VOLUMES_BASE="/root/.skiff/volumes/${SKIFF_JOB_INSTANCE}"
+
 # The node's scratch directory (the same path as on the host, which the bubble script
 # binds in): pod runtime state below it, and Apptainer's scratch.
 : "${SKIFF_TMP_DIR:?the scratch directory is required (SKIFF_TMP_DIR)}"
@@ -37,6 +42,7 @@ echo "  Service network:  ${SKIFF_SERVICE_CIDR} (API ${SKIFF_API_SERVICE_IP}, DN
 echo "  Cluster domain:   ${SKIFF_CLUSTER_DOMAIN}"
 echo "  Pod MTU:          ${SKIFF_POD_MTU}"
 echo "  Directories:      state /root/.skiff (the user's ~/.skiff), scratch ${SKIFF_TMP_DIR}"
+echo "  Volume data:      ${SKIFF_VOLUMES_BASE} (claims of this job)"
 
 # Enable IP forwarding
 sysctl -w net.ipv4.ip_forward=1
@@ -69,6 +75,11 @@ CSR_SIGN_PID=""
 
 # Start K3s if Controller
 if [ "$SKIFF_ROLE" = "controller" ]; then
+    # The default storage: K3s applies what is in its manifests directory when it starts.
+    # (Its own local storage stays disabled below: it cannot be given a shared directory.)
+    mkdir -p /var/lib/rancher/k3s/server/manifests
+    sed "s|@VOLUMES_BASE@|${SKIFF_VOLUMES_BASE}|g" /usr/share/skiff/storage.yaml > /var/lib/rancher/k3s/server/manifests/skiff-storage.yaml
+
     echo "Starting K3s Server..."
     k3s server \
       --bind-address 0.0.0.0 \

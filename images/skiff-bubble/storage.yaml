@@ -1,0 +1,156 @@
+# The cluster's default storage: Rancher's Local Path Provisioner (v0.0.32, the version K3s
+# bundles; K3s's own copy is disabled in entrypoint.sh because it cannot express this
+# configuration), configured for the shared home directory. The controller's entrypoint
+# copies this file into K3s's manifests directory with @VOLUMES_BASE@ replaced by this
+# job's directory below ~/.skiff/volumes, so K3s applies it like its own add-ons.
+#
+# What a user gets: a PersistentVolumeClaim that names no class (or the class
+# local-path) is given a directory @VOLUMES_BASE@/pvc-<claim UID>_<namespace>_<claim>
+# on the shared home, a hostPath volume without node affinity, so any node of the job can
+# use it and any access mode is accepted. Deleting the claim deletes the directory
+# (reclaimPolicy Delete); the class local-path-retain keeps it. The requested size is not
+# a limit: the shared filesystem is the authority and is not asked for a quota.
+#
+# Differences from K3s's manifest: the shared filesystem in the configuration; the volume
+# type hostPath (a local volume needs node affinity, which a shared directory has not);
+# volumes are bound at once (Immediate), which also suits pods placed with nodeName; no
+# registry prefix on the images; a second class that retains.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: local-path-provisioner-service-account
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: local-path-provisioner-role
+rules:
+- apiGroups: [""]
+  resources: ["nodes", "persistentvolumeclaims", "configmaps", "pods/log"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["endpoints", "persistentvolumes", "pods"]
+  verbs: ["*"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+- apiGroups: ["storage.k8s.io"]
+  resources: ["storageclasses"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: local-path-provisioner-bind
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: local-path-provisioner-role
+subjects:
+- kind: ServiceAccount
+  name: local-path-provisioner-service-account
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-path-provisioner
+  namespace: kube-system
+spec:
+  revisionHistoryLimit: 0
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: local-path-provisioner
+  template:
+    metadata:
+      labels:
+        app: local-path-provisioner
+    spec:
+      priorityClassName: "system-node-critical"
+      serviceAccountName: local-path-provisioner-service-account
+      tolerations:
+        - key: "CriticalAddonsOnly"
+          operator: "Exists"
+        - key: "node-role.kubernetes.io/control-plane"
+          operator: "Exists"
+          effect: "NoSchedule"
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+      - name: local-path-provisioner
+        image: "rancher/local-path-provisioner:v0.0.32"
+        imagePullPolicy: IfNotPresent
+        command:
+        - local-path-provisioner
+        - start
+        - --config
+        - /etc/config/config.json
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/config/
+        env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+      volumes:
+        - name: config-volume
+          configMap:
+            name: local-path-config
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path
+  annotations:
+    defaultVolumeType: "hostPath"
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+volumeBindingMode: Immediate
+reclaimPolicy: Delete
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path-retain
+  annotations:
+    defaultVolumeType: "hostPath"
+provisioner: rancher.io/local-path
+volumeBindingMode: Immediate
+reclaimPolicy: Retain
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: local-path-config
+  namespace: kube-system
+data:
+  config.json: |-
+    {
+      "nodePathMap": [],
+      "sharedFileSystemPath": "@VOLUMES_BASE@"
+    }
+  setup: |-
+    #!/bin/sh
+    set -eu
+    mkdir -m 0777 -p "${VOL_DIR}"
+    chmod 700 "${VOL_DIR}/.."
+  teardown: |-
+    #!/bin/sh
+    set -eu
+    rm -rf "${VOL_DIR}"
+  helperPod.yaml: |-
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: helper-pod
+    spec:
+      containers:
+      - name: helper-pod
+        image: "rancher/mirrored-library-busybox:1.37.0"
+        imagePullPolicy: IfNotPresent

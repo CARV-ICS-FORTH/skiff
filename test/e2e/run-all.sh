@@ -217,7 +217,7 @@ matrix_ready() {
 
 run_daemon_failure_matrix() {
     local class prior_job matrix_result=PASS
-    for class in skifflet plaidd slirp relay; do
+    for class in skifflet plaidd slirp k3s relay; do
         run_script "E2E-09-${class}" env E2E_DAEMON_CLASS="$class" "$E2E_DIR/case-09-daemon-recovery.sh"
         [ "${RESULTS[E2E-09-${class}]:-FAIL}" = PASS ] || matrix_result=FAIL
         if [ "$class" != relay ]; then
@@ -255,6 +255,21 @@ run_overlay_startup_failures() {
     fi
 }
 
+# Case 26 also replaces the running cluster with jobs of its own and leaves a fresh one.
+run_fresh_job_storage() {
+    if [ -n "$ONLY_CASE" ] && [ "$ONLY_CASE" != 26 ]; then
+        return 0
+    fi
+    rm -f "${E2E_LOGDIR}/fresh-job-id"
+    run_script "E2E-26" "$E2E_DIR/case-26-fresh-job-storage.sh"
+    ingest_subresults
+    if [ -s "${E2E_LOGDIR}/fresh-job-id" ]; then
+        SKIFF_JOB_ID=$(cat "${E2E_LOGDIR}/fresh-job-id")
+        export SKIFF_JOB_ID
+        printf '%s\n' "$SKIFF_JOB_ID" >> "${E2E_LOGDIR}/matrix-job-ids"
+    fi
+}
+
 run_workload_cases() {
     echo "--- E2E CASES ---------------------------------------------------------"
     run_case "02" "init-shared-net"
@@ -278,7 +293,9 @@ run_workload_cases() {
     run_case "22" "services"
     run_case "23" "nodeports"
     run_case "24" "temp-files"
+    run_case "25" "storage"
     run_overlay_startup_failures
+    run_fresh_job_storage
     run_daemon_failure_matrix
 }
 
@@ -365,6 +382,8 @@ if [ -n "$ONLY_CASE" ]; then
             22) run_case "22" "services" ;;
             23) run_case "23" "nodeports" ;;
             24) run_case "24" "temp-files" ;;
+            26) run_fresh_job_storage ;;
+            25) run_case "25" "storage" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

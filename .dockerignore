@@ -4,6 +4,7 @@
 !skifflet
 !plaid
 !images/skiff-bubble/entrypoint.sh
+!images/skiff-bubble/storage.yaml
 
 # Local build outputs and test files inside the allowed directories.
 **/bin

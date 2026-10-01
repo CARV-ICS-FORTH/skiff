@@ -131,7 +131,7 @@ spec:
   containers:
   - name: app
     image: ${FIXTURE_IMAGE}
-    args: ["app", "serve", "--port", "8080", "--control-dir", "/ctl"]
+    args: ["app", "serve", "--port", "8080"]
     ports:
     - {name: http, containerPort: 8080}
     livenessProbe:
@@ -140,10 +140,8 @@ spec:
       failureThreshold: 2
     volumeMounts:
     - {name: shared, mountPath: /shared}
-    - {name: ctl, mountPath: /ctl}
   volumes:
   - {name: shared, emptyDir: {}}
-  - {name: ctl, emptyDir: {}}
 EOF
     started() { [ "$(e2e_kubectl get pod e2e24-restart -n "$NS" -o jsonpath='{.status.containerStatuses[0].started}')" = true ]; }
     e2e_wait_condition 90 "the container runs" started
@@ -152,7 +150,8 @@ EOF
     dir=$(pod_dir e2e24-restart)
     e2e_assert_eq "attempt 1 has its directories" "$(runtime_ssh_node "$IP_A" "ls '${dir}/scratch/app'")" 1
 
-    # The liveness probe fails once: the container is stopped and started again.
+    # The liveness probe fails once (the switch is in the application's memory, so the new attempt
+    # is healthy again, and the restart happens once): the container is stopped and started again.
     in_container e2e24-restart app curl -sf http://127.0.0.1:8080/ctl/live/off > /dev/null
     restarted() { [ "$(e2e_kubectl get pod e2e24-restart -n "$NS" -o jsonpath='{.status.containerStatuses[0].restartCount}')" -ge 1 ] && started; }
     e2e_wait_condition 90 "the container is restarted and runs again" restarted

@@ -79,6 +79,7 @@ RUN ln -s /usr/local/bin/plaidtainer /usr/bin/plaidtainer && \
     ln -s /usr/bin/skifflet /usr/local/bin/skifflet && \
     mkdir -p /opt/cni/bin && ln -s /usr/local/bin/plaid /opt/cni/bin/plaid
 
+COPY images/skiff-bubble/storage.yaml /usr/share/skiff/storage.yaml
 COPY images/skiff-bubble/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
