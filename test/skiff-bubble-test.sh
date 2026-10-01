@@ -99,7 +99,7 @@ run_bubble() {
     rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR"
     rm -f "$HOME"/.skiff/job-results/*.cause
     # The bubble's instance: a process that lives until the test ends it.
-    sleep 600 > /dev/null 2>&1 < /dev/null &
+    sleep 600 > /dev/null 2>&1 &
     echo $! > "$FAKE_DIR/inst-pid"
     disown
     export FAKE_SLIRP_DIR="$FAKE_DIR"

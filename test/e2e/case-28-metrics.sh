@@ -18,7 +18,7 @@ NODE_B=$(e2e_node_b)
 e2e_require_nodes 2
 
 e2e_kubectl create namespace "$NS"
-e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found"
+e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --wait=false"
 e2e_cleanup_register "e2e_preserve_failure $NS"
 
 # A container that uses about one core, and one that holds 150 MiB (the pages are written

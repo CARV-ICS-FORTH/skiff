@@ -268,7 +268,7 @@ PY
     e2e_wait_condition 30 "the stream is running" stream_started
     local pinned other lines after node
     pinned=$(in_pod c-a head -1 /run/stream.log)
-    other=b-a; [ "$pinned" = b-a ] && other=b-b
+    other="b-a"; [ "$pinned" = "b-a" ] && other="b-b"
 
     # The pinned backend stops being ready: out of the endpoints, but its connection continues.
     in_pod "$pinned" touch /run/unready

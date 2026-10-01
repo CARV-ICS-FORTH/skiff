@@ -194,7 +194,7 @@ echo started" > /dev/null
         [ "$state" = running ] || break
     done
     e2e_log "T32: the scratch directory held entries in $seen of $samples samples during the conversion"
-    e2e_assert_eq "the conversion succeeded" "$state" done
+    e2e_assert_eq "the conversion succeeded" "$state" "done"
     [ "$seen" -gt 0 ] || e2e_fail "nothing was unpacked in ${SKIFF_APPTAINER_TMP} during the conversion: $(runtime_ssh_node "$ip" "tail -3 '${out}.log'" || true)"
     left=$(runtime_ssh_node "$ip" "ls -A '${SKIFF_APPTAINER_TMP}' 2>/dev/null | wc -l")
     e2e_assert_eq "nothing is left in the scratch directory afterwards" "$(echo "$left" | tr -d ' ')" 0

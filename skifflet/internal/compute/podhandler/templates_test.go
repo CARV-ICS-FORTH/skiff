@@ -72,8 +72,10 @@ func TestBuildApptainerArgs(t *testing.T) {
 	if !strings.HasPrefix(joined, "--host-networking exec") {
 		t.Errorf("expected --host-networking exec prefix, got: %s", joined)
 	}
-	if !strings.Contains(joined, "--netns-path /proc/12345/ns/net") {
-		t.Errorf("expected netns-path in args, got: %s", joined)
+	// The container runs as 1000: it is started inside the pod's network namespace
+	// (LaunchCommand), not given it as an argument that Apptainer cannot honor for it.
+	if strings.Contains(joined, "--netns-path") {
+		t.Errorf("a container in a user namespace was given --netns-path: %s", joined)
 	}
 	if !strings.Contains(joined, "resolv.conf:/etc/resolv.conf") {
 		t.Errorf("expected resolv.conf bind in args, got: %s", joined)
@@ -270,5 +272,33 @@ func TestPrepareAttemptScratch_WritableLayerIsPerAttempt(t *testing.T) {
 		if !strings.HasPrefix(dir, app.AttemptScratchDir(2)+"/") {
 			t.Errorf("%s is not inside the attempt's scratch directory, which goes with the pod", dir)
 		}
+	}
+}
+
+// Where a container is put in the pod's network namespace depends on whether it has a user
+// namespace of its own: root's is handed to Apptainer, one that runs as another user is
+// started inside the namespace (Apptainer silently leaves it in the bubble's network).
+func TestLaunchCommand_PodNetworkNamespace(t *testing.T) {
+	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
+	root := &Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/i.sif"}
+	bin, args := root.LaunchCommand("/usr/bin/apptainer", 777, podDir, 1)
+	if bin != "/usr/bin/apptainer" || !strings.Contains(strings.Join(args, " "), "--netns-path /proc/777/ns/net") {
+		t.Errorf("root: %s %v, want Apptainer with --netns-path", bin, args)
+	}
+	for _, c := range []*Container{
+		{Name: "app", ExecutionMode: "exec", ImageFilePath: "/i.sif", RunAsUser: 1000},
+		{Name: "app", ExecutionMode: "exec", ImageFilePath: "/i.sif", RunAsGroup: 2000},
+	} {
+		bin, args = c.LaunchCommand("/usr/bin/apptainer", 777, podDir, 1)
+		if bin != "nsenter" || len(args) < 4 || args[0] != "--net=/proc/777/ns/net" || args[1] != "--" || args[2] != "/usr/bin/apptainer" {
+			t.Errorf("non-root: %s %v, want nsenter --net=/proc/777/ns/net -- /usr/bin/apptainer ...", bin, args)
+		}
+		if strings.Contains(strings.Join(args, " "), "--netns-path") || !strings.Contains(strings.Join(args, " "), "--userns") {
+			t.Errorf("non-root arguments %v: want --userns and no --netns-path", args)
+		}
+	}
+	// No sandbox (a bare launch): nothing to join.
+	if bin, args = (&Container{Name: "app", ExecutionMode: "exec", RunAsUser: 1000}).LaunchCommand("/usr/bin/apptainer", 0, podDir, 1); bin != "/usr/bin/apptainer" {
+		t.Errorf("without a sandbox: %s %v", bin, args)
 	}
 }

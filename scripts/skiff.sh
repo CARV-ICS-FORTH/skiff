@@ -131,6 +131,8 @@ skiff_config_resolve() {
 # skiff_config_validate [NODE_COUNT [HOST_IP...]]: check the configuration as a
 # whole, before anything starts, and report every problem found. NODE_COUNT and the
 # host addresses, when given, are checked against the networks too.
+# (skiff.slurm passes it the node count and the hosts; the tests and the bubble pass none.)
+# shellcheck disable=SC2120
 skiff_config_validate() {
     local nodes="${1:-0}" errors=0 pod_net pod_last svc_net svc_last
     shift || true
@@ -537,7 +539,8 @@ bubble_start_socat_relays() {
 # When the bubble dies, why is in its own log (the entrypoint says which daemon ended):
 # the last lines are shown in the job's output.
 bubble_show_log() {
-    local log="$HOME/.apptainer/instances/logs/$(hostname)/$(id -un)/$NAME.out"
+    local log
+    log="$HOME/.apptainer/instances/logs/$(hostname)/$(id -un)/$NAME.out"
     if [ -f "$log" ]; then
         echo "--- the last lines of the log of bubble $NAME ($log):" >&2
         tail -n 8 "$log" >&2 || true
@@ -547,7 +550,8 @@ bubble_show_log() {
 # The last line of the bubble's own log that says what ended (the entrypoint writes FATAL
 # lines, the daemons ERROR lines); empty when there is none.
 bubble_log_detail() {
-    local log="$HOME/.apptainer/instances/logs/$(hostname)/$(id -un)/$NAME.out" line=""
+    local log line=""
+    log="$HOME/.apptainer/instances/logs/$(hostname)/$(id -un)/$NAME.out"
     if [ -f "$log" ]; then
         line=$(grep -E 'FATAL|ERROR' "$log" 2>/dev/null | tail -n 1 || true)
     fi

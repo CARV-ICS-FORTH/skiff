@@ -68,12 +68,13 @@ fmt:
 fmt-check:
 	@test -z "$$(gofmt -l skifflet plaid)" || (echo "Unformatted Go files found:" && gofmt -l skifflet plaid && exit 1)
 
-check-shell:
-	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck --severity=error $$(find scripts images test -type f \( -name "*.sh" -o -name "*.slurm" \) -not -path "*/.*"); \
-	else \
-		echo "shellcheck not installed, skipping"; \
-	fi
+# Every shell script of the repository, checked by the builder's shellcheck (a missing one
+# is a failure, not a skip). Warnings count, except SC2034 (a variable that is set and not
+# used here: mostly names that are sourced or exported, which shellcheck cannot see).
+check-shell: builder
+	docker run --rm -v "$(CURDIR)":/src:ro $(REGISTRY)/skiff-builder:latest \
+		sh -c 'shellcheck --severity=warning --exclude=SC2034 $$(find scripts images test -type f \( -name "*.sh" -o -name "*.slurm" \) -not -path "*/.*" -not -path "*/results/*")'
+
 
 builder:
 	@echo "Building skiff-builder image locally..."

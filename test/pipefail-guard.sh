@@ -15,7 +15,7 @@
 # safe for a reason that is written next to it carries `pipefail-ok` in a comment.
 set -u
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
-cd "$repo_dir"
+cd "$repo_dir" || exit 1
 
 if [ "$#" -gt 0 ]; then
     files=("$@")

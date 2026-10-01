@@ -397,7 +397,7 @@ EOF
     sleep 20
     e2e_assert_eq "the volume is Released, not deleted" "$(e2e_kubectl get pv "$pv" -o jsonpath='{.status.phase}')" Released
     e2e_assert_eq "the user's data is untouched" "$(cat "${HOME}/.skiff/${dir}/file" 2>/dev/null || true)" mine
-    e2e_assert_eq "no directory of the job was made for it" "$(ls "${HOME}/.skiff/volumes"/*/ 2>/dev/null | grep -c "$dir" || true)" 0
+    e2e_assert_eq "no directory of the job was made for it" "$(find "${HOME}/.skiff/volumes" -mindepth 2 -maxdepth 2 -name "*${dir}*" 2>/dev/null | wc -l | tr -d ' ')" 0
 }
 e2e_subcase_run T29-user-owned user_owned
 

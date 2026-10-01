@@ -107,7 +107,12 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 		args = append(args, "--hostname", c.Hostname)
 	}
 
-	if pausePID > 0 {
+	// A container in a user namespace of its own cannot be given the pod's network namespace
+	// by Apptainer (--netns-path): a process in a new user namespace has no authority over a
+	// network namespace of the bubble's, and the container silently ended up in the bubble's
+	// own network (its interfaces, its ports). Such a container is started inside the pod's
+	// network namespace instead (see LaunchCommand), and keeps it.
+	if pausePID > 0 && !c.runsInUserNamespace() {
 		args = append(args, "--netns-path", fmt.Sprintf("/proc/%d/ns/net", pausePID))
 	}
 
@@ -149,6 +154,22 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 	args = append(args, c.Args...)
 
 	return args
+}
+
+// runsInUserNamespace says whether the container runs as another user than root, which
+// Apptainer does in a user namespace of its own (--userns).
+func (c *Container) runsInUserNamespace() bool { return c.RunAsUser != 0 || c.RunAsGroup != 0 }
+
+// LaunchCommand is the program and arguments that start attempt N of the container: the
+// launcher of BuildApptainerArgs, run inside the pod's network namespace when the container
+// has a user namespace of its own (see BuildApptainerArgs), where nsenter enters it with
+// the bubble's authority and the container's namespaces are created inside it.
+func (c *Container) LaunchCommand(bin string, pausePID int, podDir endpoint.PodPath, attempt int) (string, []string) {
+	args := c.BuildApptainerArgs(pausePID, podDir, attempt)
+	if pausePID > 0 && c.runsInUserNamespace() {
+		return "nsenter", append([]string{fmt.Sprintf("--net=/proc/%d/ns/net", pausePID), "--", bin}, args...)
+	}
+	return bin, args
 }
 
 // mounts says whether one of the container's volume mounts is at path.

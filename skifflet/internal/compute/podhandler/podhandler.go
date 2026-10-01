@@ -549,7 +549,8 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 		return 128, attemptFilesError, err
 	}
 
-	cmd := exec.Command(compute.Environment.ApptainerBin, c.BuildApptainerArgs(sandboxPID, h.podDirectory, a.ID)...)
+	bin, args := c.LaunchCommand(compute.Environment.ApptainerBin, sandboxPID, h.podDirectory, a.ID)
+	cmd := exec.Command(bin, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = "/" // the container starts in /, as in Kubernetes without a working directory
 	cmd.Env = h.launchEnv(h.podDirectory.Container(spec.Name).AttemptUnpackDir(a.ID))
@@ -712,6 +713,11 @@ func PreparePod(pl *PodLifecycle) {
 	if err := ValidatePodCapabilities(pod); err != nil {
 		pl.Fail(compute.ReasonUnsupportedFeatures, "capability validation failed: %v", err)
 		return
+	}
+
+	if unapplied := UnappliedSecurityContext(pod); unapplied != "" {
+		pl.PodEvent(corev1.EventTypeWarning, "SecurityContextNotApplied",
+			"securityContext fields accepted and not applied (containers run without privileges, with a writable root filesystem of their own, and their volumes are writable by any user; only runAsUser, runAsGroup and runAsNonRoot are applied): %s", unapplied)
 	}
 
 	if ctx.Err() != nil {

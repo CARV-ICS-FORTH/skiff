@@ -37,7 +37,7 @@ fi
 source "$SKIFF_SCRIPT"
 
 # SKIFF_STATE_DIR (~/.skiff) is fixed by skiff.sh.
-NODES=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
+read -r -a NODES <<< "$(scontrol show hostnames "$SLURM_JOB_NODELIST" | tr '\n' ' ')"
 NUM_NODES=${#NODES[@]}
 
 JOB_RESULT_DIR="$SKIFF_STATE_DIR/job-results"
@@ -138,6 +138,22 @@ fi
 BG_PIDS=()
 BG_NODES=()
 
+# node_cpus NODE: how many CPUs the node has, all of which the job has (its nodes are
+# exclusive). The step that runs a node's bubble must ask for them: a step gets one CPU
+# unless it says otherwise, and what the step has is what Skifflet advertises as the node's
+# CPUs and what the pods can use. Empty when Slurm does not say.
+node_cpus() {
+    local cpus
+    cpus=$(scontrol show node "$1" -o 2>/dev/null | tr ' ' '\n' | grep '^CPUTot=') || true
+    echo "${cpus#CPUTot=}"
+}
+# step_cpus NODE: the srun option that gives the step the node's CPUs (nothing when unknown).
+step_cpus() {
+    local cpus
+    cpus=$(node_cpus "$1")
+    if [[ "$cpus" =~ ^[0-9]+$ ]]; then echo "--cpus-per-task=$cpus"; fi
+}
+
 SLURM_EXIT_CODE=0
 handle_term() {
     SLURM_EXIT_CODE=143
@@ -217,7 +233,8 @@ echo "Starting Controller on $CONTROLLER_NODE..."
     export SKIFF_ROLE="controller"
     export SKIFF_DEV=${SKIFF_DEV:-0}
     export CONTROLLER_IP="$CONTROLLER_IP"
-    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive bash "$SKIFF_SCRIPT" bubble 1
+    # shellcheck disable=SC2046 # (step_cpus is one option or nothing)
+    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive $(step_cpus "$CONTROLLER_NODE") bash "$SKIFF_SCRIPT" bubble 1
 ) &
 BG_PIDS+=($!)
 BG_NODES+=("$CONTROLLER_NODE")
@@ -249,7 +266,8 @@ for ((i=1; i<NUM_NODES; i++)); do
         export SKIFF_ROLE="node"
         export SKIFF_DEV=${SKIFF_DEV:-0}
         export CONTROLLER_IP="$CONTROLLER_IP"
-        exec srun --nodes=1 -w "$NODE" --exclusive bash "$SKIFF_SCRIPT" bubble "$BUBBLE_ID"
+        # shellcheck disable=SC2046 # (step_cpus is one option or nothing)
+        exec srun --nodes=1 -w "$NODE" --exclusive $(step_cpus "$NODE") bash "$SKIFF_SCRIPT" bubble "$BUBBLE_ID"
     ) &
     BG_PIDS+=($!)
     BG_NODES+=("$NODE")

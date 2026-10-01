@@ -7,7 +7,8 @@ source "$(dirname "$0")/lib/runtime.sh"
 e2e_record_versions
 
 check_nodes_ready() {
-    local cnt=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c "True" || true)
+    local cnt
+    cnt=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c "True" || true)
     [ "$cnt" -ge 2 ]
 }
 
@@ -127,7 +128,8 @@ e2e_wait_condition 60 "host-level kubectl on $(e2e_node_b) sees both nodes Ready
     host_sees_nodes_ready "$(runtime_node_ip "$(e2e_node_b)")"
 
 check_coredns_ready() {
-    local pod=$(e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    local pod
+    pod=$(e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
     [ -n "$pod" ] && e2e_kubectl wait --for=condition=Ready "pod/${pod}" -n kube-system --timeout=0s >/dev/null 2>&1
 }
 e2e_wait_condition 300 "CoreDNS pod Ready" check_coredns_ready

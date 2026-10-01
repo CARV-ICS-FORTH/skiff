@@ -108,7 +108,7 @@ fresh_job() {
     e2e_assert_contains "named after the new job" "$new_dir" "/volumes/${job}-"
     e2e_assert_eq "and it is empty" "$(e2e_kubectl exec second -n "$NS" -- sh -c 'ls -A /data | wc -l' | tr -d ' ')" 0
     e2e_assert_eq "the old files are intact" "$(cat "$OLD_DIR/file" 2>/dev/null || true)" from-the-first-job
-    e2e_assert_eq "both jobs' directories are there for the user to see" "$(ls "${HOME}/.skiff/volumes" | grep -c -E "^(${CURRENT_JOB}|${job})-[0-9a-f]{8}$")" 2
+    e2e_assert_eq "both jobs' directories are there for the user to see" "$(printf '%s\n' "${HOME}/.skiff/volumes"/* | grep -c -E "/(${CURRENT_JOB}|${job})-[0-9a-f]{8}$")" 2
     e2e_cleanup_register "rm -rf '$(dirname "$new_dir")'"
     e2e_kubectl delete pod second -n "$NS" --timeout=60s > /dev/null
     e2e_kubectl delete pvc "$CLAIM" -n "$NS" --timeout=60s > /dev/null

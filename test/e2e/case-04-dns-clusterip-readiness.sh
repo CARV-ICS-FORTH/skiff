@@ -31,7 +31,8 @@ fi
 e2e_kubectl exec e2e04-server -n $NS -- curl -sf http://localhost:8080/ready-on
 
 check_endpoints_ready() {
-    local eps=$(e2e_kubectl get endpoints e2e04-svc -n $NS -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || echo "")
+    local eps
+    eps=$(e2e_kubectl get endpoints e2e04-svc -n $NS -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || echo "")
     [ -n "$eps" ]
 }
 e2e_wait_condition 30 "Endpoints ready" check_endpoints_ready
@@ -100,7 +101,8 @@ e2e_wait_pod_ready "$NS" "e2e04-server-2" 60
 
 SERVER2_IP=$(e2e_kubectl get pod e2e04-server-2 -n $NS -o jsonpath='{.status.podIP}')
 check_endpoint_ip() {
-    local ep=$(e2e_kubectl get endpoints e2e04-svc -n $NS -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || echo "")
+    local ep
+    ep=$(e2e_kubectl get endpoints e2e04-svc -n $NS -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || echo "")
     [ "$ep" = "$SERVER2_IP" ]
 }
 e2e_wait_condition 30 "Endpoint IP updated" check_endpoint_ip

@@ -8,7 +8,10 @@ mkdir -p "$test_dir/bin" "$test_dir/repo/scripts"
 
 cat > "$test_dir/bin/scontrol" <<'EOF'
 #!/usr/bin/env bash
-[ "${TEST_EMPTY_NODES:-0}" = 1 ] || echo controller
+case "$*" in
+    "show node"*) echo "NodeName=controller Arch=x86_64 CoresPerSocket=4 CPUAlloc=0 CPUTot=8 CPULoad=0.10" ;;
+    *) [ "${TEST_EMPTY_NODES:-0}" = 1 ] || echo controller ;;
+esac
 EOF
 cat > "$test_dir/bin/squeue" <<'EOF'
 #!/usr/bin/env bash
@@ -30,7 +33,8 @@ case "$*" in
         ;;
     *'skiff.sh bubble'*)
         # The bubble of a node is the stand-in below, not the real script (which
-        # skiff.slurm has sourced for its functions).
+        # skiff.slurm has sourced for its functions). What the step was asked for is kept.
+        mkdir -p "$HOME/.skiff"; echo "$*" >> "$HOME/.skiff/step-args"
         exec "$FAKE_BUBBLE"
         ;;
     *) exit 0 ;;
@@ -117,6 +121,11 @@ for mode in 7 0 early empty term; do
     # Every job's bubbles are told the job's own volume directory name.
     if [ "$mode" != empty ] && [ "$mode" != early ]; then
         grep -Eq "^${SLURM_JOB_ID}-[0-9a-f]{8}\$" "$HOME/.skiff/instances" || { echo "$mode: the bubble was not given this job's volume directory name: $(cat "$HOME/.skiff/instances" 2>&1)" >&2; exit 1; }
+    fi
+    # The step of a node's bubble asks for all the CPUs of the node (a step has one unless it
+    # asks), because they are what the node advertises and the pods can use.
+    if [ "$mode" != empty ] && [ "$mode" != early ]; then
+        grep -q -- '--exclusive --cpus-per-task=8 bash' "$HOME/.skiff/step-args" || { echo "$mode: the bubble's step did not ask for the node's CPUs: $(cat "$HOME/.skiff/step-args" 2>&1)" >&2; exit 1; }
     fi
     if [ "$mode" = 7 ] && [ ! -f "$HOME/.skiff/published-image-used" ]; then
         echo "Default deployment did not select the published image" >&2; exit 1

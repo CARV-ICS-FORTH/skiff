@@ -40,7 +40,8 @@ runtime_host_resources_gone() {
 # Uses the node's InternalIP; override with E2E_NODE_IP_<nodename> if needed.
 runtime_node_ip() {
     local node="$1"
-    local var="E2E_NODE_IP_$(echo "$node" | tr '[:lower:]-' '[:upper:]_')"
+    local var
+    var="E2E_NODE_IP_$(echo "$node" | tr '[:lower:]-' '[:upper:]_')"
     if [ -n "${!var:-}" ]; then
         echo "${!var}"
         return

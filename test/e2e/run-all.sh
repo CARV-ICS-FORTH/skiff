@@ -332,6 +332,7 @@ run_workload_cases() {
     run_case "25" "storage"
     run_case "27" "writable-layer"
     run_case "28" "metrics"
+    run_case "29" "security-context"
     run_overlay_startup_failures
     run_fresh_job_storage
     run_daemon_failure_matrix
@@ -424,6 +425,7 @@ if [ -n "$ONLY_CASE" ]; then
             25) run_case "25" "storage" ;;
             27) run_case "27" "writable-layer" ;;
             28) run_case "28" "metrics" ;;
+            29) run_case "29" "security-context" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

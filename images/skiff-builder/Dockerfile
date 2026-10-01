@@ -4,11 +4,12 @@ FROM ubuntu:24.04
 # checksummed release (as the K3s and CNI plugins are in the bubble image), so a
 # change of toolchain is a change of this file and cannot be mistaken for a code
 # regression. gcc and the C library headers are here for the race detector (cgo);
-# the Skiff binaries themselves are built with CGO_ENABLED=0.
+# the Skiff binaries themselves are built with CGO_ENABLED=0. shellcheck is here so that
+# the scripts are checked by the same version everywhere, and cannot be skipped.
 ARG TARGETARCH
 ARG GO_VERSION=1.26.8
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl make gcc libc6-dev && \
+    apt-get install -y --no-install-recommends ca-certificates curl make gcc libc6-dev shellcheck && \
     if [ "${TARGETARCH}" = "amd64" ]; then \
         GO_SHA="d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b"; \
     elif [ "${TARGETARCH}" = "arm64" ]; then \

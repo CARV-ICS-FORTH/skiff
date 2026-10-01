@@ -2,9 +2,30 @@
 
 Skiff allows HPC users to run their own private Kubernetes "mini Cloud" on a typical HPC cluster and issue commands using Kubernetes-native tools without requiring root privileges.
 
-Deployment requires Slurm on the cluster, and on every allocated Linux node Apptainer, slirp4netns, socat and iproute2 (`ip` and `ss`) (checked on all nodes before anything starts), support for unprivileged user namespaces, and a shared home directory. The controller's TCP port 6443 and each node's TCP port 10250 and UDP port 8472 must be available and reachable between nodes.
+### Requirements
 
-Copy the `scripts/` folder contents to your HPC account under `~/skiff/` and submit a job using the published image:
+- **Slurm**, and whole nodes: `skiff.slurm` asks for exclusive nodes and all their memory (`--exclusive --mem=0`), because the fixed ports (the API server's TCP 6443 on the controller, the kubelet's TCP 10250 and the overlay's UDP 8472 on every node) and the node's scratch directory must be the job's alone. A job on shared nodes is refused when something is in the way.
+- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and iproute2** (`ip` and `ss`).
+
+  | | Debian / Ubuntu | RHEL family |
+  |---|---|---|
+  | Apptainer | `apptainer` (release `.deb`, or the project's PPA) | `apptainer` (EPEL) |
+  | slirp4netns | `slirp4netns` | `slirp4netns` |
+  | socat | `socat` | `socat` |
+  | `ip`, `ss` | `iproute2` | `iproute` |
+
+- **Unprivileged user namespaces**: `user.max_user_namespaces` above 0 and `kernel.unprivileged_userns_clone` not 0 where it exists (on recent Ubuntu, Apptainer's AppArmor profile, which its package installs, is what allows them), and a **subordinate id range** for the user in `/etc/subuid` and `/etc/subgid` (or the site's directory service): the bubbles run as root in a user namespace of yours.
+- A **shared home directory**.
+
+Skiff was qualified with Apptainer 1.5.4 and slirp4netns 1.2.1 on Ubuntu 24.04 (kernel 6.8, arm64). Older versions are reported and not refused; a failure with one is a reason to upgrade it first.
+
+**Check a node before you submit.** The job runs this check on every allocated node before anything starts, all problems at once, each with what to do about it; you can run it yourself on a compute node:
+
+```bash
+srun -N1 bash ~/skiff/skiff.sh check
+```
+
+Copy `skiff.slurm` and `skiff.sh` from `scripts/` to your HPC account under `~/skiff/` and submit a job using the published image:
 
 ```bash
 cd ~/skiff
@@ -87,6 +108,20 @@ What to know:
 - The requested size is **not a limit**: the shared filesystem decides, and nothing reserves or checks space.
 - To use data that already exists, give a pod a `hostPath` volume or create a PersistentVolume (`hostPath` or `local`) for a directory below `~/.skiff` (`/root/.skiff` in the cluster) or the scratch directory; those paths are the user's and are never removed by Skiff.
 - Pods placed with `nodeName` work too, because claims are bound without waiting for a pod. The first claim of a cluster pulls two small images (the provisioner and its helper) from Docker Hub onto the nodes that need them, as CoreDNS is pulled.
+
+### Containers
+
+- A container's **root filesystem is writable** and private to it, as in Kubernetes: what it writes anywhere outside its volumes goes to a layer on the node's disk (in the scratch directory), as large as the disk allows, empty at every start of the container (a restart finds nothing of what the attempt before wrote), and removed with the pod. Ephemeral-storage requests and limits are accepted and **not enforced**: the disk decides.
+- `kubectl top node` and `kubectl top pod` work (K3s's metrics-server is enabled and Skifflet serves the usage). The numbers come from the processes of each container, an approximation of what a cgroup would say: CPU time is exact for those processes, memory is their proportional share of the pages they hold.
+- CPU and memory **requests** decide where pods fit, against what the job grants; **limits** are not enforced (Slurm and the node are the authority).
+
+### Images
+
+A pod's image is pulled by Apptainer from the registry it names (Docker Hub, `registry.k8s.io`, ... reachable from the compute nodes), converted once and cached on the shared home (`~/.skiff/.images`); `imagePullPolicy` is honored. An absolute path to a SIF file the cluster can see (below `/root/.skiff`) is used as it is, with no registry. Not supported: `imagePullSecrets` and private registries, registry mirrors, hosts without access to a registry (use SIF files). The unpacked image of a running container is on the scratch directory (`SKIFF_TMP_DIR`): size it for the images you run.
+
+### When a job ends unexpectedly
+
+A bubble or an essential daemon that ends takes the whole job with it (the cluster is for one allocation). The job's output says what ended first and how, and the same account is kept in `~/.skiff/job-results/<job ID>.cause` (next to `<job ID>.exit`): the process, its exit status or the signal that killed it, the host and the time, and the last line the bubble itself logged. If you ask for help, send that file, the job's output file and the bubble logs (`~/.apptainer/instances/logs/<node>/<user>/bubble*.out`).
 
 ## Architecture & Components
 
