@@ -5,7 +5,7 @@
 // have one meaning in one tool and another in the next.
 //
 // Inside a Skiff cluster nothing here is a default in effect: the deployment
-// configuration (scripts/skiff-config.sh) states every value explicitly to plaidd,
+// configuration (scripts/skiff.sh) states every value explicitly to plaidd,
 // and the other tools learn them from plaidd.
 package netcfg
 

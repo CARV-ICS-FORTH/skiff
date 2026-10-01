@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests of scripts/skiff-config.sh: what it accepts, what it refuses (and says why),
+# Tests of scripts/skiff.sh: what it accepts, what it refuses (and says why),
 # and the addresses it derives. Runs without a cluster.
 set -uo pipefail
 
@@ -18,7 +18,7 @@ check() {
     vars=("$@")
     local out status
     # (${array[@]+"${array[@]}"}: an empty array is not an unset variable in bash 3.2)
-    out=$(env -i PATH="$PATH" ${vars[@]+"${vars[@]}"} bash -c 'source "$1"; shift; skiff_config_validate "$@"' _ "$repo_dir/scripts/skiff-config.sh" "$nodes" ${hosts[@]+"${hosts[@]}"} 2>&1)
+    out=$(env -i PATH="$PATH" ${vars[@]+"${vars[@]}"} bash -c 'source "$1"; shift; skiff_config_validate "$@"' _ "$repo_dir/scripts/skiff.sh" "$nodes" ${hosts[@]+"${hosts[@]}"} 2>&1)
     status=$?
     if [ "$status" -ne "$want" ]; then
         echo "FAIL $name: status $status, want $want: $out"
@@ -34,7 +34,7 @@ check() {
 derived() { # derived VARIABLE [VAR=value...]: the resolved value
     local var="$1"
     shift
-    env -i PATH="$PATH" "$@" bash -c 'source "$1"; skiff_config_resolve; echo "${!2}"' _ "$repo_dir/scripts/skiff-config.sh" "$var"
+    env -i PATH="$PATH" "$@" bash -c 'source "$1"; skiff_config_resolve; echo "${!2}"' _ "$repo_dir/scripts/skiff.sh" "$var"
 }
 
 expect() { # expect NAME GOT WANT
@@ -104,20 +104,20 @@ expect "what is below it follows" "$(derived SKIFF_APPTAINER_TMP SKIFF_TMP_DIR=/
 expect "the state directory is the home's ~/.skiff" "$(derived SKIFF_STATE_DIR HOME=/home/u)" /home/u/.skiff
 expect "and cannot be overridden" "$(derived SKIFF_STATE_DIR HOME=/home/u SKIFF_STATE_DIR=/elsewhere)" /home/u/.skiff
 expect "the volumes are below the state directory" "$(derived SKIFF_VOLUMES_DIR HOME=/home/u)" /home/u/.skiff/volumes
-id1=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff-config.sh")
-id2=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff-config.sh")
+id1=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
+id2=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
 [[ "$id1" =~ ^4711-[0-9a-f]{8}$ ]] && echo "PASS an instance name is the job ID and eight hexadecimal digits" || { echo "FAIL instance name '$id1'"; failures=$((failures + 1)); }
 [ "$id1" != "$id2" ] && echo "PASS a reused job ID gets another name" || { echo "FAIL the same job ID got the same name twice: $id1"; failures=$((failures + 1)); }
-expect "outside Slurm the job ID is 0" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff-config.sh" | cut -d- -f1)" 0
-expect "outer network of bubble 3" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_outer_network 3; echo "$SKIFF_OUTER_CIDR $SKIFF_OUTER_DNS $SKIFF_OUTER_ADDRESS"' _ "$repo_dir/scripts/skiff-config.sh")" "10.0.4.0 10.0.4.3 10.0.4.100"
+expect "outside Slurm the job ID is 0" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh" | cut -d- -f1)" 0
+expect "outer network of bubble 3" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_outer_network 3; echo "$SKIFF_OUTER_CIDR $SKIFF_OUTER_DNS $SKIFF_OUTER_ADDRESS"' _ "$repo_dir/scripts/skiff.sh")" "10.0.4.0 10.0.4.3 10.0.4.100"
 
-in_cidr() { env -i PATH="$PATH" bash -c 'source "$1"; skiff_ip_in_cidr "$2" "$3" && echo yes || echo no' _ "$repo_dir/scripts/skiff-config.sh" "$1" "$2"; }
+in_cidr() { env -i PATH="$PATH" bash -c 'source "$1"; skiff_ip_in_cidr "$2" "$3" && echo yes || echo no' _ "$repo_dir/scripts/skiff.sh" "$1" "$2"; }
 expect "an address inside a network" "$(in_cidr 10.200.3.7 10.200.0.0/16)" yes
 expect "the first and last address of a network" "$(in_cidr 10.200.0.0 10.200.0.0/16) $(in_cidr 10.200.255.255 10.200.0.0/16)" "yes yes"
 expect "an address outside a network" "$(in_cidr 10.201.0.1 10.200.0.0/16)" no
 expect "not an address" "$(in_cidr nope 10.200.0.0/16)" no
 
-expect "the Nth address of the pod network" "$(env -i PATH="$PATH" SKIFF_POD_CIDR=10.200.0.0/16 bash -c 'source "$1"; skiff_pod_address 712' _ "$repo_dir/scripts/skiff-config.sh")" 10.200.2.200
+expect "the Nth address of the pod network" "$(env -i PATH="$PATH" SKIFF_POD_CIDR=10.200.0.0/16 bash -c 'source "$1"; skiff_pod_address 712' _ "$repo_dir/scripts/skiff.sh")" 10.200.2.200
 
 
 # --- what a node needs ---------------------------------------------------------------
@@ -130,7 +130,7 @@ for command in mkdir stat hostname id; do ln -s "$(command -v "$command")" "$nod
 for tool in apptainer slirp4netns socat ss ip; do printf '#!/bin/sh\n' > "$nodedir/tools/$tool"; chmod +x "$nodedir/tools/$tool"; done
 printf '#!/bin/sh\necho nfs4\n' > "$nodedir/fakestat/stat"; chmod +x "$nodedir/fakestat/stat"
 node_check() { # node_check PATH_DIRS TMP_DIR: output and status of skiff_check_node
-    env -i PATH="$1" SKIFF_TMP_DIR="$2" "$BASH" -c 'source "$1"; skiff_check_node' _ "$repo_dir/scripts/skiff-config.sh" 2>&1
+    env -i PATH="$1" SKIFF_TMP_DIR="$2" "$BASH" -c 'source "$1"; skiff_check_node' _ "$repo_dir/scripts/skiff.sh" 2>&1
 }
 out=$(node_check "$nodedir/tools:$nodedir/base" "$nodedir/scratch"); status=$?
 expect "a node with every tool and a usable scratch directory" "$status" 0
@@ -161,11 +161,21 @@ echo "bubble1          100"
 for i in $(seq 1 60); do echo "other$i          $i"; done
 EOF2
 chmod +x "$nodedir/lister/list"
-misses=$(bash -c 'set -o pipefail; source "$1"; m=0; for i in $(seq 1 300); do skiff_listed "\bbubble1\b" "$2" || m=$((m+1)); done; echo $m' _ "$repo_dir/scripts/skiff-config.sh" "$nodedir/lister/list")
+misses=$(bash -c 'set -o pipefail; source "$1"; m=0; for i in $(seq 1 300); do skiff_listed "\bbubble1\b" "$2" || m=$((m+1)); done; echo $m' _ "$repo_dir/scripts/skiff.sh" "$nodedir/lister/list")
 expect "a listed word is found under pipefail however much follows it" "$misses" 0
-misses=$(bash -c 'set -o pipefail; source "$1"; skiff_listed "\bbubble9\b" "$2" && echo found || echo absent' _ "$repo_dir/scripts/skiff-config.sh" "$nodedir/lister/list")
+misses=$(bash -c 'set -o pipefail; source "$1"; skiff_listed "\bbubble9\b" "$2" && echo found || echo absent' _ "$repo_dir/scripts/skiff.sh" "$nodedir/lister/list")
 expect "an absent word is reported absent" "$misses" absent
-misses=$(bash -c 'set -o pipefail; source "$1"; skiff_listed x /no/such/command && echo found || echo absent' _ "$repo_dir/scripts/skiff-config.sh")
+misses=$(bash -c 'set -o pipefail; source "$1"; skiff_listed x /no/such/command && echo found || echo absent' _ "$repo_dir/scripts/skiff.sh")
 expect "a failing command lists nothing" "$misses" absent
+
+# --- one script: sourcing defines, executing works ----------------------------------------
+# Sourced, skiff.sh defines its functions and runs nothing (skiff.slurm and the tests
+# source it); executed, it runs a command, and without a known one says how to use it.
+out=$(env -i PATH="$PATH" bash -c 'source "$1"; declare -F skiff_bubble skiff_config_validate skiff_check_node >/dev/null && echo defined' _ "$repo_dir/scripts/skiff.sh" 2>&1)
+expect "sourcing defines the functions and prints nothing" "$out" defined
+out=$(env -i PATH="$PATH" bash "$repo_dir/scripts/skiff.sh" 2>&1); status=$?
+expect "executing without a command is a usage error" "$status:$(grep -c 'usage: skiff.sh bubble ID' <<< "$out")" "2:1"
+out=$(env -i PATH="$PATH" bash "$repo_dir/scripts/skiff.sh" nonsense 2>&1); status=$?
+expect "executing an unknown command is a usage error" "$status" 2
 
 [ "$failures" -eq 0 ] && echo "skiff-config: all checks passed" || { echo "skiff-config: $failures check(s) failed"; exit 1; }

@@ -28,14 +28,15 @@ case "$*" in
         [ "${TEST_NODE_CHECK:-ok}" = ok ] || { echo "controller: required program(s) not found in PATH: socat" >&2; exit 1; }
         exit 0
         ;;
-    *'/skiff-bubble.sh'*)
-        while [[ "$1" != */skiff-bubble.sh ]]; do shift; done
-        exec "$@"
+    *'/skiff.sh bubble'*)
+        # The bubble of a node is the stand-in below, not the real script (which
+        # skiff.slurm has sourced for its functions).
+        exec "$FAKE_BUBBLE"
         ;;
     *) exit 0 ;;
 esac
 EOF
-cat > "$test_dir/repo/scripts/skiff-bubble.sh" <<'EOF'
+cat > "$test_dir/fake-bubble" <<'EOF'
 #!/usr/bin/env bash
 if [ "$TEST_CHILD_MODE" = early ]; then exit 9; fi
 mkdir -p "$HOME/.skiff/tls"
@@ -45,8 +46,9 @@ if [ "$TEST_CHILD_MODE" = term ]; then exec sleep 30; fi
 sleep 0.1
 exit "$TEST_CHILD_MODE"
 EOF
-cp "$script_dir/../scripts/skiff-config.sh" "$test_dir/repo/scripts/"
-chmod +x "$test_dir/bin/"* "$test_dir/repo/scripts/skiff-bubble.sh"
+cp "$script_dir/../scripts/skiff.sh" "$test_dir/repo/scripts/"
+chmod +x "$test_dir/bin/"* "$test_dir/fake-bubble"
+export FAKE_BUBBLE="$test_dir/fake-bubble"
 export PATH="$test_dir/bin:$PATH"
 export SLURM_JOB_NODELIST=controller SLURM_SUBMIT_DIR="$test_dir/repo" SKIFF_DEV=0
 # The state directory is the user's ~/.skiff and cannot be changed: each run gets a
@@ -68,12 +70,12 @@ SKIFF_POD_MTU=1500 bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/invali
 [ "$rc" -eq 1 ] || { echo "invalid configuration: exit $rc, expected 1" >&2; exit 1; }
 grep -q 'SKIFF_POD_MTU (1500) leaves no room for VXLAN' "$test_dir/invalid.log" || { echo "invalid configuration: no reason given" >&2; cat "$test_dir/invalid.log" >&2; exit 1; }
 if grep -q 'Starting Controller' "$test_dir/invalid.log"; then echo "invalid configuration: a bubble was started" >&2; exit 1; fi
-# ... and so does scripts without the helper next to them.
-mv "$test_dir/repo/scripts/skiff-config.sh" "$test_dir/skiff-config.sh.away"
+# ... and so does a job whose skiff.sh is nowhere to be found.
+mv "$test_dir/repo/scripts/skiff.sh" "$test_dir/skiff.sh.away"
 rc=0
 SLURM_JOB_ID=8998 HOME="$test_dir/home-nohelper" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/nohelper.log" 2>&1 || rc=$?
-[ "$rc" -eq 1 ] && grep -q 'skiff-config.sh not found' "$test_dir/nohelper.log" || { echo "missing helper: exit $rc" >&2; cat "$test_dir/nohelper.log" >&2; exit 1; }
-mv "$test_dir/skiff-config.sh.away" "$test_dir/repo/scripts/skiff-config.sh"
+[ "$rc" -eq 1 ] && grep -q 'skiff.sh not found' "$test_dir/nohelper.log" || { echo "missing helper: exit $rc" >&2; cat "$test_dir/nohelper.log" >&2; exit 1; }
+mv "$test_dir/skiff.sh.away" "$test_dir/repo/scripts/skiff.sh"
 
 # A node that lacks a host program, or whose scratch directory cannot be used, stops the
 # job before any bubble starts, naming the problem.

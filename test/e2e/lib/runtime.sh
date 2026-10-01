@@ -84,7 +84,7 @@ runtime_parse_process_identities() {
 }
 
 # The pods directory of the nodes' Skifflet: below the deployment's scratch directory
-# (SKIFF_TMP_DIR, see scripts/skiff-config.sh).
+# (SKIFF_TMP_DIR, see scripts/skiff.sh).
 _RT_PODS_DIR="${E2E_PODS_DIR:-${SKIFF_TMP_DIR}/.pods}"
 
 # runtime_pod_dir NS POD UID: the runtime directory of one pod generation.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Case 17: the running cluster agrees with the configuration it was started with
 # (T18, T32). It reads the effective configuration from the same SKIFF_* variables and
-# defaults the cluster job used (lib/common.sh sources scripts/skiff-config.sh), so
+# defaults the cluster job used (lib/common.sh sources scripts/skiff.sh), so
 # it checks the default deployment and an alternate one (other pod and Service
 # networks, DNS address, cluster domain, pod MTU, runtime paths) alike: run the
 # tests with the variables the cluster was submitted with.

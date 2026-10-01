@@ -15,12 +15,12 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # The cluster's configuration: the same defaults and overrides the deployment
-# used (scripts/skiff-config.sh), so the checks compare a running cluster with
+# used (scripts/skiff.sh), so the checks compare a running cluster with
 # what it was configured with instead of with constants of their own. Run the
 # tests with the same SKIFF_* variables the cluster job was submitted with.
 # ---------------------------------------------------------------------------
-_E2E_CONFIG="${E2E_CONFIG_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts/skiff-config.sh}"
-# shellcheck source=../../../scripts/skiff-config.sh
+_E2E_CONFIG="${E2E_CONFIG_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/scripts/skiff.sh}"
+# shellcheck source=../../../scripts/skiff.sh
 source "$_E2E_CONFIG"
 skiff_config_validate || { echo "invalid cluster configuration for the tests" >&2; exit 1; }
 

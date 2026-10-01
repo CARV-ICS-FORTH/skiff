@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run scripts/skiff-bubble.sh against a fake slirp4netns API, a fake apptainer and a fake
+# Run `scripts/skiff.sh bubble` against a fake slirp4netns API, a fake apptainer and a fake
 # socat: what the host publishes, how the overlay socket helper is started and
 # supervised (it is a one-shot, not a daemon), what a missing socat does, and that a
 # terminated bubble leaves nothing behind.
@@ -16,7 +16,7 @@ fail() { echo "skiff-bubble-test: $*" >&2; [ -z "$LOG" ] || sed 's/^/  | /' "$LO
 # creates anything.
 empty="$test_dir/empty"; mkdir -p "$empty"
 rc=0
-out=$(PATH="$empty" HOME="$empty" /bin/bash "$script_dir/../scripts/skiff-bubble.sh" 1 2>&1) || rc=$?
+out=$(PATH="$empty" HOME="$empty" /bin/bash "$script_dir/../scripts/skiff.sh" bubble 1 2>&1) || rc=$?
 [ "$rc" -eq 1 ] || fail "exit $rc without socat, expected 1"
 case "$out" in *"required program(s) not found in PATH"*socat*) ;; *) fail "no reason given without socat: $out" ;; esac
 [ -z "$(ls -A "$empty")" ] || fail "created files before failing without socat"
@@ -70,8 +70,8 @@ chmod +x "$test_dir/bin/"*
 # somewhere else, to see that everything follows it.
 export PATH="$test_dir/bin:$PATH" HOME="$test_dir/home" SKIFF_DEV=1 CONTROLLER_IP=192.0.2.10 SKIFF_TMP_DIR="$test_dir/scratch"
 export SKIFF_SLIRP_API_TIMEOUT=4
-# shellcheck source=../scripts/skiff-config.sh
-source "$repo_dir/scripts/skiff-config.sh"
+# shellcheck source=../scripts/skiff.sh
+source "$repo_dir/scripts/skiff.sh"
 skiff_config_validate >/dev/null
 skiff_outer_network 1
 guest="$SKIFF_OUTER_ADDRESS"
@@ -83,7 +83,7 @@ run_bubble() {
     rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR"
     export FAKE_SLIRP_DIR="$FAKE_DIR"
     LOG="$test_dir/bubble.log"
-    env SKIFF_ROLE="$role" "$@" bash "$repo_dir/scripts/skiff-bubble.sh" 1 > "$LOG" 2>&1 &
+    env SKIFF_ROLE="$role" "$@" bash "$repo_dir/scripts/skiff.sh" bubble 1 > "$LOG" 2>&1 &
     BUBBLE_PID=$!
     local i
     for i in $(seq 1 60); do

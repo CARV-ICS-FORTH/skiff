@@ -8,8 +8,8 @@ kubectl() {
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The cluster's configuration (run with the SKIFF_* variables the cluster was started with).
-# shellcheck source=../../../scripts/skiff-config.sh
-source "${E2E_CONFIG_SCRIPT:-$SCRIPT_DIR/../../../scripts/skiff-config.sh}"
+# shellcheck source=../../../scripts/skiff.sh
+source "${E2E_CONFIG_SCRIPT:-$SCRIPT_DIR/../../../scripts/skiff.sh}"
 skiff_config_validate
 namespace=tap-acceptance
 manifest="${1:-}"

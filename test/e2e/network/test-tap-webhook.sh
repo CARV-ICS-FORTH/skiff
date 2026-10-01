@@ -3,8 +3,8 @@
 set -euo pipefail
 
 # The cluster's configuration (run with the SKIFF_* variables the cluster was started with).
-# shellcheck source=../../../scripts/skiff-config.sh
-source "${E2E_CONFIG_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../../scripts/skiff-config.sh}"
+# shellcheck source=../../../scripts/skiff.sh
+source "${E2E_CONFIG_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../../scripts/skiff.sh}"
 skiff_config_validate
 
 kubectl() {

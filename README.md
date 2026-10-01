@@ -99,7 +99,7 @@ skiff/
 ├── plaid/                   # Rootless networking tools
 ├── images/                  # Bubble and builder container definitions
 ├── scripts/                 # User-facing cluster deployment
-│   ├── skiff-bubble.sh      # Per-node bubble startup and supervision
+│   ├── skiff.sh             # Configuration, preflight and the per-node bubble
 │   └── skiff.slurm          # Slurm batch job
 ├── test/                    # Regressions, end-to-end tests and fixtures
 │   ├── e2e/                # Two-node acceptance suite

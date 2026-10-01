@@ -3,10 +3,13 @@
 #SBATCH --output=%x-%j.out
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=1500M
-# The resources of the job are per node and are the pods' too: Skifflet advertises what
-# the job grants (the Slurm memory and CPU of the node, or the cgroup limit if smaller)
-# as the node's capacity. Ask for what the workloads need, for example
+#SBATCH --exclusive
+#SBATCH --mem=0
+# The job gets whole nodes: the fixed ports and the scratch directory (/tmp/.skiff, which
+# has no user in its path) are the job's alone, and so are the node's resources, which are
+# the pods' too: Skifflet advertises what the job grants (the Slurm memory and CPU of the
+# node, or the cgroup limit if smaller) as the node's capacity, here all of it (--mem=0 is
+# all the memory of the node). Ask for less when the workloads need less, for example
 # sbatch --nodes=4 --mem=64G --cpus-per-task=16 skiff.slurm.
 
 # Usage: sbatch skiff.slurm
@@ -16,27 +19,24 @@
 
 set -euo pipefail
 
-# Where the scripts are (a submitted job runs from a copy of this file).
-SCRIPT_DIR="${SLURM_SUBMIT_DIR:-$HOME/skiff}"
-if [ -f "$SCRIPT_DIR/scripts/skiff-bubble.sh" ]; then
-    SCRIPT_DIR="$SCRIPT_DIR/scripts"
-elif [ -f "$HOME/skiff/scripts/skiff-bubble.sh" ]; then
-    SCRIPT_DIR="$HOME/skiff/scripts"
-elif [ ! -f "$SCRIPT_DIR/skiff-bubble.sh" ]; then
-    SCRIPT_DIR="$HOME/skiff"
+# Where skiff.sh is (a submitted job runs from a copy of this file).
+SKIFF_SCRIPT=""
+for candidate in "${SLURM_SUBMIT_DIR:-$HOME/skiff}/scripts/skiff.sh" "${SLURM_SUBMIT_DIR:-$HOME/skiff}/skiff.sh" \
+                 "$HOME/skiff/scripts/skiff.sh" "$HOME/skiff/skiff.sh"; do
+    if [ -f "$candidate" ]; then SKIFF_SCRIPT="$candidate"; break; fi
+done
+if [ -z "$SKIFF_SCRIPT" ]; then
+    echo "ERROR: skiff.sh not found (looked next to skiff.slurm, in its scripts/ folder and in ~/skiff); copy it to the cluster." >&2
+    exit 1
 fi
 
 # The network configuration every part of the cluster must agree on. Its defaults
-# and the variables that override them are documented in skiff-config.sh; it is
-# checked as a whole here, before anything is started.
-if [ ! -f "$SCRIPT_DIR/skiff-config.sh" ]; then
-    echo "ERROR: skiff-config.sh not found in $SCRIPT_DIR; copy the whole scripts/ folder to the cluster." >&2
-    exit 1
-fi
-# shellcheck source=skiff-config.sh
-source "$SCRIPT_DIR/skiff-config.sh"
+# and the variables that override them are documented in skiff.sh; it is checked as a
+# whole here, before anything is started. (Sourced, skiff.sh only defines functions.)
+# shellcheck source=skiff.sh
+source "$SKIFF_SCRIPT"
 
-# SKIFF_STATE_DIR (~/.skiff) is fixed by skiff-config.sh.
+# SKIFF_STATE_DIR (~/.skiff) is fixed by skiff.sh.
 NODES=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
 NUM_NODES=${#NODES[@]}
 
@@ -65,7 +65,7 @@ echo "Cluster Setup:"
 echo "  Controller Node: $CONTROLLER_NODE ($CONTROLLER_IP)"
 echo "  Nodes: ${NODES[*]}"
 
-# The job's own volume directory (see skiff-config.sh); a cluster gets a new one every time.
+# The job's own volume directory (see skiff.sh); a cluster gets a new one every time.
 SKIFF_JOB_INSTANCE=$(skiff_new_instance_id)
 skiff_config_validate "$NUM_NODES" "$CONTROLLER_IP" || exit 1
 skiff_config_export
@@ -76,7 +76,7 @@ skiff_config_print
 echo "Checking the allocated nodes..."
 NODE_PROBLEMS=0
 for node in "${NODES[@]}"; do
-    if ! srun --nodes=1 -w "$node" bash -c 'source "$1" && skiff_check_node' _ "$SCRIPT_DIR/skiff-config.sh"; then
+    if ! srun --nodes=1 -w "$node" bash -c 'source "$1" && skiff_check_node' _ "$SKIFF_SCRIPT"; then
         NODE_PROBLEMS=$((NODE_PROBLEMS + 1))
     fi
 done
@@ -234,7 +234,7 @@ echo "Starting Controller on $CONTROLLER_NODE..."
     export SKIFF_ROLE="controller"
     export SKIFF_DEV=${SKIFF_DEV:-0}
     export CONTROLLER_IP="$CONTROLLER_IP"
-    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" 1
+    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive "$SKIFF_SCRIPT" bubble 1
 ) &
 BG_PIDS+=($!)
 
@@ -265,7 +265,7 @@ for ((i=1; i<NUM_NODES; i++)); do
         export SKIFF_ROLE="node"
         export SKIFF_DEV=${SKIFF_DEV:-0}
         export CONTROLLER_IP="$CONTROLLER_IP"
-        exec srun --nodes=1 -w "$NODE" --exclusive "$SCRIPT_DIR/skiff-bubble.sh" "$BUBBLE_ID"
+        exec srun --nodes=1 -w "$NODE" --exclusive "$SKIFF_SCRIPT" bubble "$BUBBLE_ID"
     ) &
     BG_PIDS+=($!)
     
