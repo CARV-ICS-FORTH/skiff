@@ -206,6 +206,54 @@ no_backends() {
 e2e_subcase_run T25-no-backends no_backends
 
 # ---------------------------------------------------------------------------
+# T25-drain: a connection that is open when its node port is withdrawn goes on; new ones are
+# refused.
+# ---------------------------------------------------------------------------
+stream_lines() { host_sh "$NODE_A" 'wc -l < /tmp/e2e23-stream.log 2>/dev/null || echo 0' | tr -d ' '; }
+stream_running() { [ "$(stream_lines)" -ge 3 ]; }
+drain() {
+    local port=31555
+    e2e_kubectl -n "$NS" apply -f - >/dev/null <<YAML
+apiVersion: v1
+kind: Service
+metadata: {name: drain}
+spec:
+  type: NodePort
+  selector: {app: backend, role: only-a}
+  ports: [{name: http, port: 80, targetPort: web, nodePort: ${port}}]
+YAML
+    e2e_wait_condition 60 "the node port answers" answers "$NODE_A" "$NODE_B" "$port"
+    host_sh "$NODE_A" "cat > /tmp/e2e23-stream.py <<'PY'
+import socket, sys, time
+s = socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=5)
+while True:
+    s.sendall(b'GET /1 HTTP/1.1\r\nHost: x\r\n\r\n')
+    data = b''
+    while b'\r\n\r\n' not in data:
+        chunk = s.recv(4096)
+        if not chunk:
+            print('CLOSED', flush=True); sys.exit(0)
+        data += chunk
+    head, _, rest = data.partition(b'\r\n\r\n')
+    n = int([l for l in head.split(b'\r\n') if l.lower().startswith(b'content-length')][0].split(b':')[1])
+    while len(rest) < n:
+        rest += s.recv(4096)
+    print('ok', flush=True)
+    time.sleep(0.5)
+PY
+rm -f /tmp/e2e23-stream.log; nohup python3 /tmp/e2e23-stream.py ${IPS[$NODE_B]} $port > /tmp/e2e23-stream.log 2>&1 &"
+    e2e_wait_condition 30 "the connection is running" stream_running
+    e2e_kubectl -n "$NS" patch service drain --type merge -p '{"spec":{"type":"ClusterIP"}}' >/dev/null
+    e2e_wait_condition 60 "new connections are refused" refused "$NODE_A" "$NODE_B" "$port"
+    local before after
+    before=$(stream_lines); sleep 6; after=$(stream_lines)
+    host_sh "$NODE_A" 'pkill -f e2e23-stream.py || true; grep -c CLOSED /tmp/e2e23-stream.log || true; rm -f /tmp/e2e23-stream.py'  >/dev/null
+    [ "$after" -gt "$before" ] || e2e_fail "the open connection stopped when the node port was withdrawn ($before -> $after lines)"
+    e2e_assert_eq "its forward is gone" "$(published "$NODE_B" "$port")" 0
+}
+e2e_subcase_run T25-drain drain
+
+# ---------------------------------------------------------------------------
 # T25-bind-collision: something else holds a node port on node B. Node A publishes it; node B
 # says it cannot, with an event on the Service and in its status, does not use another port and
 # leaves the other node ports alone; when the holder is gone, B publishes it.
