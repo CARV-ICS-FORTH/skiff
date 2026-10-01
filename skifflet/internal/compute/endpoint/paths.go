@@ -44,9 +44,11 @@ import (
 //	volumes/<volume>     the pod's volumes
 //	logs/                container logs (see ContainerPath)
 //	tmp/                 the pod's Apptainer temporary directory (see TmpDir)
-//	scratch/<container>/<attempt>/{tmp,var-tmp}
+//	scratch/<container>/<attempt>/{tmp,var-tmp,rootfs}
 //	                     what a container sees as /tmp and /var/tmp, one pair per
-//	                     attempt (see ContainerPath.AttemptTmp)
+//	                     attempt (see ContainerPath.AttemptTmp), and where Apptainer
+//	                     unpacks its root filesystem, which the container writes to
+//	                     (see ContainerPath.AttemptUnpackDir)
 //
 // Everything that launches, reads, execs into or cleans up a pod builds these
 // paths here, from the scratch root it was configured with (SkiffPath); no
@@ -312,7 +314,17 @@ func (c ContainerPath) AttemptVarTmp(attempt int) string {
 	return filepath.Join(c.ScratchDir(), strconv.Itoa(attempt), "var-tmp")
 }
 
-// AttemptScratchDir is the directory that holds both of attempt N.
+// AttemptUnpackDir is attempt N's Apptainer temporary directory (APPTAINER_TMPDIR): where
+// Apptainer unpacks the container's root filesystem when it starts (--unsquash), and
+// the container runs on that unpacked copy, writable. That copy is the container's
+// writable layer, as in Kubernetes: private to the container, new with every attempt (a
+// restart finds none of what the attempt before wrote), on the node's disk and not in
+// memory, as large as the disk allows, and removed with the attempt's scratch directory.
+func (c ContainerPath) AttemptUnpackDir(attempt int) string {
+	return filepath.Join(c.AttemptScratchDir(attempt), "rootfs")
+}
+
+// AttemptScratchDir is the directory that holds all of attempt N's directories.
 func (c ContainerPath) AttemptScratchDir(attempt int) string {
 	return filepath.Join(c.ScratchDir(), strconv.Itoa(attempt))
 }

@@ -120,7 +120,9 @@ func TestPodLifecycle_TerminateRemovesKilledContainersTemporaryFiles(t *testing.
 }
 
 // Every Apptainer process of a pod gets its temporary directory inside the pod
-// directory (verified through a launcher that records what it receives).
+// directory (verified through a launcher that records what it receives): a container's
+// is its attempt's own, where its root filesystem is unpacked and which is its writable
+// layer, and it exists when the container starts.
 func TestRunAttempt_UsesThePodTemporaryDirectory(t *testing.T) {
 	root := t.TempDir()
 	out := filepath.Join(root, "tmpdir")
@@ -148,9 +150,15 @@ func TestRunAttempt_UsesThePodTemporaryDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := pl.PodDir().TmpDir()
+	want := pl.PodDir().Container("app").AttemptUnpackDir(1)
 	if strings.TrimSpace(string(got)) != want+" "+want+" true" {
-		t.Fatalf("launched process saw %q, want the pod temporary directory %q", got, want)
+		t.Fatalf("launched process saw %q, want the attempt's own directory %q", got, want)
+	}
+	if !strings.HasPrefix(want, pl.PodDir().String()+"/") || strings.HasPrefix(want, pl.PodDir().TmpDir()+"/") {
+		t.Fatalf("%s is not inside the pod directory, apart from the pod's own temporary directory", want)
+	}
+	if info, err := os.Stat(want); err != nil || !info.IsDir() {
+		t.Fatalf("the attempt's unpack directory %s does not exist: %v", want, err)
 	}
 }
 

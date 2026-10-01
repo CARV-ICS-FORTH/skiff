@@ -216,6 +216,11 @@ func TestContainerPath_AttemptTmp(t *testing.T) {
 	if got, want := app.AttemptVarTmp(2), filepath.Join(pod.String(), "scratch", "app", "2", "var-tmp"); got != want {
 		t.Errorf("AttemptVarTmp %s, want %s", got, want)
 	}
+	// The directory Apptainer unpacks the root filesystem in, which is the container's writable
+	// layer, belongs to the attempt too.
+	if got, want := app.AttemptUnpackDir(2), filepath.Join(pod.String(), "scratch", "app", "2", "rootfs"); got != want {
+		t.Errorf("AttemptUnpackDir %s, want %s", got, want)
+	}
 	for _, dir := range []string{app.AttemptTmp(10), app.AttemptTmp(2), app.AttemptTmp(9)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)

@@ -191,3 +191,70 @@ func TestPrepareAttemptScratch(t *testing.T) {
 		t.Errorf("a leftover of the same attempt survived: %d entries", len(entries))
 	}
 }
+
+// A container's root filesystem is the image unpacked for the attempt, written to on the
+// node's disk: --writable on that copy (--unsquash), not --writable-tmpfs, whose layer is
+// 64 MiB of memory (a package install or a build would fail with no space, where
+// Kubernetes would not).
+func TestBuildApptainerArgs_WritableLayerIsOnDisk(t *testing.T) {
+	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
+	args := (&Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/images/app.sif"}).BuildApptainerArgs(1, podDir, 1)
+	has := func(flag string) bool {
+		for _, arg := range args {
+			if arg == flag {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("--writable") || !has("--unsquash") {
+		t.Errorf("the container does not write to an unpacked copy of its image: %v", args)
+	}
+	if has("--writable-tmpfs") {
+		t.Errorf("the container's writable layer is the memory-backed one: %v", args)
+	}
+}
+
+// Every attempt has an unpack directory of its own, empty when it starts, where its writable
+// layer lives, and what the attempts before it wrote there is gone with them; another
+// container's is untouched.
+func TestPrepareAttemptScratch_WritableLayerIsPerAttempt(t *testing.T) {
+	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
+	app, other := podDir.Container("app"), podDir.Container("other")
+	for _, c := range []endpoint.ContainerPath{app, other} {
+		if err := prepareAttemptScratch(c, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []endpoint.ContainerPath{app, other} {
+		if info, err := os.Stat(c.AttemptUnpackDir(1)); err != nil || !info.IsDir() {
+			t.Fatalf("attempt 1 has no unpack directory: %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(app.AttemptUnpackDir(1), "written"), []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other.AttemptUnpackDir(1), "written"), []byte("other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareAttemptScratch(app, 2); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(app.AttemptUnpackDir(2)); err != nil || len(entries) != 0 {
+		t.Errorf("attempt 2 starts with %v (%v), want an empty directory", entries, err)
+	}
+	if _, err := os.Stat(app.AttemptUnpackDir(1)); err == nil {
+		t.Error("what attempt 1 wrote survived the next attempt")
+	}
+	if data, err := os.ReadFile(filepath.Join(other.AttemptUnpackDir(1), "written")); err != nil || string(data) != "other" {
+		t.Errorf("another container's layer was touched: %q %v", data, err)
+	}
+	if app.AttemptUnpackDir(2) == other.AttemptUnpackDir(2) || app.AttemptUnpackDir(1) == app.AttemptUnpackDir(2) {
+		t.Error("attempts or containers share a writable layer")
+	}
+	for _, dir := range []string{app.AttemptUnpackDir(2), app.AttemptTmp(2), app.AttemptVarTmp(2)} {
+		if !strings.HasPrefix(dir, app.AttemptScratchDir(2)+"/") {
+			t.Errorf("%s is not inside the attempt's scratch directory, which goes with the pod", dir)
+		}
+	}
+}

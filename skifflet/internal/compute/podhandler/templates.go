@@ -74,7 +74,15 @@ type Container struct {
 const NoMounts = "home,bind-paths,tmp,cwd"
 
 // BuildApptainerArgs constructs the CLI arguments for executing attempt N of a
-// container via Apptainer/plaidtainer. The node's /tmp and /var/tmp are not mounted
+// container via Apptainer/plaidtainer.
+//
+// The container's root filesystem is the image unpacked for this attempt (--unsquash,
+// into the attempt's own directory, see ContainerPath.AttemptUnpackDir) and the container
+// writes to that copy (--writable): its writable layer is private, on the node's disk
+// (not the 64 MiB of memory --writable-tmpfs would give it), new with every attempt, and
+// gone with it, as in Kubernetes.
+//
+// The node's /tmp and /var/tmp are not mounted
 // (Apptainer would do it by default, giving every container, and the pod directories
 // below it, the whole node's /tmp): the container's own directories for the attempt
 // (prepareAttemptScratch creates them) take their place, unless the pod mounts a
@@ -88,7 +96,7 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 		"--nv",
 		"--cleanenv",
 		"--no-eval",
-		"--writable-tmpfs",
+		"--writable",
 		"--no-mount", NoMounts,
 		"--unsquash",
 	}
