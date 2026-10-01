@@ -61,8 +61,8 @@ EOF2
 
     local dir found
     dir=$(pod_dir e2e27-big)
-    found=$(runtime_ssh_node "$IP_A" "find '${dir}/scratch/app/1/rootfs' -name bigfile -size +250M | wc -l" | tr -d ' ')
-    e2e_assert_eq "the 300 MiB are on the node's disk, in the pod's directory" "$found" 1
+    found=$(runtime_ssh_node "$IP_A" "find '${dir}/scratch/app/1/overlay' -name bigfile -size +250M | wc -l" | tr -d ' ')
+    e2e_assert_eq "the 300 MiB are on the node's disk, in the container's layer in the pod's directory" "$found" 1
     e2e_kubectl delete pod e2e27-big -n "$NS" --timeout=60s > /dev/null
     dir_gone "$dir"
 }

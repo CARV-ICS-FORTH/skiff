@@ -117,8 +117,13 @@ t04_not_implemented() {  # t04_not_implemented DESCRIPTION OUTPUT WORD
 }
 e2e_subcase_run T04-attach-501 t04_not_implemented "kubectl attach" \
     "$(e2e_kubectl attach e2e06-pod -n "$NS" -c app 2>&1 || true)" "attach"
-e2e_subcase_run T04-stats-501 t04_not_implemented "/stats/summary" "$(node_proxy stats/summary)" "statistics"
-e2e_subcase_run T04-metrics-501 t04_not_implemented "/metrics/resource" "$(node_proxy metrics/resource)" "metrics"
+# Usage is served (case 28 looks at what the numbers say): the summary and the resource
+# metrics carry this pod.
+e2e_subcase_run T04-stats t04_lists stats/summary
+t04_metrics() {
+    e2e_assert_contains "/metrics/resource has the pod's container" "$(node_proxy metrics/resource)" "pod=\"e2e06-pod\""
+}
+e2e_subcase_run T04-metrics t04_metrics
 
 # Genuine missing resources keep their normal error; the proxy bypasses the
 # API server's own pod/container validation, so these are Skifflet's answers.

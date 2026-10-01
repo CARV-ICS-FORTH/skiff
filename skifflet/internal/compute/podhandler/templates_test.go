@@ -192,13 +192,14 @@ func TestPrepareAttemptScratch(t *testing.T) {
 	}
 }
 
-// A container's root filesystem is the image unpacked for the attempt, written to on the
-// node's disk: --writable on that copy (--unsquash), not --writable-tmpfs, whose layer is
-// 64 MiB of memory (a package install or a build would fail with no space, where
-// Kubernetes would not).
+// A container's writable layer is an overlay directory of its attempt over the image
+// unpacked for it, on the node's disk: --overlay, not --writable-tmpfs, whose layer is 64 MiB
+// of memory (a package install or a build would fail with no space, where Kubernetes would
+// not), and not --writable on the unpacked copy, which leaves no way to create the mount
+// points of the pod's volumes.
 func TestBuildApptainerArgs_WritableLayerIsOnDisk(t *testing.T) {
 	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
-	args := (&Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/images/app.sif"}).BuildApptainerArgs(1, podDir, 1)
+	args := (&Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/images/app.sif"}).BuildApptainerArgs(1, podDir, 2)
 	has := func(flag string) bool {
 		for _, arg := range args {
 			if arg == flag {
@@ -207,16 +208,27 @@ func TestBuildApptainerArgs_WritableLayerIsOnDisk(t *testing.T) {
 		}
 		return false
 	}
-	if !has("--writable") || !has("--unsquash") {
-		t.Errorf("the container does not write to an unpacked copy of its image: %v", args)
+	overlay := ""
+	for i, arg := range args {
+		if arg == "--overlay" && i+1 < len(args) {
+			overlay = args[i+1]
+		}
 	}
-	if has("--writable-tmpfs") {
-		t.Errorf("the container's writable layer is the memory-backed one: %v", args)
+	if want := podDir.Container("app").AttemptOverlayDir(2); overlay != want {
+		t.Errorf("the writable layer is %q, want the attempt's overlay directory %q: %v", overlay, want, args)
+	}
+	if !has("--unsquash") {
+		t.Errorf("the image is not unpacked for the attempt: %v", args)
+	}
+	for _, flag := range []string{"--writable-tmpfs", "--writable"} {
+		if has(flag) {
+			t.Errorf("the container has %s: %v", flag, args)
+		}
 	}
 }
 
-// Every attempt has an unpack directory of its own, empty when it starts, where its writable
-// layer lives, and what the attempts before it wrote there is gone with them; another
+// Every attempt has a writable layer and an unpack directory of its own, empty when it
+// starts, and what the attempts before it wrote there is gone with them; another
 // container's is untouched.
 func TestPrepareAttemptScratch_WritableLayerIsPerAttempt(t *testing.T) {
 	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
@@ -227,32 +239,34 @@ func TestPrepareAttemptScratch_WritableLayerIsPerAttempt(t *testing.T) {
 		}
 	}
 	for _, c := range []endpoint.ContainerPath{app, other} {
-		if info, err := os.Stat(c.AttemptUnpackDir(1)); err != nil || !info.IsDir() {
-			t.Fatalf("attempt 1 has no unpack directory: %v", err)
+		for _, dir := range []string{c.AttemptOverlayDir(1), c.AttemptUnpackDir(1)} {
+			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+				t.Fatalf("attempt 1 lacks %s: %v", dir, err)
+			}
 		}
 	}
-	if err := os.WriteFile(filepath.Join(app.AttemptUnpackDir(1), "written"), []byte("one"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(app.AttemptOverlayDir(1), "written"), []byte("one"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(other.AttemptUnpackDir(1), "written"), []byte("other"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(other.AttemptOverlayDir(1), "written"), []byte("other"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := prepareAttemptScratch(app, 2); err != nil {
 		t.Fatal(err)
 	}
-	if entries, err := os.ReadDir(app.AttemptUnpackDir(2)); err != nil || len(entries) != 0 {
+	if entries, err := os.ReadDir(app.AttemptOverlayDir(2)); err != nil || len(entries) != 0 {
 		t.Errorf("attempt 2 starts with %v (%v), want an empty directory", entries, err)
 	}
-	if _, err := os.Stat(app.AttemptUnpackDir(1)); err == nil {
+	if _, err := os.Stat(app.AttemptOverlayDir(1)); err == nil {
 		t.Error("what attempt 1 wrote survived the next attempt")
 	}
-	if data, err := os.ReadFile(filepath.Join(other.AttemptUnpackDir(1), "written")); err != nil || string(data) != "other" {
+	if data, err := os.ReadFile(filepath.Join(other.AttemptOverlayDir(1), "written")); err != nil || string(data) != "other" {
 		t.Errorf("another container's layer was touched: %q %v", data, err)
 	}
-	if app.AttemptUnpackDir(2) == other.AttemptUnpackDir(2) || app.AttemptUnpackDir(1) == app.AttemptUnpackDir(2) {
+	if app.AttemptOverlayDir(2) == other.AttemptOverlayDir(2) || app.AttemptOverlayDir(1) == app.AttemptOverlayDir(2) {
 		t.Error("attempts or containers share a writable layer")
 	}
-	for _, dir := range []string{app.AttemptUnpackDir(2), app.AttemptTmp(2), app.AttemptVarTmp(2)} {
+	for _, dir := range []string{app.AttemptOverlayDir(2), app.AttemptUnpackDir(2), app.AttemptTmp(2), app.AttemptVarTmp(2)} {
 		if !strings.HasPrefix(dir, app.AttemptScratchDir(2)+"/") {
 			t.Errorf("%s is not inside the attempt's scratch directory, which goes with the pod", dir)
 		}

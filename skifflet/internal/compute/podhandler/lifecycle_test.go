@@ -461,3 +461,34 @@ func TestPodRegistry_AntiResurrection(t *testing.T) {
 		t.Fatalf("expected uid-gen-2 in registry after replacement")
 	}
 }
+
+// RunningContainers lists the containers whose process runs, with the process their own
+// descend from, and drops one when its process has ended (a reader of usage must not be
+// handed a process that is gone).
+func TestPodLifecycle_RunningContainers(t *testing.T) {
+	pl := testLifecycle(t, nil, "a", "b")
+	if got := pl.RunningContainers(); len(got) != 0 {
+		t.Fatalf("containers running before any start: %v", got)
+	}
+	before := time.Now()
+	a, err := pl.BeginAttempt("b", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := sleeper("30")
+	if err := a.Start(cmd, NoProbes); err != nil {
+		t.Fatal(err)
+	}
+	got := pl.RunningContainers()
+	if len(got) != 1 || got[0].Name != "b" || got[0].Attempt != 1 || got[0].Launcher != cmd.Process.Pid || got[0].Init {
+		t.Fatalf("running containers %+v, want container b attempt 1 launched as %d", got, cmd.Process.Pid)
+	}
+	if got[0].Started.Before(before) || got[0].Started.After(time.Now()) {
+		t.Errorf("started at %v, want a time between %v and now", got[0].Started, before)
+	}
+	_ = cmd.Process.Kill()
+	a.Wait(cmd)
+	if got := pl.RunningContainers(); len(got) != 0 {
+		t.Errorf("a container whose process ended is still listed: %+v", got)
+	}
+}

@@ -236,9 +236,9 @@ func SafeRemovePodDirectory(podDir string) error {
 
 // prepareAttemptScratch gives attempt N of a container its own /tmp and /var/tmp, empty
 // (a container's temporary files are gone when it is restarted, as in Kubernetes, where
-// they are part of the writable layer of the container that ran), and the directory
-// Apptainer unpacks the container's root filesystem in, which is that writable layer
-// (see ContainerPath.AttemptUnpackDir). What the attempts before it left is removed
+// they are part of the writable layer of the container that ran), its writable layer (an
+// empty overlay directory, see ContainerPath.AttemptOverlayDir) and the directory Apptainer
+// unpacks the image in (see ContainerPath.AttemptUnpackDir). What the attempts before it left is removed
 // first, so a pod keeps one set per container, and a restart can never see its
 // predecessor's files. The temporary directories are world-writable with the sticky bit,
 // like a /tmp, whatever user the container runs as.
@@ -260,7 +260,12 @@ func prepareAttemptScratch(container endpoint.ContainerPath, attempt int) error 
 			return err
 		}
 	}
-	return os.MkdirAll(container.AttemptUnpackDir(attempt), 0o755)
+	for _, dir := range []string{container.AttemptOverlayDir(attempt), container.AttemptUnpackDir(attempt)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // podPIDsRecord is the on-disk record of a pod's processes (pids.json in the job
@@ -499,8 +504,8 @@ var bindVariables = []string{"APPTAINER_BIND", "SINGULARITY_BIND", "APPTAINER_BI
 // launchEnv is the environment of an Apptainer process of this pod: the
 // process's own, without the bubble's bind mounts (a container gets the volumes of
 // its pod and nothing else), with Apptainer's temporary directory tmp (inside the pod
-// directory: the pod's own for the sandbox, the attempt's for a container, whose
-// unpacked root filesystem is its writable layer), and Apptainer quiet. Its informational messages ("Cleaning up image...")
+// directory: the pod's own for the sandbox, the attempt's for a container, where its
+// image is unpacked), and Apptainer quiet. Its informational messages ("Cleaning up image...")
 // would otherwise be taken for the container's own output and end up in its log; its
 // warnings and errors still appear.
 func (h *PodHandler) launchEnv(tmp string) []string {

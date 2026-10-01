@@ -94,6 +94,10 @@ type VirtualK8S struct {
 	// assigned lists the pods the API server has assigned to this node.
 	assigned atomic.Pointer[corelisters.PodLister]
 
+	// What the pods and the node use, read on demand (see usage.go).
+	usageOnce   sync.Once
+	usageReader *usageReader
+
 	// What updates could not apply (see update.go).
 	lastUnapplied   sync.Map // client.ObjectKey -> the changes last reported
 	suppressSuccess sync.Map // client.ObjectKey -> the next success event is to be dropped

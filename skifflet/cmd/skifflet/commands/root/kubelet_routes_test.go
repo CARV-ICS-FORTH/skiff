@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	dto "github.com/prometheus/client_model/go"
 	"io"
+	statsv1alpha1 "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -55,6 +57,13 @@ func testRoutes(logs *recordedLogs) kubeletRoutes {
 		},
 		RunInContainer: func(context.Context, string, string, string, []string, api.AttachIO) error { return nil },
 		PortForward:    func(context.Context, string, string, int32, io.ReadWriteCloser) error { return nil },
+		GetStatsSummary: func(context.Context) (*statsv1alpha1.Summary, error) {
+			return &statsv1alpha1.Summary{Node: statsv1alpha1.NodeStats{NodeName: "test-node"}}, nil
+		},
+		GetMetricsResource: func(context.Context) ([]*dto.MetricFamily, error) {
+			name, help, kind, value := "node_memory_working_set_bytes", "test", dto.MetricType_GAUGE, 42.0
+			return []*dto.MetricFamily{{Name: &name, Help: &help, Type: &kind, Metric: []*dto.Metric{{Gauge: &dto.Gauge{Value: &value}}}}}, nil
+		},
 	}
 }
 
@@ -100,6 +109,26 @@ func TestKubeletRoutes_AssignedPodsErrorIsNotEmptySuccess(t *testing.T) {
 	}
 }
 
+// Usage is served: the kubelet's summary and its resource metrics (what metrics-server
+// scrapes), the metrics in the text format Prometheus clients read; as in the kubelet, a
+// trailing slash is a redirect to the route.
+func TestKubeletRoutes_UsageIsServed(t *testing.T) {
+	h := newKubeletMux(testRoutes(nil))
+	code, body := do(t, h, "GET", "/stats/summary")
+	if code != http.StatusOK || !strings.Contains(body, `"nodeName":"test-node"`) {
+		t.Errorf("GET /stats/summary = %d %q, want the summary", code, body)
+	}
+	code, body = do(t, h, "GET", "/metrics/resource")
+	if code != http.StatusOK || !strings.Contains(body, "node_memory_working_set_bytes 42") {
+		t.Errorf("GET /metrics/resource = %d %q, want the metrics in text format", code, body)
+	}
+	for _, target := range []string{"/stats/summary/", "/metrics/resource/"} {
+		if code, _ := do(t, h, "GET", target); code != http.StatusMovedPermanently {
+			t.Errorf("GET %s = %d, want a redirect to the route", target, code)
+		}
+	}
+}
+
 // T04: deferred methods answer 501 with an explanation, on every spelling.
 func TestKubeletRoutes_DeferredMethodsAreExplicit501(t *testing.T) {
 	h := newKubeletMux(testRoutes(nil))
@@ -107,10 +136,6 @@ func TestKubeletRoutes_DeferredMethodsAreExplicit501(t *testing.T) {
 		{"GET", "/attach/default/pod/app", "attach"},
 		{"POST", "/attach/default/pod/app?input=1&output=1", "attach"},
 		{"GET", "/attach/default/nonexistent/app", "attach"},
-		{"GET", "/stats/summary", "statistics"},
-		{"GET", "/stats/summary/", "statistics"},
-		{"GET", "/metrics/resource", "metrics"},
-		{"GET", "/metrics/resource/", "metrics"},
 	} {
 		code, body := do(t, h, tc.method, tc.target)
 		if code != http.StatusNotImplemented || !strings.Contains(body, tc.want) {

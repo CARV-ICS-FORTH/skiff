@@ -79,7 +79,9 @@ CSR_SIGN_PID=""
 # Start K3s if Controller
 if [ "$SKIFF_ROLE" = "controller" ]; then
     # The default storage: K3s applies what is in its manifests directory when it starts.
-    # (Its own local storage stays disabled below: it cannot be given a shared directory.)
+    # (Its own local storage stays disabled below: it cannot be given a shared directory. Its
+    # metrics-server is not: Skifflet serves the usage it reads, so kubectl top and
+    # autoscaling work.)
     mkdir -p /var/lib/rancher/k3s/server/manifests
     sed "s|@VOLUMES_BASE@|${SKIFF_VOLUMES_BASE}|g" /usr/share/skiff/storage.yaml > /var/lib/rancher/k3s/server/manifests/skiff-storage.yaml
 
@@ -102,7 +104,6 @@ if [ "$SKIFF_ROLE" = "controller" ]; then
       --disable servicelb \
       --disable traefik \
       --disable local-storage \
-      --disable metrics-server \
       --disable-cloud-controller \
       --kubelet-arg=resolv-conf=/etc/resolv.conf \
       --write-kubeconfig-mode 600 \

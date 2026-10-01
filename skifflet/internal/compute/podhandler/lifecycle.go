@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -340,6 +341,7 @@ type Attempt struct {
 	process   *os.Process
 	pid       int
 	startTime uint64
+	began     time.Time     // when the process was started
 	done      chan struct{} // closed once the sole waiter has returned
 
 	// The container's main process, remembered once it has been found and
@@ -430,6 +432,7 @@ func (a *Attempt) Start(cmd *exec.Cmd, gates probeGates) error {
 	a.process = cmd.Process
 	a.pid = cmd.Process.Pid
 	a.startTime, _ = runtime.GetProcessStartTime(a.pid)
+	a.began = time.Now()
 	a.done = make(chan struct{})
 	a.gates = gates
 	l.live[a] = struct{}{}
@@ -698,6 +701,31 @@ func (a *Attempt) Launcher() (pid int, startTime uint64, ok bool) {
 		return 0, 0, false
 	}
 	return a.pid, a.startTime, true
+}
+
+// RunningContainer is a container whose process runs: what a reader of usage needs.
+type RunningContainer struct {
+	Name    string
+	Init    bool
+	Attempt int
+	// Launcher is the process the container's own processes descend from.
+	Launcher int
+	Started  time.Time
+}
+
+// RunningContainers lists the containers of the pod whose process runs, by name.
+func (l *PodLifecycle) RunningContainers() []RunningContainer {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	var running []RunningContainer
+	for a := range l.live {
+		if l.current[a.Container] != a || !a.verified() {
+			continue
+		}
+		running = append(running, RunningContainer{Name: a.Container, Init: a.Init, Attempt: a.ID, Launcher: a.pid, Started: a.began})
+	}
+	sort.Slice(running, func(i, j int) bool { return running[i].Name < running[j].Name })
+	return running
 }
 
 // RunningAttempt returns the current attempt of a container if its process runs.

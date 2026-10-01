@@ -28,11 +28,13 @@ import (
 
 func StartAPIServer(c Opts, virtualk8s *provider.VirtualK8S) {
 	mux := newKubeletMux(kubeletRoutes{
-		RunInContainer:   virtualk8s.RunInContainer,
-		GetContainerLogs: virtualk8s.GetContainerLogs,
-		PortForward:      virtualk8s.PortForward,
-		GetRunningPods:   virtualk8s.GetPods,
-		GetAssignedPods:  virtualk8s.GetAssignedPods,
+		RunInContainer:     virtualk8s.RunInContainer,
+		GetContainerLogs:   virtualk8s.GetContainerLogs,
+		PortForward:        virtualk8s.PortForward,
+		GetRunningPods:     virtualk8s.GetPods,
+		GetAssignedPods:    virtualk8s.GetAssignedPods,
+		GetStatsSummary:    virtualk8s.GetStatsSummary,
+		GetMetricsResource: virtualk8s.GetMetricsResource,
 	})
 
 	/*---------------------------------------------------

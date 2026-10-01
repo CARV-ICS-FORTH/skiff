@@ -44,11 +44,11 @@ import (
 //	volumes/<volume>     the pod's volumes
 //	logs/                container logs (see ContainerPath)
 //	tmp/                 the pod's Apptainer temporary directory (see TmpDir)
-//	scratch/<container>/<attempt>/{tmp,var-tmp,rootfs}
+//	scratch/<container>/<attempt>/{tmp,var-tmp,overlay,rootfs}
 //	                     what a container sees as /tmp and /var/tmp, one pair per
-//	                     attempt (see ContainerPath.AttemptTmp), and where Apptainer
-//	                     unpacks its root filesystem, which the container writes to
-//	                     (see ContainerPath.AttemptUnpackDir)
+//	                     attempt (see ContainerPath.AttemptTmp), its writable layer
+//	                     (overlay, see ContainerPath.AttemptOverlayDir) and where
+//	                     Apptainer unpacks its image (rootfs)
 //
 // Everything that launches, reads, execs into or cleans up a pod builds these
 // paths here, from the scratch root it was configured with (SkiffPath); no
@@ -314,12 +314,20 @@ func (c ContainerPath) AttemptVarTmp(attempt int) string {
 	return filepath.Join(c.ScratchDir(), strconv.Itoa(attempt), "var-tmp")
 }
 
+// AttemptOverlayDir is the writable layer of attempt N of the container: what the container
+// writes to its root filesystem (anywhere outside its volumes) goes here, over the image
+// as unpacked for it. As in Kubernetes the layer is private to the container, new with every
+// attempt (a restart finds none of what the attempt before wrote), on the node's disk and
+// not in memory, as large as the disk allows, and removed with the attempt's scratch
+// directory.
+func (c ContainerPath) AttemptOverlayDir(attempt int) string {
+	return filepath.Join(c.AttemptScratchDir(attempt), "overlay")
+}
+
 // AttemptUnpackDir is attempt N's Apptainer temporary directory (APPTAINER_TMPDIR): where
-// Apptainer unpacks the container's root filesystem when it starts (--unsquash), and
-// the container runs on that unpacked copy, writable. That copy is the container's
-// writable layer, as in Kubernetes: private to the container, new with every attempt (a
-// restart finds none of what the attempt before wrote), on the node's disk and not in
-// memory, as large as the disk allows, and removed with the attempt's scratch directory.
+// Apptainer unpacks the image when the container starts (--unsquash), the read-only layer
+// the writable one lies over. Apptainer removes it when the container exits; one that
+// is killed leaves it, and it goes with the attempt's scratch directory.
 func (c ContainerPath) AttemptUnpackDir(attempt int) string {
 	return filepath.Join(c.AttemptScratchDir(attempt), "rootfs")
 }
