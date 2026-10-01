@@ -91,7 +91,7 @@ func newInitialPreparationFixture(t *testing.T) *initialPreparationFixture {
 	}
 	root := t.TempDir()
 	compute.K8SClient = f.c
-	compute.Skiff = endpoint.SkiffWithPods(root, root+"/pods")
+	compute.Skiff = endpoint.SkiffWithTmp(root, root+"/scratch")
 	PodHandler.GlobalRegistry = PodHandler.NewPodRegistry()
 	var dispatched int
 	f.v.dispatchPreparation = func(run func()) {

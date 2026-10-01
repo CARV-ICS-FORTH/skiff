@@ -315,7 +315,8 @@ func (h *PodHandler) PersistentVolumeClaimSource(ctx context.Context, vol corev1
 	 *---------------------------------------------------*/
 	var pv corev1.PersistentVolume
 	{
-		key := types.NamespacedName{Namespace: h.Pod.GetNamespace(), Name: pvc.Spec.VolumeName}
+		// A PersistentVolume is not namespaced.
+		key := types.NamespacedName{Name: pvc.Spec.VolumeName}
 
 		if errPV := retry.OnError(volume.NotFoundBackoff,
 			func(err error) bool { // retry condition
@@ -334,6 +335,21 @@ func (h *PodHandler) PersistentVolumeClaimSource(ctx context.Context, vol corev1
 	/*---------------------------------------------------
 	 * Link the Referenced PV to the Pod's Volumes
 	 *---------------------------------------------------*/
+	// Where the volume is, in the host's words, must be somewhere the bubble sees
+	// (hostPath volumes are checked when the pod is created, a claim's volume only now).
+	volumePath := ""
+	switch {
+	case pv.Spec.HostPath != nil:
+		volumePath = pv.Spec.HostPath.Path
+	case pv.Spec.Local != nil:
+		volumePath = pv.Spec.Local.Path
+	}
+	if volumePath != "" {
+		if err := compute.Skiff.CheckVolumePath(volumePath); err != nil {
+			return fmt.Errorf("PersistentVolume %s: %w", pv.Name, err)
+		}
+	}
+
 	switch {
 	case pv.Spec.HostPath != nil:
 		dstFullPath := filepath.Join(h.podDirectory.VolumeDir(), vol.Name)

@@ -66,11 +66,11 @@ The profile requires these checks: cases 01–23, four individual daemon failure
 | 14 | T14, T17 (exec, pseudo-terminals, cancellation) |
 | 15 | T10, T11, T26 (lifecycle hooks; unrelated pods are created while several pods are inside a long PreStop hook) |
 | 16 | T12, T13 (logs and their attempts) |
-| 17 | T18 (network settings that differ from the defaults, run as a fresh deployment) |
+| 17 | T18, T32 (network and scratch-directory settings that differ from the defaults, run as a fresh deployment; where Apptainer's scratch really is during an image pull, and where a volume may be) |
 | 18 | T05, T06, T15, T16 (refused forms, updates, environment and files, continuity) |
 | 19 | T20 (ten create/restart/delete cycles with probes, hooks, logs and exec, and what they leave behind) |
 | 20 | T21 (the overlay socket: held by plaidd in the host's network namespace, no slirp forward for it, no helper or handoff socket left, cross-node traffic moves the overlay counters) |
-| 21 | T22 (overlay socket startup failures, with jobs of its own: cancel while the helper holds the port, helper killed, port taken, and a fresh start afterwards) |
+| 21 | T22, T32 (overlay socket startup failures, with jobs of its own: cancel while the helper holds the port, helper killed, port taken, a scratch directory that cannot be used, and a fresh start afterwards) |
 | 22 | T23, T24 (Service translation by Plaid with no kube-proxy: TCP and UDP, named ports, local, remote, hairpin and non-pod backends, DNS over UDP and TCP and a moved CoreDNS, the bubbles as clients, large responses, headless and ExternalName left alone, flows pinned through endpoint changes, refusals, unsupported settings, nothing dropped as unsupported) |
 | 23 | T25 (NodePort Services published through slirp4netns on every node, from the other node's host: TCP, UDP, a node without a local backend, the forwards and the fixed ones, port changes and recreated Services, no backends, a connection that outlives its withdrawn node port, a node port another process holds and its recovery, the Local policy and LoadBalancer Services refused with events, drift repaired, nothing left behind) |
 
@@ -78,7 +78,7 @@ T01–T03, T19 and the unit and race parts of the other groups are unit and Linu
 
 Supported probes are HTTP, TCP and exec (startup, readiness and liveness, with named ports); `grpc` probes, host namespaces, ephemeral containers, restartable init containers and the other forms in the support table of [skifflet/README.md](../skifflet/README.md) are refused at creation, and the refusal is tested with a healthy sentinel pod running beside them. Standalone Plaid checks NET-1 and NET-2 are outside this profile.
 
-The default profile runs with the standard lab network. The alternative-network scenario (case 17, T18) is a separate fresh deployment, not a mode of the aggregate: source a file that exports the `SKIFF_*` network variables described in the top-level README (for example `SKIFF_POD_CIDR=10.200.0.0/16 SKIFF_SERVICE_CIDR=10.201.0.0/16 SKIFF_CLUSTER_DNS=10.201.0.10 SKIFF_CLUSTER_DOMAIN=lab.test SKIFF_POD_MTU=1400`), submit a new job, run the aggregate against it, and restore the standard configuration by submitting a new job without them.
+The default profile runs with the standard lab network. The alternative-network scenario (case 17, T18) is a separate fresh deployment, not a mode of the aggregate: source a file that exports the `SKIFF_*` network variables described in the top-level README (for example `SKIFF_POD_CIDR=10.200.0.0/16 SKIFF_SERVICE_CIDR=10.201.0.0/16 SKIFF_CLUSTER_DNS=10.201.0.10 SKIFF_CLUSTER_DOMAIN=lab.test SKIFF_POD_MTU=1400 SKIFF_TMP_DIR=/var/tmp/skiff-alt`; a scratch directory outside `/tmp` also checks that the bubbles are given it), submit a new job, run the aggregate against it, and restore the standard configuration by submitting a new job without them.
 
 T20 counts what disposable workloads can leave behind: application processes, the namespace's pod directories, IP leases, network namespaces, unpacked root filesystems, and the open descriptors of Skifflet and Plaidd (with an allowance of five). Volume data and image caches are retained on purpose and are not counted. Ten cycles is a regression run and not a measure of endurance.
 

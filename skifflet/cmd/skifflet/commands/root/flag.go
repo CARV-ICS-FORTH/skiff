@@ -108,7 +108,7 @@ func installFlags(flags *pflag.FlagSet, c *Opts) {
 	flags.StringVar(&c.DefaultHostEnvironment.ApptainerBin, "apptainer", "plaidtainer", "path to Apptainer bin")
 	flags.StringVar(&c.DefaultHostEnvironment.ContainerRegistry, "registry", "docker://", "container registry")
 	flags.StringVar(&c.DefaultHostEnvironment.WorkingDirectory, "working-dir", GetUserHomeDir(), "sets up the Skiff working directory")
-	flags.StringVar(&c.DefaultHostEnvironment.PodsDirectory, "pods-dir", endpoint.DefaultPodsDir, "sets up the Skiff pods directory")
+	flags.StringVar(&c.DefaultHostEnvironment.TmpDirectory, "tmp-dir", endpoint.DefaultTmpDir, "the node's scratch directory: pod runtime state (.pods) and Apptainer scratch are below it")
 	flags.StringVar(&c.DefaultHostEnvironment.PlaidSocket, "plaid-socket", envOrDefault(EnvPlaidSocket, endpoint.DefaultPlaidSocket), "API socket of plaidd")
 
 	flags.StringVar(&c.DefaultHostEnvironment.ClusterDomain, "cluster-domain", envOrDefault(EnvClusterDomain, compute.DefaultClusterDomain), "DNS domain of the cluster, for the search path of pods")

@@ -2,7 +2,7 @@
 
 Skiff allows HPC users to run their own private Kubernetes "mini Cloud" on a typical HPC cluster and issue commands using Kubernetes-native tools without requiring root privileges.
 
-Deployment requires Slurm, Apptainer, slirp4netns and socat on the allocated Linux nodes, support for unprivileged user namespaces, and a shared home directory. The controller's TCP port 6443 and each node's TCP port 10250 and UDP port 8472 must be available and reachable between nodes.
+Deployment requires Slurm on the cluster, and on every allocated Linux node Apptainer, slirp4netns, socat, nc, jq and ss (checked on all nodes before anything starts), support for unprivileged user namespaces, and a shared home directory. The controller's TCP port 6443 and each node's TCP port 10250 and UDP port 8472 must be available and reachable between nodes.
 
 Copy the `scripts/` folder contents to your HPC account under `~/skiff/` and submit a job using the published image:
 
@@ -34,9 +34,18 @@ sbatch --nodes=2 --export=ALL,SKIFF_POD_CIDR=10.200.0.0/16,SKIFF_SERVICE_CIDR=10
 | `SKIFF_CLUSTER_DOMAIN` | `cluster.local` | Cluster DNS domain |
 | `SKIFF_POD_MTU` | link MTU less 50 (`1450`) | MTU of pod interfaces; at most `SKIFF_UPLINK_MTU` - 50 |
 | `SKIFF_UPLINK_MTU` | `1500` | MTU of the links between the bubbles |
-| `SKIFF_PODS_DIR` | Skifflet's (`/tmp/.skiff/.pods`) | Where nodes keep the runtime state of pods (the bubbles share the host's `/tmp`) |
+| `SKIFF_TMP_DIR` | `/tmp/.skiff` | The node's scratch directory (see below) |
 
 Each bubble's log starts with the effective configuration.
+
+### Directories
+
+Skiff uses two locations, and nothing else on the host:
+
+- **`~/.skiff`** on the shared home is fixed, not a setting: the credentials (`kubeconfig`), images, caches and volume data every node must find at the same place. The bubbles run as root, so inside the cluster it is **`/root/.skiff`**; use that spelling in a `hostPath` or PersistentVolume (`~/.skiff/data` on the host is `/root/.skiff/data` for a pod).
+- **`SKIFF_TMP_DIR`** (default `/tmp/.skiff`) is the node's scratch directory: pod runtime state, and where Apptainer unpacks and converts images. It must be node-local (it holds sockets and unpacked images, so a shared filesystem is refused), writable, and have room for the images you run: set it when `/tmp` is small or a RAM disk. It is checked on every node before anything starts, it is disposable, and the bubbles see it at the same path.
+
+A volume may use only these two locations. A `hostPath`, or a PersistentVolume bound by a claim, anywhere else is refused with a message naming the two (the bubble does not see the rest of the host, so a directory created there would be lost with it).
 
 ## Architecture & Components
 
@@ -81,7 +90,7 @@ A rootless Apptainer container runs on each allocated HPC node. One bubble hosts
 
 Plaid attaches a `plaid0` TAP to each bubble's kernel at the first address of its node PodCIDR, for example `10.244.1.1`. Pod-to-Pod traffic uses Plaid's overlay directly. NodePort Services are published on every node's host through slirp4netns (from another host; see the Plaid README for what is not published). Service traffic is translated by Plaid itself (there is no kube-proxy): destination NAT to a backend, source NAT to the node network's `.2`, which the backends answer; external traffic uses bubble-local forwarding and SNAT through slirp.
 
-Skifflet registers its Node, then waits for the TAP gateway before launching Pods. Startup checks the Kubernetes API Service and cluster DNS. The Service CIDR `10.43.0.0/16` and DNS domain `cluster.local` are fixed deployment assumptions.
+Skifflet registers its Node, then waits for the TAP gateway before launching Pods. Startup checks the Kubernetes API Service and cluster DNS. The Service and pod networks, the cluster DNS address, domain and MTU are the settings described above; the API Service is the first address of the Service network.
 
 ---
 

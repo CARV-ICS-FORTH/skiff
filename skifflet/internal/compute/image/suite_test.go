@@ -27,10 +27,10 @@ func setup(tmpDir string) {
 		ContainerRegistry: "",
 		ApptainerBin:      "apptainer",
 		WorkingDirectory:  tmpDir,
-		PodsDirectory:     filepath.Join(tmpDir, ".skiff", ".pods"),
+		TmpDirectory:      filepath.Join(tmpDir, ".skiff"),
 		KubeDNS:           "",
 	}
-	compute.Skiff = endpoint.SkiffWithPods(tmpDir, compute.Environment.PodsDirectory)
+	compute.Skiff = endpoint.SkiffWithTmp(tmpDir, compute.Environment.TmpDirectory)
 	_ = os.MkdirAll(compute.Skiff.PodsDir(), 0755)
 	_ = os.MkdirAll(compute.Skiff.ImageDir(), 0755)
 }

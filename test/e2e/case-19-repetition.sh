@@ -24,7 +24,7 @@ source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 19)
 NODES=("$(e2e_node_a)" "$(e2e_node_b)")
-CTL_ROOT="/tmp/e2e19-${E2E_RUN_ID}"
+CTL_ROOT="${SKIFF_TMP_DIR}/e2e19-${E2E_RUN_ID}"
 CYCLES="${E2E_REPETITIONS:-10}"
 FIXTURE=/usr/local/bin/fixture
 

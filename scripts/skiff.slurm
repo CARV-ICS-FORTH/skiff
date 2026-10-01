@@ -4,6 +4,10 @@
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1
 #SBATCH --mem=1500M
+# The resources of the job are per node and are the pods' too: Skifflet advertises what
+# the job grants (the Slurm memory and CPU of the node, or the cgroup limit if smaller)
+# as the node's capacity. Ask for what the workloads need, for example
+# sbatch --nodes=4 --mem=64G --cpus-per-task=16 skiff.slurm.
 
 # Usage: sbatch skiff.slurm
 # The number of nodes allocated (N) determines the cluster size:
@@ -32,7 +36,7 @@ fi
 # shellcheck source=skiff-config.sh
 source "$SCRIPT_DIR/skiff-config.sh"
 
-SKIFF_STATE_DIR="${SKIFF_STATE_DIR:-$HOME/.skiff}"
+# SKIFF_STATE_DIR (~/.skiff) is fixed by skiff-config.sh.
 NODES=($(scontrol show hostnames "$SLURM_JOB_NODELIST"))
 NUM_NODES=${#NODES[@]}
 
@@ -65,6 +69,20 @@ skiff_config_validate "$NUM_NODES" "$CONTROLLER_IP" || exit 1
 skiff_config_export
 skiff_config_print
 
+# What every allocated node needs (host programs, a usable scratch directory) is checked
+# on the nodes themselves, all of them and all problems at once, before anything starts.
+echo "Checking the allocated nodes..."
+NODE_PROBLEMS=0
+for node in "${NODES[@]}"; do
+    if ! srun --nodes=1 -w "$node" bash -c 'source "$1" && skiff_check_node' _ "$SCRIPT_DIR/skiff-config.sh"; then
+        NODE_PROBLEMS=$((NODE_PROBLEMS + 1))
+    fi
+done
+if [ "$NODE_PROBLEMS" -gt 0 ]; then
+    echo "ERROR: $NODE_PROBLEMS node(s) cannot run Skiff; nothing was started." >&2
+    exit 1
+fi
+
 # --- Preflight Collision Checks (Single-Cluster Contract) ---
 echo "Running preflight checks..."
 
@@ -90,6 +108,10 @@ check_port_free() {
     return 0
 }
 
+# The ports are fixed, not settings: the API server on 6443 (the controller), the kubelet
+# on 10250 and the overlay on UDP 8472 (every node) are spelled in the bubble script (the
+# slirp4netns forwards, the relays, the overlay socket), the entrypoint (K3s, the
+# certificates) and Plaid (--vxlan-port), and cannot change in one place.
 echo "Checking required cluster ports..."
 if ! check_port_free "$CONTROLLER_NODE" "u" "8472" || \
    ! check_port_free "$CONTROLLER_NODE" "t" "10250" || \
@@ -111,10 +133,11 @@ done
 echo "Preparing ~/.skiff for cluster startup..."
 rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock
 
-# Pre-process images
+# Pre-process images. What Apptainer unpacks and converts goes to the scratch directory.
 echo "Pre-processing images..."
 IMAGE_DIR="$SKIFF_STATE_DIR/images"
-mkdir -p "$IMAGE_DIR"
+mkdir -p "$IMAGE_DIR" "$SKIFF_APPTAINER_TMP"
+export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
 
 if [ "${SKIFF_DEV:-0}" = "1" ]; then
     echo "Development mode: ensuring local .tar image is converted to .sif..."
@@ -216,6 +239,8 @@ BG_PIDS+=($!)
 # Wait for Controller initialization (kubeconfig & server-ca)
 echo "Waiting for Controller initialization..."
 WAIT_TIME=0
+# (The startup waits here and in the entrypoint are fixed too: they only bound a start that
+# does not happen, and a start that needs longer is a node that is not working.)
 MAX_WAIT=300
 while [ ! -f "$SKIFF_STATE_DIR/kubeconfig" ] || [ ! -f "$SKIFF_STATE_DIR/tls/server-ca.crt" ]; do
     kill -0 "${BG_PIDS[0]}" 2>/dev/null || fail_exited_step "${BG_PIDS[0]}"

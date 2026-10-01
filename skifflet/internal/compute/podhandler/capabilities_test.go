@@ -200,10 +200,16 @@ func TestValidatePodCapabilities_RemainingUnsupportedForms(t *testing.T) {
 				{Name: "a", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 				{Name: "b", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}},
 				{Name: "c", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{}}},
-				{Name: "d", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/tmp"}}},
+				{Name: "d", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: compute.Skiff.TmpDir() + "/data"}}},
 				{Name: "e", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "c"}}},
 			}
 		}), ""},
+		{"hostPath in the state root", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{{Name: "out", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: compute.Skiff.String() + "/volumes/results"}}}}
+		}), ""},
+		{"hostPath outside the locations a volume may use", podWith(func(s *corev1.PodSpec) {
+			s.Volumes = []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/home/alice/data"}}}}
+		}), `Spec.Volumes[0].HostPath.Path (volume "data": volume path "/home/alice/data" is outside the locations a volume may use`},
 		{"projected cluster trust bundle", podWith(func(s *corev1.PodSpec) {
 			s.Volumes = []corev1.Volume{{Name: "p", VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
 				Sources: []corev1.VolumeProjection{{ConfigMap: &corev1.ConfigMapProjection{}}, {ClusterTrustBundle: &corev1.ClusterTrustBundleProjection{Path: "x"}}}}}}}

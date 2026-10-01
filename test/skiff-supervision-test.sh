@@ -16,13 +16,18 @@ exit 0
 EOF
 cat > "$test_dir/bin/apptainer" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in *docker://docker.io/chazapis/skiff-bubble:latest*) touch "$SKIFF_STATE_DIR/published-image-used" ;; esac
+case "$*" in *docker://docker.io/chazapis/skiff-bubble:latest*) touch "$HOME/.skiff/published-image-used" ;; esac
 exit 0
 EOF
 cat > "$test_dir/bin/srun" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
     *'getent ahostsv4'*) echo 127.0.0.1 ;;
+    *skiff_check_node*)
+        # What a node needs (host programs, a scratch directory) is checked on the node.
+        [ "${TEST_NODE_CHECK:-ok}" = ok ] || { echo "controller: required program(s) not found in PATH: socat" >&2; exit 1; }
+        exit 0
+        ;;
     *'/skiff-bubble.sh'*)
         while [[ "$1" != */skiff-bubble.sh ]]; do shift; done
         exec "$@"
@@ -33,8 +38,8 @@ EOF
 cat > "$test_dir/repo/scripts/skiff-bubble.sh" <<'EOF'
 #!/usr/bin/env bash
 if [ "$TEST_CHILD_MODE" = early ]; then exit 9; fi
-mkdir -p "$SKIFF_STATE_DIR/tls"
-touch "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls/server-ca.crt"
+mkdir -p "$HOME/.skiff/tls"
+touch "$HOME/.skiff/kubeconfig" "$HOME/.skiff/tls/server-ca.crt"
 if [ "$TEST_CHILD_MODE" = term ]; then exec sleep 30; fi
 sleep 0.1
 exit "$TEST_CHILD_MODE"
@@ -43,17 +48,20 @@ cp "$script_dir/../scripts/skiff-config.sh" "$test_dir/repo/scripts/"
 chmod +x "$test_dir/bin/"* "$test_dir/repo/scripts/skiff-bubble.sh"
 export PATH="$test_dir/bin:$PATH"
 export SLURM_JOB_NODELIST=controller SLURM_SUBMIT_DIR="$test_dir/repo" SKIFF_DEV=0
+# The state directory is the user's ~/.skiff and cannot be changed: each run gets a
+# home of its own. The scratch directory is a setting; it is kept out of the real /tmp.
+export SKIFF_TMP_DIR="$test_dir/scratch"
 
 check_result() {
     local label="$1" expected="$2" actual="$3"
     [ "$actual" -eq "$expected" ] || { echo "$label: exit $actual, expected $expected" >&2; exit 1; }
-    [ "$(cat "$SKIFF_STATE_DIR/job-results/$SLURM_JOB_ID.exit")" = "$expected" ] || {
+    [ "$(cat "$HOME/.skiff/job-results/$SLURM_JOB_ID.exit")" = "$expected" ] || {
         echo "$label: batch result marker lost exit status" >&2; exit 1;
     }
 }
 
 # An invalid configuration stops the job before any bubble starts, and says why.
-export SLURM_JOB_ID=8999 SKIFF_STATE_DIR="$test_dir/state-invalid" TEST_CHILD_MODE=0 SKIFF_DEV=0 TEST_EMPTY_NODES=0
+export SLURM_JOB_ID=8999 HOME="$test_dir/home-invalid" TEST_CHILD_MODE=0 SKIFF_DEV=0 TEST_EMPTY_NODES=0
 rc=0
 SKIFF_POD_MTU=1500 bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/invalid.log" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] || { echo "invalid configuration: exit $rc, expected 1" >&2; exit 1; }
@@ -62,14 +70,26 @@ if grep -q 'Starting Controller' "$test_dir/invalid.log"; then echo "invalid con
 # ... and so does scripts without the helper next to them.
 mv "$test_dir/repo/scripts/skiff-config.sh" "$test_dir/skiff-config.sh.away"
 rc=0
-SLURM_JOB_ID=8998 SKIFF_STATE_DIR="$test_dir/state-nohelper" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/nohelper.log" 2>&1 || rc=$?
+SLURM_JOB_ID=8998 HOME="$test_dir/home-nohelper" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/nohelper.log" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] && grep -q 'skiff-config.sh not found' "$test_dir/nohelper.log" || { echo "missing helper: exit $rc" >&2; cat "$test_dir/nohelper.log" >&2; exit 1; }
 mv "$test_dir/skiff-config.sh.away" "$test_dir/repo/scripts/skiff-config.sh"
+
+# A node that lacks a host program, or whose scratch directory cannot be used, stops the
+# job before any bubble starts, naming the problem.
+rc=0
+SLURM_JOB_ID=8997 HOME="$test_dir/home-badnode" TEST_NODE_CHECK=missing bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/badnode.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] || { echo "bad node: exit $rc, expected 1" >&2; cat "$test_dir/badnode.log" >&2; exit 1; }
+grep -q 'required program(s) not found in PATH: socat' "$test_dir/badnode.log" && grep -q 'nothing was started' "$test_dir/badnode.log" || { echo "bad node: no reason given" >&2; cat "$test_dir/badnode.log" >&2; exit 1; }
+if grep -q 'Starting Controller' "$test_dir/badnode.log"; then echo "bad node: a bubble was started" >&2; exit 1; fi
+# ... and an invalid scratch directory is refused with the rest of the configuration.
+rc=0
+SLURM_JOB_ID=8996 HOME="$test_dir/home-badtmp" SKIFF_TMP_DIR=relative/scratch bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/badtmp.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && grep -q 'SKIFF_TMP_DIR.*absolute path' "$test_dir/badtmp.log" || { echo "bad scratch directory: exit $rc" >&2; cat "$test_dir/badtmp.log" >&2; exit 1; }
 
 job=9000
 for mode in 7 0 early empty term; do
     job=$((job + 1))
-    export SLURM_JOB_ID="$job" SKIFF_STATE_DIR="$test_dir/state-$mode" TEST_CHILD_MODE="$mode"
+    export SLURM_JOB_ID="$job" HOME="$test_dir/home-$mode" TEST_CHILD_MODE="$mode"
     export SKIFF_DEV=0
     [ "$mode" != 7 ] || unset SKIFF_DEV
     export TEST_EMPTY_NODES=0
@@ -91,7 +111,7 @@ for mode in 7 0 early empty term; do
         case "$mode" in 7) expected=7 ;; early) expected=9 ;; *) expected=1 ;; esac
     fi
     check_result "$mode" "$expected" "$rc"
-    if [ "$mode" = 7 ] && [ ! -f "$SKIFF_STATE_DIR/published-image-used" ]; then
+    if [ "$mode" = 7 ] && [ ! -f "$HOME/.skiff/published-image-used" ]; then
         echo "Default deployment did not select the published image" >&2; exit 1
     fi
 done

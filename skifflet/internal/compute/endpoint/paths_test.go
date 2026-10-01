@@ -13,8 +13,8 @@ import (
 
 func TestSkiffPath_WalkPodDirectories(t *testing.T) {
 	tmpDir := t.TempDir()
-	podsDir := filepath.Join(tmpDir, ".skiff", ".pods")
-	skiff := SkiffWithPods(tmpDir, podsDir)
+	podsDir := filepath.Join(tmpDir, "scratch", ".pods")
+	skiff := SkiffWithTmp(tmpDir, filepath.Join(tmpDir, "scratch"))
 
 	if skiff.PodsDir() != podsDir {
 		t.Errorf("skiff.PodsDir() = %s, want %s", skiff.PodsDir(), podsDir)
@@ -50,6 +50,9 @@ func TestSkiffPath_WalkPodDirectories(t *testing.T) {
 
 func TestSkiffPath_Defaults(t *testing.T) {
 	skiff := Skiff("/home/testuser")
+	if skiff.TmpDir() != DefaultTmpDir || DefaultPodsDir != DefaultTmpDir+"/.pods" {
+		t.Errorf("scratch root %s, default pods directory %s", skiff.TmpDir(), DefaultPodsDir)
+	}
 	if skiff.PodsDir() != DefaultPodsDir {
 		t.Errorf("expected default pods dir %s, got %s", DefaultPodsDir, skiff.PodsDir())
 	}
@@ -62,8 +65,9 @@ func TestSkiffPath_Defaults(t *testing.T) {
 // with, in the documented layout, and none is under the default.
 func TestPodPath_LayoutFollowsTheConfiguredPodsDirectory(t *testing.T) {
 	root := t.TempDir()
-	custom := filepath.Join(root, "custom-pods")
-	pod := SkiffWithPods(root, custom).PodWithUID(client.ObjectKey{Namespace: "ns", Name: "web"}, types.UID("uid-1"))
+	scratch := filepath.Join(root, "custom-scratch")
+	custom := filepath.Join(scratch, ".pods")
+	pod := SkiffWithTmp(root, scratch).PodWithUID(client.ObjectKey{Namespace: "ns", Name: "web"}, types.UID("uid-1"))
 	base := filepath.Join(custom, "ns", "web_uid-1")
 	if pod.String() != base {
 		t.Fatalf("pod directory %s, want %s", pod, base)
@@ -110,7 +114,7 @@ func TestAttemptLogs(t *testing.T) {
 		}
 	}
 
-	container := SkiffWithPods(t.TempDir(), t.TempDir()).PodWithUID(client.ObjectKey{Namespace: "ns", Name: "p"}, "u").Container("app")
+	container := SkiffWithTmp(t.TempDir(), t.TempDir()).PodWithUID(client.ObjectKey{Namespace: "ns", Name: "p"}, "u").Container("app")
 	if attempts, err := container.AttemptLogs(); err != nil || attempts != nil {
 		t.Fatalf("no log directory yet: %v, %v", attempts, err)
 	}
@@ -169,5 +173,34 @@ func TestRuntimePathsAreNotSpelledOutElsewhere(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A volume may use the state root and the scratch root, and nothing else: the bubble
+// sees no other part of the host.
+func TestSkiffPath_CheckVolumePath(t *testing.T) {
+	skiff := SkiffWithTmp("/root", "/var/tmp/skiff")
+	for _, path := range []string{
+		"/root/.skiff", "/root/.skiff/volumes/job-1/pvc-1", "/root/.skiff/volumes/../volumes/x/",
+		"/var/tmp/skiff", "/var/tmp/skiff/data", "/var/tmp/skiff/.pods",
+	} {
+		if err := skiff.CheckVolumePath(path); err != nil {
+			t.Errorf("%s refused: %v", path, err)
+		}
+	}
+	for _, path := range []string{
+		"", "data", "relative/.skiff", "/", "/root", "/root/.skiffx", "/root/.skiff/../secret", "/root/other",
+		"/home/alice/.skiff/volumes/x", "/tmp", "/tmp/data", "/var/tmp/skiffy", "/var/tmp", "/mnt/project",
+	} {
+		err := skiff.CheckVolumePath(path)
+		if err == nil {
+			t.Errorf("%q accepted", path)
+			continue
+		}
+		for _, want := range []string{path, "/root/.skiff", "/var/tmp/skiff"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("%q: the error does not say %q: %v", path, want, err)
+			}
+		}
 	}
 }

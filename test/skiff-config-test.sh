@@ -45,7 +45,7 @@ expect() { # expect NAME GOT WANT
 check "defaults" 0 "" 2 192.168.64.3 --
 check "alternate networks, DNS, MTU, domain and path" 0 "" 2 -- \
     SKIFF_POD_CIDR=10.200.0.0/16 SKIFF_SERVICE_CIDR=10.201.0.0/16 SKIFF_CLUSTER_DNS=10.201.0.10 \
-    SKIFF_POD_MTU=1400 SKIFF_CLUSTER_DOMAIN=lab.test SKIFF_PODS_DIR=/scratch/skiff/pods
+    SKIFF_POD_MTU=1400 SKIFF_CLUSTER_DOMAIN=lab.test SKIFF_TMP_DIR=/scratch/skiff
 check "a larger uplink allows a larger pod MTU" 0 "" 2 -- SKIFF_UPLINK_MTU=9000 SKIFF_POD_MTU=8950
 check "the smallest pod MTU" 0 "" 2 -- SKIFF_POD_MTU=576
 
@@ -77,8 +77,15 @@ check "MTU that is not a number" 1 'SKIFF_POD_MTU.*not an MTU' 2 -- SKIFF_POD_MT
 check "MTU below the minimum" 1 'SKIFF_POD_MTU.*at least 576' 2 -- SKIFF_POD_MTU=500
 check "MTU without room for VXLAN" 1 'no room for VXLAN.*at most 1450' 2 -- SKIFF_POD_MTU=1500
 check "uplink MTU out of range" 1 'SKIFF_UPLINK_MTU' 2 -- SKIFF_UPLINK_MTU=100000
-check "relative pods directory" 1 'SKIFF_PODS_DIR.*absolute path' 2 -- SKIFF_PODS_DIR=pods
-check "pods directory with spaces" 1 'SKIFF_PODS_DIR.*absolute path' 2 -- 'SKIFF_PODS_DIR=/scratch/my dir/pods'
+check "relative scratch directory" 1 'SKIFF_TMP_DIR.*absolute path' 2 -- SKIFF_TMP_DIR=scratch
+check "scratch directory with spaces" 1 'SKIFF_TMP_DIR.*absolute path' 2 -- 'SKIFF_TMP_DIR=/scratch/my dir'
+check "scratch directory with a .. part" 1 'SKIFF_TMP_DIR.*plain directory path' 2 -- SKIFF_TMP_DIR=/scratch/../etc
+check "scratch directory with a trailing slash" 1 'SKIFF_TMP_DIR.*plain directory path' 2 -- SKIFF_TMP_DIR=/scratch/skiff/
+check "scratch directory with doubled slashes" 1 'SKIFF_TMP_DIR.*plain directory path' 2 -- SKIFF_TMP_DIR=/scratch//skiff
+check "the root as scratch directory" 1 'SKIFF_TMP_DIR.*plain directory path' 2 -- SKIFF_TMP_DIR=/
+check "scratch directory inside the state directory" 1 'must not contain each other' 2 -- HOME=/home/u SKIFF_TMP_DIR=/home/u/.skiff/tmp
+check "state directory inside the scratch directory" 1 'must not contain each other' 2 -- HOME=/home/u SKIFF_TMP_DIR=/home
+check "a scratch directory beside the state directory" 0 "" 2 -- HOME=/home/u SKIFF_TMP_DIR=/home/u/.skiff-scratch
 check "every problem is reported at once" 1 '4 invalid setting' 2 -- SKIFF_POD_CIDR=nope SKIFF_CLUSTER_DNS=nope SKIFF_POD_MTU=nope SKIFF_CLUSTER_DOMAIN=NOPE
 
 # --- derived values: one derivation ---------------------------------------------------
@@ -88,6 +95,10 @@ expect "both follow another Service network" "$(derived SKIFF_API_SERVICE_IP SKI
 expect "an explicit DNS address is kept" "$(derived SKIFF_CLUSTER_DNS SKIFF_CLUSTER_DNS=10.43.9.9)" 10.43.9.9
 expect "pod MTU is the link's less VXLAN" "$(derived SKIFF_POD_MTU SKIFF_UPLINK_MTU=1600)" 1550
 expect "an explicit pod MTU is kept" "$(derived SKIFF_POD_MTU SKIFF_POD_MTU=1300)" 1300
+expect "the scratch directory defaults to /tmp/.skiff" "$(derived SKIFF_TMP_DIR)" /tmp/.skiff
+expect "what is below it follows" "$(derived SKIFF_APPTAINER_TMP SKIFF_TMP_DIR=/scratch/s) $(derived SKIFF_OVERLAY_HANDOFF SKIFF_TMP_DIR=/scratch/s)" "/scratch/s/.apptainer/tmp /scratch/s/overlay.sock"
+expect "the state directory is the home's ~/.skiff" "$(derived SKIFF_STATE_DIR HOME=/home/u)" /home/u/.skiff
+expect "and cannot be overridden" "$(derived SKIFF_STATE_DIR HOME=/home/u SKIFF_STATE_DIR=/elsewhere)" /home/u/.skiff
 expect "outer network of bubble 3" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_outer_network 3; echo "$SKIFF_OUTER_CIDR $SKIFF_OUTER_DNS $SKIFF_OUTER_ADDRESS"' _ "$repo_dir/scripts/skiff-config.sh")" "10.0.4.0 10.0.4.3 10.0.4.100"
 
 in_cidr() { env -i PATH="$PATH" bash -c 'source "$1"; skiff_ip_in_cidr "$2" "$3" && echo yes || echo no' _ "$repo_dir/scripts/skiff-config.sh" "$1" "$2"; }
@@ -97,5 +108,37 @@ expect "an address outside a network" "$(in_cidr 10.201.0.1 10.200.0.0/16)" no
 expect "not an address" "$(in_cidr nope 10.200.0.0/16)" no
 
 expect "the Nth address of the pod network" "$(env -i PATH="$PATH" SKIFF_POD_CIDR=10.200.0.0/16 bash -c 'source "$1"; skiff_pod_address 712' _ "$repo_dir/scripts/skiff-config.sh")" 10.200.2.200
+
+
+# --- what a node needs ---------------------------------------------------------------
+# skiff_check_node on a PATH that holds only the commands it uses itself, plus chosen
+# stand-ins for the host programs.
+nodedir=$(mktemp -d)
+trap 'rm -rf "$nodedir"' EXIT
+mkdir -p "$nodedir/base" "$nodedir/tools" "$nodedir/fakestat"
+for command in mkdir stat hostname id; do ln -s "$(command -v "$command")" "$nodedir/base/$command"; done
+for tool in apptainer slirp4netns socat nc jq ss ip; do printf '#!/bin/sh\n' > "$nodedir/tools/$tool"; chmod +x "$nodedir/tools/$tool"; done
+printf '#!/bin/sh\necho nfs4\n' > "$nodedir/fakestat/stat"; chmod +x "$nodedir/fakestat/stat"
+node_check() { # node_check PATH_DIRS TMP_DIR: output and status of skiff_check_node
+    env -i PATH="$1" SKIFF_TMP_DIR="$2" "$BASH" -c 'source "$1"; skiff_check_node' _ "$repo_dir/scripts/skiff-config.sh" 2>&1
+}
+out=$(node_check "$nodedir/tools:$nodedir/base" "$nodedir/scratch"); status=$?
+expect "a node with every tool and a usable scratch directory" "$status" 0
+[ -d "$nodedir/scratch" ] || { echo "FAIL the scratch directory was not created"; failures=$((failures + 1)); }
+out=$(node_check "$nodedir/base" "$nodedir/scratch"); status=$?
+expect "a node without the host programs is refused" "$status" 1
+for tool in apptainer slirp4netns socat nc jq ss ip; do
+    grep -q -- "required program(s) not found in PATH:.* $tool" <<< "$out" || { echo "FAIL the message does not name $tool: $out"; failures=$((failures + 1)); }
+done
+mkdir "$nodedir/only-socat-missing"; for tool in apptainer slirp4netns nc jq ss ip; do ln -s "$nodedir/tools/$tool" "$nodedir/only-socat-missing/$tool"; done
+out=$(node_check "$nodedir/only-socat-missing:$nodedir/base" "$nodedir/scratch"); status=$?
+expect "only what is missing is named" "$status:$(grep -o 'PATH:.*(' <<< "$out")" "1:PATH: socat ("
+: > "$nodedir/a-file"
+out=$(node_check "$nodedir/tools:$nodedir/base" "$nodedir/a-file/scratch"); status=$?
+expect "a scratch directory that cannot be created is refused" "$status:$(grep -c 'SKIFF_TMP_DIR .* cannot be created or written' <<< "$out")" "1:1"
+out=$(node_check "$nodedir/fakestat:$nodedir/tools:$nodedir/base" "$nodedir/scratch"); status=$?
+expect "a scratch directory on a shared filesystem is refused" "$status:$(grep -c 'shared filesystem (nfs4)' <<< "$out")" "1:1"
+out=$(node_check "$nodedir/base" "$nodedir/a-file/scratch"); status=$?
+expect "every problem of a node is reported at once" "$status:$(grep -c . <<< "$out")" "1:2"
 
 [ "$failures" -eq 0 ] && echo "skiff-config: all checks passed" || { echo "skiff-config: $failures check(s) failed"; exit 1; }

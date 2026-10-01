@@ -31,7 +31,9 @@ type HostEnvironment struct {
 	ApptainerBin      string
 
 	WorkingDirectory string
-	PodsDirectory    string
+	// TmpDirectory is the node's scratch root (see endpoint.SkiffPath): the pods
+	// directory and Apptainer's scratch are below it.
+	TmpDirectory string
 
 	// KubeDNS points to the internal DNS of a Kubernetes cluster.
 	KubeDNS string

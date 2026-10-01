@@ -8,7 +8,7 @@
 #
 # The resolved values are passed explicitly to what needs them: K3s,
 # Plaid's daemon (cluster and Service CIDRs, resolver, pod MTU), Skifflet (cluster
-# domain, pods directory) and the readiness checks. Nothing else spells them out.
+# domain, scratch directory) and the readiness checks. Nothing else spells them out.
 # Node PodCIDRs are not configured here: Kubernetes allocates them.
 
 # --- Defaults ---------------------------------------------------------------
@@ -26,11 +26,19 @@
 # 50 bytes of VXLAN encapsulation the pod network adds.
 : "${SKIFF_UPLINK_MTU:=1500}"
 : "${SKIFF_POD_MTU:=}"
-# Optional: where the nodes keep the runtime state of pods. The bubbles share the
-# host's /tmp, so this is a host path (shared between the users of a node); when
-# empty, Skifflet uses its own default. (Plaid's socket is inside the bubble and
-# needs no deployment setting.)
-: "${SKIFF_PODS_DIR:=}"
+# The node's scratch directory, for runtimes whose scratch space is not /tmp: pod
+# runtime state, Apptainer's image conversion and unpacking, and the socket between
+# the host and the bubble live below it. It is node-local and disposable (a shared
+# filesystem cannot hold sockets and is slow for unpacking) and is checked on every
+# node before anything starts. The bubbles see it at the same path.
+: "${SKIFF_TMP_DIR:=/tmp/.skiff}"
+
+# The state directory is fixed, not a setting: the user's ~/.skiff on the shared home
+# holds the credentials, images, caches and volumes every node must find at the same
+# place, and the bubbles (which run as root) see it as /root/.skiff. Assigned here,
+# unconditionally, so that no environment variable can make the scripts disagree
+# with the bubbles about it.
+SKIFF_STATE_DIR="$HOME/.skiff"
 
 # What VXLAN adds to every packet of the pod network.
 SKIFF_VXLAN_OVERHEAD=50
@@ -102,6 +110,9 @@ skiff_config_resolve() {
     if [ -z "$SKIFF_POD_MTU" ] && [[ "$SKIFF_UPLINK_MTU" =~ ^[0-9]+$ ]]; then
         SKIFF_POD_MTU=$(( SKIFF_UPLINK_MTU - SKIFF_VXLAN_OVERHEAD ))
     fi
+    # Where things live below the scratch directory (spelled here and nowhere else).
+    SKIFF_APPTAINER_TMP="$SKIFF_TMP_DIR/.apptainer/tmp"
+    SKIFF_OVERLAY_HANDOFF="$SKIFF_TMP_DIR/overlay.sock"
 }
 
 # skiff_config_validate [NODE_COUNT [HOST_IP...]]: check the configuration as a
@@ -201,8 +212,14 @@ skiff_config_validate() {
         errors=$((errors + 1))
     fi
 
-    if [ -n "$SKIFF_PODS_DIR" ] && { [[ "$SKIFF_PODS_DIR" != /* ]] || [[ "$SKIFF_PODS_DIR" =~ [[:space:]] ]]; }; then
-        echo "SKIFF_PODS_DIR: \"$SKIFF_PODS_DIR\" is not an absolute path without spaces" >&2
+    if [[ "$SKIFF_TMP_DIR" != /* ]] || [[ "$SKIFF_TMP_DIR" =~ [[:space:]] ]]; then
+        echo "SKIFF_TMP_DIR: \"$SKIFF_TMP_DIR\" is not an absolute path without spaces" >&2
+        errors=$((errors + 1))
+    elif [ "$SKIFF_TMP_DIR" = / ] || [[ "$SKIFF_TMP_DIR" == *//* || "$SKIFF_TMP_DIR" == */ || "$SKIFF_TMP_DIR/" == */../* || "$SKIFF_TMP_DIR/" == */./* ]]; then
+        echo "SKIFF_TMP_DIR: \"$SKIFF_TMP_DIR\" is not a plain directory path (no trailing or doubled slashes, no . or .. parts, not /)" >&2
+        errors=$((errors + 1))
+    elif [[ "$SKIFF_TMP_DIR/" == "$SKIFF_STATE_DIR/"* || "$SKIFF_STATE_DIR/" == "$SKIFF_TMP_DIR/"* ]]; then
+        echo "SKIFF_TMP_DIR ($SKIFF_TMP_DIR) and the state directory ($SKIFF_STATE_DIR) must not contain each other: one is node-local and disposable, the other is shared and kept" >&2
         errors=$((errors + 1))
     fi
 
@@ -232,7 +249,37 @@ skiff_pod_address() {
 # skiff_config_export: make the resolved values available to what is started.
 skiff_config_export() {
     export SKIFF_POD_CIDR SKIFF_SERVICE_CIDR SKIFF_CLUSTER_DOMAIN SKIFF_CLUSTER_DNS \
-        SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_PODS_DIR
+        SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_TMP_DIR
+}
+
+# The programs the scripts run on the allocated nodes themselves, outside the bubble.
+SKIFF_HOST_TOOLS="apptainer slirp4netns socat nc jq ss ip"
+
+# skiff_check_node: what every allocated node needs before a bubble can start on it,
+# checked on the node itself (skiff.slurm runs it everywhere before starting anything,
+# and each bubble script again): the host tools, and a scratch directory that can be
+# used. Every problem is reported at once.
+skiff_check_node() {
+    local tool missing="" errors=0 fstype
+    for tool in $SKIFF_HOST_TOOLS; do
+        command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+    done
+    if [ -n "$missing" ]; then
+        echo "$(hostname): required program(s) not found in PATH:$missing (Skiff needs: $SKIFF_HOST_TOOLS)" >&2
+        errors=$((errors + 1))
+    fi
+    if ! mkdir -p "$SKIFF_TMP_DIR" 2>/dev/null || [ ! -d "$SKIFF_TMP_DIR" ] || [ ! -w "$SKIFF_TMP_DIR" ]; then
+        echo "$(hostname): SKIFF_TMP_DIR ($SKIFF_TMP_DIR) cannot be created or written by $(id -un)" >&2
+        errors=$((errors + 1))
+    else
+        fstype=$(stat -f -c %T "$SKIFF_TMP_DIR" 2>/dev/null || true)
+        case "$fstype" in
+            nfs|nfs4|cifs|smb*|lustre|gpfs|beegfs|ceph)
+                echo "$(hostname): SKIFF_TMP_DIR ($SKIFF_TMP_DIR) is on a shared filesystem ($fstype); it must be node-local (it holds sockets and unpacked images)" >&2
+                errors=$((errors + 1)) ;;
+        esac
+    fi
+    [ "$errors" -eq 0 ]
 }
 
 # skiff_config_print: the effective configuration, for the log of a startup.
@@ -242,7 +289,7 @@ skiff_config_print() {
     echo "  Service network:  $SKIFF_SERVICE_CIDR (API Service $SKIFF_API_SERVICE_IP, DNS Service $SKIFF_CLUSTER_DNS)"
     echo "  Cluster domain:   $SKIFF_CLUSTER_DOMAIN"
     echo "  MTU:              pods $SKIFF_POD_MTU, bubble link $SKIFF_UPLINK_MTU"
-    echo "  Pods directory:   ${SKIFF_PODS_DIR:-(default)}"
+    echo "  Directories:      state $SKIFF_STATE_DIR (fixed, /root/.skiff in the cluster), scratch $SKIFF_TMP_DIR (node-local)"
 }
 
 # skiff_outer_network BUBBLE_ID: the network of the link that joins a bubble to its

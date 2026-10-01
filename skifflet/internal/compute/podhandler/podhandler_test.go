@@ -23,7 +23,7 @@ func TestDeletePod_CleanRemoval(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	compute.Skiff = endpoint.SkiffWithPods(tmpDir, filepath.Join(tmpDir, ".skiff", ".pods"))
+	compute.Skiff = endpoint.SkiffWithTmp(tmpDir, filepath.Join(tmpDir, ".skiff"))
 
 	podKey := client.ObjectKey{Namespace: "default", Name: "my-pod"}
 	pod := &corev1.Pod{

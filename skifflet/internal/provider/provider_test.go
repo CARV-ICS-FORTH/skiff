@@ -22,7 +22,7 @@ import (
 
 func TestReconcileNonTerminalPodsNotifiesOnlyOnChange(t *testing.T) {
 	tmpDir := t.TempDir()
-	compute.Skiff = endpoint.SkiffWithPods(tmpDir, filepath.Join(tmpDir, ".skiff", ".pods"))
+	compute.Skiff = endpoint.SkiffWithTmp(tmpDir, filepath.Join(tmpDir, ".skiff"))
 
 	podKey := client.ObjectKey{Namespace: "default", Name: "test-pod"}
 
@@ -87,7 +87,7 @@ func TestReconcileNonTerminalPodsNotifiesOnlyOnChange(t *testing.T) {
 
 func TestNodeNameFiltering(t *testing.T) {
 	tmpDir := t.TempDir()
-	compute.Skiff = endpoint.SkiffWithPods(tmpDir, filepath.Join(tmpDir, ".skiff", ".pods"))
+	compute.Skiff = endpoint.SkiffWithTmp(tmpDir, filepath.Join(tmpDir, ".skiff"))
 
 	podKeyA := client.ObjectKey{Namespace: "default", Name: "pod-a"}
 	podA := &corev1.Pod{
@@ -252,7 +252,7 @@ func TestProvider_UIDIsolation_RaceFree(t *testing.T) {
 
 func TestProvider_ReconcileConcurrentReadersAndStaleSnapshot(t *testing.T) {
 	tmpDir := t.TempDir()
-	compute.Skiff = endpoint.SkiffWithPods(tmpDir, filepath.Join(tmpDir, ".skiff", ".pods"))
+	compute.Skiff = endpoint.SkiffWithTmp(tmpDir, filepath.Join(tmpDir, ".skiff"))
 	key := client.ObjectKey{Namespace: "default", Name: "snapshot-pod"}
 	old := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: key.Namespace, Name: key.Name, UID: "old"},
@@ -297,7 +297,7 @@ func TestProvider_ReconcileConcurrentReadersAndStaleSnapshot(t *testing.T) {
 func TestProvider_ReplacementRejectsDelayedCallbackAndDelete(t *testing.T) {
 	root := t.TempDir()
 	previousSkiff := compute.Skiff
-	compute.Skiff = endpoint.SkiffWithPods(root, filepath.Join(root, ".pods"))
+	compute.Skiff = endpoint.SkiffWithTmp(root, root)
 	defer func() { compute.Skiff = previousSkiff }()
 	old := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "generation", Name: "replacement", UID: "generation-old"},
 		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "unused"}}}}

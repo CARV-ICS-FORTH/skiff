@@ -26,7 +26,7 @@ profile_required_cases() {
         T05-unsupported-forms T06-metadata-updates T06-unsupported-updates T06-rollout \
         T15-environment-and-files T15-missing-configuration T16-continuity \
         T20-cycles T20-no-leaks \
-        T18-services T18-node-networks T18-startup-report T18-pod-network T18-connectivity T18-runtime-path \
+        T18-services T18-node-networks T18-startup-report T18-pod-network T18-connectivity T18-runtime-path T32-scratch T32-volume-roots T32-unusable-scratch \
         T21-owner T21-no-forward T21-traffic \
         T22-cancel-during-startup T22-helper-killed T22-port-taken T22-second-boot \
         T23-translation T23-named-ports T23-dns T23-bubble T23-large T23-selectorless T23-untranslated \

@@ -59,8 +59,9 @@ Unknown pods or containers, and malformed requests, keep their normal 404 and 40
 
 | Field | Status | Result | Alternative | Test |
 |---|---|---|---|---|
-| `emptyDir`, `configMap`, `secret`, `hostPath`, `downwardAPI`, `projected` (ConfigMap, Secret, Downward API, service account token) volumes | implemented | Mounted into the containers | | T15 |
-| `persistentVolumeClaim` volumes | partly | Claims bound to a `hostPath` or `local` volume in filesystem mode work; other volume types and block mode fail the pod at mount with the reason | Use `hostPath` or `local` volumes | unit |
+| `emptyDir`, `configMap`, `secret`, `downwardAPI`, `projected` (ConfigMap, Secret, Downward API, service account token) volumes | implemented | Mounted into the containers | | T15 |
+| `hostPath` volumes | implemented for the two locations a volume may use | Below `/root/.skiff` (the user's `~/.skiff` on the host) and below the scratch directory (node-local): mounted. Anywhere else: the pod is refused at creation, naming the field and the two locations; nothing is created there | A path below `/root/.skiff` or the scratch directory | T32 |
+| `persistentVolumeClaim` volumes | partly | Claims bound to a `hostPath` or `local` volume in filesystem mode, with a path in the two locations, work; a volume elsewhere, other volume types and block mode fail the pod at mount with the reason | Use `hostPath` or `local` volumes below `/root/.skiff` | T32, unit |
 | Other volume sources (`nfs`, `csi`, `ephemeral`, cloud volumes, ...), projected `clusterTrustBundle` and `podCertificate`, `volumeDevices` (block devices) | not supported | Refused at creation, naming the field | `emptyDir`, `hostPath` or a `local` claim | T05 |
 | Restartable init containers (`restartPolicy: Always` on an init container), pod `activeDeadlineSeconds`, hooks of init containers, host namespaces, ephemeral containers | not supported | Refused at creation, naming the field | | T05 |
 | Environment: `env`, `envFrom`, `valueFrom` of a ConfigMap or Secret key (optional references that are absent are left out) | implemented | Resolved when the container starts | | T15 |
@@ -145,6 +146,7 @@ For those changing Skifflet. Each item owns its state, and everything else asks 
 | Missing configuration | `podhandler/podhandler.go` (`prepareContainer`) | Per-container waiting and retry for configuration that is not there yet |
 | Update handling | `podhandler/updates.go`, `internal/provider/update.go` | Which differences are applied and which are reported (`UpdateNotApplied`), and the filter that drops Virtual Kubelet's misleading success event |
 | Network settings | `scripts/skiff-config.sh`, `plaid/pkg/netcfg` | The one definition of the pod and Service ranges, DNS address, MTU and cluster domain; the bubble entrypoint and Plaid read what it derives |
+| Directories | `scripts/skiff-config.sh`, `endpoint/paths.go` | The two roots (the state directory `~/.skiff`, fixed, and the scratch directory `SKIFF_TMP_DIR`), what lives below each, and `CheckVolumePath`, the one rule for where a volume may be. The scripts and Skifflet spell them nowhere else |
 | Cleanup | `podhandler/ledger.go` | A stack of cleanup actions for what the pod acquired, run once when the pod ends |
 
 Rules that the code comments hold and the tests enforce: nothing publishes status or signals a process except through the pod's owner and the current attempt; an operation that cannot be honoured says so, as the kubelet does, and does not warn and continue; no operation started for a pod outlives the pod or its attempt.
@@ -158,7 +160,7 @@ Rules that the code comments hold and the tests enforce: nothing publishes statu
 | `--apptainer` | `plaidtainer` | Path or binary name for Apptainer execution wrapper |
 | `--pause-image` | `registry.k8s.io/pause:3.10` | OCI image for the Pod pause container |
 | `--working-dir` | `$HOME` | Base working directory for Skiff runtime files (`~/.skiff`) |
-| `--pods-dir` | `/tmp/.skiff/.pods` | Ephemeral directory for pod job state and volume mounts |
+| `--tmp-dir` | `/tmp/.skiff` | The node's scratch directory (the deployment's `SKIFF_TMP_DIR`): pod runtime state is below it (`.pods`) and so is Apptainer's scratch. A volume may use it and `~/.skiff` (`/root/.skiff` in a bubble), and nothing else |
 | `--cluster-domain` | `$SKIFF_CLUSTER_DOMAIN`, else `cluster.local` | DNS domain of the cluster, for the search path of pods that use the cluster DNS |
 | `--pod-sync-workers` | `8` | Pods Virtual Kubelet's controller works on at once. A pod is deleted inside the worker that took it, for as long as its PreStop hook and grace period take, so this is also how many pods can be terminating before one that arrives has to wait (T26) |
 | `--plaid-socket` | `$PLAID_SOCKET_PATH`, else `/run/plaid/plaidd.sock` | API socket of `plaidd` |

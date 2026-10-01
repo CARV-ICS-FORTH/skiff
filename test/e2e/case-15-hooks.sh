@@ -14,7 +14,8 @@ source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 15)
 NODE_A=$(e2e_node_a)
-CTL_ROOT="/tmp/e2e15-${E2E_RUN_ID}"
+# A volume must be below one of the two roots the bubble sees (the node-local scratch directory here).
+CTL_ROOT="${SKIFF_TMP_DIR}/e2e15-${E2E_RUN_ID}"
 
 e2e_require_nodes 2
 

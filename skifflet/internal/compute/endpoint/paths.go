@@ -26,8 +26,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// Skiff's two roots. The state root is the user's ~/.skiff (the shared home: credentials,
+// images, volumes); inside a bubble, which runs as root, it is /root/.skiff. The
+// scratch root, DefaultTmpDir unless the deployment names another (SKIFF_TMP_DIR),
+// is node-local and disposable: the pods directory, Apptainer's unpack and conversion
+// scratch and the sockets between the host and the bubble live in it.
+//
 // Layout of the runtime files of a pod, all under one directory per pod
-// generation, <podsDir>/<namespace>/<name>_<pod UID>/ (the pod UID keeps a
+// generation, <scratch root>/.pods/<namespace>/<name>_<pod UID>/ (the pod UID keeps a
 // replacement of the same name apart from the pod it replaces):
 //
 //	job/pids.json        the on-disk record of the pod's processes (crash cleanup)
@@ -40,12 +46,13 @@ import (
 //	tmp/                 the pod's Apptainer temporary directory (see TmpDir)
 //
 // Everything that launches, reads, execs into or cleans up a pod builds these
-// paths here, from the runtime directory it was configured with (SkiffPath); no
-// other code spells out a file name or a path. The pods directory is node-local
-// and disposable. User volume backing data does not live here.
+// paths here, from the scratch root it was configured with (SkiffPath); no
+// other code spells out a file name or a path. User volume backing data does not
+// live here.
 const (
 	PodGlobalDirectoryPermissions = os.FileMode(0o777)
-	DefaultPodsDir                = "/tmp/.skiff/.pods"
+	DefaultTmpDir                 = "/tmp/.skiff"
+	DefaultPodsDir                = DefaultTmpDir + "/.pods"
 
 	// DefaultPlaidSocket is the API socket of plaidd, the daemon that gives pods
 	// their network and removes their endpoints.
@@ -64,21 +71,23 @@ const (
 )
 
 type SkiffPath struct {
-	rootPath string
-	podsPath string
+	rootPath string // the state root
+	tmpPath  string // the scratch root
 }
 
 func Skiff(rootPath string) SkiffPath {
-	return SkiffWithPods(rootPath, DefaultPodsDir)
+	return SkiffWithTmp(rootPath, DefaultTmpDir)
 }
 
-func SkiffWithPods(rootPath string, podsPath string) SkiffPath {
-	if podsPath == "" {
-		podsPath = DefaultPodsDir
+// SkiffWithTmp is the layout of a deployment: the state root is <rootPath>/.skiff
+// and the scratch root is tmpPath (DefaultTmpDir when empty).
+func SkiffWithTmp(rootPath string, tmpPath string) SkiffPath {
+	if tmpPath == "" {
+		tmpPath = DefaultTmpDir
 	}
 	return SkiffPath{
 		rootPath: filepath.Clean(filepath.Join(rootPath, ".skiff")),
-		podsPath: filepath.Clean(podsPath),
+		tmpPath:  filepath.Clean(tmpPath),
 	}
 }
 
@@ -94,11 +103,35 @@ func (p SkiffPath) ImageDir() string {
 	return filepath.Join(p.rootPath, ".images")
 }
 
-func (p SkiffPath) PodsDir() string {
-	if p.podsPath == "" {
-		return DefaultPodsDir
+// TmpDir is the scratch root.
+func (p SkiffPath) TmpDir() string {
+	if p.tmpPath == "" {
+		return DefaultTmpDir
 	}
-	return p.podsPath
+	return p.tmpPath
+}
+
+func (p SkiffPath) PodsDir() string {
+	return filepath.Join(p.TmpDir(), ".pods")
+}
+
+// CheckVolumePath says whether a volume (a hostPath, or the path of a volume that a
+// claim is bound to) may use path. Skifflet runs inside a bubble that sees the host
+// through the state root (the user's ~/.skiff, /root/.skiff in the bubble) and the
+// scratch root only, so a path anywhere else does not exist for it: a directory
+// created there would be lost with the bubble, and one that must exist could not be
+// found. It is refused with that explanation rather than failing or losing data later.
+func (p SkiffPath) CheckVolumePath(path string) error {
+	clean := filepath.Clean(path)
+	if filepath.IsAbs(clean) {
+		for _, root := range []string{p.String(), p.TmpDir()} {
+			if rel, err := filepath.Rel(root, clean); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("volume path %q is outside the locations a volume may use: %s (the user's ~/.skiff on the host) and %s (the node's scratch directory)",
+		path, p.String(), p.TmpDir())
 }
 
 type WalkPodFunc func(path PodPath) error

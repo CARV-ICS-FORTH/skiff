@@ -12,12 +12,13 @@ trap 'kill "$(cat "$test_dir"/fake/pid 2>/dev/null)" 2>/dev/null || true; rm -rf
 LOG=""
 fail() { echo "skiff-bubble-test: $*" >&2; [ -z "$LOG" ] || sed 's/^/  | /' "$LOG" >&2; exit 1; }
 
-# Without socat the bubble refuses to start, before it creates anything.
+# Without the host programs (socat among them) the bubble refuses to start, before it
+# creates anything.
 empty="$test_dir/empty"; mkdir -p "$empty"
 rc=0
 out=$(PATH="$empty" HOME="$empty" /bin/bash "$script_dir/../scripts/skiff-bubble.sh" 1 2>&1) || rc=$?
 [ "$rc" -eq 1 ] || fail "exit $rc without socat, expected 1"
-case "$out" in *"socat is required"*) ;; *) fail "no reason given without socat: $out" ;; esac
+case "$out" in *"required program(s) not found in PATH"*socat*) ;; *) fail "no reason given without socat: $out" ;; esac
 [ -z "$(ls -A "$empty")" ] || fail "created files before failing without socat"
 
 mkdir -p "$test_dir/bin" "$test_dir/home/.skiff/images"
@@ -53,9 +54,12 @@ cat > "$test_dir/bin/socat" <<'STUB'
 #!/usr/bin/env bash
 exec sleep 300
 STUB
+printf '#!/usr/bin/env bash\nexit 0\n' > "$test_dir/bin/ss"
 chmod +x "$test_dir/bin/"*
 
-export PATH="$test_dir/bin:$PATH" HOME="$test_dir/home" SKIFF_DEV=1 CONTROLLER_IP=192.0.2.10
+# The scratch directory is a setting (its default is the node's /tmp/.skiff): here it is
+# somewhere else, to see that everything follows it.
+export PATH="$test_dir/bin:$PATH" HOME="$test_dir/home" SKIFF_DEV=1 CONTROLLER_IP=192.0.2.10 SKIFF_TMP_DIR="$test_dir/scratch"
 export SKIFF_SLIRP_API_TIMEOUT=4
 # shellcheck source=../scripts/skiff-config.sh
 source "$repo_dir/scripts/skiff-config.sh"
@@ -116,11 +120,19 @@ tcp 127.0.0.1 6443 $guest 6443"
 grep -q -- "--mtu=$SKIFF_POD_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&2; fail "slirp4netns was not started at the pod MTU"; }
 
 # The helper was started once, from the image, with the host address, the port and the
-# handoff socket under /tmp/.skiff; the bubble was told where it is.
+# handoff socket in the scratch directory; the bubble was told where it is, got the
+# scratch directory at the same path, and Apptainer's scratch is below it.
 [ "$(wc -l < "$FAKE_DIR/helper-args" | tr -d ' ')" = 1 ] || fail "the helper was not started exactly once"
-grep -q -- "$HOME/.skiff/images/skiff-bubble.sif /usr/local/bin/plaidctl overlay-socket --bind 192.0.2.10 --port 8472 --handoff /tmp/.skiff/overlay.sock" "$FAKE_DIR/helper-args" \
+grep -q -- "$HOME/.skiff/images/skiff-bubble.sif /usr/local/bin/plaidctl overlay-socket --bind 192.0.2.10 --port 8472 --handoff $SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/helper-args" \
     || { cat "$FAKE_DIR/helper-args" >&2; fail "unexpected helper command line"; }
-grep -q -- "--env SKIFF_OVERLAY_HANDOFF=/tmp/.skiff/overlay.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told the handoff path"
+grep -q -- "--env SKIFF_OVERLAY_HANDOFF=$SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told the handoff path"
+grep -q -- "--bind $SKIFF_TMP_DIR:$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not given the scratch directory at the same path"
+grep -q -- "--env SKIFF_TMP_DIR=$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not told the scratch directory"
+for variable in APPTAINER_TMPDIR SINGULARITY_TMPDIR TMPDIR; do
+    grep -q -- "--env $variable=$SKIFF_TMP_DIR/.apptainer/tmp " "$FAKE_DIR/instance-run" || fail "$variable is not below the scratch directory"
+done
+grep -q -- "--bind $HOME/.skiff:/root/.skiff " "$FAKE_DIR/instance-run" || fail "the state directory is not bound as /root/.skiff"
+if grep -q "/tmp/.skiff" "$FAKE_DIR/instance-run" "$FAKE_DIR/helper-args"; then fail "the default scratch directory is still used"; fi
 grep -q -- "--env SKIFF_SLIRP_API=/root/.skiff/slirp-bubble1.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told slirp4netns's API socket"
 
 # A helper that is still waiting is not a failure, and terminating the bubble stops it.
@@ -129,7 +141,7 @@ kill -0 "$BUBBLE_PID" 2>/dev/null || fail "the bubble stopped while the helper w
 kill -TERM "$BUBBLE_PID"; wait_exit
 [ "$EXIT_RC" -eq 143 ] || fail "SIGTERM: exit $EXIT_RC"
 released
-[ ! -e "/tmp/.skiff/overlay.sock" ] || fail "the handoff socket was left behind"
+[ ! -e "$SKIFF_TMP_DIR/overlay.sock" ] || fail "the handoff socket was left behind"
 [ ! -e "$HOME/.skiff/slirp-bubble1.sock" ] || fail "the API socket was left behind"
 
 # A worker forwards no API port.
@@ -157,5 +169,14 @@ wait_exit
 [ "$EXIT_RC" -ne 0 ] || fail "a forward that could not bind did not stop the bubble"
 grep -qi 'kubelet' "$LOG" && grep -q 'Address already in use' "$LOG" || fail "the failure does not name the forward and the reason"
 released
+
+# A scratch directory that cannot be created stops the bubble before anything starts,
+# with the reason; no slirp4netns, helper or instance was started.
+: > "$test_dir/a-file"
+run_bubble controller SKIFF_TMP_DIR="$test_dir/a-file/scratch"
+wait_exit
+[ "$EXIT_RC" -eq 1 ] || fail "an unusable scratch directory: exit $EXIT_RC, expected 1"
+grep -q "SKIFF_TMP_DIR ($test_dir/a-file/scratch) cannot be created or written" "$LOG" || fail "no reason given for the scratch directory"
+[ ! -e "$FAKE_DIR/pid" ] && [ ! -e "$FAKE_DIR/helper-args" ] && [ ! -e "$FAKE_DIR/instance-run" ] || fail "something was started before the scratch directory was checked"
 
 echo "skiff-bubble-test: ok"

@@ -83,9 +83,9 @@ runtime_parse_process_identities() {
     python3 -c 'import json,sys; p=json.load(sys.stdin); starts=p.get("container_start_times") or {}; ids=p.get("container_pids") or []; assert all(isinstance(pid,int) and pid>1 and int(starts.get(str(pid),0))>0 for pid in ids); print(",".join(str(pid)+":"+str(starts[str(pid)]) for pid in ids))'
 }
 
-# The pods directory of the nodes' Skifflet (its --pods-dir): the deployment's
-# SKIFF_PODS_DIR when it configures one.
-_RT_PODS_DIR="${E2E_PODS_DIR:-${SKIFF_PODS_DIR:-/tmp/.skiff/.pods}}"
+# The pods directory of the nodes' Skifflet: below the deployment's scratch directory
+# (SKIFF_TMP_DIR, see scripts/skiff-config.sh).
+_RT_PODS_DIR="${E2E_PODS_DIR:-${SKIFF_TMP_DIR}/.pods}"
 
 # runtime_pod_dir NS POD UID: the runtime directory of one pod generation.
 runtime_pod_dir() {
@@ -351,7 +351,7 @@ runtime_kill_process() {
 # and must be removed with their pod. Record how many remain and how much space
 # they and the root filesystem use on each node, so growth across a run (and a
 # full disk on a development node) is visible in the result bundle.
-_RT_APPTAINER_TMP="${E2E_APPTAINER_TMP:-/tmp/.skiff/.apptainer/tmp}"
+_RT_APPTAINER_TMP="${E2E_APPTAINER_TMP:-${SKIFF_APPTAINER_TMP}}"
 
 runtime_record_node_ips() {
     local node

@@ -3,21 +3,23 @@ set -euo pipefail
 
 BUBBLE_ID=${1:-1}
 
-# The API and kubelet are published on the host address through socat relays; without
-# them the other nodes cannot reach this one, so refuse to start.
-if ! command -v socat >/dev/null 2>&1; then
-    echo "Error: socat is required on the allocated nodes and was not found in PATH." >&2
-    exit 1
-fi
-
 NAME="bubble$BUBBLE_ID"
 
 # The cluster configuration arrives in the environment from skiff.slurm; checking it
 # again here costs nothing and covers a bubble started by hand.
+# (The directory of the script is taken without running a program: the check below
+# is what reports a host that lacks them.)
+script_dir=.
+[[ "${BASH_SOURCE[0]}" != */* ]] || script_dir="${BASH_SOURCE[0]%/*}"
 # shellcheck source=skiff-config.sh
-source "$(dirname "$0")/skiff-config.sh"
+source "$script_dir/skiff-config.sh"
 skiff_config_validate || exit 1
 skiff_config_export
+# The host programs the script uses (the API and kubelet are published on the host
+# address through socat relays, without which the other nodes cannot reach this one) and
+# the scratch directory; skiff.slurm has checked them already, this covers a bubble
+# started by hand.
+skiff_check_node || exit 1
 skiff_outer_network "$BUBBLE_ID"
 CIDR="$SKIFF_OUTER_CIDR"
 DNS_ADDR="$SKIFF_OUTER_DNS"
@@ -38,12 +40,12 @@ fi
 SOCAT_PID_6443=""
 SOCAT_PID_10250=""
 SLIRP_PID=""
-SLIRP_SOCK="$HOME/.skiff/slirp-${NAME}.sock"
+SLIRP_SOCK="$SKIFF_STATE_DIR/slirp-${NAME}.sock"
 # The overlay's UDP socket is opened here, on the physical host, and handed to plaidd
-# inside the bubble through this socket. It is node-local (the bubbles share the host's
-# /tmp; the home directory is shared between nodes, where a socket would not work), and
-# only its owner can connect to it.
-OVERLAY_HANDOFF="/tmp/.skiff/overlay.sock"
+# inside the bubble through this socket. It is node-local (in the scratch directory; the
+# home directory is shared between nodes, where a socket would not work), and only its
+# owner can connect to it.
+OVERLAY_HANDOFF="$SKIFF_OVERLAY_HANDOFF"
 OVERLAY_PORT=8472
 OVERLAY_HELPER_PID=""
 SKIFF_ROLE=${SKIFF_ROLE:-controller}
@@ -105,10 +107,12 @@ trap handle_term TERM
 trap handle_int INT
 trap cleanup EXIT
 
-mkdir -p "$HOME/.skiff"
-mkdir -p "$HOME/.skiff/.apptainer/tmp"
-mkdir -p "$HOME/.skiff/.apptainer/cache"
-mkdir -p "/tmp/.skiff/.apptainer/tmp"
+mkdir -p "$SKIFF_STATE_DIR"
+mkdir -p "$SKIFF_STATE_DIR/.apptainer/cache"
+mkdir -p "$SKIFF_APPTAINER_TMP"
+# What Apptainer unpacks and converts on this host (the bubble image here, below also
+# inside the bubble) goes to the node's scratch directory, not to the system's default.
+export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
 rm -f "$SLIRP_SOCK"
 rm -f "$OVERLAY_HANDOFF"
 
@@ -120,7 +124,7 @@ echo "  Host IP: $HOST_IP_DETECTED"
 # Determine image source
 if [ "${SKIFF_DEV:-0}" = "1" ]; then
     echo "  Development mode: using local image"
-    IMAGE_DIR="$HOME/.skiff/images"
+    IMAGE_DIR="$SKIFF_STATE_DIR/images"
     IMAGE_SIF="$IMAGE_DIR/skiff-bubble.sif"
     
     if [ ! -f "$IMAGE_SIF" ]; then
@@ -150,14 +154,15 @@ apptainer instance run \
 	--writable-tmpfs \
 	--network=none \
 	--dns "$DNS_ADDR" \
-	--bind "$HOME/.skiff:/var/lib/skiff" \
-    --bind "$HOME/.skiff:/root/.skiff" \
-    --bind "$HOME/.skiff/.apptainer/cache:/root/.apptainer/cache" \
+	--bind "$SKIFF_STATE_DIR:/var/lib/skiff" \
+    --bind "$SKIFF_STATE_DIR:/root/.skiff" \
+    --bind "$SKIFF_STATE_DIR/.apptainer/cache:/root/.apptainer/cache" \
+    --bind "$SKIFF_TMP_DIR:$SKIFF_TMP_DIR" \
     --env APPTAINER_CACHEDIR=/root/.skiff/.apptainer/cache \
-    --env APPTAINER_TMPDIR=/tmp/.skiff/.apptainer/tmp \
+    --env APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP" \
     --env SINGULARITY_CACHEDIR=/root/.skiff/.apptainer/cache \
-    --env SINGULARITY_TMPDIR=/tmp/.skiff/.apptainer/tmp \
-    --env TMPDIR=/tmp/.skiff/.apptainer/tmp \
+    --env SINGULARITY_TMPDIR="$SKIFF_APPTAINER_TMP" \
+    --env TMPDIR="$SKIFF_APPTAINER_TMP" \
 	--env HOST_IP="$HOST_IP_DETECTED" \
 	--env SKIFF_OVERLAY_HANDOFF="$OVERLAY_HANDOFF" \
 	--env SKIFF_SLIRP_API="/root/.skiff/slirp-${NAME}.sock" \
@@ -171,7 +176,7 @@ apptainer instance run \
 	--env SKIFF_CLUSTER_DNS="$SKIFF_CLUSTER_DNS" \
 	--env SKIFF_API_SERVICE_IP="$SKIFF_API_SERVICE_IP" \
 	--env SKIFF_POD_MTU="$SKIFF_POD_MTU" \
-	--env SKIFF_PODS_DIR="$SKIFF_PODS_DIR" \
+	--env SKIFF_TMP_DIR="$SKIFF_TMP_DIR" \
 	"$BUBBLE_IMAGE" \
 	"$NAME"
 

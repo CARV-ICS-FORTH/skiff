@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Redirect all stdout and stderr to /var/log/entrypoint.log while keeping terminal output
-mkdir -p /var/log /tmp/.skiff/.apptainer/tmp /root/.skiff/.apptainer/cache
+mkdir -p /var/log
 exec > >(tee -a /var/log/entrypoint.log) 2>&1
 
 # Default values if not provided
@@ -22,8 +22,10 @@ PLAID_UPLINK=${PLAID_UPLINK:-tap0}
 : "${SKIFF_POD_MTU:?the pod MTU is required (SKIFF_POD_MTU)}"
 : "${SKIFF_OVERLAY_HANDOFF:?the overlay socket handoff path is required (SKIFF_OVERLAY_HANDOFF)}"
 : "${SKIFF_SLIRP_API:?the slirp4netns API socket is required (SKIFF_SLIRP_API)}"
-# Optional: the pods directory. Empty means Skifflet's own default.
-SKIFF_PODS_DIR="${SKIFF_PODS_DIR:-}"
+# The node's scratch directory (the same path as on the host, which the bubble script
+# binds in): pod runtime state below it, and Apptainer's scratch.
+: "${SKIFF_TMP_DIR:?the scratch directory is required (SKIFF_TMP_DIR)}"
+mkdir -p "$SKIFF_TMP_DIR/.apptainer/tmp" /root/.skiff/.apptainer/cache
 
 echo "Starting Skiff Bubble..."
 echo "  Public IP:     ${HOST_IP}"
@@ -34,7 +36,7 @@ echo "  Pod network:      ${SKIFF_POD_CIDR}"
 echo "  Service network:  ${SKIFF_SERVICE_CIDR} (API ${SKIFF_API_SERVICE_IP}, DNS ${SKIFF_CLUSTER_DNS})"
 echo "  Cluster domain:   ${SKIFF_CLUSTER_DOMAIN}"
 echo "  Pod MTU:          ${SKIFF_POD_MTU}"
-echo "  Pods directory:   ${SKIFF_PODS_DIR:-(default)}"
+echo "  Directories:      state /root/.skiff (the user's ~/.skiff), scratch ${SKIFF_TMP_DIR}"
 
 # Enable IP forwarding
 sysctl -w net.ipv4.ip_forward=1
@@ -313,7 +315,7 @@ start_skifflet() {
       --nodename="$(hostname)" \
       --disable-taint=true \
       --cluster-domain="$SKIFF_CLUSTER_DOMAIN" \
-      ${SKIFF_PODS_DIR:+--pods-dir="$SKIFF_PODS_DIR"} \
+      --tmp-dir="$SKIFF_TMP_DIR" \
       "${PAUSE_IMAGE_OPT[@]}" \
       >> /var/log/skifflet.log 2>&1 &
     SKIFFLET_PID=$!

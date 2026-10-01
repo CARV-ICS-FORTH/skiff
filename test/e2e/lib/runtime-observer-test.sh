@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# runtime.sh follows the deployment's configuration (it is sourced after common.sh, which
+# reads it); this test sources the helper itself.
+# shellcheck source=../../../scripts/skiff-config.sh
+source "$(dirname "$0")/../../../scripts/skiff-config.sh"
+skiff_config_resolve
 source "$(dirname "$0")/runtime.sh"
 e2e_fail() { :; }
 e2e_pass() { :; }

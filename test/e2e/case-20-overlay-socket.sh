@@ -55,7 +55,7 @@ no_forward() {
         e2e_assert_contains "slirp4netns answered the listing on $node" "$list" '"entries"'
         if [[ "$list" == *8472* ]]; then e2e_fail "slirp4netns on $node forwards the overlay port: $list"; fi
         e2e_assert_eq "no overlay helper process on $node" "$(runtime_ssh_node "$ip" "pgrep -f '[p]laidctl overlay-socket' || true")" ""
-        e2e_assert_eq "no handoff socket left on $node" "$(runtime_ssh_node "$ip" 'ls /tmp/.skiff/overlay.sock 2>/dev/null | wc -l')" 0
+        e2e_assert_eq "no handoff socket left on $node" "$(runtime_ssh_node "$ip" "ls ${SKIFF_OVERLAY_HANDOFF} 2>/dev/null | wc -l")" 0
     done
 }
 e2e_subcase_run T21-no-forward no_forward

@@ -7,6 +7,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"skifflet/internal/compute"
 	"skifflet/pkg/fieldpath"
 )
 
@@ -120,6 +121,11 @@ func validateVolume(pod *corev1.Pod, prefix string, vol *corev1.Volume) []string
 	}
 	var out []string
 	switch {
+	case vol.HostPath != nil:
+		// The bubble sees the host only through Skiff's two roots (see endpoint.CheckVolumePath).
+		if err := compute.Skiff.CheckVolumePath(vol.HostPath.Path); err != nil {
+			out = append(out, fmt.Sprintf("%s.HostPath.Path (volume %q: %v)", prefix, vol.Name, err))
+		}
 	case vol.DownwardAPI != nil:
 		for j, item := range vol.DownwardAPI.Items {
 			out = append(out, validateDownwardItem(pod, fmt.Sprintf("%s.DownwardAPI.Items[%d]", prefix, j), item)...)

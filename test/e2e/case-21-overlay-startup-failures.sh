@@ -39,7 +39,7 @@ all_released() {
 no_handoff_socket() {
     local ip
     for ip in "${ALL_IPS[@]}"; do
-        [ "$(runtime_ssh_node "$ip" 'ls /tmp/.skiff/overlay.sock 2>/dev/null | wc -l')" = 0 ] || return 1
+        [ "$(runtime_ssh_node "$ip" "ls ${SKIFF_OVERLAY_HANDOFF} 2>/dev/null | wc -l")" = 0 ] || return 1
     done
 }
 helper_pids() { runtime_ssh_node "$CONTROLLER_IP" "pgrep -f '[p]laidctl overlay-socket' | tr '\n' ' '" || true; }
@@ -122,13 +122,33 @@ port_taken() {
     if [[ "$out" == *"Starting Controller"* ]]; then e2e_fail "a bubble was started although the overlay port is taken"; fi
     e2e_assert_eq "the holder still runs" "$(runtime_ssh_node "$WORKER_IP" "kill -0 $HOLDER_PID && echo yes || echo no")" yes
 
-    out=$(runtime_ssh_node "$WORKER_IP" "apptainer exec $image /usr/local/bin/plaidctl overlay-socket --bind ${WORKER_IP} --port 8472 --handoff /tmp/.skiff/overlay-test.sock --timeout 20s 2>&1" ) || rc=$?
+    out=$(runtime_ssh_node "$WORKER_IP" "apptainer exec $image /usr/local/bin/plaidctl overlay-socket --bind ${WORKER_IP} --port 8472 --handoff ${SKIFF_TMP_DIR}/overlay-test.sock --timeout 20s 2>&1" ) || rc=$?
     e2e_assert_ne "the helper does not succeed on a taken port" "$rc" 0
     e2e_assert_contains "the helper says why" "$out" "cannot open the overlay socket"
     stop_holder
     e2e_wait_condition 30 "the port is free again" all_released
 }
 e2e_subcase_run T22-port-taken port_taken
+
+# ---------------------------------------------------------------------------
+# T32-unusable-scratch: a scratch directory that cannot be used stops the job in its
+# preflight checks, on the node that cannot use it, saying so; no bubble starts and
+# nothing is left running.
+# ---------------------------------------------------------------------------
+unusable_scratch() {
+    local job result out
+    job=$(sbatch --parsable --export=ALL,SKIFF_TMP_DIR=/proc/skiff-scratch "${ARTIFACT_DIR}/scripts/skiff.slurm" | cut -d';' -f1)
+    e2e_wait_condition 120 "the job failed before starting" job_gone "$job"
+    result="${HOME}/.skiff/job-results/${job}.exit"
+    e2e_wait_condition 30 "the job's exit status is recorded" test -s "$result"
+    e2e_assert_eq "the job's exit status" "$(cat "$result")" 1
+    out=$(cat "$(job_output "$job")" 2>/dev/null)
+    e2e_assert_contains "the job names the scratch directory" "$out" "SKIFF_TMP_DIR (/proc/skiff-scratch) cannot be created or written"
+    e2e_assert_contains "and says nothing was started" "$out" "nothing was started"
+    if [[ "$out" == *"Starting Controller"* ]]; then e2e_fail "a bubble was started with an unusable scratch directory"; fi
+    e2e_wait_condition 60 "nothing is left running" all_released
+}
+e2e_subcase_run T32-unusable-scratch unusable_scratch
 
 # ---------------------------------------------------------------------------
 # T22-second-boot: after all of that a new job gets the ports, starts and its overlay carries

@@ -10,11 +10,7 @@ import (
 )
 
 func Initialize(pauseImage string) error {
-	if compute.Environment.PodsDirectory != "" {
-		compute.Skiff = endpoint.SkiffWithPods(compute.Environment.WorkingDirectory, compute.Environment.PodsDirectory)
-	} else {
-		compute.Skiff = endpoint.Skiff(compute.Environment.WorkingDirectory)
-	}
+	compute.Skiff = endpoint.SkiffWithTmp(compute.Environment.WorkingDirectory, compute.Environment.TmpDirectory)
 
 	// create the ~/.skiff directory, if it does not exist.
 	if err := os.MkdirAll(compute.Skiff.String(), endpoint.PodGlobalDirectoryPermissions); err != nil {
@@ -26,7 +22,7 @@ func Initialize(pauseImage string) error {
 		return fmt.Errorf("Failed to create ImageDir '%s': %w", compute.Skiff.ImageDir(), err)
 	}
 
-	// create the /tmp/.skiff/.pods directory, if it does not exist.
+	// create the pods directory (in the scratch root), if it does not exist.
 	if err := os.MkdirAll(compute.Skiff.PodsDir(), endpoint.PodGlobalDirectoryPermissions); err != nil {
 		return fmt.Errorf("Failed to create PodsDir '%s': %w", compute.Skiff.PodsDir(), err)
 	}
@@ -44,6 +40,7 @@ func Initialize(pauseImage string) error {
 
 	compute.DefaultLogger.Info("Runtime info",
 		"WorkingDirectory", compute.Skiff.String(),
+		"TmpDirectory", compute.Skiff.TmpDir(),
 		"PodsDirectory", compute.Skiff.PodsDir(),
 		"PlaidSocket", compute.Environment.PlaidSocketPath(),
 		"ClusterDomain", compute.Environment.ClusterDomainOrDefault(),
