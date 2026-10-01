@@ -51,7 +51,7 @@ no_forward() {
         ip="${IPS[$node]}"
         inst=$(runtime_ssh_node "$ip" "apptainer instance list | awk 'NR>1 && \$1 ~ /^bubble[0-9]+\$/ {print \$1}'")
         e2e_assert_nonempty "bubble on $node" "$inst"
-        list=$(runtime_ssh_node "$ip" "printf '{\"execute\":\"list_hostfwd\"}' | nc -w 2 -U \$HOME/.skiff/slirp-${inst}.sock")
+        list=$(runtime_ssh_node "$ip" "printf '{\"execute\":\"list_hostfwd\"}' | socat -t 2 - UNIX-CONNECT:\$HOME/.skiff/slirp-${inst}.sock")
         e2e_assert_contains "slirp4netns answered the listing on $node" "$list" '"entries"'
         if [[ "$list" == *8472* ]]; then e2e_fail "slirp4netns on $node forwards the overlay port: $list"; fi
         e2e_assert_eq "no overlay helper process on $node" "$(runtime_ssh_node "$ip" "pgrep -f '[p]laidctl overlay-socket' || true")" ""

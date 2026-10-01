@@ -286,7 +286,7 @@ skiff_config_export() {
 }
 
 # The programs the scripts run on the allocated nodes themselves, outside the bubble.
-SKIFF_HOST_TOOLS="apptainer slirp4netns socat nc jq ss ip"
+SKIFF_HOST_TOOLS="apptainer slirp4netns socat ss ip"
 
 # skiff_check_node: what every allocated node needs before a bubble can start on it,
 # checked on the node itself (skiff.slurm runs it everywhere before starting anything,

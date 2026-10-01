@@ -127,7 +127,7 @@ nodedir=$(mktemp -d)
 trap 'rm -rf "$nodedir"' EXIT
 mkdir -p "$nodedir/base" "$nodedir/tools" "$nodedir/fakestat"
 for command in mkdir stat hostname id; do ln -s "$(command -v "$command")" "$nodedir/base/$command"; done
-for tool in apptainer slirp4netns socat nc jq ss ip; do printf '#!/bin/sh\n' > "$nodedir/tools/$tool"; chmod +x "$nodedir/tools/$tool"; done
+for tool in apptainer slirp4netns socat ss ip; do printf '#!/bin/sh\n' > "$nodedir/tools/$tool"; chmod +x "$nodedir/tools/$tool"; done
 printf '#!/bin/sh\necho nfs4\n' > "$nodedir/fakestat/stat"; chmod +x "$nodedir/fakestat/stat"
 node_check() { # node_check PATH_DIRS TMP_DIR: output and status of skiff_check_node
     env -i PATH="$1" SKIFF_TMP_DIR="$2" "$BASH" -c 'source "$1"; skiff_check_node' _ "$repo_dir/scripts/skiff-config.sh" 2>&1
@@ -137,10 +137,10 @@ expect "a node with every tool and a usable scratch directory" "$status" 0
 [ -d "$nodedir/scratch" ] || { echo "FAIL the scratch directory was not created"; failures=$((failures + 1)); }
 out=$(node_check "$nodedir/base" "$nodedir/scratch"); status=$?
 expect "a node without the host programs is refused" "$status" 1
-for tool in apptainer slirp4netns socat nc jq ss ip; do
+for tool in apptainer slirp4netns socat ss ip; do
     grep -q -- "required program(s) not found in PATH:.* $tool" <<< "$out" || { echo "FAIL the message does not name $tool: $out"; failures=$((failures + 1)); }
 done
-mkdir "$nodedir/only-socat-missing"; for tool in apptainer slirp4netns nc jq ss ip; do ln -s "$nodedir/tools/$tool" "$nodedir/only-socat-missing/$tool"; done
+mkdir "$nodedir/only-socat-missing"; for tool in apptainer slirp4netns ss ip; do ln -s "$nodedir/tools/$tool" "$nodedir/only-socat-missing/$tool"; done
 out=$(node_check "$nodedir/only-socat-missing:$nodedir/base" "$nodedir/scratch"); status=$?
 expect "only what is missing is named" "$status:$(grep -o 'PATH:.*(' <<< "$out")" "1:PATH: socat ("
 : > "$nodedir/a-file"

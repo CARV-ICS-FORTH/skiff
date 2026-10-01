@@ -50,7 +50,7 @@ host_sh() {  # host_sh NODE COMMAND: run a command on the node's physical host
     runtime_ssh_node "${IPS[$1]}" "echo '$b64' | base64 -d | bash"
 }
 slirp_api() {  # slirp_api NODE JSON: one request to the node's slirp4netns
-    host_sh "$1" "inst=\$(apptainer instance list | awk 'NR>1 && \$1 ~ /^bubble[0-9]+\$/ {print \$1}'); printf '%s' '$2' | nc -w 2 -U \$HOME/.skiff/slirp-\${inst}.sock"
+    host_sh "$1" "inst=\$(apptainer instance list | awk 'NR>1 && \$1 ~ /^bubble[0-9]+\$/ {print \$1}'); printf '%s' '$2' | socat -t 2 - UNIX-CONNECT:\$HOME/.skiff/slirp-\${inst}.sock"
 }
 forwards() {  # forwards NODE: "proto host_addr:port->guest_addr:port id" lines
     slirp_api "$1" '{"execute":"list_hostfwd"}' | python3 -c '
@@ -70,7 +70,7 @@ http_json() {  # http_json FROM_NODE TO_NODE PORT [PATH]: the JSON of an answer
     host_sh "$1" "curl -sS -m 6 http://${IPS[$2]}:$3${4:-/}"
 }
 udp_json() {  # udp_json FROM_NODE TO_NODE PORT
-    host_sh "$1" "printf hello | nc -u -w 2 ${IPS[$2]} $3"
+    host_sh "$1" "printf hello | socat -t 2 - UDP:${IPS[$2]}:$3"
 }
 field() { python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"; }
 nodeport() {  # nodeport SERVICE PORTNAME

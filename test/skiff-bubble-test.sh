@@ -36,7 +36,6 @@ case "$*" in
             *) exec sleep 300 ;;
         esac ;;
     "instance run"*) echo "$*" > "$FAKE_DIR/instance-run"; exit 0 ;;
-    "instance list -j"*) echo '{"instances":[{"instance":"bubble1","pid":4242}]}' ;;
     "instance list"*) [ -e "$FAKE_DIR/instance-gone" ] || printf 'INSTANCE NAME PID\nbubble1 4242\n' ;;
     "instance stop"*) echo stop >> "$FAKE_DIR/instance-stop" ;;
 esac
@@ -50,9 +49,19 @@ cat > "$test_dir/bin/slirp4netns" <<STUB
 #!/usr/bin/env bash
 exec python3 "$script_dir/fake-slirp4netns.py" "\$@"
 STUB
+# The relays stay up (sleep); as a client of a UNIX socket (the slirp API) it sends its
+# standard input and prints the answer, as `socat -t 2 - UNIX-CONNECT:path` does.
 cat > "$test_dir/bin/socat" <<'STUB'
 #!/usr/bin/env bash
-exec sleep 300
+case "$*" in
+    *UNIX-CONNECT:*)
+        exec python3 -c 'import socket, sys
+s = socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(sys.argv[1].split("UNIX-CONNECT:", 1)[1])
+s.sendall(sys.stdin.buffer.read())
+try: sys.stdout.buffer.write(s.recv(65536))
+except socket.timeout: pass' "$*" ;;
+    *) exec sleep 300 ;;
+esac
 STUB
 printf '#!/usr/bin/env bash\nexit 0\n' > "$test_dir/bin/ss"
 chmod +x "$test_dir/bin/"*

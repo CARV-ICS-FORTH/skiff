@@ -195,14 +195,16 @@ apptainer instance run \
 
 PID=""
 for i in {1..20}; do
-    PID=$(apptainer instance list -j "$NAME" 2>/dev/null | jq -r '.instances[]? | select(.instance=="'"$NAME"'") | .pid // empty' 2>/dev/null || true)
-    if [ -n "$PID" ] && [ "$PID" != "null" ]; then
+    # The whole listing is read (an awk that exits at the first match would make apptainer
+    # die of SIGPIPE under pipefail); the PID is the second column of the instance's row.
+    PID=$(apptainer instance list 2>/dev/null | awk -v n="$NAME" 'NR > 1 && $1 == n {pid = $2} END {print pid}' || true)
+    if [[ "$PID" =~ ^[0-9]+$ ]]; then
         break
     fi
     sleep 0.5
 done
 
-if [ -z "$PID" ] || [ "$PID" = "null" ]; then
+if ! [[ "$PID" =~ ^[0-9]+$ ]]; then
     echo "Error: Failed to retrieve PID for Apptainer instance $NAME" >&2
     exit 1
 fi
@@ -234,11 +236,11 @@ send_slirp_command() {
     local resp=""
     while [ "$wait_time" -lt "$max_wait" ]; do
         if [ -S "$SLIRP_SOCK" ]; then
-            resp=$(printf '%s' "$cmd" | nc -w 2 -U "$SLIRP_SOCK" 2>/dev/null || true)
-            if echo "$resp" | grep -q '"return"'; then
+            resp=$(printf '%s' "$cmd" | socat -t 2 - "UNIX-CONNECT:$SLIRP_SOCK" 2>/dev/null || true)
+            if [[ "$resp" == *'"return"'* ]]; then
                 return 0
             fi
-            if echo "$resp" | grep -q '"error"'; then
+            if [[ "$resp" == *'"error"'* ]]; then
                 echo "Error configuring slirp forwarding for $desc: $resp" >&2
                 return 1
             fi

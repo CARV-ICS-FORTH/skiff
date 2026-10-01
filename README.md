@@ -2,7 +2,7 @@
 
 Skiff allows HPC users to run their own private Kubernetes "mini Cloud" on a typical HPC cluster and issue commands using Kubernetes-native tools without requiring root privileges.
 
-Deployment requires Slurm on the cluster, and on every allocated Linux node Apptainer, slirp4netns, socat, nc, jq and ss (checked on all nodes before anything starts), support for unprivileged user namespaces, and a shared home directory. The controller's TCP port 6443 and each node's TCP port 10250 and UDP port 8472 must be available and reachable between nodes.
+Deployment requires Slurm on the cluster, and on every allocated Linux node Apptainer, slirp4netns, socat and iproute2 (`ip` and `ss`) (checked on all nodes before anything starts), support for unprivileged user namespaces, and a shared home directory. The controller's TCP port 6443 and each node's TCP port 10250 and UDP port 8472 must be available and reachable between nodes.
 
 Copy the `scripts/` folder contents to your HPC account under `~/skiff/` and submit a job using the published image:
 
