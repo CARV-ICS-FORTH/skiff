@@ -42,6 +42,9 @@ profile_is_required() {
     return 1
 }
 
+# A run passes when every required label PASSED (a missing or skipped one fails it)
+# and no recorded result at all failed: a result that is not required still has to
+# be reported honestly, so a failure beside a passing verdict cannot happen.
 profile_check_results() {
     local label failed=0
     while IFS= read -r label; do
@@ -50,6 +53,12 @@ profile_check_results() {
             failed=1
         fi
     done < <(profile_required_cases)
+    for label in "${!RESULTS[@]}"; do
+        if [ "${RESULTS[$label]}" = FAIL ]; then
+            echo "Recorded ${label}: FAIL" >&2
+            failed=1
+        fi
+    done
     return "$failed"
 }
 

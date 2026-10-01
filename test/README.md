@@ -12,6 +12,8 @@ make test-race
 make vet fmt-check check-shell
 ```
 
+`make test-race` runs both modules' tests with the race detector inside the builder container (`images/skiff-builder`: Ubuntu 24.04 with an exact, checksummed Go release and a C compiler), as an unprivileged user and on Linux whatever the host is, so the Linux-only tests (terminals, namespaces, process trees, directory modes) run too and are not skipped. The builder's image id and Go version are recorded in the candidate manifest and checked by the qualification. Docker is the only host prerequisite.
+
 Some shell regressions require Bash 4 or later. On systems with an older Bash, run the Linux regressions in the controller VM as described below.
 
 ## VM Tests
@@ -84,4 +86,4 @@ Cases can also report named subcases with `e2e_subcase ID RESULT` (or run a func
 
 The fixture image also contains a controllable application (`fixture app serve|hook`, see `test/e2e/images/fixture/app.py`): readiness, startup and liveness switches that can be flipped over HTTP or through files for command probes, a start delay, per-path request counters, chosen exit codes, hook and SIGTERM event markers with timestamps and attempt numbers, and sequenced log records. Its behaviour is tested locally by `regression.sh`.
 
-The aggregate saves `candidate.json`, `results.json` and logs in `~/skiff/test/e2e/results/<run-id>/` on the controller. Qualification requires a clean source commit, recorded image/fixture identities, matching runtime identity on both nodes, and every required check passing. A missing, failed or skipped required check fails the profile. Each aggregate uses a new result directory and fixed deployed artifacts throughout the run.
+The aggregate saves `candidate.json`, `results.json` and logs in `~/skiff/test/e2e/results/<run-id>/` on the controller. Qualification requires a clean source commit, recorded image/fixture identities, matching runtime identity on both nodes, and every required check passing. A missing, failed or skipped required check fails the profile, and so does a failed result that the profile does not require. The verdict line says what was covered: a focused run (`--case`) reports that it did not check the profile. Each aggregate uses a new result directory and fixed deployed artifacts throughout the run.

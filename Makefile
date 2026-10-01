@@ -48,11 +48,18 @@ test:
 	$(MAKE) -C plaid test
 	bash test/regression.sh
 
-test-race:
-	@echo "Running skifflet tests with race detector..."
-	$(MAKE) -C skifflet test-race
-	@echo "Running plaid tests with race detector..."
-	$(MAKE) -C plaid test-race
+# The race detector needs cgo and the Linux-only tests (terminals, namespaces,
+# process trees) need Linux, so this runs in the builder container: the same pinned
+# toolchain on every machine. It runs as an unprivileged user (tests that depend on
+# directory modes skip as root); --init reaps the processes the tests kill and
+# --privileged lets the network namespace tests create namespaces.
+test-race: builder
+	docker run --rm --init --privileged --user 1000:1000 -e GOFLAGS \
+		-e HOME=/home/ubuntu -e GOPATH=/home/ubuntu/.go \
+		-v "$(CURDIR)":/src \
+		-v skiff-test-go-mod:/home/ubuntu/.go/pkg/mod -v skiff-test-go-build:/home/ubuntu/.cache/go-build \
+		$(REGISTRY)/skiff-builder:latest \
+		sh -c 'make -C skifflet test-race && make -C plaid test-race'
 
 fmt:
 	@echo "Formatting Go source files..."
@@ -127,8 +134,10 @@ develop:
 	fi; \
 	GIT_DIRTY=$$(test -z "$$(git -c core.fsmonitor=false status --porcelain)" && echo false || echo true); \
 	IMAGE_ID=$$(docker image inspect --format '{{.Id}}' $(REGISTRY)/skiff-bubble:latest); \
-	printf '{\n  "version": "%s",\n  "git_commit": "%s",\n  "git_dirty": %s,\n  "build_time": "%s",\n  "tar_sha256": "%s",\n  "image_id": "%s"\n}\n' \
-		"$(VERSION)" "$(GIT_COMMIT)" "$$GIT_DIRTY" "$(BUILD_TIME)" "$$TAR_SHA" "$$IMAGE_ID" > /tmp/skiff-images/manifest.json
+	BUILDER_ID=$$(docker image inspect --format '{{.Id}}' $(REGISTRY)/skiff-builder:latest); \
+	GO_VERSION=$$(docker run --rm $(REGISTRY)/skiff-builder:latest go version | awk '{print $$3}'); \
+	printf '{\n  "version": "%s",\n  "git_commit": "%s",\n  "git_dirty": %s,\n  "build_time": "%s",\n  "tar_sha256": "%s",\n  "image_id": "%s",\n  "builder_image_id": "%s",\n  "go_version": "%s"\n}\n' \
+		"$(VERSION)" "$(GIT_COMMIT)" "$$GIT_DIRTY" "$(BUILD_TIME)" "$$TAR_SHA" "$$IMAGE_ID" "$$BUILDER_ID" "$$GO_VERSION" > /tmp/skiff-images/manifest.json
 
 	@echo "Copying image and manifest to Vagrant VMs..."
 	test/vagrant/transport.sh ssh controller "mkdir -p ~/.skiff/images && rm -f ~/.skiff/images/skiff-bubble.sif"

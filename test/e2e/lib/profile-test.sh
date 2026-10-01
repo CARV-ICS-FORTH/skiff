@@ -18,8 +18,12 @@ RESULTS[E2E-01-teardown]=FAIL
 if profile_check_results 2>/dev/null; then echo "failed teardown accepted" >&2; exit 1; fi
 RESULTS[E2E-01-teardown]=PASS
 
-RESULTS[NET-2-plaid-all]=FAIL
+# A failure of a label that is not required still fails the run.
+RESULTS[NOT-REQUIRED]=FAIL
+if profile_check_results 2>/dev/null; then echo "failure beside a passing profile accepted" >&2; exit 1; fi
+RESULTS[NOT-REQUIRED]=SKIP
 profile_check_results
+unset 'RESULTS[NOT-REQUIRED]'
 
 # Named subcases: a required subcase must be reported, and only a PASS counts.
 tmp=$(mktemp -d)

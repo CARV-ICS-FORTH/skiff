@@ -22,6 +22,10 @@ def validate(record):
         raise ValueError("candidate manifest does not identify a clean source commit")
     if not re.fullmatch(r"[0-9a-f]{64}", manifest.get("tar_sha256", "")):
         raise ValueError("candidate archive digest missing")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", manifest.get("builder_image_id", "")):
+        raise ValueError("builder image identity missing")
+    if not re.fullmatch(r"go[0-9]+\.[0-9]+\.[0-9]+", manifest.get("go_version", "")):
+        raise ValueError("Go toolchain version missing")
     if not record.get("fixture_image_tag") or not re.fullmatch(r"[0-9a-f]{64}", record.get("fixture_sif_sha256", "")):
         raise ValueError("fixture identity missing")
     if not re.fullmatch(r"[0-9]+", record.get("job_id", "")):
@@ -59,12 +63,15 @@ def self_test():
     sha = "a" * 64
     record = dict(job_id="12", sif_sha256=sha, fixture_sif_sha256=sha,
                   fixture_image_tag="test", manifest=dict(git_dirty=False, git_commit="b" * 40,
-                  tar_sha256=sha, version="test"),
+                  tar_sha256=sha, version="test",
+                  builder_image_id="sha256:" + sha, go_version="go1.26.8"),
                   nodes=[dict(name=name, architecture="aarch64", sif_sha256=sha,
                               kubelet_version="test") for name in ("controller", "node")])
     validate(record)
     for mutation in (
         lambda r: r["manifest"].update(git_dirty=True),
+        lambda r: r["manifest"].pop("builder_image_id"),
+        lambda r: r["manifest"].update(go_version="1.26"),
         lambda r: r["nodes"][1].update(sif_sha256="c" * 64),
         lambda r: r["nodes"][0].update(kubelet_version="wrong"),
         lambda r: r["nodes"].pop(),

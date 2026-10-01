@@ -79,7 +79,7 @@ record() {
     local label="$1" result="$2" duration="$3"
     RESULTS["$label"]="$result"
     DURATIONS["$label"]="${duration}s"
-    if [ "$result" = "FAIL" ] && { [ -n "$ONLY_CASE" ] || [ "$NETWORK_ONLY" -eq 1 ] || profile_is_required "$label"; }; then
+    if [ "$result" = "FAIL" ]; then
         OVERALL=1
     fi
 }
@@ -460,10 +460,13 @@ with open('${E2E_LOGDIR}/results.json', 'w') as f:
 print('Results written to ${E2E_LOGDIR}/results.json')
 PYEOF
 
-if [ $OVERALL -eq 0 ]; then
-    echo -e "\033[0;32m>>> ALL TESTS PASSED <<<\033[0m"
+# The verdict says what was covered: a focused run did not check the profile.
+if [ $OVERALL -ne 0 ]; then
+    echo -e "\033[0;31m>>> FAILED: see the results marked FAIL or missing above <<<\033[0m"
+elif [ -n "$ONLY_CASE" ] || [ "$NETWORK_ONLY" -eq 1 ]; then
+    echo -e "\033[1;33m>>> FOCUSED RUN PASSED: ${#RESULTS[@]} results, the qualification profile was not checked <<<\033[0m"
 else
-    echo -e "\033[0;31m>>> ONE OR MORE TESTS FAILED <<<\033[0m"
+    echo -e "\033[0;32m>>> PROFILE PASSED: $(profile_required_cases | wc -l | tr -d ' ') required results and all ${#RESULTS[@]} recorded results <<<\033[0m"
 fi
 echo "========================================================================"
 
