@@ -130,7 +130,7 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		}
 
 		accessMode := "rw"
-		if mount.ReadOnly {
+		if mount.ReadOnly || claimReadOnly(h.Pod, mount.Name) {
 			accessMode = "ro"
 		}
 
@@ -285,4 +285,11 @@ func SyncContainerStatuses(pod *corev1.Pod) {
 	for i := range pod.Status.ContainerStatuses {
 		checkStatus(&pod.Status.ContainerStatuses[i])
 	}
+}
+
+// claimReadOnly says whether the pod asks for a volume to be read-only at the claim
+// (persistentVolumeClaim.readOnly), which applies to every mount of it.
+func claimReadOnly(pod *corev1.Pod, volume string) bool {
+	vol := findVolume(pod, volume)
+	return vol != nil && vol.PersistentVolumeClaim != nil && vol.PersistentVolumeClaim.ReadOnly
 }

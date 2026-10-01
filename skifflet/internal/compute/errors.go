@@ -32,7 +32,6 @@ var (
 
 // Volume Errors
 var (
-	ErrUnboundedPVC         = errors.New("unbound pvc")
 	ErrUnsupportedClaimMode = errors.New("skiff does not support block volume provisioning")
 )
 

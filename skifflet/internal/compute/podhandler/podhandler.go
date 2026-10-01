@@ -633,6 +633,57 @@ func (h *PodHandler) prepareContainer(ctx context.Context, spec *corev1.Containe
 	}
 }
 
+// mountVolumes prepares the pod's volumes, one after the other. A volume that cannot be
+// mounted yet (its claim is not bound, its volume is not there: VolumePendingError) is
+// waited for, as the kubelet does: the pod stays Pending with its containers in
+// ContainerCreating, a FailedMount event says what it waits for (once per distinct
+// reason), and it is looked at again with a growing pause, until the volume is there or
+// the pod is deleted or replaced, which ends the wait at once. Any other error fails the
+// pod. false means the pod is not to be launched.
+func (h *PodHandler) mountVolumes(ctx context.Context) bool {
+	pl := h.lifecycle
+	for _, vol := range h.Pod.Spec.Volumes {
+		last := ""
+		for attempt := 0; ; attempt++ {
+			err := h.mountVolumeSource(ctx, vol)
+			if err == nil {
+				break
+			}
+			if ctx.Err() != nil {
+				return false
+			}
+			var pending *VolumePendingError
+			if !errors.As(err, &pending) {
+				pl.Fail("VolumeError", "%v", err)
+				return false
+			}
+			message := fmt.Sprintf("MountVolume: volume %q: %s", vol.Name, pending.Message)
+			if message != last {
+				last = message
+				h.logger.Info("volume is not ready; waiting", "volume", vol.Name, "reason", pending.Message)
+				h.waitingForVolume(message)
+				pl.PodEvent(corev1.EventTypeWarning, "FailedMount", "%s", message)
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(backoffFor(attempt, 5, time.Second)):
+			}
+		}
+	}
+	return true
+}
+
+// waitingForVolume says in the status of every container why none has started.
+func (h *PodHandler) waitingForVolume(message string) {
+	for _, spec := range h.Pod.Spec.InitContainers {
+		h.lifecycle.SetContainerWaiting(spec.Name, true, "ContainerCreating", message)
+	}
+	for _, spec := range h.Pod.Spec.Containers {
+		h.lifecycle.SetContainerWaiting(spec.Name, false, "ContainerCreating", message)
+	}
+}
+
 // PreparePod launches the pod for its lifecycle owner, which the caller has
 // already registered. It never registers a generation, and closes startup
 // tracking on every return, including a panic.
@@ -703,11 +754,8 @@ func PreparePod(pl *PodLifecycle) {
 	logger.Info(" * Pod Environment has been created")
 
 	// Mount Volumes
-	for _, vol := range h.Pod.Spec.Volumes {
-		if err := h.mountVolumeSource(ctx, vol); err != nil {
-			pl.Fail("VolumeError", "%v", err)
-			return
-		}
+	if !h.mountVolumes(ctx) {
+		return
 	}
 	h.logger.Info(" * All volumes have been mounted")
 

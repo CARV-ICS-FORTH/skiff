@@ -20,7 +20,7 @@ profile_required_cases() {
         T17-exec-streams T17-exec-tty T17-exec-right-after-start T17-exec-init-running T17-exec-init-finished \
         T14-exec-client-cancel T14-exec-target-ends T14-exec-resources \
         T10-exec-hooks T10-http-hook T10-completed T11-poststart-failure T11-prestop-failure \
-        T11-prestop-hang T11-zero-grace T11-liveness-prestop T26-deletion-progress T31-private-tmp T31-reset-on-restart T31-emptydir \
+        T11-prestop-hang T11-zero-grace T11-liveness-prestop T26-deletion-progress T27-claim-waits T27-waiting-cancel T31-private-tmp T31-reset-on-restart T31-emptydir \
         T12-default-and-tail T12-partial-line T12-timestamps T12-since T12-limit-bytes T12-invalid T12-follow-tail \
         T13-previous-missing T13-attempts T13-init-attempts \
         T05-unsupported-forms T06-metadata-updates T06-unsupported-updates T06-rollout \

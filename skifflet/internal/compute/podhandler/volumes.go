@@ -21,9 +21,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"errors"
 	"skifflet/internal/compute/endpoint"
-	"skifflet/internal/compute/volume"
 	"skifflet/internal/compute/volume/configmap"
 	"skifflet/internal/compute/volume/downwardapi"
 	"skifflet/internal/compute/volume/emptydir"
@@ -40,7 +38,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	k8errors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/util/retry"
 )
 
 // mountVolumeSource prepares the volumes into the local pod directory.
@@ -266,6 +263,25 @@ func (h *PodHandler) DownwardAPIVolumeSource(ctx context.Context, vol corev1.Vol
 	return nil
 }
 
+// VolumePendingError says a volume cannot be mounted yet but may be later: its claim does
+// not exist or is not bound, or the volume it is bound to is not there. The kubelet keeps
+// the pod in ContainerCreating with FailedMount events and tries again, because the
+// claim's provisioner, or whoever creates the volume, may be late; so does Skifflet
+// (waitForVolumes). Everything else that stops a volume (a block volume, a source
+// Skifflet cannot mount, a path outside the locations a volume may use, a claim that lost
+// its volume) is not going to change and fails the pod.
+type VolumePendingError struct{ Message string }
+
+func (e *VolumePendingError) Error() string { return e.Message }
+
+func volumePendingf(format string, args ...any) error {
+	return &VolumePendingError{Message: fmt.Sprintf(format, args...)}
+}
+
+// PersistentVolumeClaimSource links the volume a claim is bound to into the pod. It looks
+// once: a claim or volume that is not there yet is a VolumePendingError for the caller to
+// wait on, and nothing here waits (it must not hold up the pod's deletion or a
+// replacement, which cancel the caller).
 func (h *PodHandler) PersistentVolumeClaimSource(ctx context.Context, vol corev1.Volume) error {
 	/*---------------------------------------------------
 	 * Get the Referenced PVC from Volume
@@ -276,37 +292,25 @@ func (h *PodHandler) PersistentVolumeClaimSource(ctx context.Context, vol corev1
 
 		key := types.NamespacedName{Namespace: h.Pod.GetNamespace(), Name: source.ClaimName}
 
-		if errPVC := retry.OnError(volume.NotFoundBackoff,
-			func(err error) bool { // retry condition
-				return k8errors.IsNotFound(err) || errors.Is(err, compute.ErrUnboundedPVC)
-			},
-			func() error { // execution
-				if err := compute.K8SClient.Get(ctx, key, &pvc); err != nil {
-					compute.DefaultLogger.Info("Failed to get PVC", "pvcName", pvc.GetName())
+		if err := compute.K8SClient.Get(ctx, key, &pvc); err != nil {
+			if k8errors.IsNotFound(err) {
+				return volumePendingf("persistentvolumeclaim %q not found", source.ClaimName)
+			}
+			// The API server being briefly unreachable is not a reason to fail the pod.
+			return volumePendingf("cannot read persistentvolumeclaim %q: %v", source.ClaimName, err)
+		}
 
-					return err
-				}
+		// filter-out unsupported pvc
+		if util.CheckPersistentVolumeClaimModeBlock(&pvc) {
+			return fmt.Errorf("PVC (%s) has failed: %w", pvc.GetName(), compute.ErrUnsupportedClaimMode)
+		}
 
-				// filter-out unsupported pvc
-				if util.CheckPersistentVolumeClaimModeBlock(&pvc) {
-					compute.DefaultLogger.Info("Unsupported PVC mode", "pvcName", pvc.GetName())
-
-					return compute.ErrUnsupportedClaimMode
-				}
-
-				// ensure that pvc is bounded to a pv
-				if pvc.Status.Phase != corev1.ClaimBound {
-					compute.DefaultLogger.Info("Waiting for PVC to become bounded to a PV",
-						"pvcName", pvc.GetName(),
-					)
-
-					return compute.ErrUnboundedPVC
-				}
-
-				return nil
-			},
-		); errPVC != nil { // error cehcking
-			return fmt.Errorf("PVC (%s) has failed: %w", pvc.GetName(), errPVC)
+		switch pvc.Status.Phase {
+		case corev1.ClaimBound:
+		case corev1.ClaimLost:
+			return fmt.Errorf("PVC (%s) has lost its volume %q", pvc.GetName(), pvc.Spec.VolumeName)
+		default:
+			return volumePendingf("persistentvolumeclaim %q is not bound to a volume yet (phase %q)", pvc.GetName(), pvc.Status.Phase)
 		}
 	}
 
@@ -318,15 +322,11 @@ func (h *PodHandler) PersistentVolumeClaimSource(ctx context.Context, vol corev1
 		// A PersistentVolume is not namespaced.
 		key := types.NamespacedName{Name: pvc.Spec.VolumeName}
 
-		if errPV := retry.OnError(volume.NotFoundBackoff,
-			func(err error) bool { // retry condition
-				return k8errors.IsNotFound(err)
-			},
-			func() error { // execution
-				return compute.K8SClient.Get(ctx, key, &pv)
-			},
-		); errPV != nil { // error checking
-			return fmt.Errorf("PV (%s) has failed: %w", pvc.Spec.VolumeName, errPV)
+		if err := compute.K8SClient.Get(ctx, key, &pv); err != nil {
+			if k8errors.IsNotFound(err) {
+				return volumePendingf("persistentvolume %q of claim %q not found", pvc.Spec.VolumeName, pvc.GetName())
+			}
+			return volumePendingf("cannot read persistentvolume %q: %v", pvc.Spec.VolumeName, err)
 		}
 	}
 

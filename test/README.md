@@ -61,6 +61,7 @@ The profile requires these checks: cases 01–24, four individual daemon failure
 
 | Case | Acceptance groups |
 |---|---|
+| 05 | T27 (a pod waits for a claim that is not bound for longer than the old fixed wait, with the reason and one event, and starts when the volume appears; a waiting pod holds nothing up and is deleted at once) |
 | 06 | T04 (kubelet routes and their failures) |
 | 13 | T07, T08, T09 (startup, readiness and liveness probes, Service endpoints) |
 | 14 | T14, T17 (exec, pseudo-terminals, cancellation) |
