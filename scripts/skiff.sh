@@ -3,6 +3,9 @@
 #
 #   skiff.sh bubble ID    start and supervise the bubble of one node (skiff.slurm runs it
 #                         through srun, with SKIFF_ROLE and CONTROLLER_IP in the environment)
+#   skiff.sh check [ROLE] what a node needs and whether it has it (skiff.slurm runs it on
+#                         every allocated node; run it yourself on a compute node first,
+#                         for example `srun -N1 skiff.sh check`)
 #
 # Sourced (by skiff.slurm, which validates the configuration once before anything starts,
 # and by the tests), it defines the functions below and runs nothing. Every configuration
@@ -318,34 +321,181 @@ skiff_config_export() {
     [ -z "${SKIFF_JOB_INSTANCE:-}" ] || export SKIFF_JOB_INSTANCE
 }
 
-# The programs the scripts run on the allocated nodes themselves, outside the bubble.
+# The programs the scripts run on the allocated nodes themselves, outside the bubble:
+# Apptainer (the bubble), slirp4netns (the bubble's link to the outside), socat (the relays
+# that publish the API and the kubelet on the host address, and the client of slirp4netns's
+# API) and iproute2 (ip and ss, which find the host address and the ports in use).
 SKIFF_HOST_TOOLS="apptainer slirp4netns socat ss ip"
 
-# skiff_check_node: what every allocated node needs before a bubble can start on it,
-# checked on the node itself (skiff.slurm runs it everywhere before starting anything,
-# and each bubble script again): the host tools, and a scratch directory that can be
-# used. Every problem is reported at once.
+# The versions Skiff was qualified with (Ubuntu, kernel 6.8, arm64). Older ones may work and
+# are not refused; they are reported, because a failure with one is a reason to upgrade
+# before looking anywhere else. No older minimum has been established by test.
+SKIFF_QUALIFIED_APPTAINER=1.5.4
+SKIFF_QUALIFIED_SLIRP4NETNS=1.2.1
+
+# The ports of a node that cannot be configured: the API server's 6443 on the controller,
+# the kubelet's 10250 and the overlay's UDP 8472 on every node (they are spelled in the
+# script, the entrypoint, the certificates and Plaid, and cannot change in one place).
+SKIFF_PORTS_CONTROLLER="tcp:6443 tcp:10250 udp:8472"
+SKIFF_PORTS_NODE="tcp:10250 udp:8472"
+
+# _skiff_sys PATH: a file of the host's /proc, /sys or /etc (SKIFF_SYS_ROOT puts them
+# elsewhere, for the tests: what a host lacks cannot be made to happen on a test machine).
+_skiff_sys() { printf '%s%s' "${SKIFF_SYS_ROOT:-}" "$1"; }
+
+# _skiff_version TOOL: the dotted version a program reports with --version, empty if it
+# reports none.
+_skiff_version() {
+    local out re='([0-9]+(\.[0-9]+)+)'
+    out=$("$1" --version 2>/dev/null || true)
+    if [[ "$out" =~ $re ]]; then printf '%s' "${BASH_REMATCH[1]}"; fi
+}
+
+# _skiff_version_older A B: succeeds when version A is older than version B.
+_skiff_version_older() {
+    local IFS=. i x y
+    local -a a b
+    read -r -a a <<< "$1"
+    read -r -a b <<< "$2"
+    for i in 0 1 2 3; do
+        x=${a[i]:-0}
+        y=${b[i]:-0}
+        [ "$((10#$x))" -lt "$((10#$y))" ] && return 0
+        [ "$((10#$x))" -gt "$((10#$y))" ] && return 1
+    done
+    return 1
+}
+
+# _skiff_port_taken PROTO PORT: succeeds when something on this host listens there.
+_skiff_port_taken() {
+    local flag=-ltn
+    [ "$1" = udp ] && flag=-lun
+    skiff_listed ":$2 " ss "$flag"
+}
+
+# skiff_check_node [controller|node]: what a node needs before a bubble can start on it,
+# checked on the node itself (skiff.slurm runs it on every allocated node before
+# anything starts, a user can run it on a compute node before submitting, and each bubble
+# script checks again). Every problem is reported at once, each with what to do about
+# it; the role says which ports matter (the controller's API port), without one all do.
+#
+#   the programs, with their versions     (older than the qualified ones: reported, not refused)
+#   unprivileged user namespaces          (the bubble, and every container in it, run in one)
+#   a subordinate id range for the user   (the bubble is started with --fakeroot)
+#   the fixed ports, free                 (the nodes are the job's alone)
+#   the scratch directory                 (usable, node-local, and not another user's)
 skiff_check_node() {
-    local tool missing="" errors=0 fstype
+    local role="${1:-}" tool missing="" errors=0 fstype owner host version qualified ports port
+    host=$(hostname)
     for tool in $SKIFF_HOST_TOOLS; do
         command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
     done
     if [ -n "$missing" ]; then
-        echo "$(hostname): required program(s) not found in PATH:$missing (Skiff needs: $SKIFF_HOST_TOOLS)" >&2
+        echo "$host: required program(s) not found in PATH:$missing (Skiff needs: $SKIFF_HOST_TOOLS; ip and ss are in iproute2; install them with the system's package manager)" >&2
         errors=$((errors + 1))
     fi
+    for tool in apptainer slirp4netns; do
+        case "$missing" in *" $tool"*) continue ;; esac
+        version=$(_skiff_version "$tool")
+        if [ "$tool" = apptainer ]; then qualified=$SKIFF_QUALIFIED_APPTAINER; else qualified=$SKIFF_QUALIFIED_SLIRP4NETNS; fi
+        if [ -z "$version" ]; then
+            echo "$host: warning: cannot tell the version of $tool (Skiff was qualified with $qualified)" >&2
+        elif _skiff_version_older "$version" "$qualified"; then
+            echo "$host: warning: $tool $version is older than $qualified, which Skiff was qualified with; if the cluster does not start, upgrade it first" >&2
+        fi
+    done
+
+    local userns clone
+    userns=$(cat "$(_skiff_sys /proc/sys/user/max_user_namespaces)" 2>/dev/null || true)
+    clone=$(cat "$(_skiff_sys /proc/sys/kernel/unprivileged_userns_clone)" 2>/dev/null || true)
+    if [ "$userns" = 0 ]; then
+        echo "$host: unprivileged user namespaces are disabled (user.max_user_namespaces is 0); Skiff cannot run without them: ask the administrator to set it above 0" >&2
+        errors=$((errors + 1))
+    elif [ "$clone" = 0 ]; then
+        echo "$host: unprivileged user namespaces are disabled (kernel.unprivileged_userns_clone is 0); Skiff cannot run without them: ask the administrator to set it to 1" >&2
+        errors=$((errors + 1))
+    fi
+
+    # The bubble runs as root in a user namespace of the user's (--fakeroot): that needs a
+    # range of subordinate ids for the user, in the files or in the site's directory service.
+    local user subuid subgid
+    user=$(id -un)
+    subuid=no
+    subgid=no
+    if grep -q "^$user:" "$(_skiff_sys /etc/subuid)" 2>/dev/null; then subuid=yes; fi
+    if grep -q "^$user:" "$(_skiff_sys /etc/subgid)" 2>/dev/null; then subgid=yes; fi
+    if { [ "$subuid" = no ] || [ "$subgid" = no ]; } && ! { command -v getsubids >/dev/null 2>&1 && getsubids "$user" >/dev/null 2>&1; }; then
+        echo "$host: no subordinate user/group id range for $user (Skiff starts its bubble with --fakeroot, which needs one): ask the administrator to add \"$user:100000:65536\" to /etc/subuid and /etc/subgid" >&2
+        errors=$((errors + 1))
+    fi
+
+    # The ports. Skipped when ss is missing (already reported above).
+    if command -v ss >/dev/null 2>&1; then
+        case "$role" in
+            controller) ports=$SKIFF_PORTS_CONTROLLER ;;
+            node) ports=$SKIFF_PORTS_NODE ;;
+            *) ports=$SKIFF_PORTS_CONTROLLER ;;
+        esac
+        for port in $ports; do
+            if _skiff_port_taken "${port%%:*}" "${port##*:}"; then
+                echo "$host: port ${port##*:}/${port%%:*} is already in use; Skiff needs it (the nodes of a job must be the job's alone: another cluster, or something else, is using this node)" >&2
+                errors=$((errors + 1))
+            fi
+        done
+    fi
+
+    # The scratch directory.
+    if [ -d "$SKIFF_TMP_DIR" ]; then
+        owner=$(stat -c %U "$SKIFF_TMP_DIR" 2>/dev/null || true)
+        if [ -n "$owner" ] && [ "$owner" != "$(id -un)" ]; then
+            echo "$host: SKIFF_TMP_DIR ($SKIFF_TMP_DIR) belongs to $owner: someone else's Skiff has run here, or the node is shared; the nodes of a job must be the job's alone (set SKIFF_TMP_DIR to a directory of your own to share a node)" >&2
+            errors=$((errors + 1))
+        fi
+    fi
     if ! mkdir -p "$SKIFF_TMP_DIR" 2>/dev/null || [ ! -d "$SKIFF_TMP_DIR" ] || [ ! -w "$SKIFF_TMP_DIR" ]; then
-        echo "$(hostname): SKIFF_TMP_DIR ($SKIFF_TMP_DIR) cannot be created or written by $(id -un)" >&2
+        echo "$host: SKIFF_TMP_DIR ($SKIFF_TMP_DIR) cannot be created or written by $(id -un)" >&2
         errors=$((errors + 1))
     else
         fstype=$(stat -f -c %T "$SKIFF_TMP_DIR" 2>/dev/null || true)
         case "$fstype" in
             nfs|nfs4|cifs|smb*|lustre|gpfs|beegfs|ceph)
-                echo "$(hostname): SKIFF_TMP_DIR ($SKIFF_TMP_DIR) is on a shared filesystem ($fstype); it must be node-local (it holds sockets and unpacked images)" >&2
+                echo "$host: SKIFF_TMP_DIR ($SKIFF_TMP_DIR) is on a shared filesystem ($fstype); it must be node-local (it holds sockets and unpacked images)" >&2
                 errors=$((errors + 1)) ;;
         esac
     fi
     [ "$errors" -eq 0 ]
+}
+
+# skiff_node_report: what this node is, for the output of a check (facts, not problems).
+skiff_node_report() {
+    local cgroup=unknown fstype tool
+    case "$(stat -f -c %T "$(_skiff_sys /sys/fs/cgroup)" 2>/dev/null || true)" in
+        cgroup2fs) cgroup=v2 ;;
+        tmpfs|cgroup) cgroup=v1 ;;
+    esac
+    echo "$(hostname): kernel $(uname -r), $(uname -m), cgroup $cgroup, user $(id -un)"
+    for tool in apptainer slirp4netns; do
+        command -v "$tool" >/dev/null 2>&1 && echo "$(hostname): $tool $(_skiff_version "$tool")"
+    done
+    fstype=$(stat -f -c %T "$SKIFF_TMP_DIR" 2>/dev/null || true)
+    echo "$(hostname): scratch $SKIFF_TMP_DIR${fstype:+ ($fstype)}"
+}
+
+# skiff_check [controller|node]: the command `skiff.sh check`: the configuration as a whole
+# and this node, with a verdict. skiff.slurm runs it on every allocated node; a user can run
+# it on a compute node before submitting (for example `srun -N1 skiff.sh check`).
+skiff_check() {
+    local role="${1:-}" status=0
+    case "$role" in ""|controller|node) ;; *) echo "usage: skiff.sh check [controller|node]" >&2; return 2 ;; esac
+    skiff_config_validate || status=1
+    skiff_node_report
+    skiff_check_node "$role" || status=1
+    if [ "$status" -eq 0 ]; then
+        echo "$(hostname): ready for Skiff"
+    else
+        echo "$(hostname): NOT ready for Skiff: see the problems above" >&2
+    fi
+    return "$status"
 }
 
 # skiff_config_print: the effective configuration, for the log of a startup.
@@ -480,7 +630,7 @@ skiff_bubble() {
     # address through socat relays, without which the other nodes cannot reach this one) and
     # the scratch directory; skiff.slurm has checked them already, this covers a bubble
     # started by hand.
-    skiff_check_node || exit 1
+    skiff_check_node "${SKIFF_ROLE:-controller}" || exit 1
     # The job's volume directory comes from skiff.slurm; a bubble started by hand makes one.
     if [ -z "${SKIFF_JOB_INSTANCE:-}" ]; then SKIFF_JOB_INSTANCE=$(skiff_new_instance_id); export SKIFF_JOB_INSTANCE; fi
     skiff_outer_network "$BUBBLE_ID"
@@ -742,7 +892,8 @@ skiff_main() {
     set -euo pipefail
     case "${1:-}" in
         bubble) shift; skiff_bubble "$@" ;;
-        *) echo "usage: skiff.sh bubble ID" >&2; exit 2 ;;
+        check) shift; skiff_check "$@" ;;
+        *) echo "usage: skiff.sh bubble ID | skiff.sh check [controller|node]" >&2; exit 2 ;;
     esac
 }
 

@@ -73,12 +73,16 @@ skiff_config_validate "$NUM_NODES" "$CONTROLLER_IP" || exit 1
 skiff_config_export
 skiff_config_print
 
-# What every allocated node needs (host programs, a usable scratch directory) is checked
-# on the nodes themselves, all of them and all problems at once, before anything starts.
+# What every allocated node needs (the host programs and their versions, user namespaces,
+# a subordinate id range, the fixed ports, a usable scratch directory of its own) is
+# checked on the nodes themselves, all of them and all problems at once, before anything
+# starts. `skiff.sh check` is the same check, which a user can run before submitting.
 echo "Checking the allocated nodes..."
 NODE_PROBLEMS=0
-for node in "${NODES[@]}"; do
-    if ! srun --nodes=1 -w "$node" bash -c 'source "$1" && skiff_check_node' _ "$SKIFF_SCRIPT"; then
+for ((i=0; i<NUM_NODES; i++)); do
+    role=node
+    [ "$i" -eq 0 ] && role=controller
+    if ! srun --nodes=1 -w "${NODES[$i]}" bash "$SKIFF_SCRIPT" check "$role"; then
         NODE_PROBLEMS=$((NODE_PROBLEMS + 1))
     fi
 done
@@ -87,8 +91,7 @@ if [ "$NODE_PROBLEMS" -gt 0 ]; then
     exit 1
 fi
 
-# --- Preflight Collision Checks (Single-Cluster Contract) ---
-echo "Running preflight checks..."
+# --- Single-cluster contract: one Skiff job per user ---
 
 # Check if another Skiff Slurm job is already active for this user
 if command -v squeue >/dev/null 2>&1; then
@@ -99,39 +102,6 @@ if command -v squeue >/dev/null 2>&1; then
         exit 1
     fi
 fi
-
-# Check for port collisions on controller and worker nodes
-check_port_free() {
-    local node="$1"
-    local proto="$2"
-    local port="$3"
-    if skiff_listed ":${port} " srun --nodes=1 -w "$node" ss -l"${proto}"n; then
-        echo "ERROR: Port ${port}/${proto} is already occupied on node $node!" >&2
-        return 1
-    fi
-    return 0
-}
-
-# The ports are fixed, not settings: the API server on 6443 (the controller), the kubelet
-# on 10250 and the overlay on UDP 8472 (every node) are spelled in the bubble script (the
-# slirp4netns forwards, the relays, the overlay socket), the entrypoint (K3s, the
-# certificates) and Plaid (--vxlan-port), and cannot change in one place.
-echo "Checking required cluster ports..."
-if ! check_port_free "$CONTROLLER_NODE" "u" "8472" || \
-   ! check_port_free "$CONTROLLER_NODE" "t" "10250" || \
-   ! check_port_free "$CONTROLLER_NODE" "t" "6443"; then
-    echo "ERROR: Port conflict detected on controller node $CONTROLLER_NODE." >&2
-    exit 1
-fi
-
-for ((i=1; i<NUM_NODES; i++)); do
-    WORKER_NODE=${NODES[$i]}
-    if ! check_port_free "$WORKER_NODE" "u" "8472" || \
-       ! check_port_free "$WORKER_NODE" "t" "10250"; then
-        echo "ERROR: Port conflict detected on worker node $WORKER_NODE." >&2
-        exit 1
-    fi
-done
 
 # Safe cleanup of old cluster credentials (only after verifying no active job)
 echo "Preparing ~/.skiff for cluster startup..."
@@ -247,7 +217,7 @@ echo "Starting Controller on $CONTROLLER_NODE..."
     export SKIFF_ROLE="controller"
     export SKIFF_DEV=${SKIFF_DEV:-0}
     export CONTROLLER_IP="$CONTROLLER_IP"
-    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive "$SKIFF_SCRIPT" bubble 1
+    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive bash "$SKIFF_SCRIPT" bubble 1
 ) &
 BG_PIDS+=($!)
 BG_NODES+=("$CONTROLLER_NODE")
@@ -279,7 +249,7 @@ for ((i=1; i<NUM_NODES; i++)); do
         export SKIFF_ROLE="node"
         export SKIFF_DEV=${SKIFF_DEV:-0}
         export CONTROLLER_IP="$CONTROLLER_IP"
-        exec srun --nodes=1 -w "$NODE" --exclusive "$SKIFF_SCRIPT" bubble "$BUBBLE_ID"
+        exec srun --nodes=1 -w "$NODE" --exclusive bash "$SKIFF_SCRIPT" bubble "$BUBBLE_ID"
     ) &
     BG_PIDS+=($!)
     BG_NODES+=("$NODE")

@@ -23,12 +23,12 @@ cat > "$test_dir/bin/srun" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
     *'getent ahostsv4'*) echo 127.0.0.1 ;;
-    *skiff_check_node*)
+    *'skiff.sh check'*)
         # What a node needs (host programs, a scratch directory) is checked on the node.
         [ "${TEST_NODE_CHECK:-ok}" = ok ] || { echo "controller: required program(s) not found in PATH: socat" >&2; exit 1; }
         exit 0
         ;;
-    *'/skiff.sh bubble'*)
+    *'skiff.sh bubble'*)
         # The bubble of a node is the stand-in below, not the real script (which
         # skiff.slurm has sourced for its functions).
         exec "$FAKE_BUBBLE"

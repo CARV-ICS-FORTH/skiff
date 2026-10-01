@@ -27,6 +27,7 @@ mkdir -p "$test_dir/bin" "$test_dir/home/.skiff/images"
 cat > "$test_dir/bin/apptainer" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
+    --version) echo "apptainer version 1.5.4" ;;
     *overlay-socket*)
         echo "$*" >> "$FAKE_DIR/helper-args"
         echo $$ > "$FAKE_DIR/helper-pid"
@@ -263,6 +264,6 @@ run_bubble controller SKIFF_TMP_DIR="$test_dir/a-file/scratch"
 wait_exit
 [ "$EXIT_RC" -eq 1 ] || fail "an unusable scratch directory: exit $EXIT_RC, expected 1"
 grep -q "SKIFF_TMP_DIR ($test_dir/a-file/scratch) cannot be created or written" "$LOG" || fail "no reason given for the scratch directory"
-[ ! -e "$FAKE_DIR/pid" ] && [ ! -e "$FAKE_DIR/helper-args" ] && [ ! -e "$FAKE_DIR/instance-run" ] || fail "something was started before the scratch directory was checked"
+[ ! -e "$FAKE_DIR/pid" ] && [ ! -e "$FAKE_DIR/helper-args" ] && [ ! -e "$FAKE_DIR/instance-run" ] || { ls -la "$FAKE_DIR" >&2; fail "something was started before the scratch directory was checked"; }
 
 echo "skiff-bubble-test: ok"

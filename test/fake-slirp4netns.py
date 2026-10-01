@@ -16,6 +16,10 @@ import socket
 import sys
 import time
 
+if "--version" in sys.argv:  # what the preflight asks; nothing is started by it
+    print("slirp4netns version 1.2.1")
+    sys.exit(0)
+
 directory = os.environ["FAKE_SLIRP_DIR"]
 with open(os.path.join(directory, "pid"), "w") as f:
     f.write(str(os.getpid()))
