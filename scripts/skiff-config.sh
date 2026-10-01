@@ -264,6 +264,20 @@ skiff_new_instance_id() {
     echo "${SLURM_JOB_ID:-0}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 }
 
+# skiff_listed WORD: succeeds when the output of the command that follows lists WORD, for
+# the scripts that run under pipefail. `cmd | grep -q WORD` is wrong there: grep -q leaves
+# at the first match, a command that still has more lines to write dies of SIGPIPE, and the
+# pipeline fails although the word was found (an `apptainer instance list` with a few other
+# instances running reported the bubble's own instance as gone, about once in fifty checks,
+# and ended the job). The output is read completely first.
+#   skiff_listed WORD COMMAND [ARGS...]
+skiff_listed() {
+    local word="$1" out
+    shift
+    out=$("$@" 2>/dev/null) || true
+    grep -q -- "$word" <<< "$out"
+}
+
 # skiff_config_export: make the resolved values available to what is started.
 skiff_config_export() {
     export SKIFF_POD_CIDR SKIFF_SERVICE_CIDR SKIFF_CLUSTER_DOMAIN SKIFF_CLUSTER_DNS \

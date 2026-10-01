@@ -151,4 +151,21 @@ expect "a scratch directory on a shared filesystem is refused" "$status:$(grep -
 out=$(node_check "$nodedir/base" "$nodedir/a-file/scratch"); status=$?
 expect "every problem of a node is reported at once" "$status:$(grep -c . <<< "$out")" "1:2"
 
+# skiff_listed under pipefail with a command that writes line by line (as `apptainer
+# instance list` does): the word is found every time, however many lines follow it.
+mkdir "$nodedir/lister"
+cat > "$nodedir/lister/list" <<'EOF2'
+#!/usr/bin/env bash
+echo "INSTANCE NAME    PID"
+echo "bubble1          100"
+for i in $(seq 1 60); do echo "other$i          $i"; done
+EOF2
+chmod +x "$nodedir/lister/list"
+misses=$(bash -c 'set -o pipefail; source "$1"; m=0; for i in $(seq 1 300); do skiff_listed "\bbubble1\b" "$2" || m=$((m+1)); done; echo $m' _ "$repo_dir/scripts/skiff-config.sh" "$nodedir/lister/list")
+expect "a listed word is found under pipefail however much follows it" "$misses" 0
+misses=$(bash -c 'set -o pipefail; source "$1"; skiff_listed "\bbubble9\b" "$2" && echo found || echo absent' _ "$repo_dir/scripts/skiff-config.sh" "$nodedir/lister/list")
+expect "an absent word is reported absent" "$misses" absent
+misses=$(bash -c 'set -o pipefail; source "$1"; skiff_listed x /no/such/command && echo found || echo absent' _ "$repo_dir/scripts/skiff-config.sh")
+expect "a failing command lists nothing" "$misses" absent
+
 [ "$failures" -eq 0 ] && echo "skiff-config: all checks passed" || { echo "skiff-config: $failures check(s) failed"; exit 1; }

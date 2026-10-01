@@ -103,7 +103,7 @@ check_port_free() {
     local node="$1"
     local proto="$2"
     local port="$3"
-    if srun --nodes=1 -w "$node" ss -l"${proto}"n 2>/dev/null | grep -q ":${port} "; then
+    if skiff_listed ":${port} " srun --nodes=1 -w "$node" ss -l"${proto}"n; then
         echo "ERROR: Port ${port}/${proto} is already occupied on node $node!" >&2
         return 1
     fi

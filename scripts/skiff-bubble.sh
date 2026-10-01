@@ -280,7 +280,7 @@ while true; do
         EXIT_CODE=1
         exit 1
     fi
-    if ! apptainer instance list 2>/dev/null | grep -q "\b$NAME\b"; then
+    if ! skiff_listed "\b$NAME\b" apptainer instance list; then
         echo "ERROR: Apptainer instance $NAME terminated unexpectedly!" >&2
         show_bubble_log
         EXIT_CODE=1
