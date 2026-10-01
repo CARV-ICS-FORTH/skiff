@@ -519,3 +519,21 @@ func TestKillProcessTree_KillsDescendantsLeavesOthers(t *testing.T) {
 		t.Fatal("a process outside the tree was killed")
 	}
 }
+
+// A command run in a container is given the container's user namespace when it has one of its
+// own, so that it is the container's user; in the namespaces of one that does not, there is
+// none to join.
+func TestNsenterArgs(t *testing.T) {
+	got := strings.Join(nsenterArgs(42, false, []string{"id", "-u"}), " ")
+	if got != "-t 42 -m -n -p -r -w -- id -u" {
+		t.Errorf("without a user namespace: %q", got)
+	}
+	got = strings.Join(nsenterArgs(42, true, []string{"id", "-u"}), " ")
+	if got != "-t 42 -U -m -n -p -r -w -- id -u" {
+		t.Errorf("with a user namespace: %q", got)
+	}
+	// The test process is in no other user namespace than itself.
+	if runsInOtherUserNamespace(os.Getpid()) {
+		t.Error("a process is not in another user namespace than its own")
+	}
+}

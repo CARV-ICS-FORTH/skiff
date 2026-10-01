@@ -113,7 +113,8 @@ EOF2
     e2e_assert_eq "runAsNonRoot alone runs as nobody" "$(in_container e2e29-nonroot id -u)" 65534
 
     event() { e2e_kubectl get events -n "$NS" --field-selector involvedObject.name=e2e29-hardened,reason=SecurityContextNotApplied -o jsonpath='{.items[0].message}' 2>/dev/null; }
-    e2e_wait_condition 30 "the event that says what was not applied" test -n "$(event)"
+    has_event() { [ -n "$(event)" ]; }
+    e2e_wait_condition 30 "the event that says what was not applied" has_event
     local message
     message=$(event)
     for field in fsGroup supplementalGroups seccompProfile readOnlyRootFilesystem capabilities; do

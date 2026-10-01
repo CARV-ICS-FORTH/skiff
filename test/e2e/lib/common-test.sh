@@ -16,6 +16,18 @@ check_exit 77 'e2e_skip injected'
 check_exit 0 'true'
 check_exit 1 'e2e_cleanup_register false'
 
+# The snapshot of a failure (e2e_preserve_failure, registered by the cases as a cleanup) is
+# made for a case that failed, by a message or by stopping on an error, and not for one that passed.
+for scenario in "true:no" "e2e_fail injected:yes" "exit 5:yes"; do
+    body=${scenario%%:*}
+    want=${scenario##*:}
+    rm -rf "$tmp/logs"
+    E2E_LOGDIR="$tmp/logs" E2E_KUBECTL=echo bash -c 'source "$1/common.sh"; e2e_cleanup_register e2e_preserve_failure some-namespace; eval "$2"' _ "$lib_dir" "$body" >"$tmp/preserve.log" 2>&1 || true
+    got=no
+    [ -d "$tmp/logs/case-TEST-failure" ] && got=yes
+    [ "$got" = "$want" ] || { cat "$tmp/preserve.log"; echo "failure snapshot for '$body': $got, expected $want" >&2; exit 1; }
+done
+
 cat > "$tmp/observer.sh" <<'EOF'
 #!/usr/bin/env bash
 sleep 3

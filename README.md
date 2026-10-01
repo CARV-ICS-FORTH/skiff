@@ -119,6 +119,10 @@ What to know:
 
 A pod's image is pulled by Apptainer from the registry it names (Docker Hub, `registry.k8s.io`, ... reachable from the compute nodes), converted once and cached on the shared home (`~/.skiff/.images`); `imagePullPolicy` is honored. An absolute path to a SIF file the cluster can see (below `/root/.skiff`) is used as it is, with no registry. Not supported: `imagePullSecrets` and private registries, registry mirrors, hosts without access to a registry (use SIF files). The unpacked image of a running container is on the scratch directory (`SKIFF_TMP_DIR`): size it for the images you run.
 
+### Stopping the cluster
+
+End the job with `scancel --batch --signal=TERM <job ID>` (Slurm itself does the same a minute before the time limit): every pod is stopped by its own termination sequence (its `preStop` hook, `SIGTERM`, its grace period, at most 20 s) and then the cluster goes. A plain `scancel` signals every process of the job at once and Slurm kills what is left after 30 s: the pods get `SIGTERM` along with the daemons, and neither their hooks nor their grace periods are honored. Either way, the claims and the data of the job are not deleted.
+
 ### When a job ends unexpectedly
 
 A bubble or an essential daemon that ends takes the whole job with it (the cluster is for one allocation). The job's output says what ended first and how, and the same account is kept in `~/.skiff/job-results/<job ID>.cause` (next to `<job ID>.exit`): the process, its exit status or the signal that killed it, the host and the time, and the last line the bubble itself logged. If you ask for help, send that file, the job's output file and the bubble logs (`~/.apptainer/instances/logs/<node>/<user>/bubble*.out`).

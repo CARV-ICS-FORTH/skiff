@@ -296,7 +296,7 @@ func (t *Target) Command(ctx context.Context, argv []string) (cmd *exec.Cmd, rel
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(t.boundContext(), cancel)
-	args := append([]string{"-t", strconv.Itoa(t.Payload), "-m", "-n", "-p", "-r", "-w", "--"}, argv...)
+	args := nsenterArgs(t.Payload, runsInOtherUserNamespace(t.Payload), argv)
 	cmd = exec.CommandContext(ctx, "nsenter", args...)
 	cmd.Env = t.Env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -307,6 +307,32 @@ func (t *Target) Command(ctx context.Context, argv []string) (cmd *exec.Cmd, rel
 	cmd.WaitDelay = 2 * time.Second
 	t.Attempt.logger.Info("running a command in the container", "action", "exec", "command", argv[0])
 	return cmd, func() { stop(); cancel() }, nil
+}
+
+// nsenterArgs is the nsenter command line that runs argv in the namespaces of a container's
+// main process: mount, network and pid, its root and working directory, and, for a container
+// that runs in a user namespace of its own (as another user than root), that user namespace
+// too, so that the command is the container's user, with the container's view of ids and
+// files, and not root of the bubble's namespace (what it was before: `kubectl exec` in a
+// container that runs as 1000 printed uid 0).
+func nsenterArgs(payload int, userNamespace bool, argv []string) []string {
+	args := []string{"-t", strconv.Itoa(payload)}
+	if userNamespace {
+		args = append(args, "-U")
+	}
+	args = append(args, "-m", "-n", "-p", "-r", "-w", "--")
+	return append(args, argv...)
+}
+
+// runsInOtherUserNamespace says whether the process is in a user namespace other than
+// Skifflet's (joining one's own is an error).
+func runsInOtherUserNamespace(pid int) bool {
+	inside, err := nsIdentity(pid, "user")
+	if err != nil {
+		return false
+	}
+	outside, err := nsIdentity(os.Getpid(), "user")
+	return err == nil && inside != outside
 }
 
 // Run runs argv inside the container without any streams and returns its exit

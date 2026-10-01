@@ -346,7 +346,12 @@ e2e_get_uid() {
 # ---------------------------------------------------------------------------
 E2E_LOGDIR="${E2E_LOGDIR:-/tmp/e2e-results}"
 
+# e2e_preserve_failure NS [POD]: keep what says why a case failed (events, pods, logs). A
+# case that passed leaves nothing, so that a directory of this name always means a failure.
+# (It is registered as a cleanup, which runs at the end of every case: E2E_EXIT_RC is how the
+# case ended, set by the exit trap, for the case that stopped on an error without a message.)
 e2e_preserve_failure() {
+    [ "${E2E_FAILED:-0}" -ne 0 ] || [ "${E2E_EXIT_RC:-0}" -ne 0 ] || return 0
     local ns="$1" pod="${2:-}"
     local outdir="${E2E_LOGDIR}/case-${E2E_CASE}-failure"
     mkdir -p "$outdir"
@@ -392,6 +397,7 @@ e2e_cleanup_run() {
 _e2e_on_exit() {
     local rc=$?
     trap - EXIT
+    E2E_EXIT_RC=$rc
     if [ "$rc" -eq 77 ]; then
         e2e_log "Case ${E2E_CASE} skipped (rc=77)"
     elif [ "$rc" -ne 0 ] || [ "${E2E_FAILED:-0}" -ne 0 ]; then

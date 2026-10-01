@@ -363,6 +363,19 @@ run_startup_case() {
     echo -e "  $([ "$result01" = PASS ] && echo '\033[0;32m' || echo '\033[0;31m')${result01}\033[0m  E2E-01  ($((end01 - start01))s)" >&2
 }
 
+# environment_summary: the conditions of a run, as its verdict says them: the architecture and
+# the number of nodes of the cluster that ran it (from nodes.json, saved when the candidate was
+# identified); "unrecorded" when that was not done (a focused run on a cluster that was started
+# elsewhere).
+environment_summary() {
+    python3 - "${E2E_LOGDIR}/nodes.json" <<'PY' 2>/dev/null || echo unrecorded
+import json, sys
+items = json.load(open(sys.argv[1]))["items"]
+archs = sorted({i["status"]["nodeInfo"]["architecture"] for i in items})
+print("%s, %d node%s" % ("/".join(archs), len(items), "" if len(items) == 1 else "s"))
+PY
+}
+
 collect_candidate_evidence() {
     local manifest="${SKIFF_MANIFEST_PATH:-${HOME}/.skiff/images/manifest.json}"
     local sif="${HOME}/.skiff/images/skiff-bubble.sif"
@@ -504,6 +517,8 @@ if [ -s "${E2E_LOGDIR}/disposable-resources.txt" ]; then
     echo "Disposable node-local resources (start, end):"
     sed 's/^/  /' "${E2E_LOGDIR}/disposable-resources.txt"
 fi
+ENVIRONMENT=$(environment_summary)
+echo "Environment: ${ENVIRONMENT}"
 echo "Log directory: ${E2E_LOGDIR}"
 
 # Write machine-readable results
@@ -515,6 +530,7 @@ $(for k in "${!RESULTS[@]}"; do
 done)
 out = {
     'run_id': '${E2E_RUN_ID}',
+    'environment': '${ENVIRONMENT}',
     'overall': '$([ $OVERALL -eq 0 ] && echo PASS || echo FAIL)',
     'cases': results,
 }
@@ -527,9 +543,9 @@ PYEOF
 if [ $OVERALL -ne 0 ]; then
     echo -e "\033[0;31m>>> FAILED: see the results marked FAIL or missing above <<<\033[0m"
 elif [ -n "$ONLY_CASE" ] || [ "$NETWORK_ONLY" -eq 1 ]; then
-    echo -e "\033[1;33m>>> FOCUSED RUN PASSED: ${#RESULTS[@]} results, the qualification profile was not checked <<<\033[0m"
+    echo -e "\033[1;33m>>> FOCUSED RUN PASSED: ${#RESULTS[@]} results (${ENVIRONMENT}), the qualification profile was not checked <<<\033[0m"
 else
-    echo -e "\033[0;32m>>> PROFILE PASSED: $(profile_required_cases | wc -l | tr -d ' ') required results and all ${#RESULTS[@]} recorded results <<<\033[0m"
+    echo -e "\033[0;32m>>> PROFILE PASSED: $(profile_required_cases | wc -l | tr -d ' ') required results and all ${#RESULTS[@]} recorded results (${ENVIRONMENT}) <<<\033[0m"
 fi
 echo "========================================================================"
 
