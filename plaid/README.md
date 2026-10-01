@@ -206,6 +206,8 @@ plaidtainer exec --host-networking alpine.sif ping -c 3 127.0.0.1
 > Passing `--host-networking` bypasses IP allocation via IPAM and TAP interface creation. The container runs with direct access to host network interfaces (without `--net` / `--network=none`), and without requiring a running `plaidd` daemon.
 
 #### C. Privileged CNI Mode (Root / Kubernetes)
+> **Experimental:** this mode is implemented but not consistently verified. It needs a network configuration installed as root in `/etc/apptainer/network`, and no automated test covers it (the CNI plugin it uses is covered by the standalone checks).
+
 In environments where root permissions or Kubernetes CNI plugins are configured:
 ```bash
 # Start instance with standard CNI network 'plaid'
