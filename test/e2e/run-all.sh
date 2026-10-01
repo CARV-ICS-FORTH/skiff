@@ -67,6 +67,7 @@ E2E_CASE="00"
 source "$LIB_DIR/common.sh"
 source "$LIB_DIR/profile.sh"
 source "$LIB_DIR/runtime.sh"
+source "$LIB_DIR/standalone.sh"
 
 # ---------------------------------------------------------------------------
 # Result tracking
@@ -74,6 +75,8 @@ source "$LIB_DIR/runtime.sh"
 declare -A RESULTS   # label → PASS|FAIL|SKIP
 declare -A DURATIONS # label → seconds
 OVERALL=0
+STANDALONE_IPS="" # the two nodes' addresses, kept for the teardown (the cluster may be gone by then)
+STANDALONE_ACTIVE=0 # set while the standalone Plaid suites have Plaid installed on the nodes
 
 record() {
     local label="$1" result="$2" duration="$3"
@@ -132,6 +135,7 @@ run_script() {
 DEFERRED_TEARDOWN=""
 
 _run_deferred() {
+    standalone_cleanup
     if [ -n "$DEFERRED_TEARDOWN" ]; then
         local teardown_cmd="$DEFERRED_TEARDOWN"
         DEFERRED_TEARDOWN="" # Run once
@@ -174,15 +178,50 @@ echo ""
 # ---------------------------------------------------------------------------
 # Test Execution Functions
 # ---------------------------------------------------------------------------
+# NET-1 and NET-2: Plaid used on its own (no Kubernetes), from the candidate under test. The
+# binaries come out of the uploaded image and are installed on both nodes for these suites
+# only (lib/standalone.sh); the daemons run as the ordinary user and are stopped, and
+# everything removed, whatever the outcome. The running cluster is not touched.
+standalone_cleanup() {
+    [ "$STANDALONE_ACTIVE" -eq 1 ] || return 0
+    STANDALONE_ACTIVE=0
+    # shellcheck disable=SC2086
+    standalone_teardown $STANDALONE_IPS >> "${E2E_LOGDIR}/NET-standalone.log" 2>&1 || true
+}
+
+run_standalone_plaid_tests() {
+    local ip_a ip_b
+    ip_a=$(runtime_node_ip "$(e2e_node_a)")
+    ip_b=$(runtime_node_ip "$(e2e_node_b)")
+    STANDALONE_IPS="$ip_a $ip_b"
+    STANDALONE_ACTIVE=1
+    if ! standalone_prepare "$ip_a" "$ip_b" >> "${E2E_LOGDIR}/NET-standalone.log" 2>&1; then
+        e2e_fail "standalone Plaid could not be installed from the candidate image (see NET-standalone.log)"
+        record NET-1-plaid-integration FAIL 0
+        record NET-2-plaid-standalone FAIL 0
+        standalone_cleanup
+        return 0
+    fi
+
+    run_script "NET-1-plaid-integration" sudo "$NETWORK_DIR/test-plaid-integration.sh"
+
+    if standalone_start_plaidd "$ip_a" "$STANDALONE_CIDR_A" "$STANDALONE_CIDR_B" "$ip_b" >> "${E2E_LOGDIR}/NET-standalone.log" 2>&1 \
+        && standalone_start_plaidd "$ip_b" "$STANDALONE_CIDR_B" "$STANDALONE_CIDR_A" "$ip_a" >> "${E2E_LOGDIR}/NET-standalone.log" 2>&1; then
+        run_script "NET-2-plaid-standalone" env STANDALONE_PEER_IP="$ip_b" \
+            STANDALONE_CIDR_A="$STANDALONE_CIDR_A" STANDALONE_VXLAN_PORT="$STANDALONE_VXLAN_PORT" \
+            "$NETWORK_DIR/test-plaid-standalone.sh"
+    else
+        e2e_fail "the standalone plaidd daemons did not start (see NET-standalone.log)"
+        record NET-2-plaid-standalone FAIL 0
+    fi
+    standalone_cleanup
+}
+
 run_networking_tests() {
     echo "--- NETWORKING ACCEPTANCE TESTS ---------------------------------------"
     e2e_require_nodes 2
 
-    # NET-1: Plaid integration (standalone daemon + CNI, requires root)
-    run_script "NET-1-plaid-integration" sudo "$NETWORK_DIR/test-plaid-integration.sh"
-
-    # NET-2: Plaid all (privileged + unprivileged; calls sub-scripts internally)
-    run_script "NET-2-plaid-all" "$NETWORK_DIR/test-plaid-all.sh"
+    run_standalone_plaid_tests
 
     # NET-3: TAP acceptance (direct PodIP, ClusterIP, DNS, API Service)
     e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s \
@@ -441,11 +480,11 @@ printf "%-30s %-10s %s\n" "Test" "Result" "Duration"
 printf "%-30s %-10s %s\n" "----" "------" "--------"
 
 # Required labels first, in profile order, then any other recorded results.
-summary_labels=(NET-1-plaid-integration NET-2-plaid-all)
+summary_labels=()
 while IFS= read -r label; do summary_labels+=("$label"); done < <(profile_required_cases)
 for label in $(printf '%s\n' "${!RESULTS[@]}" | sort); do
     [ -n "$label" ] || continue
-    profile_is_required "$label" || [ "$label" = NET-1-plaid-integration ] || [ "$label" = NET-2-plaid-all ] || summary_labels+=("$label")
+    profile_is_required "$label" || summary_labels+=("$label")
 done
 for label in "${summary_labels[@]}"; do
     result="${RESULTS[$label]:-SKIP}"

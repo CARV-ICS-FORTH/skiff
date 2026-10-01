@@ -1,23 +1,17 @@
 #!/usr/bin/env bash
-# Integration test for Plaid on a Linux system or Docker container.
+# NET-1: Plaid's CNI plugin against a standalone plaidd (no Kubernetes, no containers
+# runtime): two network namespaces are attached through `plaid` (CNI ADD), reach each other
+# through the daemon, and one is detached again (CNI DEL). Needs root (network namespaces).
+# The binaries are the candidate's own, installed by the aggregate (lib/standalone.sh); a
+# missing one is a failure.
 set -euo pipefail
 
 export CNI_PATH="${CNI_PATH:-/opt/cni/bin}"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-if command -v plaidd >/dev/null 2>&1; then
-    BIN_DIR="$(dirname "$(command -v plaidd)")"
-elif [ -d "${ROOT_DIR}/plaid/bin" ]; then
-    BIN_DIR="${ROOT_DIR}/plaid/bin"
-elif [ -d "${ROOT_DIR}/bin" ]; then
-    BIN_DIR="${ROOT_DIR}/bin"
-else
-    echo "=== 1. Building Plaid binaries ==="
-    make -C "${ROOT_DIR}" build
-    BIN_DIR="${ROOT_DIR}/plaid/bin"
-fi
+for tool in plaidd plaid; do
+    BIN_DIR_CANDIDATE=$(command -v "$tool") || { echo "ERROR: $tool is not installed (the aggregate installs Plaid from the candidate image)" >&2; exit 1; }
+done
+BIN_DIR="$(dirname "$BIN_DIR_CANDIDATE")"
+[ -x "$CNI_PATH/host-local" ] || { echo "ERROR: the host-local IPAM plugin is not in $CNI_PATH" >&2; exit 1; }
 RUN_DIR=$(mktemp -d /tmp/plaid-test-XXXXXX)
 SOCKET_PATH="${RUN_DIR}/plaidd.sock"
 
@@ -44,7 +38,7 @@ echo "=== 3. Starting plaidd in background ==="
     --disable-kubernetes \
     --node-cidr="10.244.1.0/24" \
     --cluster-cidr="10.244.0.0/16" \
-    --vxlan-port=8473 \
+    --vxlan-port=8474 \
     --enable-slirp=false &
 PLAIDD_PID=$!
 

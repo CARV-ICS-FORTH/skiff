@@ -5,7 +5,7 @@ repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 cd "$repo_dir"
 # Every shell script that runs somewhere no test reaches (the bubble's entrypoint runs
 # only inside a bubble) at least parses.
-for script in scripts/*.sh scripts/skiff.slurm images/skiff-bubble/entrypoint.sh; do
+for script in scripts/*.sh scripts/skiff.slurm images/skiff-bubble/entrypoint.sh test/*.sh test/e2e/*.sh test/e2e/lib/*.sh test/e2e/network/*.sh; do
     bash -n "$script"
 done
 python3 test/e2e/lib/candidate.py --self-test

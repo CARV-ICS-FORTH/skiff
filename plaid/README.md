@@ -279,52 +279,14 @@ vagrant up
 
 ### 3. Individual Test Suites
 
-- **Privileged CNI Suite (`test/e2e/network/test-plaid-e2e.sh`)**:
-  Tests standard root CNI container networking (`sudo apptainer --network=plaid`):
-  ```bash
-  vagrant ssh controller -c "sudo bash /home/vagrant/skiff/test/e2e/network/test-plaid-e2e.sh"
-  ```
-  Verifies intra-node communication, cross-host VXLAN (UDP 8472), host loopback access, and outbound internet access.
+- **Standalone Plaid (NET-1 and NET-2, part of the qualification run)**:
+  The aggregate (`test/e2e/run-all.sh`) takes `plaidd`, `plaid`, `plaidctl` and `plaidtainer` out of the uploaded bubble image, installs them on both nodes for these suites only, and removes them afterwards (`test/e2e/lib/standalone.sh`). The binaries under test are therefore the candidate's own.
+  - `test/e2e/network/test-plaid-integration.sh` (NET-1, root): the CNI plugin against a standalone `plaidd`, with network namespaces: CNI ADD, traffic between the namespaces, CNI DEL.
+  - `test/e2e/network/test-plaid-standalone.sh` (NET-2, ordinary user): `plaidd` in slirp mode without Kubernetes on both nodes, and `plaidtainer` on the end-to-end fixture image. It verifies persistent instances with dynamic addresses (`instance start / run / stop`, with leases and endpoints released), one-off execution (`exec / run`), `--host-networking`, the gateway, the host's loopback through `10.244.x.2`, outbound traffic through slirp's NAT (to the node's own network address, so no Internet is needed), and the overlay between the two nodes (pings and TCP, route in the daemon's table).
 
-- **Unprivileged Apptainer Suite (`test/e2e/network/test-plaid-unprivileged.sh`)**:
-  Tests rootless workflows without `sudo` as regular user `vagrant`:
-  ```bash
-  vagrant ssh controller -c "bash /home/vagrant/skiff/test/e2e/network/test-plaid-unprivileged.sh"
-  ```
-  Verifies:
-  - **Persistent Instances**: `plaidtainer instance start / run / stop` with dynamic IPAM on stock `alpine.sif`.
-  - **One-Off Execution**: `plaidtainer exec / run` on stock `alpine.sif`.
-  - **Host Networking**: `plaidtainer --host-networking` bypass.
-  - **Gateway Ping**: In-process ICMP Echo reply from gateway (`10.244.1.1`).
-  - **Host Loopback**: Access to host service on `127.0.0.1:9092` via `10.244.1.2`.
-  - **Internet NAT**: Outbound HTTP traffic via `slirp4netns`.
-  - **Inter-Node Overlay**: Cross-host VXLAN ping between unprivileged containers on `controller` and `node`.
+  Run them (with the Kubernetes networking checks NET-3 and NET-4, against a running cluster) with `test/e2e/run-all.sh --network-only`.
 
-### 4. Master Unattended Test Suite (`test/e2e/network/test-plaid-all.sh`)
-To run **all workflows unattended in a single run** and generate a consolidated report card:
-```bash
-vagrant ssh controller -c "bash /home/vagrant/skiff/test/e2e/network/test-plaid-all.sh"
-```
-
-The master script automatically verifies prerequisites, runs both the privileged and unprivileged test suites across nodes, cleans up all instances, and produces an execution matrix:
-```text
-========================================================================
-                 MASTER TEST SUITE EXECUTION SUMMARY                    
-========================================================================
-Workflow / Feature                       | Status      
------------------------------------------+--------------
-1. Privileged CNI Mode (Root)            | PASS
-2. Plaidtainer Instances (start/run/stop)| PASS
-3. Plaidtainer Exec (stock alpine)       | PASS
-4. Cross-Host VXLAN Overlay (Inter-Node) | PASS
-5. Host Loopback & Outbound Internet NAT | PASS
-========================================================================
-Total Execution Time: 28s
->>> ALL WORKFLOWS PASSED UNATTENDED! <<<
-========================================================================
-```
-
----
+  The privileged mode of section C (`sudo apptainer --network=plaid`) needs a network configuration installed as root in `/etc/apptainer/network`, which no workflow of this repository installs; it has no automated test. The CNI plugin it uses is the one NET-1 covers.
 
 ## License
 
