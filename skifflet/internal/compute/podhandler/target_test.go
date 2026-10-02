@@ -529,7 +529,7 @@ func TestNsenterArgs(t *testing.T) {
 		t.Errorf("without a user namespace: %q", got)
 	}
 	got = strings.Join(nsenterArgs(42, true, []string{"id", "-u"}), " ")
-	if got != "-t 42 -U -m -n -p -r -w -- id -u" {
+	if got != "-t 42 -U --preserve-credentials -m -n -p -r -w -- id -u" {
 		t.Errorf("with a user namespace: %q", got)
 	}
 	// The test process is in no other user namespace than itself.

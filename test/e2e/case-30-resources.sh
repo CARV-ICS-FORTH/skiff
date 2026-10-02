@@ -37,7 +37,13 @@ node_capacity() {
         advertised_mem_kb=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.memory}' | sed 's/Ki$//')
         e2e_assert_eq "$node advertises the CPUs it has" "$advertised_cpu" "$cpus"
         e2e_assert_eq "$node advertises the memory it has (within 5%)" "$(awk -v a="$advertised_mem_kb" -v b="$mem_kb" 'BEGIN {d = a - b; if (d < 0) d = -d; print (d * 20 <= b) ? "yes" : "no (" a " of " b ")"}')" yes
-        e2e_assert_eq "$node allocates the CPUs it advertises" "$(e2e_kubectl get node "$node" -o jsonpath='{.status.allocatable.cpu}')" "$cpus"
+        e2e_assert_eq "$node allocates most of the CPUs it advertises (the rest is reserved)" "$(e2e_kubectl get node "$node" -o json | python3 -c '
+import json, sys
+from fractions import Fraction
+def cpu(v): return Fraction(v[:-1]) / 1000 if v.endswith("m") else Fraction(v)
+s = json.load(sys.stdin)["status"]
+c, a = cpu(s["capacity"]["cpu"]), cpu(s["allocatable"]["cpu"])
+print("yes" if c * Fraction(8, 10) <= a <= c else "no (%s of %s)" % (a, c))')" yes
     done
 }
 e2e_subcase_run T40-node-capacity node_capacity

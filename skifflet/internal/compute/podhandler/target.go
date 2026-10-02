@@ -318,7 +318,10 @@ func (t *Target) Command(ctx context.Context, argv []string) (cmd *exec.Cmd, rel
 func nsenterArgs(payload int, userNamespace bool, argv []string) []string {
 	args := []string{"-t", strconv.Itoa(payload)}
 	if userNamespace {
-		args = append(args, "-U")
+		// (Without --preserve-credentials nsenter sets the ids to root's in the namespace, which
+		// the container's namespace does not map: "setgid failed". Kept, the command has the
+		// ids the container's main process has.)
+		args = append(args, "-U", "--preserve-credentials")
 	}
 	args = append(args, "-m", "-n", "-p", "-r", "-w", "--")
 	return append(args, argv...)
