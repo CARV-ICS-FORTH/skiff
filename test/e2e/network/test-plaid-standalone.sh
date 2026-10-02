@@ -29,7 +29,8 @@ peer() { ssh -i "${E2E_SSH_KEY:-/home/vagrant/.ssh/id_ed25519}" -o StrictHostKey
 # grep -q for the end of a pipeline under pipefail: an early exit would kill the writer with SIGPIPE.
 grep_q() { local input; input=$(cat); grep -q "$@" <<< "$input"; }
 ip_of() { apptainer exec "instance://$1" ip -4 addr show eth0 | awk '/inet / {print $2}' | cut -d/ -f1; }
-leases() { find /run/plaid/ipam/plaid-ipam -maxdepth 1 -name '10.*' 2>/dev/null | wc -l | tr -d ' '; }
+# (find fails when nothing has been leased yet and the directory is not there: no leases, not an error)
+leases() { { find /run/plaid/ipam/plaid-ipam -maxdepth 1 -name '10.*' 2>/dev/null || true; } | wc -l | tr -d ' '; }
 endpoints() { plaidctl status | grep -c -i 'endpoint' || true; }
 
 cleanup() {
