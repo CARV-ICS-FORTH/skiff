@@ -36,7 +36,16 @@ node_capacity() {
         cpus=$(runtime_ssh_node "$ip" "nproc --all")
         mem_kb=$(( $(scontrol show node "$node" -o | sed -n 's/.*RealMemory=\([0-9]*\).*/\1/p') * 1024 ))
         advertised_cpu=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.cpu}')
-        advertised_mem_kb=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.memory}' | sed 's/Ki$//')
+        advertised_mem_kb=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.memory}' | python3 -c '
+import sys
+v = sys.stdin.read().strip()
+units = {"Ki": 1, "Mi": 1024, "Gi": 1024 ** 2, "Ti": 1024 ** 3}
+for suffix, factor in units.items():
+    if v.endswith(suffix):
+        print(int(v[:-2]) * factor)
+        break
+else:
+    print(int(v) // 1024)')
         e2e_assert_eq "$node advertises the CPUs it has" "$advertised_cpu" "$cpus"
         e2e_assert_eq "$node advertises the memory Slurm offers on it (RealMemory)" "$advertised_mem_kb" "$mem_kb"
         e2e_assert_eq "$node allocates most of the CPUs it advertises (the rest is reserved)" "$(e2e_kubectl get node "$node" -o json | python3 -c '

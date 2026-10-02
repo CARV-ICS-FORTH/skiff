@@ -199,12 +199,13 @@ echo started" > /dev/null
     left=$(runtime_ssh_node "$ip" "ls -A '${SKIFF_APPTAINER_TMP}' 2>/dev/null | wc -l")
     e2e_assert_eq "nothing is left in the scratch directory afterwards" "$(echo "$left" | tr -d ' ')" 0
     runtime_ssh_node "$ip" "rm -f '${out}.sif' '${out}.log'" || true
-    # A running pod: its unpacked root filesystem is in its own directory.
+    # A running pod: the image of its container is unpacked in the container's own directory
+    # for the attempt (scratch/<container>/<attempt>/rootfs), inside the pod's directory.
     uid=$(e2e_kubectl get pod e2e17-b -n "$NS" -o jsonpath='{.metadata.uid}')
     pod_dir=$(runtime_pod_dir "$NS" e2e17-b "$uid")
     case "$pod_dir" in "${SKIFF_TMP_DIR}/"*) ;; *) e2e_fail "the pod's directory ${pod_dir} is not below ${SKIFF_TMP_DIR}" ;; esac
     e2e_assert_eq "the pod's unpacked root filesystem is in its own directory" \
-        "$(runtime_ssh_node "$(runtime_node_ip "$NODE_B")" "find '${pod_dir}/tmp' -maxdepth 1 -name 'rootfs-*' | wc -l" | tr -d ' ')" 1
+        "$(runtime_ssh_node "$(runtime_node_ip "$NODE_B")" "find '${pod_dir}/scratch' -mindepth 4 -maxdepth 4 -type d -name 'rootfs-*' | wc -l" | tr -d ' ')" 1
 }
 e2e_subcase_run T32-scratch scratch_files
 
