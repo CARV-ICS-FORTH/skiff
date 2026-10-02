@@ -66,6 +66,8 @@ Skiff uses two locations, and nothing else on the host:
 - **`~/.skiff`** on the shared home is fixed, not a setting: the credentials (`kubeconfig`), images, caches and volume data every node must find at the same place. The bubbles run as root, so inside the cluster it is **`/root/.skiff`**; use that spelling in a `hostPath` or PersistentVolume (`~/.skiff/data` on the host is `/root/.skiff/data` for a pod).
 - **`SKIFF_TMP_DIR`** (default `/tmp/.skiff`) is the node's scratch directory: pod runtime state, and where Apptainer unpacks and converts images. It must be node-local (it holds sockets and unpacked images, so a shared filesystem is refused), writable, and have room for the images you run: set it when `/tmp` is small or a RAM disk. It is checked on every node before anything starts, it is disposable, and the bubbles see it at the same path.
 
+To keep the data on other storage (a project filesystem instead of a small home), make `~/.skiff` a symlink to a directory that every node sees at the same path: the whole suite was run that way. A symlink inside `~/.skiff` would dangle in the bubble, which sees only what is bound into it.
+
 A volume may use only these two locations. A `hostPath`, or a PersistentVolume bound by a claim, anywhere else is refused with a message naming the two (the bubble does not see the rest of the host, so a directory created there would be lost with it).
 
 ### Storage
@@ -121,7 +123,7 @@ A pod's image is pulled by Apptainer from the registry it names (Docker Hub, `re
 
 ### Stopping the cluster
 
-End the job with `scancel --batch --signal=TERM <job ID>` (Slurm itself does the same a minute before the time limit): every pod is stopped by its own termination sequence (its `preStop` hook, `SIGTERM`, its grace period, at most 20 s) and then the cluster goes. A plain `scancel` signals every process of the job at once and Slurm kills what is left after 30 s: the pods get `SIGTERM` along with the daemons, and neither their hooks nor their grace periods are honored. Either way, the claims and the data of the job are not deleted.
+End the job with `scancel --batch --signal=TERM <job ID>` (Slurm itself does the same a minute before the time limit): every pod is stopped by its own termination sequence (its `preStop` hook, `SIGTERM`, its grace period, at most 20 s) and then the cluster goes. A plain `scancel` signals every process of the job at once and Slurm kills what is left after 30 s: the pods get `SIGTERM` at the same time as the daemons (a test pod's handler did finish its work), but their `preStop` hooks are not run first and nothing is ordered. Either way, the claims and the data of the job are not deleted.
 
 ### When a job ends unexpectedly
 
