@@ -117,7 +117,7 @@ What to know:
 
 ### Images
 
-A pod's image is pulled by Apptainer from the registry it names (Docker Hub, `registry.k8s.io`, ... reachable from the compute nodes), converted once and cached on the shared home (`~/.skiff/.images`); `imagePullPolicy` is honored. An absolute path to a SIF file the cluster can see (below `/root/.skiff`) is used as it is, with no registry. Not supported: `imagePullSecrets` and private registries, registry mirrors, hosts without access to a registry (use SIF files). The unpacked image of a running container is on the scratch directory (`SKIFF_TMP_DIR`): size it for the images you run.
+A pod's image is pulled by Apptainer from the registry it names (Docker Hub, `registry.k8s.io`, ... reachable from the compute nodes), converted once and cached on the shared home (`~/.skiff/.images`); `imagePullPolicy` is honored. An absolute path to a SIF file the cluster can see (below `/root/.skiff`) is used as it is, with no registry. Not supported: `imagePullSecrets` and private registries, registry mirrors, hosts without access to a registry (use SIF files). The unpacked image of a running container, and what it writes, are on the scratch directory (`SKIFF_TMP_DIR`): size it for the images you run. The cluster's own add-ons are pulled the same way, from Docker Hub, onto the nodes that run them: CoreDNS, metrics-server and, with the first claim, the storage provisioner and its helper; a site whose compute nodes cannot reach a registry cannot start a cluster until that is solved (pre-pulled images are not supported yet).
 
 ### Stopping the cluster
 
