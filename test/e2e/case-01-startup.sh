@@ -153,9 +153,11 @@ for node in $(e2e_node_a) $(e2e_node_b); do
     e2e_assert_nonempty "Node $node allocatable memory" "$mem"
     e2e_assert_ne "Node $node allocatable memory non-zero" "$mem" "0"
     allocation=$(scontrol show job "$SKIFF_JOB_ID" -o)
-    if python3 - "$allocation" "$cpu" "$mem" <<'PY'
+    # (A job that asks for --mem=0 has all of the node's memory: its limit is the node's.)
+    real_memory_mb=$(scontrol show node "$node" -o | sed -n 's/.*RealMemory=\([0-9]*\).*/\1/p')
+    if python3 - "$allocation" "$cpu" "$mem" "$real_memory_mb" <<'PY'
 import decimal, re, sys
-job, cpu, mem = sys.argv[1:]
+job, cpu, mem, real_memory_mb = sys.argv[1:]
 def field(name):
     match = re.search(r'(?:^| )' + name + r'=([^ ]+)', job)
     if not match:
@@ -177,6 +179,8 @@ slurm_mem = field('MinMemoryNode')
 if not re.fullmatch(r'\d+[KMGT]?', slurm_mem):
     raise ValueError('invalid Slurm node memory ' + slurm_mem)
 memory_limit = decimal.Decimal(slurm_mem[:-1]) * 1024 ** ('KMGT'.index(slurm_mem[-1]) + 1) if slurm_mem[-1].isalpha() else decimal.Decimal(slurm_mem)
+if memory_limit == 0:  # --mem=0: all of the node's memory
+    memory_limit = decimal.Decimal(real_memory_mb) * 1024 ** 2
 advertised_cpu = decimal.Decimal(cpu[:-1]) / 1000 if cpu.endswith('m') else decimal.Decimal(cpu)
 advertised_memory = quantity(mem)
 if not (0 < advertised_cpu <= cpu_limit and 0 < advertised_memory <= memory_limit):

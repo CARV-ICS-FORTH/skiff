@@ -42,7 +42,7 @@ case "$*" in
             fail) echo "Error: cannot open the overlay socket" >&2; exit 1 ;;
             *) exec sleep 300 ;;
         esac ;;
-    "instance run"*) echo "$*" > "$FAKE_DIR/instance-run"; exit 0 ;;
+    "instance run"*) echo "$*" > "$FAKE_DIR/instance-run"; echo "${SLURM_MEM_PER_NODE-unset}" > "$FAKE_DIR/instance-mem"; exit 0 ;;
     "instance list"*)
         # The instance is one of many on the node (the user's others: 400 rows after it, more
         # than a pipe holds, so a reader that stops at the first match makes this die of
@@ -85,6 +85,11 @@ except socket.timeout: pass' "$*" ;;
 esac
 STUB
 printf '#!/usr/bin/env bash\nexit 0\n' > "$test_dir/bin/ss"
+# scontrol: what Slurm is configured to offer on the node
+cat > "$test_dir/bin/scontrol" <<'STUB'
+#!/usr/bin/env bash
+echo "NodeName=controller Arch=aarch64 CPUTot=2 CPULoad=0.1 RealMemory=1500 AllocMem=0"
+STUB
 chmod +x "$test_dir/bin/"*
 
 # The scratch directory is a setting (its default is the node's /tmp/.skiff): here it is
@@ -172,6 +177,18 @@ done
 grep -q -- "--bind $HOME/.skiff:/root/.skiff " "$FAKE_DIR/instance-run" || fail "the state directory is not bound as /root/.skiff"
 if grep -q "/tmp/.skiff" "$FAKE_DIR/instance-run" "$FAKE_DIR/helper-args"; then fail "the default scratch directory is still used"; fi
 grep -q -- "--env SKIFF_SLIRP_API=/root/.skiff/slirp-bubble1.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told slirp4netns's API socket"
+
+# The memory of the node the bubble is told it has: what the job says, and for a job that asks
+# for all of it (--mem=0: none or 0 in the environment) what Slurm offers on the node.
+[ "$(cat "$FAKE_DIR/instance-mem")" = 1500 ] || fail "a job without a memory amount: the bubble was told $(cat "$FAKE_DIR/instance-mem"), want the node's RealMemory 1500"
+kill -TERM "$BUBBLE_PID"; wait_exit; released
+run_bubble controller FAKE_HELPER=ok SLURM_MEM_PER_NODE=0
+[ "$(cat "$FAKE_DIR/instance-mem")" = 1500 ] || fail "--mem=0: the bubble was told $(cat "$FAKE_DIR/instance-mem"), want 1500"
+kill -TERM "$BUBBLE_PID"; wait_exit; released
+run_bubble controller FAKE_HELPER=ok SLURM_MEM_PER_NODE=4096
+[ "$(cat "$FAKE_DIR/instance-mem")" = 4096 ] || fail "a job's own amount was replaced: $(cat "$FAKE_DIR/instance-mem")"
+kill -TERM "$BUBBLE_PID"; wait_exit; released
+run_bubble controller
 
 # A helper that is still waiting is not a failure, and terminating the bubble stops it.
 sleep 3

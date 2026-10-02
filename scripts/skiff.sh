@@ -729,6 +729,18 @@ skiff_bubble() {
         --bind "$HOST_IP_DETECTED" --port "$OVERLAY_PORT" --handoff "$OVERLAY_HANDOFF" --timeout 10m &
     OVERLAY_HELPER_PID=$!
 
+    # A job that asks for all of a node's memory (--mem=0) has no amount in its environment
+    # (SLURM_MEM_PER_NODE is 0 or absent), and Skifflet would advertise what the machine has,
+    # which Slurm does not grant (it is configured with less than the machine has). The grant of
+    # such a job is what Slurm is configured to offer on the node: RealMemory.
+    if ! [[ "${SLURM_MEM_PER_NODE:-0}" =~ ^[1-9][0-9]*$ ]] && command -v scontrol >/dev/null 2>&1; then
+        local real
+        real=$(scontrol show node "${SLURMD_NODENAME:-$(hostname -s)}" -o 2>/dev/null | tr ' ' '\n' | grep '^RealMemory=') || true
+        if [[ "${real#RealMemory=}" =~ ^[1-9][0-9]*$ ]]; then
+            export SLURM_MEM_PER_NODE="${real#RealMemory=}"
+        fi
+    fi
+
     apptainer instance run \
     	--fakeroot \
     	--no-mount home \

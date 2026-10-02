@@ -24,19 +24,21 @@ e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --wait
 e2e_cleanup_register "e2e_preserve_failure $NS"
 
 # ---------------------------------------------------------------------------
-# T40-node-capacity: a node advertises the CPUs and the memory it has (the job's step has all
-# of them: it was once given one CPU, and the node advertised one), and room for pods.
+# T40-node-capacity: a node advertises what the job grants it: its CPUs (the job's step has all
+# of them: it was once given one CPU, and the node advertised one) and the memory Slurm offers
+# on it (RealMemory, which is what a job that asks for all of it, --mem=0, is granted: not
+# what the machine has, which Slurm is configured with less than), and room for pods.
 # ---------------------------------------------------------------------------
 node_capacity() {
     local node ip cpus mem_kb advertised_cpu advertised_mem_kb
     for node in "$NODE_A" "$NODE_B"; do
         ip=$(runtime_node_ip "$node")
         cpus=$(runtime_ssh_node "$ip" "nproc --all")
-        mem_kb=$(runtime_ssh_node "$ip" "awk '/^MemTotal:/ {print \$2}' /proc/meminfo")
+        mem_kb=$(( $(scontrol show node "$node" -o | sed -n 's/.*RealMemory=\([0-9]*\).*/\1/p') * 1024 ))
         advertised_cpu=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.cpu}')
         advertised_mem_kb=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.memory}' | sed 's/Ki$//')
         e2e_assert_eq "$node advertises the CPUs it has" "$advertised_cpu" "$cpus"
-        e2e_assert_eq "$node advertises the memory it has (within 5%)" "$(awk -v a="$advertised_mem_kb" -v b="$mem_kb" 'BEGIN {d = a - b; if (d < 0) d = -d; print (d * 20 <= b) ? "yes" : "no (" a " of " b ")"}')" yes
+        e2e_assert_eq "$node advertises the memory Slurm offers on it (RealMemory)" "$advertised_mem_kb" "$mem_kb"
         e2e_assert_eq "$node allocates most of the CPUs it advertises (the rest is reserved)" "$(e2e_kubectl get node "$node" -o json | python3 -c '
 import json, sys
 from fractions import Fraction
