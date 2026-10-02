@@ -73,14 +73,14 @@ e2e_kubectl exec first -n "$NS" -- sh -c 'echo from-the-first-job > /data/file'
 OLD_DIR=$(claim_dir)
 OLD_JOB_DIR=$(dirname "$OLD_DIR")
 e2e_assert_eq "the file is on the filesystem" "$(cat "$OLD_DIR/file" 2>/dev/null || true)" from-the-first-job
-e2e_cleanup_register "rm -rf '$OLD_JOB_DIR'"
+e2e_cleanup_register "e2e_remove_below '${HOME}/.skiff/volumes' '$OLD_JOB_DIR'"
 
 # A pod that handles the end of its life: a preStop hook and a SIGTERM handler that each leave a
 # marker on the host (below ~/.skiff, which a pod sees as /root/.skiff), the handler after
 # a few seconds' work. Both pods of the job have one, on each node.
 TERM_DIR="${HOME}/.skiff/e2e26-term"
-rm -rf "$TERM_DIR"; mkdir -p "$TERM_DIR"; chmod 777 "$TERM_DIR"
-e2e_cleanup_register "rm -rf '$TERM_DIR'"
+e2e_remove_below "${HOME}/.skiff" "$TERM_DIR"; mkdir -p "$TERM_DIR"; chmod 777 "$TERM_DIR"
+e2e_cleanup_register "e2e_remove_below '${HOME}/.skiff' '$TERM_DIR'"
 for node in "${NODES[@]}"; do
     cat <<EOF2 | e2e_kubectl apply -f - > /dev/null
 apiVersion: v1
@@ -150,7 +150,7 @@ fresh_job() {
     e2e_assert_eq "and it is empty" "$(e2e_kubectl exec second -n "$NS" -- sh -c 'ls -A /data | wc -l' | tr -d ' ')" 0
     e2e_assert_eq "the old files are intact" "$(cat "$OLD_DIR/file" 2>/dev/null || true)" from-the-first-job
     e2e_assert_eq "both jobs' directories are there for the user to see" "$(printf '%s\n' "${HOME}/.skiff/volumes"/* | grep -c -E "/(${CURRENT_JOB}|${job})-[0-9a-f]{8}$")" 2
-    e2e_cleanup_register "rm -rf '$(dirname "$new_dir")'"
+    e2e_cleanup_register "e2e_remove_below '${HOME}/.skiff/volumes' '$(dirname "$new_dir")'"
     e2e_kubectl delete pod second -n "$NS" --timeout=60s > /dev/null
     e2e_kubectl delete pvc "$CLAIM" -n "$NS" --timeout=60s > /dev/null
     e2e_kubectl delete namespace "$NS" --wait=false > /dev/null

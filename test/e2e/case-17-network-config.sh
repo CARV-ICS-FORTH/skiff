@@ -305,7 +305,7 @@ EOF
     e2e_kubectl delete pod e2e32-state e2e32-scratch e2e32-elsewhere e2e32-claim-pod -n "$NS" --wait=false > /dev/null
     e2e_kubectl delete pvc e2e32-claim -n "$NS" --wait=false > /dev/null || true
     e2e_kubectl delete pv "e2e32-pv-${E2E_RUN_ID}" --wait=false > /dev/null || true
-    rm -rf "${HOME}/.skiff/${dir_state}"
+    e2e_remove_below "${HOME}/.skiff" "${HOME}/.skiff/${dir_state}"
     runtime_ssh_node "$ip" "rm -rf '${dir_scratch}'" || true
 }
 e2e_subcase_run T32-volume-roots volume_roots

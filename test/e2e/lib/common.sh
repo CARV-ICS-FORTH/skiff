@@ -370,6 +370,28 @@ e2e_preserve_failure() {
     fi
 }
 
+# e2e_remove_below ROOT DIR: remove DIR, which must lie strictly below ROOT. The paths the cases
+# remove are worked out from what a cluster reports (the directory of a volume, the job's own
+# directory), and a path that comes out empty, short or wrong must not become `rm -rf` of a
+# home directory (one did: the directory worked out from a claim that was never bound was
+# the home itself, and the cleanup took the account's files, its ssh keys among them, with it).
+# An empty, relative or `..` path, ROOT itself, and ROOT being /, the home or empty are refused.
+e2e_remove_below() {
+    local root="${1%/}" dir="$2"
+    if [ -z "$root" ] || [ "$root" = "${HOME%/}" ] || [[ "$root" != /?* ]]; then
+        e2e_fail "refusing to remove below '${1}': not a directory below the home"
+        return 1
+    fi
+    case "$dir" in
+        "$root"/?*) ;;
+        *) e2e_fail "refusing to remove '${dir}': not strictly below '${root}'"; return 1 ;;
+    esac
+    case "$dir" in
+        */../*|*/..|*/./*|*/.) e2e_fail "refusing to remove '${dir}': it has . or .. parts"; return 1 ;;
+    esac
+    rm -rf -- "$dir"
+}
+
 # ---------------------------------------------------------------------------
 # Cleanup registry (LIFO stack)
 # ---------------------------------------------------------------------------

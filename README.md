@@ -190,6 +190,8 @@ Build the bubble image with Docker:
 make images
 ```
 
+**Versions.** The bubble image carries K3s v1.35.0+k3s1 (Kubernetes 1.35, checksummed in `images/skiff-bubble/Dockerfile`) and Apptainer from its PPA; Skifflet is built against Virtual Kubelet v1.14.0 and `client-go` v0.36 (one minor version ahead of the API server, which Kubernetes supports; see `skifflet/go.mod`) with the Go release pinned in `images/skiff-builder/Dockerfile`. Change the K3s version only together with a run of the whole suite: Skifflet implements the kubelet's side of that API.
+
 ---
 
 ## Evaluating Locally with Vagrant

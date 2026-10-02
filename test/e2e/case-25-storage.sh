@@ -327,7 +327,7 @@ delete_and_retain() {
     e2e_assert_eq "the retained data is on the filesystem" "$(runtime_ssh_node "$SHARED_HOME_HOST" "cat '$dir_data/result'")" kept
     # (Cleaning up retained data is the user's: it can be found by its name and removed by hand.)
     e2e_kubectl delete pv "$keep_pv" --wait=false > /dev/null
-    runtime_ssh_node "$SHARED_HOME_HOST" "rm -rf '$dir_data'"
+    e2e_remove_below "${HOME}/.skiff/volumes" "$dir_data"
 }
 e2e_subcase_run T29-delete-and-retain delete_and_retain
 
@@ -366,7 +366,7 @@ e2e_subcase_run T29-cleanup-retry cleanup_retry
 # ---------------------------------------------------------------------------
 user_owned() {
     local dir="e2e25-user-${E2E_RUN_ID}" pv="e2e25-user-${E2E_RUN_ID}"
-    e2e_cleanup_register "e2e_kubectl delete pv $pv --ignore-not-found --wait=false; rm -rf ${HOME}/.skiff/$dir"
+    e2e_cleanup_register "e2e_kubectl delete pv $pv --ignore-not-found --wait=false; e2e_remove_below ${HOME}/.skiff ${HOME}/.skiff/$dir"
     cat <<EOF | e2e_kubectl apply -f - > /dev/null
 apiVersion: v1
 kind: PersistentVolume

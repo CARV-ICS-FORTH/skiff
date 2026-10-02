@@ -131,7 +131,7 @@ e2e_wait_condition 90 "all allocated nodes released bubble processes and ports" 
 # The data of the job's claims outlived the job: nothing deleted it. (It is the user's now,
 # to keep or to remove; the test removes it.)
 e2e_assert_eq "the data of a claim survives the failed job" "$(cat "$VOLUME_DIR/precious" 2>/dev/null)" kept
-rm -rf "$(dirname "$VOLUME_DIR")"
+e2e_remove_below "${HOME}/.skiff/volumes" "$(dirname "$VOLUME_DIR")"
 
 # 2. Verify bubble instances on NODE_B terminated cleanly
 e2e_pass "Bubble processes and forwarded ports released on both allocated nodes"

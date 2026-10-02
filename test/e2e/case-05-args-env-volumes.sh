@@ -114,7 +114,7 @@ spec:
   resources: {requests: {storage: 1Gi}}
 EOF
     claim_pod e2e27-waiter e2e27-claim
-    e2e_cleanup_register "e2e_kubectl delete pv ${pv} --ignore-not-found --wait=false; rm -rf \$HOME/.skiff/${dir}"
+    e2e_cleanup_register "e2e_kubectl delete pv ${pv} --ignore-not-found --wait=false; e2e_remove_below \$HOME/.skiff \$HOME/.skiff/${dir}"
     sleep 80
     waited=$((SECONDS - start))
     e2e_assert_eq "after ${waited}s the pod is still Pending" "$(e2e_kubectl get pod e2e27-waiter -n "$NS" -o jsonpath='{.status.phase}')" Pending
