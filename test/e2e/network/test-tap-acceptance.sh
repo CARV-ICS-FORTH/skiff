@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# Run on the controller VM after the two-node Skiff job is ready.
+# Run after the two-node Skiff job is ready.
 set -euo pipefail
 
-kubectl() {
-    apptainer exec --pwd / instance://bubble1 k3s kubectl --kubeconfig /var/lib/skiff/kubeconfig "$@"
-}
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The host's kubectl, against the cluster's credentials; and the controller's bubble, which is
+# on whichever node runs the controller (not necessarily this host).
+# shellcheck source=../lib/common.sh
+source "$SCRIPT_DIR/../lib/common.sh"
+# shellcheck source=../lib/runtime.sh
+source "$SCRIPT_DIR/../lib/runtime.sh"
+# (the function below is named like the program: e2e_kubectl must run the program, not it)
+E2E_KUBECTL="$(type -P kubectl || echo /nonexistent-kubectl)"
+kubectl() { e2e_kubectl "$@"; }
+
 # The cluster's configuration (run with the SKIFF_* variables the cluster was started with).
 # shellcheck source=../../../scripts/skiff.sh
 source "${E2E_CONFIG_SCRIPT:-$SCRIPT_DIR/../../../scripts/skiff.sh}"
@@ -88,5 +94,5 @@ kubectl -n "$namespace" exec client-controller -- python3 /srv/client.py unknown
 
 echo "Logs and gateway state"
 kubectl -n "$namespace" logs echo-node --tail=5
-apptainer exec --pwd / instance://bubble1 plaidctl status
+runtime_controller_exec plaidctl status
 echo "TAP acceptance passed"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run on the controller VM with test/tap-acceptance.yaml already applied.
+# Run with test/tap-acceptance.yaml already applied.
 set -euo pipefail
 
 # The cluster's configuration (run with the SKIFF_* variables the cluster was started with).
@@ -7,9 +7,15 @@ set -euo pipefail
 source "${E2E_CONFIG_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../../../scripts/skiff.sh}"
 skiff_config_validate
 
-kubectl() {
-    apptainer exec --pwd / instance://bubble1 k3s kubectl --kubeconfig /var/lib/skiff/kubeconfig "$@"
-}
+# The host's kubectl, against the cluster's credentials; and the controller's bubble, which is
+# on whichever node runs the controller (not necessarily this host).
+# shellcheck source=../lib/common.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
+# shellcheck source=../lib/runtime.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/runtime.sh"
+# (the function below is named like the program: e2e_kubectl must run the program, not it)
+E2E_KUBECTL="$(type -P kubectl || echo /nonexistent-kubectl)"
+kubectl() { e2e_kubectl "$@"; }
 
 test_dir=$(mktemp -d)
 cleanup() {
@@ -59,7 +65,7 @@ cat "$webhook_manifest" | kubectl apply -f -
 kubectl -n tap-acceptance wait --for=condition=Ready pod/admission-controller pod/admission-node --timeout=180s
 service_ip=$(kubectl -n tap-acceptance get service admission -o jsonpath='{.spec.clusterIP}')
 for attempt in $(seq 1 120); do
-    if apptainer exec --pwd / instance://bubble1 curl -ks --connect-timeout 1 --max-time 2 -o /dev/null "https://$service_ip/mutate"; then
+    if runtime_controller_exec curl -ks --connect-timeout 1 --max-time 2 -o /dev/null "https://$service_ip/mutate"; then
         break
     fi
     if [ "$attempt" -eq 120 ]; then
@@ -116,7 +122,7 @@ for attempt in $(seq 1 120); do
 done
 kubectl -n tap-acceptance get endpoints admission -o wide
 for attempt in $(seq 1 120); do
-    if apptainer exec --pwd / instance://bubble1 curl -ks --connect-timeout 1 --max-time 2 -o /dev/null "https://$service_ip/mutate"; then
+    if runtime_controller_exec curl -ks --connect-timeout 1 --max-time 2 -o /dev/null "https://$service_ip/mutate"; then
         break
     fi
     if [ "$attempt" -eq 120 ]; then

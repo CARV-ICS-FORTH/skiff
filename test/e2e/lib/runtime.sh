@@ -75,6 +75,27 @@ runtime_bubble_exec() {
 
 runtime_node_exec() { runtime_bubble_exec "$@"; }
 
+# runtime_controller_node: the Kubernetes node whose bubble is the controller's (bubble1). On the
+# Vagrant VMs that is the machine the suite runs on; on a cluster it is a compute node.
+runtime_controller_node() {
+    local node ip
+    for node in "$(e2e_node_a)" "$(e2e_node_b)"; do
+        ip=$(runtime_node_ip "$node") || continue
+        if runtime_ssh_node "$ip" "apptainer instance list 2>/dev/null | awk '\$1 == \"bubble1\" {f = 1} END {exit !f}'" >/dev/null 2>&1; then
+            echo "$node"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# runtime_controller_exec COMMAND...: run a command inside the controller's bubble, wherever it is.
+runtime_controller_exec() {
+    local node
+    node=$(runtime_controller_node) || return 1
+    runtime_bubble_exec "$node" "$*"
+}
+
 # ---------------------------------------------------------------------------
 # Runtime identity store
 # Keyed by "<ns>/<pod>"; values are pipe-separated fields:
