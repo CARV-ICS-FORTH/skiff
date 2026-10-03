@@ -385,13 +385,28 @@ e2e_preserve_failure() {
         > "${outdir}/events.txt" 2>&1 || true
     e2e_kubectl get pods -n "$ns" -o wide \
         > "${outdir}/pods.txt" 2>&1 || true
-    if [ -n "$pod" ]; then
-        e2e_kubectl describe pod "$pod" -n "$ns" \
-            > "${outdir}/describe-${pod}.txt" 2>&1 || true
+    # What a pod says about itself, and what its container said now and before its last restart:
+    # for the pod asked for, or for every pod of the namespace.
+    local p pods
+    if [ -n "$pod" ]; then pods="$pod"; else pods=$(e2e_kubectl get pods -n "$ns" -o name 2>/dev/null | sed 's|^pod/||' || true); fi
+    for p in $pods; do
+        e2e_kubectl describe pod "$p" -n "$ns" \
+            > "${outdir}/describe-${p}.txt" 2>&1 || true
         # Mask any lines that look like secret values
-        e2e_kubectl logs "$pod" -n "$ns" --all-containers 2>&1 \
+        e2e_kubectl logs "$p" -n "$ns" --all-containers 2>&1 \
             | sed 's/\(secret\|password\|token\|key\)=[^ ]*/\1=***/gi' \
-            > "${outdir}/logs-${pod}.txt" 2>&1 || true
+            > "${outdir}/logs-${p}.txt" 2>&1 || true
+        e2e_kubectl logs "$p" -n "$ns" --all-containers --previous 2>&1 \
+            | sed 's/\(secret\|password\|token\|key\)=[^ ]*/\1=***/gi' \
+            > "${outdir}/logs-previous-${p}.txt" 2>&1 || true
+    done
+    # What Skifflet of each node says about the namespace (the runtime's side of it).
+    if declare -F runtime_bubble_exec >/dev/null 2>&1; then
+        local node
+        for node in $(e2e_all_nodes 2>/dev/null || true); do
+            runtime_bubble_exec "$node" "grep -F '\"${ns}\"' /var/log/skifflet.log | tail -150" \
+                > "${outdir}/skifflet-${node}.txt" 2>&1 || true
+        done
     fi
 }
 

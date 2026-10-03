@@ -44,6 +44,18 @@ concurrent_pull() {
     # Nothing of this image in the cache: the pods below are the first to want it.
     for f in $(cached_files); do e2e_remove_below "$CACHE_DIR" "$CACHE_DIR/$f"; done
     e2e_assert_eq "the image is not cached" "$(cached_files | wc -l | tr -d ' ')" 0
+    # The nodes must agree that it is gone. The file was removed here, which may be the shared
+    # filesystem's server; a node that used the image a moment ago still has it in its cache of the
+    # directory, would take it for cached, and its container would fail to open it (the nodes' clients
+    # revalidate on opening a directory, which is what listing it does). Nobody removes a cached image
+    # behind a running Skifflet but this test.
+    gone_everywhere() {
+        local n
+        for n in "${NODES[@]}"; do
+            [ "$(runtime_ssh_node "$(runtime_node_ip "$n")" "ls '$CACHE_DIR' >/dev/null; ls '$CACHE_DIR' | grep -c '^${CACHE_NAME}.*\.sif\$'" 2>/dev/null | tail -1)" = 0 ] || return 1
+        done
+    }
+    e2e_wait_condition 90 "every node sees the image gone from the cache" gone_everywhere
     # A pod on every node, created together.
     for node in "${NODES[@]}"; do
         i=$((i + 1)); pod="pull-$i"; pods+=("$pod")
