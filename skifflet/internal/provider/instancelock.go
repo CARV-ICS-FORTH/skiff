@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"skifflet/internal/compute"
 	"syscall"
 )
 
@@ -12,12 +13,21 @@ var (
 	ErrInstanceLocked = errors.New("another skifflet instance holds the runtime lock")
 )
 
+// InstanceLockDir is where the lock of this node's runtime lives: the node's scratch directory,
+// which also holds the pods' runtime state (.pods) the lock protects. Not the state directory:
+// that is on the shared home, where one lock would be shared by the Skifflets of every node (on
+// NFS flock is network-wide) and the second node to start would be refused.
+func InstanceLockDir() string {
+	return compute.Skiff.TmpDir()
+}
+
 // InstanceLock represents an advisory lock held on the Skiff runtime directory.
 type InstanceLock struct {
 	file *os.File
 }
 
-// AcquireInstanceLock obtains an exclusive non-blocking lock on <skiffDir>/skifflet.lock.
+// AcquireInstanceLock obtains an exclusive non-blocking lock on <skiffDir>/skifflet.lock
+// (see InstanceLockDir for which directory).
 func AcquireInstanceLock(skiffDir string) (*InstanceLock, error) {
 	if err := os.MkdirAll(skiffDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create runtime directory for lock: %w", err)

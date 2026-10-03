@@ -2,8 +2,29 @@ package provider
 
 import (
 	"errors"
+	"path/filepath"
+	"skifflet/internal/compute"
+	"skifflet/internal/compute/endpoint"
 	"testing"
 )
+
+// The lock is node-local: in the scratch directory, never in the state directory, which is on
+// the shared home and is the same directory on every node (on NFS a lock there is held
+// against all of them: the first node's Skifflet would keep every other from starting).
+func TestInstanceLockDir_IsTheNodesScratchNotTheSharedState(t *testing.T) {
+	home := t.TempDir()
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	saved := compute.Skiff
+	compute.Skiff = endpoint.SkiffWithTmp(home, scratch)
+	defer func() { compute.Skiff = saved }()
+
+	if got := InstanceLockDir(); got != scratch {
+		t.Fatalf("lock directory = %q, want the scratch directory %q", got, scratch)
+	}
+	if InstanceLockDir() == compute.Skiff.String() {
+		t.Fatalf("the lock is in the state directory %q, which is shared between nodes", compute.Skiff.String())
+	}
+}
 
 func TestInstanceLock_MutualExclusion(t *testing.T) {
 	tmpDir := t.TempDir()

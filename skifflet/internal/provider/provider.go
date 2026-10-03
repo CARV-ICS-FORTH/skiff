@@ -118,7 +118,7 @@ func NewVirtualK8S(config InitConfig) (*VirtualK8S, error) {
 	/*---------------------------------------------------
 	 * Acquire Advisory Runtime Instance Lock
 	 *---------------------------------------------------*/
-	lock, err := AcquireInstanceLock(compute.Skiff.String())
+	lock, err := AcquireInstanceLock(InstanceLockDir())
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire instance lock: %w", err)
 	}
