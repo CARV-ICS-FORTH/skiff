@@ -429,11 +429,53 @@ skiff_check_node() {
     userns=$(cat "$(_skiff_sys /proc/sys/user/max_user_namespaces)" 2>/dev/null || true)
     clone=$(cat "$(_skiff_sys /proc/sys/kernel/unprivileged_userns_clone)" 2>/dev/null || true)
     if [ "$userns" = 0 ]; then
-        echo "$host: unprivileged user namespaces are disabled (user.max_user_namespaces is 0); Skiff cannot run without them: ask the administrator to set it above 0" >&2
+        echo "$host: unprivileged user namespaces are disabled (user.max_user_namespaces is 0); Skiff requires them: please contact your administrator and request that user.max_user_namespaces be set above 0 (sysctl, persisted in /etc/sysctl.d/)" >&2
         errors=$((errors + 1))
     elif [ "$clone" = 0 ]; then
-        echo "$host: unprivileged user namespaces are disabled (kernel.unprivileged_userns_clone is 0); Skiff cannot run without them: ask the administrator to set it to 1" >&2
+        echo "$host: unprivileged user namespaces are disabled (kernel.unprivileged_userns_clone is 0); Skiff requires them: please contact your administrator and request that kernel.unprivileged_userns_clone be set to 1 (sysctl, persisted in /etc/sysctl.d/)" >&2
         errors=$((errors + 1))
+    fi
+
+    # Ubuntu 24.04 and later: AppArmor lets only programs that have a profile create user
+    # namespaces (kernel.apparmor_restrict_unprivileged_userns). The Apptainer package installs a
+    # profile for /usr/bin/apptainer; a copy anywhere else, such as the one skiff.sh tools puts in
+    # ~/.skiff/tools, has none and every container fails with "Could not write info to setgroups".
+    # Asked of the system itself: can this program create a user namespace here?
+    local restrict apptainer_path
+    restrict=$(cat "$(_skiff_sys /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" 2>/dev/null || true)
+    apptainer_path=$(command -v apptainer 2>/dev/null || true)
+    if [ "$restrict" = 1 ] && [ -n "$apptainer_path" ] && [ "$userns" != 0 ] && [ "$clone" != 0 ] \
+        && [ "$apptainer_path" != /usr/bin/apptainer ] && command -v unshare >/dev/null 2>&1 \
+        && ! unshare --user --map-root-user true >/dev/null 2>&1; then
+        echo "$host: AppArmor restricts user namespaces on this node to programs that have a profile (kernel.apparmor_restrict_unprivileged_userns is 1) and the Apptainer in use ($apptainer_path) has none, so no container can start. Skiff requires user namespaces: please contact your administrator and request either that kernel.apparmor_restrict_unprivileged_userns be set to 0 (sysctl, persisted in /etc/sysctl.d/), or that Apptainer be installed as a system package, which installs its AppArmor profile$([ -x /usr/bin/apptainer ] && echo " (this node has one, /usr/bin/apptainer: remove $SKIFF_TOOLS_DIR to use it)")" >&2
+        errors=$((errors + 1))
+    fi
+
+    # An Apptainer that is not installed setuid maps the ids of its user namespaces (--fakeroot,
+    # which the bubble needs) through newuidmap and newgidmap, which must be setuid root: only
+    # an administrator can install them (package uidmap); a copy in the user's home is not setuid.
+    if [ -n "$apptainer_path" ]; then
+        local libexec suid=no idmap idmap_path idmap_missing="" idmap_plain=""
+        libexec=$(apptainer buildcfg 2>/dev/null | sed -n 's/^LIBEXECDIR=//p') || true
+        if [ -n "$libexec" ] && [ -u "$libexec/apptainer/bin/starter-suid" ]; then suid=yes; fi
+        if [ "$suid" = no ]; then
+            for idmap in newuidmap newgidmap; do
+                idmap_path=$(command -v "$idmap" 2>/dev/null || true)
+                if [ -z "$idmap_path" ]; then
+                    idmap_missing="${idmap_missing:+$idmap_missing and }$idmap"
+                elif [ ! -u "$idmap_path" ]; then
+                    idmap_plain="${idmap_plain:+$idmap_plain and }$idmap ($idmap_path)"
+                fi
+            done
+            if [ -n "$idmap_missing" ]; then
+                echo "$host: $idmap_missing not installed, and the Apptainer in use ($apptainer_path) is not installed setuid, so it needs them to map the ids of its user namespaces (--fakeroot). Skiff requires newuidmap and newgidmap: please contact your administrator and request that the package uidmap be installed" >&2
+                errors=$((errors + 1))
+            fi
+            if [ -n "$idmap_plain" ]; then
+                echo "$host: $idmap_plain not setuid root, and the Apptainer in use ($apptainer_path) is not installed setuid, so it cannot map the ids of its user namespaces (--fakeroot). Skiff requires the system's newuidmap and newgidmap: please contact your administrator and request that the package uidmap be installed" >&2
+                errors=$((errors + 1))
+            fi
+        fi
     fi
 
     # The bubble runs as root in a user namespace of the user's (--fakeroot): that needs a
@@ -445,7 +487,7 @@ skiff_check_node() {
     if grep -q "^$user:" "$(_skiff_sys /etc/subuid)" 2>/dev/null; then subuid=yes; fi
     if grep -q "^$user:" "$(_skiff_sys /etc/subgid)" 2>/dev/null; then subgid=yes; fi
     if { [ "$subuid" = no ] || [ "$subgid" = no ]; } && ! { command -v getsubids >/dev/null 2>&1 && getsubids "$user" >/dev/null 2>&1; }; then
-        echo "$host: no subordinate user/group id range for $user (Skiff starts its bubble with --fakeroot, which needs one): ask the administrator to add \"$user:100000:65536\" to /etc/subuid and /etc/subgid" >&2
+        echo "$host: no subordinate user/group id range for $user (Skiff starts its bubble with --fakeroot and requires one): please contact your administrator and request that the line \"$user:100000:65536\" be added to /etc/subuid and /etc/subgid on every compute node (usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user)" >&2
         errors=$((errors + 1))
     fi
 
@@ -494,8 +536,19 @@ skiff_node_report() {
         tmpfs|cgroup) cgroup=v1 ;;
     esac
     echo "$(hostname): kernel $(uname -r), $(uname -m), cgroup $cgroup, user $(id -un)"
+    local all first rest
     for tool in apptainer slirp4netns; do
-        command -v "$tool" >/dev/null 2>&1 && echo "$(hostname): $tool $(_skiff_version "$tool") ($(command -v "$tool"))"
+        command -v "$tool" >/dev/null 2>&1 || continue
+        # Where it comes from; and, when it is the one from ~/.skiff/tools, what it takes the
+        # place of (the system's own is not used while the extracted tools are first in PATH).
+        all=$(type -ap "$tool" 2>/dev/null) || true
+        first=${all%%$'\n'*}
+        rest=${all#*$'\n'}
+        if [ "$rest" != "$all" ] && [[ "$first" == "$SKIFF_TOOLS_DIR"/* ]]; then
+            echo "$(hostname): $tool $(_skiff_version "$tool") ($first, instead of the system's ${rest%%$'\n'*}; remove $SKIFF_TOOLS_DIR to use that)"
+        else
+            echo "$(hostname): $tool $(_skiff_version "$tool") ($first)"
+        fi
     done
     fstype=$(stat -f -c %T "$SKIFF_TMP_DIR" 2>/dev/null || true)
     echo "$(hostname): scratch $SKIFF_TMP_DIR${fstype:+ ($fstype)}"

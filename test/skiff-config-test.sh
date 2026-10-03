@@ -127,11 +127,11 @@ expect "the Nth address of the pod network" "$(env -i PATH="$PATH" SKIFF_POD_CID
 nodedir=$(mktemp -d)
 trap 'rm -rf "$nodedir"' EXIT
 mkdir -p "$nodedir/base" "$nodedir/tools" "$nodedir/fake"
-for command in mkdir stat hostname id cat grep uname; do ln -s "$(command -v "$command")" "$nodedir/base/$command"; done
+for command in mkdir stat hostname id cat grep uname sed; do ln -s "$(command -v "$command")" "$nodedir/base/$command"; done
 user=$(id -un)
-printf '#!/bin/sh\necho "apptainer version ${FAKE_APPTAINER:-1.5.4}"\n' > "$nodedir/tools/apptainer"
+printf '#!/bin/sh\ncase "$1" in buildcfg) echo "LIBEXECDIR=${FAKE_LIBEXEC:-}" ;; *) echo "apptainer version ${FAKE_APPTAINER:-1.5.4}" ;; esac\n' > "$nodedir/tools/apptainer"
 printf '#!/bin/sh\necho "slirp4netns version ${FAKE_SLIRP:-1.2.1}"\necho "commit: abcdef"\n' > "$nodedir/tools/slirp4netns"
-for tool in socat ip; do printf '#!/bin/sh\n' > "$nodedir/tools/$tool"; done
+for tool in socat ip newuidmap newgidmap; do printf '#!/bin/sh\n' > "$nodedir/tools/$tool"; done
 # ss: what listens on this host (FAKE_TCP and FAKE_UDP are lines of its output).
 cat > "$nodedir/tools/ss" <<'EOF2'
 #!/bin/sh
@@ -139,6 +139,7 @@ echo "State Recv-Q Send-Q Local Address:Port Peer Address:Port"
 case "$1" in -ltn) echo "${FAKE_TCP:-}" ;; -lun) echo "${FAKE_UDP:-}" ;; esac
 EOF2
 chmod +x "$nodedir/tools/"*
+chmod u+s "$nodedir/tools/newuidmap" "$nodedir/tools/newgidmap"   # (setuid root on a real host)
 # stat: the owner of the scratch directory and the kind of filesystem it is on.
 cat > "$nodedir/fake/stat" <<'EOF2'
 #!/bin/sh
@@ -195,11 +196,44 @@ expect "and one that allows them is fine" "$status:$out" "0:"
 # subordinate ids
 mv "$nodedir/sys/etc/subuid" "$nodedir/sys/etc/subuid.away"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
-expect "a user without subordinate ids is refused, with the line to add" "$status:$(grep -c "add \"$user:100000:65536\" to /etc/subuid and /etc/subgid" <<< "$out")" "1:1"
+expect "a user without subordinate ids is refused, with the line to add and who to ask" "$status:$(grep -c "contact your administrator and request that the line \"$user:100000:65536\" be added to /etc/subuid and /etc/subgid" <<< "$out")" "1:1"
 printf '#!/bin/sh\nexit 0\n' > "$nodedir/tools/getsubids"; chmod +x "$nodedir/tools/getsubids"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
 expect "unless the site's directory service has a range (getsubids)" "$status:$out" "0:"
 rm "$nodedir/tools/getsubids"; mv "$nodedir/sys/etc/subuid.away" "$nodedir/sys/etc/subuid"
+
+
+# newuidmap and newgidmap: an Apptainer that is not installed setuid maps ids through them
+mkdir "$nodedir/nouidmap" "$nodedir/notsuid"
+for f in "$nodedir/tools/"*; do
+    case "${f##*/}" in newuidmap|newgidmap) ;; *) ln -s "$f" "$nodedir/nouidmap/${f##*/}"; ln -s "$f" "$nodedir/notsuid/${f##*/}" ;; esac
+done
+for f in newuidmap newgidmap; do printf '#!/bin/sh\n' > "$nodedir/notsuid/$f"; chmod 0755 "$nodedir/notsuid/$f"; done
+out=$(node_check "$nodedir/nouidmap:$nodedir/base" "$nodedir/scratch"); status=$?
+expect "missing newuidmap and newgidmap are refused, naming the package to ask for" "$status:$(grep -c 'newuidmap and newgidmap not installed' <<< "$out"):$(grep -c 'contact your administrator and request that the package uidmap be installed' <<< "$out")" "1:1:1"
+out=$(node_check "$nodedir/notsuid:$nodedir/base" "$nodedir/scratch"); status=$?
+expect "copies that are not setuid root are refused too" "$status:$(grep -c 'newuidmap (.*) and newgidmap (.*) not setuid root' <<< "$out")" "1:1"
+mkdir -p "$nodedir/suidlibexec/apptainer/bin"; : > "$nodedir/suidlibexec/apptainer/bin/starter-suid"; chmod u+s "$nodedir/suidlibexec/apptainer/bin/starter-suid"
+out=$(node_check "$nodedir/nouidmap:$nodedir/base" "$nodedir/scratch" "" FAKE_LIBEXEC="$nodedir/suidlibexec"); status=$?
+expect "an Apptainer installed setuid needs neither" "$status:$out" "0:"
+out=$(node_check "$nodedir/base" "$nodedir/scratch"); status=$?
+expect "without Apptainer they are not asked about (it is already reported)" "$(grep -c 'newuidmap' <<< "$out")" 0
+
+# AppArmor's restriction of user namespaces (Ubuntu 24.04 and later)
+mkdir "$nodedir/unshare-fails" "$nodedir/unshare-ok"
+printf '#!/bin/sh\nexit 1\n' > "$nodedir/unshare-fails/unshare"; printf '#!/bin/sh\nexit 0\n' > "$nodedir/unshare-ok/unshare"
+chmod +x "$nodedir/unshare-fails/unshare" "$nodedir/unshare-ok/unshare"
+echo 1 > "$nodedir/sys/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+out=$(node_check "$nodedir/unshare-fails:$GOOD" "$nodedir/scratch"); status=$?
+expect "a restricted node where no user namespace can be made is refused, with what to ask for" "$status:$(grep -c 'kernel.apparmor_restrict_unprivileged_userns is 1' <<< "$out"):$(grep -c 'contact your administrator and request either' <<< "$out")" "1:1:1"
+out=$(node_check "$nodedir/unshare-ok:$GOOD" "$nodedir/scratch"); status=$?
+expect "one where it can (a profile allows it) is fine" "$status:$out" "0:"
+out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+expect "without unshare to ask, the restriction alone refuses nothing" "$status:$out" "0:"
+echo 0 > "$nodedir/sys/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+out=$(node_check "$nodedir/unshare-fails:$GOOD" "$nodedir/scratch"); status=$?
+expect "an unrestricted node is not asked" "$status:$out" "0:"
+rm "$nodedir/sys/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 
 # ports: the controller needs three, a node two; TCP and UDP are told apart
 used_tcp="LISTEN 0 4096 0.0.0.0:6443 0.0.0.0:*"
@@ -228,6 +262,13 @@ out=$(node_check "$nodedir/fake:$GOOD" "$nodedir/not-yet-there" "" FAKE_OWNER=so
 expect "one that does not exist yet is nobody's" "$status:$out" "0:"
 out=$(node_check "$nodedir/base" "$nodedir/a-file/scratch"); status=$?
 expect "every problem of a node is reported at once" "$status:$(grep -c . <<< "$out")" "1:2"
+
+# where the programs come from: the ones taken out of the image come first and say what they replace
+mkdir -p "$nodedir/h/.skiff/tools/bin"
+printf '#!/bin/sh\necho "apptainer version 9.9.9"\n' > "$nodedir/h/.skiff/tools/bin/apptainer"; chmod +x "$nodedir/h/.skiff/tools/bin/apptainer"
+out=$(env -i PATH="$GOOD" HOME="$nodedir/h" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" -c 'source "$1"; skiff_node_report' _ "$repo_dir/scripts/skiff.sh" 2>&1)
+expect "the report says an extracted program takes the place of the system's" "$(grep -c "apptainer 9.9.9 ($nodedir/h/.skiff/tools/bin/apptainer, instead of the system's $nodedir/tools/apptainer; remove $nodedir/h/.skiff/tools to use that)" <<< "$out")" 1
+expect "and a program that replaces nothing is just placed" "$(grep -c "slirp4netns 1.2.1 ($nodedir/tools/slirp4netns)" <<< "$out")" 1
 
 # the command: `skiff.sh check`
 check_cmd() { env -i PATH="$GOOD" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$@" "$BASH" "$repo_dir/scripts/skiff.sh" check controller 2>&1; }

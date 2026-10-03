@@ -33,12 +33,15 @@ cd ~/skiff
 sbatch --nodes=2 skiff.slurm
 ```
 
-After startup creates the cluster credentials, configure and use `kubectl`:
+After startup creates the cluster credentials (the job's output says when, and how to connect), configure and use `kubectl`. If you took the tools out of the Skiff image, `kubectl` is the one in `~/.skiff/tools/bin` (Kubernetes 1.35, the cluster's version): run it by its path or put the directory first in your `PATH`:
 
 ```bash
 export KUBECONFIG=${HOME}/.skiff/kubeconfig
+export PATH=${HOME}/.skiff/tools/bin:${PATH}    # only if you ran skiff.sh tools
 kubectl get nodes
 ```
+
+If the site already provides Apptainer, slirp4netns, socat and `kubectl`, you do not need `skiff.sh tools`: without it nothing changes and the system's programs are used. If you run it anyway, the extracted ones come first in `PATH` and the check says which system program each one replaces; remove `~/.skiff/tools` to go back (this matters for Apptainer on Ubuntu 24.04 and later: the system package comes with the AppArmor profile that lets it create user namespaces, a copy in your home does not).
 
 ### Network configuration
 

@@ -92,6 +92,7 @@ for ((i=0; i<NUM_NODES; i++)); do
 done
 if [ "$NODE_PROBLEMS" -gt 0 ]; then
     echo "ERROR: $NODE_PROBLEMS node(s) cannot run Skiff; nothing was started." >&2
+    echo "Some of what Skiff requires only an administrator can provide: the messages above say what, and why; send them to your administrator." >&2
     exit 1
 fi
 
@@ -282,6 +283,12 @@ done
 
 # Active supervision of all background bubble processes
 echo "Cluster nodes started. Supervising job steps..."
+echo "Connect from the login node with:"
+echo "  export KUBECONFIG=$SKIFF_STATE_DIR/kubeconfig"
+if [ -x "$SKIFF_TOOLS_DIR/bin/kubectl" ]; then
+    echo "  export PATH=$SKIFF_TOOLS_DIR/bin:\$PATH     # kubectl is the one taken out of the Skiff image (or run $SKIFF_TOOLS_DIR/bin/kubectl)"
+fi
+echo "  kubectl get nodes"
 while true; do
     for pid in "${BG_PIDS[@]}"; do
         if ! kill -0 "$pid" 2>/dev/null; then

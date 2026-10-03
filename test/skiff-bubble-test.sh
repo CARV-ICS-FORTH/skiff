@@ -28,6 +28,7 @@ cat > "$test_dir/bin/apptainer" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
     --version) echo "apptainer version 1.5.4" ;;
+    buildcfg*) echo "LIBEXECDIR=$FAKE_DIR/libexec" ;;   # a setuid installation: no newuidmap is needed
     *"kill -TERM"*)
         # The request to stop the bubble gracefully (to its entrypoint): it stops, taking its
         # instance with it.
@@ -108,6 +109,7 @@ run_bubble() {
     export FAKE_DIR="$test_dir/fake"
     kill "$(cat "$FAKE_DIR/inst-pid" 2>/dev/null)" 2>/dev/null || true
     rm -rf "$FAKE_DIR"; mkdir -p "$FAKE_DIR"
+    mkdir -p "$FAKE_DIR/libexec/apptainer/bin"; : > "$FAKE_DIR/libexec/apptainer/bin/starter-suid"; chmod u+s "$FAKE_DIR/libexec/apptainer/bin/starter-suid"
     rm -f "$HOME"/.skiff/job-results/*.cause
     # The bubble's instance: a process that lives until the test ends it.
     sleep 600 > /dev/null 2>&1 &
