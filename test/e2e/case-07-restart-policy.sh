@@ -67,6 +67,15 @@ spec:
   - name: app
     image: ${FIXTURE_IMAGE}
     args: ["server", "--port", "9007"]
+    # The server needs a moment to listen, more or less on a slower host. The startup probe holds
+    # the liveness probe (which would restart the container at the first refused connection,
+    # failureThreshold being 1) back until it does, as Kubernetes users guard a slow starter.
+    startupProbe:
+      httpGet:
+        path: /ready
+        port: 9007
+      periodSeconds: 1
+      failureThreshold: 60
     readinessProbe:
       httpGet:
         path: /ready
