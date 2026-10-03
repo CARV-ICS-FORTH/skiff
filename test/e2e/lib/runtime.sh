@@ -81,7 +81,7 @@ runtime_controller_node() {
     local node ip
     for node in "$(e2e_node_a)" "$(e2e_node_b)"; do
         ip=$(runtime_node_ip "$node") || continue
-        if runtime_ssh_node "$ip" "apptainer instance list 2>/dev/null | awk '\$1 == \"bubble1\" {f = 1} END {exit !f}'" >/dev/null 2>&1; then
+        if runtime_ssh_node "$ip" "[ \"\$(apptainer instance list 2>/dev/null | grep -c '^bubble1[[:space:]]')\" -gt 0 ]" >/dev/null 2>&1; then
             echo "$node"
             return 0
         fi

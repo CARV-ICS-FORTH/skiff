@@ -178,9 +178,22 @@ cleanup_slurm() {
         SLURM_EXIT_CODE=$original_status
     fi
     echo "Shutting down Skiff cluster (Job ID: ${SLURM_JOB_ID:-})..."
-    for pid in "${BG_PIDS[@]}"; do
-        kill -TERM "$pid" 2>/dev/null || true
-    done
+    # Tell the bubbles to stop, as a signal to the tasks of their steps and not to srun: a SIGTERM
+    # to srun makes it cancel the step, which Slurm does with SIGKILL, and where processes are
+    # tracked by cgroup (the usual) that kills everything of the step, the bubbles' daemons too,
+    # before the pods have been stopped. A signal to the step's tasks (scancel --signal) leaves the
+    # step running while its bubble script drains the pods and stops its instance.
+    signalled=0
+    if [ -n "${SLURM_JOB_ID:-}" ] && command -v squeue >/dev/null 2>&1 && command -v scancel >/dev/null 2>&1; then
+        for step in $(squeue -s -h -j "$SLURM_JOB_ID" -o %i 2>/dev/null | grep -vE '\.(batch|extern|interactive)$' || true); do
+            scancel --signal=TERM "$step" 2>/dev/null && signalled=1
+        done
+    fi
+    if [ "$signalled" -eq 0 ]; then
+        for pid in "${BG_PIDS[@]}"; do
+            kill -TERM "$pid" 2>/dev/null || true
+        done
+    fi
     # The bubbles stop their pods first (see bubble_drain in skiff.sh): about 30 s.
     local wait_count=0
     while [ $wait_count -lt 40 ]; do

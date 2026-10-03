@@ -13,8 +13,19 @@ case "$*" in
     *) [ "${TEST_EMPTY_NODES:-0}" = 1 ] || echo controller ;;
 esac
 EOF
+# squeue lists nothing, or with TEST_STEPS=1 the steps of the job (what `squeue -s` does).
 cat > "$test_dir/bin/squeue" <<'EOF'
 #!/usr/bin/env bash
+case " $* " in
+    *" -s "*) if [ "${TEST_STEPS:-0}" = 1 ]; then printf '%s.batch\n%s.extern\n%s.0\n' "$SLURM_JOB_ID" "$SLURM_JOB_ID" "$SLURM_JOB_ID"; fi ;;
+esac
+exit 0
+EOF
+# scancel keeps what it is asked and, as a signal to the tasks of a step does, stops the bubble.
+cat > "$test_dir/bin/scancel" <<'EOF'
+#!/usr/bin/env bash
+mkdir -p "$HOME/.skiff"; echo "$*" >> "$HOME/.skiff/scancel-args"
+if [ -s "$HOME/.skiff/bubble-pid" ]; then kill -TERM "$(cat "$HOME/.skiff/bubble-pid")" 2>/dev/null || true; fi
 exit 0
 EOF
 cat > "$test_dir/bin/apptainer" <<'EOF'
@@ -46,7 +57,7 @@ if [ "$TEST_CHILD_MODE" = early ]; then exit 9; fi
 mkdir -p "$HOME/.skiff/tls"
 echo "$SKIFF_JOB_INSTANCE" >> "$HOME/.skiff/instances"
 touch "$HOME/.skiff/kubeconfig" "$HOME/.skiff/tls/server-ca.crt"
-if [ "$TEST_CHILD_MODE" = term ]; then exec sleep 30; fi
+if [ "$TEST_CHILD_MODE" = term ]; then echo $$ > "$HOME/.skiff/bubble-pid"; exec sleep 30; fi
 sleep 0.1
 exit "$TEST_CHILD_MODE"
 EOF
@@ -94,15 +105,17 @@ SLURM_JOB_ID=8996 HOME="$test_dir/home-badtmp" SKIFF_TMP_DIR=relative/scratch ba
 [ "$rc" -eq 1 ] && grep -q 'SKIFF_TMP_DIR.*absolute path' "$test_dir/badtmp.log" || { echo "bad scratch directory: exit $rc" >&2; cat "$test_dir/badtmp.log" >&2; exit 1; }
 
 job=9000
-for mode in 7 0 early empty term; do
+for mode in 7 0 early empty term termsteps; do
     job=$((job + 1))
-    export SLURM_JOB_ID="$job" HOME="$test_dir/home-$mode" TEST_CHILD_MODE="$mode"
+    export SLURM_JOB_ID="$job" HOME="$test_dir/home-$mode" TEST_CHILD_MODE="$mode" TEST_STEPS=0
+    # (termsteps: the job is told to end while its steps are listed by Slurm, as they are on a cluster)
+    if [ "$mode" = termsteps ]; then export TEST_CHILD_MODE=term TEST_STEPS=1; fi
     export SKIFF_DEV=0
     [ "$mode" != 7 ] || unset SKIFF_DEV
     export TEST_EMPTY_NODES=0
     [ "$mode" != empty ] || export TEST_EMPTY_NODES=1
     rc=0
-    if [ "$mode" = term ]; then
+    if [ "$mode" = term ] || [ "$mode" = termsteps ]; then
         bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/$mode.log" 2>&1 &
         supervisor_pid=$!
         for attempt in $(seq 1 50); do
@@ -118,6 +131,14 @@ for mode in 7 0 early empty term; do
         case "$mode" in 7) expected=7 ;; early) expected=9 ;; *) expected=1 ;; esac
     fi
     check_result "$mode" "$expected" "$rc"
+    # Told to end with its steps listed, the job signals the tasks of each step (TERM, so the
+    # bubble drains its pods) and not the srun that started it; never the batch or extern step.
+    if [ "$mode" = termsteps ]; then
+        grep -qx -- "--signal=TERM ${SLURM_JOB_ID}.0" "$HOME/.skiff/scancel-args" || { echo "$mode: the step was not signalled: $(cat "$HOME/.skiff/scancel-args" 2>&1)" >&2; exit 1; }
+        if grep -qE 'batch|extern' "$HOME/.skiff/scancel-args"; then echo "$mode: a step that is not a bubble was signalled" >&2; exit 1; fi
+    elif [ "$mode" = term ] && [ -e "$HOME/.skiff/scancel-args" ]; then
+        echo "$mode: a step was signalled although Slurm listed none" >&2; exit 1
+    fi
     # Every job's bubbles are told the job's own volume directory name.
     if [ "$mode" != empty ] && [ "$mode" != early ]; then
         grep -Eq "^${SLURM_JOB_ID}-[0-9a-f]{8}\$" "$HOME/.skiff/instances" || { echo "$mode: the bubble was not given this job's volume directory name: $(cat "$HOME/.skiff/instances" 2>&1)" >&2; exit 1; }
