@@ -223,7 +223,7 @@ func resourceMetrics(s usageSnapshot) []*dto.MetricFamily {
 		podCPU = append(podCPU, labelled(s.At, cpu, true, labels...))
 		podMemory = append(podMemory, labelled(s.At, float64(memory), false, labels...))
 	}
-	return []*dto.MetricFamily{
+	families := []*dto.MetricFamily{
 		counter("node_cpu_usage_seconds_total", "Cumulative cpu time consumed by the node in core-seconds", labelled(s.At, s.Node.CPUSeconds, true)),
 		gauge("node_memory_working_set_bytes", "Current working set of the node in bytes", labelled(s.At, float64(s.Node.WorkingSetBytes), false)),
 		counter("container_cpu_usage_seconds_total", "Cumulative cpu time consumed by the container in core-seconds", containerCPU...),
@@ -233,6 +233,16 @@ func resourceMetrics(s usageSnapshot) []*dto.MetricFamily {
 		gauge("pod_memory_working_set_bytes", "Current working set of the pod in bytes", podMemory...),
 		gauge("resource_scrape_error", "1 if there was an error while getting container metrics, 0 otherwise", labelled(s.At, 0, false)),
 	}
+	// A family with no sample is left out, as the kubelet does when a node runs no container: its
+	// header alone is not valid exposition for the API server's proxy, which refuses the whole answer
+	// ("MetricFamily has no metrics"), and so would kubectl top and metrics-server.
+	present := families[:0]
+	for _, family := range families {
+		if len(family.Metric) > 0 {
+			present = append(present, family)
+		}
+	}
+	return present
 }
 
 // GetStatsSummary serves the kubelet's /stats/summary.

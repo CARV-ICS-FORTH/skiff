@@ -53,6 +53,33 @@ func metric(t *testing.T, families []*dto.MetricFamily, name string, labels ...s
 	return nil
 }
 
+// A node that runs no container has the node's metrics and nothing per container or pod: the
+// families that would have no sample are not there. A family with a header and no sample is
+// refused by the API server's proxy ("MetricFamily has no metrics"), which made kubectl top
+// and the kubelet endpoints fail on a node with no pod.
+func TestResourceMetrics_NodeWithoutContainers(t *testing.T) {
+	snapshot := testSnapshot(time.Unix(1_700_000_000, 0))
+	snapshot.Pods = nil
+	families := resourceMetrics(snapshot)
+	got := map[string]bool{}
+	for _, f := range families {
+		if len(f.Metric) == 0 {
+			t.Errorf("family %s has no sample", f.GetName())
+		}
+		got[f.GetName()] = true
+	}
+	for _, name := range []string{"node_cpu_usage_seconds_total", "node_memory_working_set_bytes", "resource_scrape_error"} {
+		if !got[name] {
+			t.Errorf("family %s is missing", name)
+		}
+	}
+	for _, name := range []string{"container_cpu_usage_seconds_total", "pod_cpu_usage_seconds_total"} {
+		if got[name] {
+			t.Errorf("family %s is there with nothing to say", name)
+		}
+	}
+}
+
 // What metrics-server reads: the kubelet's names, cumulative CPU as counters (so rates can
 // be computed), memory as gauges, a start time per container (so a restart is not taken for
 // a counter that went backwards), a timestamp on every sample, and a pod total.
