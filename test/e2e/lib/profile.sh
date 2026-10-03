@@ -107,3 +107,21 @@ profile_merge_subresults() {
             if (bad) printf "MALFORMED-SUBRESULT\tFAIL\n"
         }' "$file"
 }
+
+# The cases of a smoke run (run-all.sh --smoke): one of each kind of thing a change or a new
+# host can break, on a single fresh cluster, in minutes instead of hours. Startup and the
+# failure of a daemon (the cause it records) are added by the runner; the cases that start
+# jobs of their own, and the long ones (storage, repetition, hooks, probes), are not here.
+#   02 03   pods and the pod network between the nodes
+#   04      cluster DNS, ClusterIP Services, readiness
+#   05      arguments, environment, volumes
+#   06      logs, exec, port-forward (the kubelet's API)
+#   20      the overlay's socket, held on the host
+#   23      NodePorts, published on the host through slirp4netns
+#   24 27   the node's scratch: temporary files, the writable layer of a container
+#   28 30   usage metrics, what the node advertises against what Slurm granted
+#   29 31   securityContext, the forms of volumes charts use
+# (NET-3, the TAP acceptance checks, is run after them by the runner.)
+profile_smoke_cases() {
+    echo 02 03 04 05 06 20 23 24 27 28 29 30 31
+}

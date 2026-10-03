@@ -10,6 +10,9 @@
 #   --registry HOST:PORT     Local registry for fixture images (sets FIXTURE_REGISTRY)
 #   --daemon-class CLASS    Target one daemon class with --case 09
 #   --case N                 Run only case N (1–10; for development)
+#   --smoke                  A short run of representative cases on one fresh cluster (see
+#                            profile_smoke_cases): for checking a change or a new host quickly. It
+#                            does not check the qualification profile; the whole run does.
 #   --no-teardown            Skip cluster cancellation at the end
 #   --preflight-only         Run only the pre-flight scripts, then exit
 #
@@ -28,6 +31,7 @@ NETWORK_DIR="$E2E_DIR/network"
 ONLY_CASE=""
 export NO_TEARDOWN=0
 NETWORK_ONLY=0
+SMOKE=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -37,6 +41,7 @@ while [ $# -gt 0 ]; do
         --daemon-class)   export E2E_DAEMON_CLASS="$2"; shift 2 ;;
         --case)            ONLY_CASE="$2"; shift 2 ;;
         --no-teardown)     export NO_TEARDOWN=1; shift ;;
+        --smoke)           SMOKE=1; shift ;;
         --network-only|--preflight-only) NETWORK_ONLY=1; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -272,6 +277,37 @@ run_networking_tests() {
     echo ""
 }
 
+# run_case_n N: case N by its number (its file is case-N-<name>.sh).
+run_case_n() {
+    local n="$1" file name
+    file=$(ls "$E2E_DIR"/case-"$n"-*.sh 2>/dev/null | sed -n 1p)
+    [ -n "$file" ] || { echo "No case $n" >&2; return 1; }
+    name="${file##*/case-$n-}"
+    run_case "$n" "${name%.sh}"
+}
+
+# run_smoke: the cases of profile_smoke_cases on one fresh cluster, then the failure of a
+# daemon (it ends the cluster, so it is last).
+run_smoke() {
+    run_startup_case
+    if [ "${RESULTS[E2E-01]:-FAIL}" != PASS ]; then
+        e2e_fail "E2E-01 failed; aborting subsequent cases"
+        return 0
+    fi
+    # (the nodes and the architecture, for the verdict; no profile is being checked)
+    collect_candidate_evidence >> "${E2E_LOGDIR}/candidate.log" 2>&1 || true
+    e2e_require_nodes 2
+    echo "--- SMOKE CASES -------------------------------------------------------"
+    local n
+    for n in $(profile_smoke_cases); do
+        run_case_n "$n"
+    done
+    e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
+    run_script "NET-3-tap-acceptance" "$NETWORK_DIR/test-tap-acceptance.sh"
+    e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
+    run_script "E2E-09-skifflet" env E2E_DAEMON_CLASS=skifflet "$E2E_DIR/case-09-daemon-recovery.sh"
+}
+
 run_case() {
     local n="$1" name="$2"
     if [ -n "$ONLY_CASE" ] && [ "$ONLY_CASE" != "$n" ]; then
@@ -482,6 +518,8 @@ if [ -n "$ONLY_CASE" ]; then
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi
+elif [ "$SMOKE" -eq 1 ]; then
+    run_smoke
 elif [ "$NETWORK_ONLY" -eq 1 ]; then
     run_networking_tests
 else
@@ -520,7 +558,7 @@ _run_deferred
 runtime_record_disposable end
 
 INCOMPLETE=0
-if [ -z "$ONLY_CASE" ] && [ "$NETWORK_ONLY" -eq 0 ]; then
+if [ -z "$ONLY_CASE" ] && [ "$NETWORK_ONLY" -eq 0 ] && [ "$SMOKE" -eq 0 ]; then
     profile_status=0
     profile_check_results || profile_status=$?
     case "$profile_status" in
@@ -588,6 +626,8 @@ PYEOF
 # The verdict says what was covered: a focused run did not check the profile.
 if [ $OVERALL -ne 0 ]; then
     echo -e "\033[0;31m>>> FAILED: see the results marked FAIL or missing above <<<\033[0m"
+elif [ "$SMOKE" -eq 1 ]; then
+    echo -e "\033[1;33m>>> SMOKE RUN PASSED: ${#RESULTS[@]} results (${ENVIRONMENT}), a selection of the profile, which was not checked <<<\033[0m"
 elif [ "$INCOMPLETE" -eq 1 ]; then
     unavailable_count=$(profile_unavailable_count)
     required_count=$(profile_required_cases | wc -l | tr -d ' ')
