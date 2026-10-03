@@ -78,6 +78,82 @@ probe client-node udp "$controller_service" "$node_engine"
 probe echo-controller udp "$controller_service" "$controller_engine"
 probe echo-node udp "$node_service" "$node_engine"
 
+# Every further node (a third, a fourth...) joins the mesh: a client and an echo pod with its Service
+# on it, reached from the first two nodes directly and through the Service, and reaching theirs.
+extra_index=0
+for extra_node in $(e2e_all_nodes); do
+    [ "$extra_node" != "$controller_node" ] && [ "$extra_node" != "$worker_node" ] || continue
+    extra_index=$((extra_index + 1))
+    x="x${extra_index}"
+    echo "Node ${extra_node} (${x}): a client and an echo pod, directly and through the Service"
+    for role in client echo; do
+        if [ "$role" = client ]; then
+            command_line='["python3", "-c", "import time; time.sleep(86400)"]'; extra_fields=""
+        else
+            command_line='["python3", "-u", "/srv/server.py"]'
+            extra_fields='    readinessProbe:
+      httpGet: {path: /ready, port: 8080}
+      periodSeconds: 2
+    ports: [{containerPort: 8080}, {containerPort: 8081, protocol: UDP}]'
+        fi
+        kubectl -n "$namespace" apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${role}-${x}
+  namespace: ${namespace}
+  labels: {app: tap-${role}, placement: ${x}}
+spec:
+  nodeSelector: {kubernetes.io/hostname: ${extra_node}}
+  containers:
+  - name: ${role}
+    image: python:3.9-slim
+    command: ${command_line}
+${extra_fields}
+    volumeMounts: [{name: code, mountPath: /srv}]
+  volumes:
+  - name: code
+    configMap: {name: echo-server}
+EOF
+    done
+    kubectl -n "$namespace" apply -f - <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: echo-${x}
+  namespace: ${namespace}
+spec:
+  selector: {app: tap-echo, placement: ${x}}
+  ports:
+  - {name: tcp, port: 8080, targetPort: 8080}
+  - {name: udp, port: 8081, targetPort: 8081, protocol: UDP}
+EOF
+    for pod in client-${x} echo-${x}; do
+        kubectl -n "$namespace" wait --for=condition=Ready "pod/$pod" --timeout=180s
+    done
+    x_client=$(kubectl -n "$namespace" get pod client-${x} -o jsonpath='{.status.podIP}')
+    x_echo=$(kubectl -n "$namespace" get pod echo-${x} -o jsonpath='{.status.podIP}')
+    x_service=$(kubectl -n "$namespace" get service echo-${x} -o jsonpath='{.spec.clusterIP}')
+    x_cidr=$(kubectl get node "$extra_node" -o jsonpath='{.spec.podCIDR}')
+    x_engine=$(printf '%s' "$x_cidr" | awk -F. '{print $1 "." $2 "." $3 ".2"}')
+    probe client-${x} http "$x_echo" "$x_client"
+    probe client-${x} http "$controller_echo" "$x_client"
+    probe client-${x} http "$node_echo" "$x_client"
+    probe client-controller http "$x_echo" "$controller_ip"
+    probe client-node http "$x_echo" "$node_ip"
+    probe client-${x} large "$controller_echo" "$x_client"
+    probe client-controller large "$x_echo" "$controller_ip"
+    probe client-${x} http "$x_service" "$x_engine"
+    probe client-${x} http "$controller_service" "$x_engine"
+    probe client-${x} http "$node_service" "$x_engine"
+    probe client-controller http "$x_service" "$controller_engine"
+    probe client-node http "$x_service" "$node_engine"
+    probe echo-${x} http "$x_service" "$x_engine"
+    probe client-${x} udp "$controller_service" "$x_engine"
+    probe client-controller udp "$x_service" "$controller_engine"
+    probe echo-${x} udp "$x_service" "$x_engine"
+done
+
 echo "Cluster DNS and authorized API Service via IP and DNS name"
 kubectl -n kube-system wait --for=condition=Ready pod -l k8s-app=kube-dns --timeout=60s >/dev/null 2>&1 || true
 for i in $(seq 1 30); do

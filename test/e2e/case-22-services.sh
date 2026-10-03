@@ -13,11 +13,18 @@ source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 22)
-NODE_A=$(e2e_node_a)
-NODE_B=$(e2e_node_b)
 e2e_require_nodes 2
-NODES=("$NODE_A" "$NODE_B")
-declare -A IPS ENGINE
+# The nodes of the cluster (two or more): a backend and a client pod on each, b-a/c-a on the first.
+mapfile -t NODES < <(e2e_all_nodes)
+NODE_A="${NODES[0]}"
+N=${#NODES[@]}
+BACKENDS=(); CLIENTS=()
+declare -A IPS ENGINE NODE_OF
+for i in $(seq 0 $((N - 1))); do
+    letter=$(printf '%s' abcdefghijklmnop | cut -c$((i + 1)))
+    BACKENDS+=("b-$letter"); CLIENTS+=("c-$letter")
+    NODE_OF[b-$letter]="${NODES[$i]}"; NODE_OF[c-$letter]="${NODES[$i]}"
+done
 for node in "${NODES[@]}"; do
     IPS[$node]=$(runtime_node_ip "$node")
     cidr=$(e2e_kubectl get node "$node" -o jsonpath='{.spec.podCIDR}')
@@ -30,14 +37,12 @@ e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --grac
 e2e_cleanup_register "e2e_preserve_failure $NS"
 
 # ---------------------------------------------------------------------------
-# The workload: two backends (one per node) serving TCP 8080 and 8081 and UDP 5353, a client
+# The workload: a backend (one per node) serving TCP 8080 and 8081 and UDP 5353, a client
 # pod on each node, and the Services.
 # ---------------------------------------------------------------------------
 fixture_backend_apply "$NS"
-fixture_backend_pod "$NS" b-a "$NODE_A" | e2e_kubectl apply -f -
-fixture_backend_pod "$NS" b-b "$NODE_B" | e2e_kubectl apply -f -
-fixture_client_pod "$NS" c-a "$NODE_A" | e2e_kubectl apply -f -
-fixture_client_pod "$NS" c-b "$NODE_B" | e2e_kubectl apply -f -
+for pod in "${BACKENDS[@]}"; do fixture_backend_pod "$NS" "$pod" "${NODE_OF[$pod]}" | e2e_kubectl apply -f -; done
+for pod in "${CLIENTS[@]}"; do fixture_client_pod "$NS" "$pod" "${NODE_OF[$pod]}" | e2e_kubectl apply -f -; done
 e2e_kubectl -n "$NS" apply -f - <<'YAML'
 apiVersion: v1
 kind: Service
@@ -62,10 +67,10 @@ kind: Service
 metadata: {name: alias}
 spec: {type: ExternalName, externalName: placeholder.example.org}
 YAML
-for p in b-a b-b c-a c-b; do e2e_wait_pod_ready "$NS" "$p" 120; done
+for p in "${BACKENDS[@]}" "${CLIENTS[@]}"; do e2e_wait_pod_ready "$NS" "$p" 120; done
 VIP=$(e2e_kubectl -n "$NS" get service svc -o jsonpath='{.spec.clusterIP}')
-POD_IP_A=$(e2e_kubectl -n "$NS" get pod b-a -o jsonpath='{.status.podIP}')
-POD_IP_B=$(e2e_kubectl -n "$NS" get pod b-b -o jsonpath='{.status.podIP}')
+POD_IPS=()
+for pod in "${BACKENDS[@]}"; do POD_IPS+=("$(e2e_kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.podIP}')"); done
 
 in_pod() { local pod="$1"; shift; e2e_kubectl -n "$NS" exec "$pod" -- "$@"; }
 # get POD URL: the answer of a request made from a pod.
@@ -76,15 +81,17 @@ udp() {  # udp POD HOST PORT: the answer to a datagram
 }
 engine_unsupported() { runtime_plaidctl "$1" status | sed -n 's/.*unsupported=\([0-9]*\).*/\1/p' | tail -1; }
 both_backends_listed() {
-    [ "$(e2e_kubectl -n "$NS" get endpointslice -l kubernetes.io/service-name=svc -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}{"\n"}{end}' | wc -l | tr -d ' ')" = 2 ]
+    [ "$(e2e_kubectl -n "$NS" get endpointslice -l kubernetes.io/service-name=svc -o jsonpath='{range .items[*].endpoints[*]}{.addresses[0]}{"\n"}{end}' | wc -l | tr -d ' ')" = "$N" ]
 }
 e2e_wait_condition 60 "both backends in the endpoints" both_backends_listed
 engine_has() {  # engine_has NODE PATTERN: the node's Service table has a line matching
     runtime_plaidctl "$1" service list | e2e_grep_q "$2"
 }
-e2e_wait_condition 30 "the engine of each node has the Service" engine_has "$NODE_A" "^${VIP}:80/tcp"
-e2e_wait_condition 30 "the engine of each node has the Service" engine_has "$NODE_B" "^${VIP}:80/tcp"
-UNSUPPORTED_BEFORE_A=$(engine_unsupported "$NODE_A"); UNSUPPORTED_BEFORE_B=$(engine_unsupported "$NODE_B")
+declare -A UNSUPPORTED_BEFORE
+for node in "${NODES[@]}"; do
+    e2e_wait_condition 30 "the engine of $node has the Service" engine_has "$node" "^${VIP}:80/tcp"
+    UNSUPPORTED_BEFORE[$node]=$(engine_unsupported "$node")
+done
 
 # ---------------------------------------------------------------------------
 # T23-translation: TCP and UDP to the Service from pods on both nodes reach both backends
@@ -93,19 +100,19 @@ UNSUPPORTED_BEFORE_A=$(engine_unsupported "$NODE_A"); UNSUPPORTED_BEFORE_B=$(eng
 # ---------------------------------------------------------------------------
 translation() {
     local client node seen ans host src
-    for client in c-a c-b; do
-        node=$NODE_A; [ "$client" = c-b ] && node=$NODE_B
+    for client in "${CLIENTS[@]}"; do
+        node="${NODE_OF[$client]}"
         seen=""
-        for i in $(seq 1 20); do
+        for i in $(seq 1 $((10 * N))); do
             ans=$(get "$client" "http://${VIP}:80/")
             host=$(printf '%s' "$ans" | field host); src=$(printf '%s' "$ans" | field src)
             [ "$src" = "${ENGINE[$node]}" ] || e2e_fail "$client: the backend saw source $src, want ${ENGINE[$node]}"
             seen="$seen $host"
         done
-        for b in b-a b-b; do [[ " $seen " == *" $b "* ]] || e2e_fail "$client never reached $b in 20 requests"; done
+        for b in "${BACKENDS[@]}"; do [[ " $seen " == *" $b "* ]] || e2e_fail "$client never reached $b in $((10 * N)) requests"; done
         seen=""
-        for i in $(seq 1 12); do seen="$seen $(udp "$client" "$VIP" 5353 | field host)"; done
-        for b in b-a b-b; do [[ " $seen " == *" $b "* ]] || e2e_fail "UDP from $client never reached $b"; done
+        for i in $(seq 1 $((6 * N))); do seen="$seen $(udp "$client" "$VIP" 5353 | field host)"; done
+        for b in "${BACKENDS[@]}"; do [[ " $seen " == *" $b "* ]] || e2e_fail "UDP from $client never reached $b"; done
     done
     local hairpin=no
     for i in $(seq 1 60); do
@@ -131,7 +138,7 @@ dns() {
     local dnsip client name="svc.${NS}.svc.${SKIFF_CLUSTER_DOMAIN}" round
     dnsip=$(e2e_kubectl -n kube-system get service kube-dns -o jsonpath='{.spec.clusterIP}')
     for round in before after; do
-        for client in c-a c-b; do
+        for client in "${CLIENTS[@]}"; do
             e2e_assert_eq "$round: $client resolves the Service over UDP" "$(in_pod "$client" dig +short +time=3 +tries=2 @"$dnsip" "$name" | tail -1)" "$VIP"
             e2e_assert_eq "$round: $client resolves the Service over TCP" "$(in_pod "$client" dig +short +tcp +time=3 +tries=2 @"$dnsip" "$name" | tail -1)" "$VIP"
             e2e_assert_eq "$round: $client resolves the API Service" "$(in_pod "$client" dig +short +time=3 +tries=2 @"$dnsip" kubernetes.default.svc."$SKIFF_CLUSTER_DOMAIN" | tail -1)" "$SKIFF_API_SERVICE_IP"
@@ -155,13 +162,13 @@ e2e_subcase_run T23-dns dns
 bubble_clients() {
     local node seen=""
     for node in "${NODES[@]}"; do
-        for i in $(seq 1 20); do
+        for i in $(seq 1 $((10 * N))); do
             seen="$seen $(runtime_bubble_exec "$node" "curl -sS --max-time 5 http://${VIP}:80/" | field host)"
         done
         e2e_assert_eq "the bubble of $node reaches the API Service" \
             "$(runtime_bubble_exec "$node" "curl -ksS --max-time 5 -o /dev/null -w '%{http_code}' https://${SKIFF_API_SERVICE_IP}/version")" 401
     done
-    for b in b-a b-b; do [[ " $seen " == *" $b "* ]] || e2e_fail "the bubbles never reached $b"; done
+    for b in "${BACKENDS[@]}"; do [[ " $seen " == *" $b "* ]] || e2e_fail "the bubbles never reached $b"; done
 }
 e2e_subcase_run T23-bubble bubble_clients
 
@@ -172,7 +179,7 @@ e2e_subcase_run T23-bubble bubble_clients
 # ---------------------------------------------------------------------------
 large() {
     local client node size code
-    for client in c-a c-b; do
+    for client in "${CLIENTS[@]}"; do
         size=$(in_pod "$client" curl -sS --max-time 20 -o /dev/null -w '%{size_download}' "http://${VIP}:80/600000")
         [ "$size" -gt 600000 ] || e2e_fail "$client received $size bytes of a 600000 byte response"
         for i in $(seq 1 10); do
@@ -210,9 +217,10 @@ endpoints: [{addresses: ["${API_HOST}"]}]
 YAML
     local ext client
     ext=$(e2e_kubectl -n "$NS" get service ext -o jsonpath='{.spec.clusterIP}')
-    e2e_wait_condition 30 "the engine has the selectorless Service" engine_has "$NODE_A" "^${ext}:8443/tcp"
-    e2e_wait_condition 30 "the engine has the selectorless Service" engine_has "$NODE_B" "^${ext}:8443/tcp"
-    for client in c-a c-b; do
+    for node in "${NODES[@]}"; do
+        e2e_wait_condition 30 "the engine of $node has the selectorless Service" engine_has "$node" "^${ext}:8443/tcp"
+    done
+    for client in "${CLIENTS[@]}"; do
         e2e_assert_eq "$client reaches the API server through the selectorless Service" \
             "$(in_pod "$client" curl -ksS --max-time 8 -o /dev/null -w '%{http_code}' "https://${ext}:8443/version")" 401
     done
@@ -228,7 +236,7 @@ untranslated() {
     local dnsip name="hl.${NS}.svc.${SKIFF_CLUSTER_DOMAIN}" answers ans client_ip list
     dnsip=$(e2e_kubectl -n kube-system get service kube-dns -o jsonpath='{.spec.clusterIP}')
     answers=$(in_pod c-a dig +short +time=3 +tries=2 @"$dnsip" "$name" | sort | tr '\n' ' ')
-    e2e_assert_eq "the headless Service resolves to the pods" "$answers" "$(printf '%s\n%s\n' "$POD_IP_A" "$POD_IP_B" | sort | tr '\n' ' ')"
+    e2e_assert_eq "the headless Service resolves to the pods" "$answers" "$(printf '%s\n' "${POD_IPS[@]}" | sort | tr '\n' ' ')"
     client_ip=$(e2e_kubectl -n "$NS" get pod c-a -o jsonpath='{.status.podIP}')
     ans=$(in_pod c-a curl -sS --max-time 5 "http://${name}:8080/")
     e2e_assert_eq "a pod reached through the headless Service sees the client's own address" "$(printf '%s' "$ans" | field src)" "$client_ip"
@@ -268,7 +276,6 @@ PY
     e2e_wait_condition 30 "the stream is running" stream_started
     local pinned other lines after node
     pinned=$(in_pod c-a head -1 /run/stream.log)
-    other="b-a"; [ "$pinned" = "b-a" ] && other="b-b"
 
     # The pinned backend stops being ready: out of the endpoints, but its connection continues.
     in_pod "$pinned" touch /run/unready
@@ -278,8 +285,8 @@ PY
     sleep 4
     [ "$(stream_lines)" -gt "$lines" ] || e2e_fail "the connection stopped when its backend became unready"
     e2e_assert_eq "the connection stayed on its backend" "$(in_pod c-a sort -u /run/stream.log)" "$pinned"
-    for i in $(seq 1 20); do
-        [ "$(get c-b "http://${VIP}:80/" | field host)" = "$other" ] || e2e_fail "a new connection went to the unready backend"
+    for i in $(seq 1 $((10 * N))); do
+        [ "$(get c-b "http://${VIP}:80/" | field host)" != "$pinned" ] || e2e_fail "a new connection went to the unready backend"
     done
 
     # The backend is deleted: its connection does not move to another backend.
@@ -292,17 +299,47 @@ PY
     e2e_assert_eq "no line came from another backend" "$(in_pod c-a sort -u /run/stream.log | grep -cv "^${pinned}\$\|CLOSED" || true)" 0
     in_pod c-a pkill -f stream.py || true
     # Restore the backend for what follows.
-    node=$NODE_A; [ "$pinned" = b-b ] && node=$NODE_B
+    node="${NODE_OF[$pinned]}"
     fixture_backend_pod "$NS" "$pinned" "$node" | e2e_kubectl apply -f -
     e2e_wait_pod_ready "$NS" "$pinned" 120
     e2e_wait_condition 60 "both backends are served again" both_backends_served
 }
 both_backends_served() {  # one exec: the polls of a condition are short
     local hosts
-    hosts=$(in_pod c-b sh -c "for i in 1 2 3 4 5 6 7 8 9 10 11 12; do curl -s --max-time 3 http://${VIP}:80/; echo; done" 2>/dev/null | grep -o '"host": "[^"]*"' | sort -u | wc -l)
-    [ "$hosts" = 2 ]
+    hosts=$(in_pod c-b sh -c "for i in $(seq 1 $((8 * N)) | tr '\n' ' '); do curl -s --max-time 3 http://${VIP}:80/; echo; done" 2>/dev/null | grep -o '"host": "[^"]*"' | sort -u | wc -l)
+    [ "$hosts" = "$N" ]
 }
 e2e_subcase_run T24-pinned pinned
+
+# ---------------------------------------------------------------------------
+# T23-no-local-backend: a client on a node that has no backend of the Service reaches every
+# backend, all of them remote, and the backends see the engine's address of the client's node.
+# The Service has the backends of all the nodes but the last; the client is the last node's
+# (two nodes: one backend; three: two, on the others).
+# ---------------------------------------------------------------------------
+no_local_backend() {
+    local last=$((N - 1)) client="${CLIENTS[$((N - 1))]}" front=("${BACKENDS[@]:0:$((N - 1))}") b vip2 seen="" ans host src
+    for b in "${front[@]}"; do e2e_kubectl -n "$NS" label pod "$b" group=front --overwrite >/dev/null; done
+    e2e_kubectl -n "$NS" apply -f - <<'YAML'
+apiVersion: v1
+kind: Service
+metadata: {name: front}
+spec:
+  selector: {app: backend, group: front}
+  ports: [{name: http, port: 80, targetPort: web}]
+YAML
+    vip2=$(e2e_kubectl -n "$NS" get service front -o jsonpath='{.spec.clusterIP}')
+    e2e_wait_condition 30 "the engine of ${NODES[$last]} has the Service" engine_has "${NODES[$last]}" "^${vip2}:80/tcp"
+    for i in $(seq 1 $((10 * ${#front[@]}))); do
+        ans=$(get "$client" "http://${vip2}:80/")
+        host=$(printf '%s' "$ans" | field host); src=$(printf '%s' "$ans" | field src)
+        [ "$src" = "${ENGINE[${NODES[$last]}]}" ] || e2e_fail "$client: the backend saw source $src, want ${ENGINE[${NODES[$last]}]}"
+        seen="$seen $host"
+    done
+    for b in "${front[@]}"; do [[ " $seen " == *" $b "* ]] || e2e_fail "$client never reached $b"; done
+    [[ " $seen " != *" ${BACKENDS[$last]} "* ]] || e2e_fail "$client reached ${BACKENDS[$last]}, which is not a backend of the Service"
+}
+e2e_subcase_run T23-no-local-backend no_local_backend
 
 # ---------------------------------------------------------------------------
 # T24-refusal: a Service without endpoints refuses at once (an ICMP error, as kube-proxy does).
@@ -391,9 +428,8 @@ e2e_subcase_run T24-no-kube-proxy no_kube_proxy
 # ---------------------------------------------------------------------------
 counters() {
     local node status
-    e2e_assert_eq "unsupported packets on $NODE_A" "$(engine_unsupported "$NODE_A")" "$UNSUPPORTED_BEFORE_A"
-    e2e_assert_eq "unsupported packets on $NODE_B" "$(engine_unsupported "$NODE_B")" "$UNSUPPORTED_BEFORE_B"
     for node in "${NODES[@]}"; do
+        e2e_assert_eq "unsupported packets on $node" "$(engine_unsupported "$node")" "${UNSUPPORTED_BEFORE[$node]}"
         status=$(runtime_plaidctl "$node" status)
         e2e_assert_contains "no flow table exhaustion on $node" "$status" "flow limit=0, no port=0"
     done

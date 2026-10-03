@@ -10,6 +10,8 @@
 #   --registry HOST:PORT     Local registry for fixture images (sets FIXTURE_REGISTRY)
 #   --daemon-class CLASS    Target one daemon class with --case 09
 #   --case N                 Run only case N (1–10; for development)
+#   --nodes N                Size of the clusters this run starts (default 2). Cases use the nodes
+#                            their cluster has, at least two; with more, the pairs become meshes.
 #   --smoke                  A short run of representative cases on one fresh cluster (see
 #                            profile_smoke_cases): for checking a change or a new host quickly. It
 #                            does not check the qualification profile; the whole run does.
@@ -42,6 +44,7 @@ while [ $# -gt 0 ]; do
         --case)            ONLY_CASE="$2"; shift 2 ;;
         --no-teardown)     export NO_TEARDOWN=1; shift ;;
         --smoke)           SMOKE=1; shift ;;
+        --nodes)           export E2E_NODES="$2"; shift 2 ;;
         --network-only|--preflight-only) NETWORK_ONLY=1; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -319,7 +322,7 @@ run_case() {
 matrix_ready() {
     local count
     count=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c '^True$' || true)
-    [ "$count" -ge 2 ] || return 1
+    [ "$count" -ge "$E2E_NODES" ] || return 1
     e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | e2e_grep_q '^True$'
 }
 
@@ -337,11 +340,11 @@ run_daemon_failure_matrix() {
             fi
             e2e_wait_condition 90 "prior Slurm job ${prior_job} stopped" \
                 "test -z \"\$(squeue -j ${prior_job} -h -o %i 2>/dev/null)\"" || return 1
-            SKIFF_JOB_ID=$(sbatch --parsable "${SKIFF_ARTIFACT_DIR:-$HOME/skiff}/scripts/skiff.slurm" | cut -d';' -f1) || return 1
+            SKIFF_JOB_ID=$(e2e_sbatch "${SKIFF_ARTIFACT_DIR:-$HOME/skiff}/scripts/skiff.slurm") || return 1
             export SKIFF_JOB_ID
             [[ "$SKIFF_JOB_ID" =~ ^[0-9]+$ ]] || return 1
             printf '%s\n' "$SKIFF_JOB_ID" >> "${E2E_LOGDIR}/matrix-job-ids"
-            e2e_wait_condition 300 "fresh two-node cluster after ${class} failure" matrix_ready || matrix_result=FAIL
+            e2e_wait_condition 300 "fresh $E2E_NODES-node cluster after ${class} failure" matrix_ready || matrix_result=FAIL
         fi
     done
     record E2E-09 "$matrix_result" 0
@@ -407,6 +410,7 @@ run_workload_cases() {
     run_case "29" "security-context"
     run_case "30" "resources"
     run_case "31" "volume-forms"
+    run_case "32" "concurrent-pull"
     run_overlay_startup_failures
     run_fresh_job_storage
     run_daemon_failure_matrix
@@ -463,7 +467,7 @@ collect_candidate_evidence() {
     e2e_kubectl get nodes -o json > "${E2E_LOGDIR}/nodes.json" || return 1
     scontrol show job "$SKIFF_JOB_ID" > "${E2E_LOGDIR}/slurm-job.txt" || return 1
     : > "$nodes_file"
-    for node in "$(e2e_node_a)" "$(e2e_node_b)"; do
+    for node in $(e2e_all_nodes); do
         ip=$(runtime_node_ip "$node") || return 1
         arch=$(runtime_ssh_node "$ip" "uname -m") || return 1
         sif_sha=$(runtime_ssh_node "$ip" "sha256sum \$HOME/.skiff/images/skiff.sif | cut -d' ' -f1") || return 1
@@ -515,6 +519,7 @@ if [ -n "$ONLY_CASE" ]; then
             29) run_case "29" "security-context" ;;
             30) run_case "30" "resources" ;;
             31) run_case "31" "volume-forms" ;;
+            32) run_case "32" "concurrent-pull" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

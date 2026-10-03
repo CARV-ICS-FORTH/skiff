@@ -31,7 +31,7 @@ e2e_cleanup_register "e2e_preserve_failure $NS"
 # ---------------------------------------------------------------------------
 node_capacity() {
     local node ip cpus mem_kb advertised_cpu advertised_mem_kb
-    for node in "$NODE_A" "$NODE_B"; do
+    for node in $(e2e_all_nodes); do
         ip=$(runtime_node_ip "$node")
         cpus=$(runtime_ssh_node "$ip" "nproc --all")
         mem_kb=$(( $(scontrol show node "$node" -o | sed -n 's/.*RealMemory=\([0-9]*\).*/\1/p') * 1024 ))

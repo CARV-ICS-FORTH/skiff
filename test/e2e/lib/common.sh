@@ -160,6 +160,19 @@ e2e_curl() {
 # ---------------------------------------------------------------------------
 _E2E_NODES=()
 
+# The size of the clusters the suite starts (the nodes of the jobs it submits). The cases do not
+# assume it: they use the nodes the cluster they find has (e2e_all_nodes), at least two.
+export E2E_NODES="${E2E_NODES:-2}"
+
+# e2e_sbatch [ARGS...] SCRIPT: submit a job of the suite's size; prints the job ID.
+e2e_sbatch() { sbatch --parsable --nodes="$E2E_NODES" "$@" | cut -d';' -f1; }
+
+# e2e_all_nodes: the names of the cluster's nodes, one per line, in a fixed order.
+e2e_all_nodes() {
+    _e2e_load_nodes
+    printf '%s\n' "${_E2E_NODES[@]}"
+}
+
 _e2e_load_nodes() {
     if [ ${#_E2E_NODES[@]} -eq 0 ]; then
         mapfile -t _E2E_NODES < <(e2e_kubectl get nodes \

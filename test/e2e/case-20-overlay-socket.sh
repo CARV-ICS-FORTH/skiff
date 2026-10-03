@@ -12,10 +12,8 @@ source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 20)
-NODE_A=$(e2e_node_a)
-NODE_B=$(e2e_node_b)
 e2e_require_nodes 2
-NODES=("$NODE_A" "$NODE_B")
+mapfile -t NODES < <(e2e_all_nodes)
 declare -A IPS
 for node in "${NODES[@]}"; do IPS[$node]=$(runtime_node_ip "$node"); done
 
@@ -65,26 +63,31 @@ counters() {
     runtime_plaidctl "$1" status | sed -n 's/^Overlay:.*(tx=\([0-9]*\), tx errors=\([0-9]*\), rx=\([0-9]*\), rx invalid=\([0-9]*\), rx dropped=\([0-9]*\))/\1 \2 \3 \4 \5/p'
 }
 
+# Cross-node traffic moves the overlay counters of both ends, from the first node to every other
+# one (two nodes: one pair; three: two of the three pairs, the third being the others' mesh).
 traffic() {
-    local before_a before_b after_a after_b server_ip
+    local server_node="${NODES[0]}" client_node server_ip n=0 before_s before_c after_s after_c
     for node in "${NODES[@]}"; do
         e2e_assert_contains "status on $node names the adopted socket" "$(runtime_plaidctl "$node" status)" "Overlay:      adopted socket ${IPS[$node]}:8472"
     done
-    fixture_server_pod "$NS" e2e20-server "$NODE_A" 8080 | e2e_kubectl apply -f -
+    fixture_server_pod "$NS" e2e20-server "$server_node" 8080 | e2e_kubectl apply -f -
     e2e_wait_pod_ready "$NS" e2e20-server 60
     server_ip=$(e2e_kubectl get pod e2e20-server -n "$NS" -o jsonpath='{.status.podIP}')
-    before_a=$(counters "$NODE_A"); before_b=$(counters "$NODE_B")
-    fixture_client_job "$NS" e2e20-client "$NODE_B" "http://${server_ip}:8080/" | e2e_kubectl apply -f -
-    e2e_wait_job_complete "$NS" e2e20-client 60
-    after_a=$(counters "$NODE_A"); after_b=$(counters "$NODE_B")
-    read -r ta ea ra ia da <<< "$after_a"; read -r ta0 ea0 ra0 ia0 da0 <<< "$before_a"
-    read -r tb eb rb ib db <<< "$after_b"; read -r tb0 eb0 rb0 ib0 db0 <<< "$before_b"
-    [ "$ta" -gt "$ta0" ] && [ "$ra" -gt "$ra0" ] || e2e_fail "the overlay of $NODE_A did not carry the request (before: $before_a, after: $after_a)"
-    [ "$tb" -gt "$tb0" ] && [ "$rb" -gt "$rb0" ] || e2e_fail "the overlay of $NODE_B did not carry the request (before: $before_b, after: $after_b)"
-    e2e_assert_eq "no overlay send errors on $NODE_A" "$ea" "$ea0"
-    e2e_assert_eq "no overlay send errors on $NODE_B" "$eb" "$eb0"
-    e2e_assert_eq "no invalid overlay datagrams on $NODE_A" "$ia" "$ia0"
-    e2e_assert_eq "no dropped overlay packets on $NODE_B" "$db" "$db0"
+    for client_node in "${NODES[@]:1}"; do
+        n=$((n + 1))
+        before_s=$(counters "$server_node"); before_c=$(counters "$client_node")
+        fixture_client_job "$NS" "e2e20-client-$n" "$client_node" "http://${server_ip}:8080/" | e2e_kubectl apply -f -
+        e2e_wait_job_complete "$NS" "e2e20-client-$n" 60
+        after_s=$(counters "$server_node"); after_c=$(counters "$client_node")
+        read -r ta ea ra ia da <<< "$after_s"; read -r ta0 ea0 ra0 ia0 da0 <<< "$before_s"
+        read -r tb eb rb ib db <<< "$after_c"; read -r tb0 eb0 rb0 ib0 db0 <<< "$before_c"
+        [ "$ta" -gt "$ta0" ] && [ "$ra" -gt "$ra0" ] || e2e_fail "the overlay of $server_node did not carry the request from $client_node (before: $before_s, after: $after_s)"
+        [ "$tb" -gt "$tb0" ] && [ "$rb" -gt "$rb0" ] || e2e_fail "the overlay of $client_node did not carry the request to $server_node (before: $before_c, after: $after_c)"
+        e2e_assert_eq "no overlay send errors on $server_node" "$ea" "$ea0"
+        e2e_assert_eq "no overlay send errors on $client_node" "$eb" "$eb0"
+        e2e_assert_eq "no invalid overlay datagrams on $server_node" "$ia" "$ia0"
+        e2e_assert_eq "no dropped overlay packets on $client_node" "$db" "$db0"
+    done
     e2e_kubectl delete pod e2e20-server -n "$NS" --grace-period=2 --timeout=60s >/dev/null
 }
 e2e_subcase_run T21-traffic traffic

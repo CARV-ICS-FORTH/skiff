@@ -210,17 +210,34 @@ shared_replacement() {
     e2e_wait_pod_phase "$NS" e2e25-back Running 120
     e2e_assert_eq "and back on the first node" "$(exec_in e2e25-back sh -c 'sha256sum /data/payload | cut -d" " -f1')" "$sum"
     e2e_kubectl delete pod e2e25-back -n "$NS" --timeout=60s > /dev/null
+    # ... and on every further node of the cluster, if it has more than two
+    local n k=0
+    for n in $(e2e_all_nodes); do
+        [ "$n" != "$NODE_A" ] && [ "$n" != "$NODE_B" ] || continue
+        k=$((k + 1))
+        pod "e2e25-via-$k" "$n" e2e25-data
+        e2e_wait_pod_phase "$NS" "e2e25-via-$k" Running 120
+        e2e_assert_eq "a replacement on $n reads the same bytes" "$(exec_in "e2e25-via-$k" sh -c 'sha256sum /data/payload | cut -d" " -f1')" "$sum"
+        e2e_kubectl delete pod "e2e25-via-$k" -n "$NS" --timeout=60s > /dev/null
+    done
 
+    # A ReadWriteMany claim: a pod on every node writes its own file and reads all the others'.
     claim e2e25-rwx "" ReadWriteMany
-    pod e2e25-rwx-a "$NODE_A" e2e25-rwx
-    pod e2e25-rwx-b "$NODE_B" e2e25-rwx
-    e2e_wait_pod_phase "$NS" e2e25-rwx-a Running 120
-    e2e_wait_pod_phase "$NS" e2e25-rwx-b Running 120
-    exec_in e2e25-rwx-a sh -c 'echo from-a > /data/a'
-    exec_in e2e25-rwx-b sh -c 'echo from-b > /data/b'
-    e2e_assert_eq "a pod on one node sees the other's file" "$(exec_in e2e25-rwx-a cat /data/b)" from-b
-    e2e_assert_eq "and the reverse" "$(exec_in e2e25-rwx-b cat /data/a)" from-a
-    e2e_kubectl delete pod e2e25-rwx-a e2e25-rwx-b -n "$NS" --timeout=60s > /dev/null
+    local nodes=() pods=() i
+    mapfile -t nodes < <(e2e_all_nodes)
+    for i in "${!nodes[@]}"; do
+        pods+=("e2e25-rwx-$i")
+        pod "e2e25-rwx-$i" "${nodes[$i]}" e2e25-rwx
+    done
+    for i in "${!nodes[@]}"; do e2e_wait_pod_phase "$NS" "e2e25-rwx-$i" Running 120; done
+    for i in "${!nodes[@]}"; do exec_in "e2e25-rwx-$i" sh -c "echo from-$i > /data/f$i"; done
+    for i in "${!nodes[@]}"; do
+        for k in "${!nodes[@]}"; do
+            [ "$i" != "$k" ] || continue
+            e2e_assert_eq "the pod on ${nodes[$i]} sees the file of the pod on ${nodes[$k]}" "$(exec_in "e2e25-rwx-$i" cat "/data/f$k")" "from-$k"
+        done
+    done
+    e2e_kubectl delete pod "${pods[@]}" -n "$NS" --timeout=60s > /dev/null
 }
 e2e_subcase_run T28-shared-replacement shared_replacement
 

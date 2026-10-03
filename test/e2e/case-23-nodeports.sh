@@ -14,18 +14,17 @@ source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 23)
-NODE_A=$(e2e_node_a)
-NODE_B=$(e2e_node_b)
 e2e_require_nodes 2
-NODES=("$NODE_A" "$NODE_B")
+mapfile -t NODES < <(e2e_all_nodes)
+NODE_A="${NODES[0]}"   # the backend's node
+NODE_B="${NODES[1]}"   # the node the changes and failures of the later subcases are made on
 declare -A IPS ENGINE OTHER
 for node in "${NODES[@]}"; do
     IPS[$node]=$(runtime_node_ip "$node")
     cidr=$(e2e_kubectl get node "$node" -o jsonpath='{.spec.podCIDR}')
     ENGINE[$node]="${cidr%.*}.2"
 done
-OTHER[$NODE_A]=$NODE_B
-OTHER[$NODE_B]=$NODE_A
+for i in "${!NODES[@]}"; do OTHER[${NODES[$i]}]=${NODES[$(( (i + 1) % ${#NODES[@]} ))]}; done
 API_HOST=$(sed -n 's|.*server: https://\([^:]*\):6443.*|\1|p' "${HOME}/.skiff/kubeconfig" | sed -n 1p)
 CONTROLLER=""
 for node in "${NODES[@]}"; do [ "${IPS[$node]}" != "$API_HOST" ] || CONTROLLER=$node; done
@@ -80,7 +79,7 @@ in_pod() { local pod="$1"; shift; e2e_kubectl -n "$NS" exec "$pod" -- "$@"; }
 status_of() { runtime_plaidctl "$1" status; }
 
 # ---------------------------------------------------------------------------
-# The workload: one backend on node A (so node B has no local endpoint), a client pod, and
+# The workload: one backend on node A (so no other node has a local endpoint), a client pod, and
 # a NodePort Service with TCP, a second TCP port, and UDP.
 # ---------------------------------------------------------------------------
 fixture_backend_apply "$NS"
@@ -106,23 +105,25 @@ published_everywhere() {  # published_everywhere PORT
     local node
     for node in "${NODES[@]}"; do [ "$(published "$node" "$1")" -ge 1 ] || return 1; done
 }
-e2e_wait_condition 60 "the node ports are published on both nodes" published_everywhere "$HTTP"
-e2e_wait_condition 60 "the node ports are published on both nodes" published_everywhere "$ECHO"
+e2e_wait_condition 60 "the node ports are published on every node" published_everywhere "$HTTP"
+e2e_wait_condition 60 "the node ports are published on every node" published_everywhere "$ECHO"
 
 # ---------------------------------------------------------------------------
-# T25-tcp-udp: from the other node's host, TCP and UDP node ports reach the backend on both
-# nodes, including the one with no local endpoint; the backend sees the engine's address of
-# the node that was addressed; the second port and the named target ports are right.
+# T25-tcp-udp: from the host of every other node, TCP and UDP node ports reach the backend on
+# every node, including those with no local endpoint (all but one); the backend sees the engine's
+# address of the node that was addressed; the second port and the named target ports are right.
 # ---------------------------------------------------------------------------
 tcp_udp() {
     local node from ans
     for node in "${NODES[@]}"; do
-        from=${OTHER[$node]}
-        ans=$(http_json "$from" "$node" "$HTTP")
-        e2e_assert_eq "node port $HTTP of $node answers from the host of ${from}" "$(printf '%s' "$ans" | field host)" b-a
-        e2e_assert_eq "the backend's view of the client on $node" "$(printf '%s' "$ans" | field src)" "${ENGINE[$node]}"
-        e2e_assert_eq "node port $ALT of $node reaches the second port" "$(http_json "$from" "$node" "$ALT" | field port)" 8081
-        e2e_assert_contains "the UDP node port $ECHO of $node answers" "$(udp_json "$from" "$node" "$ECHO")" '"echo": "hello"'
+        for from in "${NODES[@]}"; do
+            [ "$from" != "$node" ] || continue
+            ans=$(http_json "$from" "$node" "$HTTP")
+            e2e_assert_eq "node port $HTTP of $node answers from the host of ${from}" "$(printf '%s' "$ans" | field host)" b-a
+            e2e_assert_eq "the backend's view of the client on $node" "$(printf '%s' "$ans" | field src)" "${ENGINE[$node]}"
+            e2e_assert_eq "node port $ALT of $node reaches the second port" "$(http_json "$from" "$node" "$ALT" | field port)" 8081
+            e2e_assert_contains "the UDP node port $ECHO of $node answers" "$(udp_json "$from" "$node" "$ECHO")" '"echo": "hello"'
+        done
     done
 }
 e2e_subcase_run T25-tcp-udp tcp_udp

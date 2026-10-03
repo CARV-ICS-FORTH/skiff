@@ -13,10 +13,10 @@ source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
 
 e2e_require_nodes 2
-NODES=("$(e2e_node_a)" "$(e2e_node_b)")
+mapfile -t NODES < <(e2e_all_nodes)
 declare -A IPS
 for node in "${NODES[@]}"; do IPS[$node]=$(runtime_node_ip "$node"); done
-ALL_IPS=("${IPS[${NODES[0]}]}" "${IPS[${NODES[1]}]}")
+ALL_IPS=(); for node in "${NODES[@]}"; do ALL_IPS+=("${IPS[$node]}"); done
 ARTIFACT_DIR="${SKIFF_ARTIFACT_DIR:-$HOME/skiff}"
 CURRENT_JOB="${SKIFF_JOB_ID:-}"
 [[ "$CURRENT_JOB" =~ ^[0-9]+$ ]] || e2e_die "case 26 needs the running job's ID (SKIFF_JOB_ID)"
@@ -33,7 +33,7 @@ all_released() {
 cluster_ready() {
     local n
     n=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c '^True$' || true)
-    [ "$n" -ge 2 ] && e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | e2e_grep_q '^True$'
+    [ "$n" -ge "$E2E_NODES" ] && e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | e2e_grep_q '^True$'
 }
 host_path() { echo "${HOME}/.skiff${1#/root/.skiff}"; }
 use_claim() { # use_claim POD: a claim of the shared name, and a pod that has it
@@ -98,7 +98,7 @@ spec:
     volumeMounts: [{name: h, mountPath: /h}]
 EOF2
 done
-started_both() { [ -e "$TERM_DIR/started-${NODES[0]}" ] && [ -e "$TERM_DIR/started-${NODES[1]}" ]; }
+started_both() { local n; for n in "${NODES[@]}"; do [ -e "$TERM_DIR/started-$n" ] || return 1; done; }
 e2e_wait_condition 120 "both pods that handle their end are running" started_both
 
 # The job is told to end (what Slurm does a minute before the time limit, and what
@@ -132,7 +132,7 @@ fresh_job() {
     e2e_assert_eq "the data outlived the job" "$(cat "$OLD_DIR/file" 2>/dev/null || true)" from-the-first-job
     e2e_assert_contains "and is below a directory named after the job" "$OLD_JOB_DIR" "/volumes/${CURRENT_JOB}-"
 
-    job=$(sbatch --parsable "${ARTIFACT_DIR}/scripts/skiff.slurm" | cut -d';' -f1)
+    job=$(e2e_sbatch "${ARTIFACT_DIR}/scripts/skiff.slurm")
     [[ "$job" =~ ^[0-9]+$ ]] || e2e_die "cannot submit a new job"
     printf '%s\n' "$job" > "${E2E_LOGDIR}/fresh-job-id"
     e2e_wait_condition 300 "the new cluster is ready" cluster_ready

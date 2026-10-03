@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Case 19: bounded repetition of create, restart and delete (T20).
 #
-# Ten cycles of the same disposable workload, alternating between the two nodes.
+# Ten cycles of the same disposable workload, going round the nodes.
 # Each pod has startup, readiness and liveness probes, PostStart and PreStop hooks,
 # and a fixture application that writes log records and exits once, so that its
 # second attempt is what runs. Every cycle reads current and previous logs, follows
@@ -23,7 +23,7 @@ source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 19)
-NODES=("$(e2e_node_a)" "$(e2e_node_b)")
+mapfile -t NODES < <(e2e_all_nodes)   # (the cycles go round all the nodes of the cluster, two or more)
 CTL_ROOT="${SKIFF_TMP_DIR}/e2e19-${E2E_RUN_ID}"
 CYCLES="${E2E_REPETITIONS:-10}"
 FIXTURE=/usr/local/bin/fixture
@@ -118,7 +118,7 @@ has_sleep() { [ "$(sleeps_now)" -ge 1 ]; }
 no_sleep() { [ "$(sleeps_now)" = 0 ]; }
 
 BEFORE=()
-for i in 0 1; do
+for i in "${!NODES[@]}"; do
     BEFORE[$i]=$(census "${NODES[$i]}")
     e2e_log "Census of ${NODES[$i]} before: ${BEFORE[$i]}"
 done
@@ -128,7 +128,7 @@ done
 # and is removed with everything it owned.
 # ---------------------------------------------------------------------------
 one_cycle() {
-    local n="$1" pod="e2e19-c$1" node="${NODES[$(($1 % 2))]}" marker=$((400 + $1))
+    local n="$1" pod="e2e19-c$1" node="${NODES[$(($1 % ${#NODES[@]}))]}" marker=$((400 + $1))
     local ctl="${CTL_ROOT}/${pod}"
 
     cycle_pod "$pod" "$node"
@@ -182,7 +182,7 @@ e2e_subcase_run T20-cycles cycles
 # ---------------------------------------------------------------------------
 no_leaks() {
     local i node key before after
-    for i in 0 1; do
+    for i in "${!NODES[@]}"; do
         node="${NODES[$i]}"
         # Deletion is asynchronous inside the node; give it its own deadline.
         settled() {

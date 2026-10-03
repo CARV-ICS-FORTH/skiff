@@ -72,6 +72,12 @@ kubelet_endpoints() {
     local held
     held=$(metric_value container_memory_working_set_bytes "container=\"hold\"")
     e2e_assert_eq "the container that holds memory shows it" "$(awk -v h="$held" 'BEGIN {print (h > 150 * 1048576 && h < 400 * 1048576) ? "yes" : "no (" h ")"}')" yes
+    # Every node's kubelet answers for itself (the API server reaches each one through its proxy).
+    local node
+    for node in $(e2e_all_nodes); do
+        e2e_assert_contains "the resource metrics of $node carry its CPU" "$(raw "$node" metrics/resource)" "node_cpu_usage_seconds_total "
+        e2e_assert_contains "the summary of $node names it" "$(raw "$node" stats/summary)" "\"nodeName\":\"${node}\""
+    done
     summary=$(raw "$NODE_A" stats/summary)
     e2e_assert_contains "the summary names the node" "$summary" "\"nodeName\":\"${NODE_A}\""
     e2e_assert_contains "and the pod's containers" "$summary" "\"name\":\"burn\""
@@ -86,12 +92,15 @@ e2e_subcase_run T37-kubelet-endpoints kubelet_endpoints
 metrics_api() {
     available() { [ "$(e2e_kubectl get apiservice v1beta1.metrics.k8s.io -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null)" = True ]; }
     e2e_wait_condition 240 "the metrics API is available" available
-    top_nodes() { [ "$(e2e_kubectl top node --no-headers 2>/dev/null | wc -l | tr -d ' ')" = 2 ]; }
-    e2e_wait_condition 120 "kubectl top node lists both nodes" top_nodes
-    local nodes
+    local node_count
+    node_count=$(e2e_all_nodes | wc -l | tr -d ' ')
+    top_nodes() { [ "$(e2e_kubectl top node --no-headers 2>/dev/null | wc -l | tr -d ' ')" = "$node_count" ]; }
+    e2e_wait_condition 120 "kubectl top node lists every node" top_nodes
+    local nodes node
     nodes=$(e2e_kubectl top node --no-headers)
-    e2e_assert_contains "the first node is listed" "$nodes" "$NODE_A"
-    e2e_assert_contains "and the second" "$nodes" "$NODE_B"
+    for node in $(e2e_all_nodes); do
+        e2e_assert_contains "$node is listed" "$nodes" "$node"
+    done
 
     # The burner is about a core, within what a 15 s resolution and a shell loop allow.
     burning() {

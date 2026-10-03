@@ -17,21 +17,21 @@ source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
 
 e2e_require_nodes 2
-NODES=("$(e2e_node_a)" "$(e2e_node_b)")
+mapfile -t NODES < <(e2e_all_nodes)
 declare -A IPS
 for node in "${NODES[@]}"; do IPS[$node]=$(runtime_node_ip "$node"); done
 CONTROLLER_IP=$(sed -n 's|.*server: https://\([^:]*\):6443.*|\1|p' "${HOME}/.skiff/kubeconfig" | sed -n 1p)
 e2e_assert_nonempty "controller address" "$CONTROLLER_IP"
 WORKER_IP=""
 for node in "${NODES[@]}"; do [ "${IPS[$node]}" = "$CONTROLLER_IP" ] || WORKER_IP="${IPS[$node]}"; done
-ALL_IPS=("${IPS[${NODES[0]}]}" "${IPS[${NODES[1]}]}")
+ALL_IPS=(); for node in "${NODES[@]}"; do ALL_IPS+=("${IPS[$node]}"); done
 
 ARTIFACT_DIR="${SKIFF_ARTIFACT_DIR:-$HOME/skiff}"
 CURRENT_JOB="${SKIFF_JOB_ID:-}"
 [[ "$CURRENT_JOB" =~ ^[0-9]+$ ]] || e2e_die "case 21 needs the running job's ID (SKIFF_JOB_ID)"
 
 job_gone() { [ -z "$(squeue -j "$1" -h -o %i 2>/dev/null)" ]; }
-submit_job() { sbatch --parsable "${ARTIFACT_DIR}/scripts/skiff.slurm" | cut -d';' -f1; }
+submit_job() { e2e_sbatch "${ARTIFACT_DIR}/scripts/skiff.slurm"; }
 all_released() {
     local ip
     for ip in "${ALL_IPS[@]}"; do runtime_host_resources_gone "$ip" || return 1; done
@@ -50,7 +50,7 @@ job_output() {  # the job's standard output file
 cluster_ready() {
     local n
     n=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c '^True$' || true)
-    [ "$n" -ge 2 ] && e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | e2e_grep_q '^True$'
+    [ "$n" -ge "$E2E_NODES" ] && e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | e2e_grep_q '^True$'
 }
 # Start from nothing: the running cluster goes away (it carries no state this case needs).
 scancel "$CURRENT_JOB"
@@ -158,7 +158,7 @@ second_boot() {
     local job node status
     job=$(submit_job)
     printf '%s\n' "$job" > "${E2E_LOGDIR}/overlay-job-id"
-    e2e_wait_condition 300 "a fresh two-node cluster" cluster_ready
+    e2e_wait_condition 300 "a fresh $E2E_NODES-node cluster" cluster_ready
     for node in "${NODES[@]}"; do
         status=$(runtime_plaidctl "$node" status)
         e2e_assert_contains "the overlay of $node uses its adopted socket" "$status" "Overlay:      adopted socket ${IPS[$node]}:8472"

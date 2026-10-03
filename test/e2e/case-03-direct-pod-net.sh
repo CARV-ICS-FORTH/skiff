@@ -5,8 +5,9 @@ source "$(dirname "$0")/lib/fixture.sh"
 source "$(dirname "$0")/lib/runtime.sh"
 
 NS=$(e2e_namespace 03)
-NODE_A=$(e2e_node_a)
-NODE_B=$(e2e_node_b)
+# Every node serves and every node is a client of every server (the same node included): all the
+# pairs of the cluster, however many nodes it has (two: four rounds; three: nine).
+mapfile -t NODES < <(e2e_all_nodes)
 
 e2e_require_nodes 2
 e2e_kubectl create namespace $NS
@@ -15,8 +16,7 @@ e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --time
 run_round() {
     local server_node=$1
     local server_name=$2
-    local client_a=$3
-    local client_b=$4
+    local k=0 client_node client pod
 
     fixture_server_pod $NS $server_name $server_node 8080 | e2e_kubectl apply -f -
     e2e_wait_pod_ready $NS $server_name 60
@@ -36,23 +36,30 @@ run_round() {
         PAYLOAD_SHA="3d0cc4f26de53adb27cb19d8262d4d0fcc49e020942a4c90bde6e64353fda6d5"
     fi
 
-    fixture_checksum_job $NS $client_a $NODE_A http://$SERVER_IP:8080/payload $PAYLOAD_SHA | e2e_kubectl apply -f -
-    if ! e2e_wait_job_complete $NS $client_a 60; then
-        e2e_kubectl logs -n $NS -l job-name=$client_a --tail=20 || true
-        return 1
-    fi
+    local clients=()
+    for client_node in "${NODES[@]}"; do
+        k=$((k + 1))
+        client="${server_name/server/client}-$k"
+        clients+=("$client")
+        e2e_log "client on $client_node of the server on $server_node"
+        fixture_checksum_job $NS $client $client_node http://$SERVER_IP:8080/payload $PAYLOAD_SHA | e2e_kubectl apply -f -
+        if ! e2e_wait_job_complete $NS $client 60; then
+            e2e_kubectl logs -n $NS -l job-name=$client --tail=20 || true
+            return 1
+        fi
+    done
 
-    fixture_checksum_job $NS $client_b $NODE_B http://$SERVER_IP:8080/payload $PAYLOAD_SHA | e2e_kubectl apply -f -
-    e2e_wait_job_complete $NS $client_b 60
-
-    for pod in $server_name $(e2e_kubectl get pods -n $NS -l job-name=$client_a -o jsonpath='{.items[0].metadata.name}') $(e2e_kubectl get pods -n $NS -l job-name=$client_b -o jsonpath='{.items[0].metadata.name}'); do
+    for pod in $server_name $(for client in "${clients[@]}"; do e2e_kubectl get pods -n $NS -l job-name=$client -o jsonpath='{.items[0].metadata.name}'; echo; done); do
         e2e_record_uid "$NS" "$pod"
         runtime_record_pod "$NS" "$pod"
     done
 }
 
-run_round $NODE_A e2e03-server-a e2e03-client-aa e2e03-client-ba
-run_round $NODE_B e2e03-server-b e2e03-client-ab e2e03-client-bb
+n=0
+for server_node in "${NODES[@]}"; do
+    n=$((n + 1))
+    run_round "$server_node" "e2e03-server-$n"
+done
 
 for pod in $(e2e_kubectl get pods -n $NS -o jsonpath='{.items[*].metadata.name}'); do
     e2e_kubectl delete pod $pod -n $NS --wait=false

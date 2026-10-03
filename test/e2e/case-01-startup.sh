@@ -9,7 +9,7 @@ e2e_record_versions
 check_nodes_ready() {
     local cnt
     cnt=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c "True" || true)
-    [ "$cnt" -ge 2 ]
+    [ "$cnt" -ge "$E2E_NODES" ]
 }
 
 write_teardown_script() {
@@ -57,7 +57,7 @@ wait_clean() {
 
 check_nodes_ready() {
     local cnt=\$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c "True" || true)
-    [ "\$cnt" -ge 2 ]
+    [ "\$cnt" -ge "\$E2E_NODES" ]
 }
 
 TARGET_JOB="\${SKIFF_JOB_ID:-${SKIFF_JOB_ID:-}}"
@@ -88,9 +88,9 @@ if [ "\${NO_TEARDOWN:-0}" != "1" ]; then
         done
     fi
     e2e_log "Submitting second skiff.slurm from \${REPO_ROOT}"
-    NEW_JOB=\$(sbatch --parsable "\${REPO_ROOT}/scripts/skiff.slurm" | cut -d';' -f1)
+    NEW_JOB=\$(e2e_sbatch "\${REPO_ROOT}/scripts/skiff.slurm")
     
-    e2e_wait_condition 300 "2 nodes ready (2nd time)" check_nodes_ready
+    e2e_wait_condition 300 "$E2E_NODES nodes ready (2nd time)" check_nodes_ready
     
     scancel "\$NEW_JOB"
     wait_clean
@@ -106,14 +106,14 @@ if [ -z "${SKIFF_JOB_ID:-}" ]; then
         REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
     fi
     e2e_log "Submitting skiff.slurm from ${REPO_ROOT}/scripts/skiff.slurm"
-    SKIFF_JOB_ID=$(sbatch --parsable "${REPO_ROOT}/scripts/skiff.slurm" | cut -d';' -f1)
+    SKIFF_JOB_ID=$(e2e_sbatch "${REPO_ROOT}/scripts/skiff.slurm")
     export SKIFF_JOB_ID
     printf '%s\n' "$SKIFF_JOB_ID" > "${E2E_LOGDIR}/job-id"
     e2e_log "Submitted Skiff cluster job: ${SKIFF_JOB_ID}"
 fi
 write_teardown_script
 
-e2e_wait_condition 300 "2 nodes ready" check_nodes_ready
+e2e_wait_condition 300 "$E2E_NODES nodes ready" check_nodes_ready
 e2e_require_nodes 2
 
 # The documented quickstart: kubectl on a host outside the bubble, with the
@@ -145,12 +145,12 @@ if [ ! -f "$manifest_path" ]; then
     e2e_die "candidate manifest missing: $manifest_path"
 fi
 expected_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$manifest_path")
-for node in $(e2e_node_a) $(e2e_node_b); do
+for node in $(e2e_all_nodes); do
     actual_version=$(e2e_kubectl get node "$node" -o jsonpath='{.status.nodeInfo.kubeletVersion}')
     e2e_assert_eq "Node $node kubeletVersion matches candidate" "$actual_version" "$expected_version"
 done
 
-for node in $(e2e_node_a) $(e2e_node_b); do
+for node in $(e2e_all_nodes); do
     cpu=$(e2e_kubectl get node "$node" -o jsonpath='{.status.allocatable.cpu}')
     mem=$(e2e_kubectl get node "$node" -o jsonpath='{.status.allocatable.memory}')
     e2e_log "Node $node allocatable CPU: $cpu, Mem: $mem"
@@ -203,7 +203,7 @@ NS=$(e2e_namespace 01)
 e2e_kubectl create namespace $NS
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --timeout=60s"
 
-for node in $(e2e_node_a) $(e2e_node_b); do
+for node in $(e2e_all_nodes); do
     pod_name="oneshot-${node}"
     cat <<EOF | e2e_kubectl apply -f -
 apiVersion: v1

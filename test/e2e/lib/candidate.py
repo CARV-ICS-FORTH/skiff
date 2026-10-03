@@ -32,8 +32,8 @@ def validate(record):
         raise ValueError("Slurm job identity missing")
     nodes = record.get("nodes") or []
     names = {n.get("name") for n in nodes}
-    if len(nodes) != 2 or len(names) != 2 or "" in names or None in names:
-        raise ValueError("both runtime nodes must be recorded, under names of their own")
+    if len(nodes) < 2 or len(names) != len(nodes) or "" in names or None in names:
+        raise ValueError("every runtime node must be recorded (at least two), under a name of its own")
     if len({n.get("architecture") for n in nodes}) != 1:
         raise ValueError("the runtime nodes differ in architecture")
     # The image that was uploaded must be the nodes' architecture (the manifest names its platform).
@@ -81,13 +81,17 @@ def self_test():
     for node, name in zip(other["nodes"], ("k8s-node1", "k8s-node2")):
         node.update(name=name, architecture="x86_64")
     validate(other)
+    # ... and more than two nodes
+    three = json.loads(json.dumps(other))
+    three["nodes"].append(dict(three["nodes"][0], name="k8s-node3"))
+    validate(three)
     for mutation in (
         lambda r: r["manifest"].update(git_dirty=True),
         lambda r: r["manifest"].pop("builder_image_id"),
         lambda r: r["manifest"].update(go_version="1.26"),
         lambda r: r["nodes"][1].update(sif_sha256="c" * 64),
         lambda r: r["nodes"][0].update(kubelet_version="wrong"),
-        lambda r: r["nodes"].pop(),
+        lambda r: [r["nodes"].pop(), r["nodes"].pop()],
         lambda r: r["nodes"][1].update(name=r["nodes"][0]["name"]),
         lambda r: r["nodes"][1].update(architecture="x86_64"),
         lambda r: r["nodes"][0].update(architecture="riscv64") or r["nodes"][1].update(architecture="riscv64"),
