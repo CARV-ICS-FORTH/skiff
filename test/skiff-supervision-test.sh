@@ -19,7 +19,7 @@ exit 0
 EOF
 cat > "$test_dir/bin/apptainer" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in *docker://docker.io/chazapis/skiff-bubble:latest*) touch "$HOME/.skiff/published-image-used" ;; esac
+case "$*" in *docker://docker.io/chazapis/skiff:latest*) touch "$HOME/.skiff/published-image-used" ;; esac
 exit 0
 EOF
 cat > "$test_dir/bin/srun" <<'EOF'

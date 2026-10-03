@@ -6,6 +6,10 @@
 #   skiff.sh check [ROLE] what a node needs and whether it has it (skiff.slurm runs it on
 #                         every allocated node; run it yourself on a compute node first,
 #                         for example `srun -N1 skiff.sh check`)
+#   skiff.sh tools [TAR]  take the programs Skiff needs on a host (Apptainer, slirp4netns,
+#                         socat, kubectl) out of the Skiff image archive and put them in
+#                         ~/.skiff/tools, which every command here puts first in PATH: a
+#                         host that has none of them needs nothing installed (see below)
 #
 # Sourced (by skiff.slurm, which validates the configuration once before anything starts,
 # and by the tests), it defines the functions below and runs nothing. Every configuration
@@ -46,6 +50,20 @@
 # unconditionally, so that no environment variable can make the scripts disagree
 # with the bubbles about it.
 SKIFF_STATE_DIR="$HOME/.skiff"
+
+# The programs Skiff needs on a host (Apptainer, slirp4netns, socat and kubectl, with what
+# Apptainer runs) can come from the Skiff image itself: `skiff.sh tools` takes them out of the
+# image archive into this directory, a tree that works from wherever it is put. Once it exists
+# it comes first in PATH for everything started from here (the job, its steps, the check), so a
+# host's own copies are not needed and not used.
+SKIFF_TOOLS_DIR="$SKIFF_STATE_DIR/tools"
+skiff_use_tools() {
+    if [ -d "$SKIFF_TOOLS_DIR/bin" ]; then
+        case ":$PATH:" in *":$SKIFF_TOOLS_DIR/bin:"*) ;; *) PATH="$SKIFF_TOOLS_DIR/bin:$PATH"; export PATH ;; esac
+    fi
+    return 0
+}
+skiff_use_tools
 
 # The data of the PersistentVolumeClaims of every job lives below the state directory, in
 # a directory of its own per job (see skiff_new_instance_id), so that identically named
@@ -393,7 +411,7 @@ skiff_check_node() {
         command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
     done
     if [ -n "$missing" ]; then
-        echo "$host: required program(s) not found in PATH:$missing (Skiff needs: $SKIFF_HOST_TOOLS; ip and ss are in iproute2; install them with the system's package manager)" >&2
+        echo "$host: required program(s) not found in PATH:$missing (Skiff needs: $SKIFF_HOST_TOOLS; ip and ss are in iproute2. Take apptainer, slirp4netns and socat out of the Skiff image with 'skiff.sh tools', or install them with the system's package manager)" >&2
         errors=$((errors + 1))
     fi
     for tool in apptainer slirp4netns; do
@@ -477,7 +495,7 @@ skiff_node_report() {
     esac
     echo "$(hostname): kernel $(uname -r), $(uname -m), cgroup $cgroup, user $(id -un)"
     for tool in apptainer slirp4netns; do
-        command -v "$tool" >/dev/null 2>&1 && echo "$(hostname): $tool $(_skiff_version "$tool")"
+        command -v "$tool" >/dev/null 2>&1 && echo "$(hostname): $tool $(_skiff_version "$tool") ($(command -v "$tool"))"
     done
     fstype=$(stat -f -c %T "$SKIFF_TMP_DIR" 2>/dev/null || true)
     echo "$(hostname): scratch $SKIFF_TMP_DIR${fstype:+ ($fstype)}"
@@ -708,7 +726,7 @@ skiff_bubble() {
     if [ "${SKIFF_DEV:-0}" = "1" ]; then
         echo "  Development mode: using local image"
         IMAGE_DIR="$SKIFF_STATE_DIR/images"
-        IMAGE_SIF="$IMAGE_DIR/skiff-bubble.sif"
+        IMAGE_SIF="$IMAGE_DIR/skiff.sif"
     
         if [ ! -f "$IMAGE_SIF" ]; then
             echo "Error: $IMAGE_SIF not found. Run 'make develop' first."
@@ -717,7 +735,7 @@ skiff_bubble() {
     
         BUBBLE_IMAGE="$IMAGE_SIF"
     else
-        BUBBLE_IMAGE="docker://docker.io/chazapis/skiff-bubble:latest"
+        BUBBLE_IMAGE="docker://docker.io/chazapis/skiff:latest"
     fi
 
     # Open the overlay's UDP socket in the host's network namespace and pass it to plaidd
@@ -921,12 +939,64 @@ skiff_bubble() {
     done
 }
 
+# skiff_tools [ARCHIVE]: the command `skiff.sh tools`. Takes the programs Skiff needs on a
+# host out of the Skiff image archive (a `docker save` tar, by default the one the development
+# deployment uploads to ~/.skiff/images/skiff.tar) into ~/.skiff/tools. The archive is read with
+# tar alone, so a host needs no container runtime, not even Apptainer, to get Apptainer; the
+# programs are the ones the image itself runs, built to need no more than glibc 2.34.
+skiff_tools() {
+    local archive="${1:-$SKIFF_STATE_DIR/images/skiff.tar}" work layers layer sum have
+    if [ ! -f "$archive" ]; then
+        echo "skiff.sh tools: $archive not found (give the path of the Skiff image archive: a 'docker save' tar)" >&2
+        return 1
+    fi
+    sum=$(sha256sum "$archive" | awk '{print $1}')
+    have=$(cat "$SKIFF_TOOLS_DIR/.source" 2>/dev/null || true)
+    if [ "$have" = "$sum" ] && [ -x "$SKIFF_TOOLS_DIR/bin/apptainer" ]; then
+        echo "The tools in $SKIFF_TOOLS_DIR are those of $archive already."
+        return 0
+    fi
+    mkdir -p "$SKIFF_STATE_DIR"
+    work=$(mktemp -d "$SKIFF_STATE_DIR/.tools.XXXXXX") || return 1
+    # The layers of the image, in order: the names in manifest.json (read to its end).
+    layers=$(tar -xOf "$archive" manifest.json | tr -d '\n' | sed -e 's/.*"Layers":\[\([^]]*\)\].*/\1/' | tr ',' '\n' | tr -d '" ') || true
+    if [ -z "$layers" ]; then
+        echo "skiff.sh tools: $archive is not a docker image archive (no layers in its manifest.json)" >&2
+        rm -rf "$work"
+        return 1
+    fi
+    # Each layer is a tar, gzip-compressed or not (gzip -f passes the latter through); the
+    # tree is in one of them, named with a leading ./ or without (the other name is then
+    # reported missing, which does not matter).
+    while read -r layer; do
+        [ -n "$layer" ] || continue
+        tar -xOf "$archive" "$layer" | gzip -dcf | tar -xf - -C "$work" --no-same-owner opt/skiff/tools ./opt/skiff/tools 2>/dev/null || true
+    done <<< "$layers"
+    if [ ! -x "$work/opt/skiff/tools/bin/apptainer" ]; then
+        echo "skiff.sh tools: there are no tools in $archive (is it a Skiff image, built from this version?)" >&2
+        rm -rf "$work"
+        return 1
+    fi
+    rm -rf "$SKIFF_TOOLS_DIR.old"
+    [ ! -e "$SKIFF_TOOLS_DIR" ] || mv "$SKIFF_TOOLS_DIR" "$SKIFF_TOOLS_DIR.old"
+    mv "$work/opt/skiff/tools" "$SKIFF_TOOLS_DIR"
+    printf '%s\n' "$sum" > "$SKIFF_TOOLS_DIR/.source"
+    rm -rf "$work" "$SKIFF_TOOLS_DIR.old"
+    skiff_use_tools
+    echo "Tools put in $SKIFF_TOOLS_DIR (from $archive):"
+    printf '  %-12s %s\n' apptainer "$("$SKIFF_TOOLS_DIR/bin/apptainer" --version 2>&1 | sed -n 1p)"
+    printf '  %-12s %s\n' slirp4netns "$("$SKIFF_TOOLS_DIR/bin/slirp4netns" --version 2>&1 | sed -n 1p)"
+    printf '  %-12s %s\n' socat "$("$SKIFF_TOOLS_DIR/bin/socat" -V 2>&1 | sed -n 2p)"
+    printf '  %-12s %s\n' kubectl "$("$SKIFF_TOOLS_DIR/bin/kubectl" version --client 2>&1 | sed -n 1p)"
+}
+
 skiff_main() {
     set -euo pipefail
     case "${1:-}" in
         bubble) shift; skiff_bubble "$@" ;;
         check) shift; skiff_check "$@" ;;
-        *) echo "usage: skiff.sh bubble ID | skiff.sh check [controller|node]" >&2; exit 2 ;;
+        tools) shift; skiff_tools "$@" ;;
+        *) echo "usage: skiff.sh bubble ID | skiff.sh check [controller|node] | skiff.sh tools [IMAGE-TAR]" >&2; exit 2 ;;
     esac
 }
 

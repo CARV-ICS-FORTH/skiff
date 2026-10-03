@@ -1,6 +1,13 @@
 # Makefile for Skiff project
 
 REGISTRY ?= docker.io/chazapis
+IMAGE ?= $(REGISTRY)/skiff
+
+# The platform the image is built for (linux/amd64 or linux/arm64); the host's by default.
+# Everything is built in containers, so any platform can be built on any host.
+PLATFORM ?=
+PLATFORM_FLAG := $(if $(PLATFORM),--platform $(PLATFORM))
+SAVE_FLAG := $(if $(PLATFORM),--platform $(PLATFORM))
 
 BASE_VERSION ?= $(shell cat VERSION 2>/dev/null || echo "0.1.0")
 GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
@@ -19,9 +26,11 @@ endif
 
 BUILD_TIME := $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 
+BUILD_ARGS = --build-arg VERSION="$(VERSION)" --build-arg GIT_COMMIT="$(GIT_COMMIT)" --build-arg BUILD_TIME="$(BUILD_TIME)"
+
 export GOFLAGS ?= -buildvcs=false
 
-.PHONY: all build build-skifflet build-plaid vet test test-race clean builder images publish-images develop e2e-images fmt fmt-check check-shell
+.PHONY: all build build-skifflet build-plaid vet test test-race clean builder image publish-image develop e2e-images fmt fmt-check check-shell
 
 all: build
 
@@ -48,17 +57,17 @@ test:
 	$(MAKE) -C plaid test
 	bash test/regression.sh
 
-# The race detector needs cgo and the Linux-only tests (terminals, namespaces,
-# process trees) need Linux, so this runs in the builder container: the same pinned
-# toolchain on every machine. It runs as an unprivileged user (tests that depend on
-# directory modes skip as root); --init reaps the processes the tests kill and
-# --privileged lets the network namespace tests create namespaces.
+# The race detector needs cgo and the Linux-only tests (terminals, namespaces, process
+# trees) need Linux, so this runs in the builder container: the same pinned toolchain on
+# every machine. It runs as an unprivileged user (tests that depend on directory modes skip
+# as root); --init reaps the processes the tests kill and --privileged lets the network
+# namespace tests create namespaces.
 test-race: builder
 	docker run --rm --init --privileged --user 1000:1000 -e GOFLAGS \
 		-e HOME=/home/ubuntu -e GOPATH=/home/ubuntu/.go \
 		-v "$(CURDIR)":/src \
 		-v skiff-test-go-mod:/home/ubuntu/.go/pkg/mod -v skiff-test-go-build:/home/ubuntu/.cache/go-build \
-		$(REGISTRY)/skiff-builder:latest \
+		$(IMAGE):builder \
 		sh -c 'make -C skifflet test-race && make -C plaid test-race'
 
 fmt:
@@ -72,83 +81,66 @@ fmt-check:
 # is a failure, not a skip). Warnings count, except SC2034 (a variable that is set and not
 # used here: mostly names that are sourced or exported, which shellcheck cannot see).
 check-shell: builder
-	docker run --rm -v "$(CURDIR)":/src:ro $(REGISTRY)/skiff-builder:latest \
+	docker run --rm -v "$(CURDIR)":/src:ro $(IMAGE):builder \
 		sh -c 'shellcheck --severity=warning --exclude=SC2034 $$(find scripts images test -type f \( -name "*.sh" -o -name "*.slurm" \) -not -path "*/.*" -not -path "*/results/*")'
 
 
+# The build and test environment: the first stage of the one Skiff image's Dockerfile
+# (tagged skiff:builder, kept locally, never published).
 builder:
-	@echo "Building skiff-builder image locally..."
-	docker build \
-		-t $(REGISTRY)/skiff-builder:latest \
-		-f images/skiff-builder/Dockerfile images/skiff-builder
+	@echo "Building the builder stage of the skiff image locally..."
+	docker buildx build $(PLATFORM_FLAG) --load --target builder \
+		-t $(IMAGE):builder \
+		-f images/skiff/Dockerfile .
 
-images:
-	@echo "Building skiff-bubble image locally (Version: $(VERSION))..."
-	docker build \
-		--build-arg REGISTRY=$(REGISTRY) \
-		--build-arg VERSION="$(VERSION)" \
-		--build-arg GIT_COMMIT="$(GIT_COMMIT)" \
-		--build-arg BUILD_TIME="$(BUILD_TIME)" \
-		-t $(REGISTRY)/skiff-bubble:$(VERSION) \
-		-t $(REGISTRY)/skiff-bubble:latest \
-		-f images/skiff-bubble/Dockerfile .
+image:
+	@echo "Building the skiff image locally (Version: $(VERSION))..."
+	docker buildx build $(PLATFORM_FLAG) --load $(BUILD_ARGS) \
+		-t $(IMAGE):$(VERSION) \
+		-t $(IMAGE):latest \
+		-f images/skiff/Dockerfile .
 
-publish-images:
-	@echo "Building and pushing multi-arch skiff-bubble release image (Version: $(VERSION))..."
-	docker buildx build --platform linux/amd64,linux/arm64 \
-		--build-arg REGISTRY=$(REGISTRY) \
-		--build-arg VERSION="$(VERSION)" \
-		--build-arg GIT_COMMIT="$(GIT_COMMIT)" \
-		--build-arg BUILD_TIME="$(BUILD_TIME)" \
-		-t $(REGISTRY)/skiff-bubble:$(VERSION) \
-		-t $(REGISTRY)/skiff-bubble:latest \
+publish-image:
+	@echo "Building and pushing the multi-arch skiff release image (Version: $(VERSION))..."
+	docker buildx build --platform linux/amd64,linux/arm64 $(BUILD_ARGS) \
+		-t $(IMAGE):$(VERSION) \
+		-t $(IMAGE):latest \
 		--push \
-		-f images/skiff-bubble/Dockerfile .
+		-f images/skiff/Dockerfile .
 
-develop:
-	@echo "Building images for local development (Version: $(VERSION))..."
-	
-	# Build skiff-builder locally
-	docker build --build-arg REGISTRY=$(REGISTRY) \
-		-t $(REGISTRY)/skiff-builder:latest \
-		-f images/skiff-builder/Dockerfile images/skiff-builder
-
-	# Build skiff-bubble locally
-	docker build --build-arg REGISTRY=$(REGISTRY) \
-		--build-arg VERSION="$(VERSION)" \
-		--build-arg GIT_COMMIT="$(GIT_COMMIT)" \
-		--build-arg BUILD_TIME="$(BUILD_TIME)" \
-		-t $(REGISTRY)/skiff-bubble:latest \
-		-f images/skiff-bubble/Dockerfile .
-
-	@echo "Exporting images to tar files..."
+# Build the image and the builder for local development, and deploy them with the scripts
+# to the Vagrant VMs. The VMs need no Apptainer, slirp4netns, socat or kubectl of their own:
+# `skiff.sh tools` takes them out of the image that was just uploaded, and the Apptainer
+# that comes with it converts the image to the SIF the jobs run.
+develop: builder image
+	@echo "Exporting the image to a tar file..."
 	@mkdir -p /tmp/skiff-images
-	docker save -o /tmp/skiff-images/skiff-bubble.tar $(REGISTRY)/skiff-bubble:latest
+	docker save $(SAVE_FLAG) -o /tmp/skiff-images/skiff.tar $(IMAGE):latest
 
 	@echo "Generating deployment manifest..."
 	@if command -v sha256sum >/dev/null 2>&1; then \
-		TAR_SHA=$$(sha256sum /tmp/skiff-images/skiff-bubble.tar | awk '{print $$1}'); \
+		TAR_SHA=$$(sha256sum /tmp/skiff-images/skiff.tar | awk '{print $$1}'); \
 	elif command -v shasum >/dev/null 2>&1; then \
-		TAR_SHA=$$(shasum -a 256 /tmp/skiff-images/skiff-bubble.tar | awk '{print $$1}'); \
+		TAR_SHA=$$(shasum -a 256 /tmp/skiff-images/skiff.tar | awk '{print $$1}'); \
 	else \
 		echo "Error: neither sha256sum nor shasum found" >&2; exit 1; \
 	fi; \
 	GIT_DIRTY=$$(test -z "$$(git -c core.fsmonitor=false status --porcelain)" && echo false || echo true); \
-	IMAGE_ID=$$(docker image inspect --format '{{.Id}}' $(REGISTRY)/skiff-bubble:latest); \
-	BUILDER_ID=$$(docker image inspect --format '{{.Id}}' $(REGISTRY)/skiff-builder:latest); \
-	GO_VERSION=$$(docker run --rm $(REGISTRY)/skiff-builder:latest go version | awk '{print $$3}'); \
-	printf '{\n  "version": "%s",\n  "git_commit": "%s",\n  "git_dirty": %s,\n  "build_time": "%s",\n  "tar_sha256": "%s",\n  "image_id": "%s",\n  "builder_image_id": "%s",\n  "go_version": "%s"\n}\n' \
-		"$(VERSION)" "$(GIT_COMMIT)" "$$GIT_DIRTY" "$(BUILD_TIME)" "$$TAR_SHA" "$$IMAGE_ID" "$$BUILDER_ID" "$$GO_VERSION" > /tmp/skiff-images/manifest.json
+	IMAGE_ID=$$(docker image inspect --format '{{.Id}}' $(IMAGE):latest); \
+	IMAGE_PLATFORM=$$(docker image inspect --format '{{.Os}}/{{.Architecture}}' $(IMAGE):latest); \
+	BUILDER_ID=$$(docker image inspect --format '{{.Id}}' $(IMAGE):builder); \
+	GO_VERSION=$$(docker run --rm $(IMAGE):builder go version | awk '{print $$3}'); \
+	printf '{\n  "version": "%s",\n  "git_commit": "%s",\n  "git_dirty": %s,\n  "build_time": "%s",\n  "tar_sha256": "%s",\n  "image_id": "%s",\n  "platform": "%s",\n  "builder_image_id": "%s",\n  "go_version": "%s"\n}\n' \
+		"$(VERSION)" "$(GIT_COMMIT)" "$$GIT_DIRTY" "$(BUILD_TIME)" "$$TAR_SHA" "$$IMAGE_ID" "$$IMAGE_PLATFORM" "$$BUILDER_ID" "$$GO_VERSION" > /tmp/skiff-images/manifest.json
 
-	@echo "Copying image and manifest to Vagrant VMs..."
-	test/vagrant/transport.sh ssh controller "mkdir -p ~/.skiff/images && rm -f ~/.skiff/images/skiff-bubble.sif"
-	test/vagrant/transport.sh upload /tmp/skiff-images/skiff-bubble.tar /home/vagrant/.skiff/images/skiff-bubble.tar controller
-	test/vagrant/transport.sh upload /tmp/skiff-images/manifest.json /home/vagrant/.skiff/images/manifest.json controller
-
-	@echo "Converting tar to SIF on controller VM..."
-	test/vagrant/transport.sh ssh controller "apptainer build --force ~/.skiff/images/skiff-bubble.sif docker-archive:///home/vagrant/.skiff/images/skiff-bubble.tar"
-
+	@echo "Copying image, manifest and scripts to the Vagrant VMs..."
+	test/vagrant/transport.sh ssh controller "mkdir -p ~/.skiff/images && rm -f ~/.skiff/images/skiff.sif ~/.skiff/images/skiff-bubble.*"
+	test/vagrant/transport.sh upload /tmp/skiff-images/skiff.tar .skiff/images/skiff.tar controller
+	test/vagrant/transport.sh upload /tmp/skiff-images/manifest.json .skiff/images/manifest.json controller
 	$(MAKE) -C test/vagrant sync
+
+	@echo "Extracting the tools from the image and converting it to a SIF on the controller VM..."
+	test/vagrant/transport.sh ssh controller 'bash ~/skiff/scripts/skiff.sh tools && PATH="$$HOME/.skiff/tools/bin:$$PATH" apptainer build --force ~/.skiff/images/skiff.sif docker-archive://$$HOME/.skiff/images/skiff.tar'
 
 	@echo "Development image and deployment manifest deployed successfully!"
 	@echo "Submit with SKIFF_DEV=1 to use the local image."
@@ -157,27 +149,27 @@ develop:
 e2e-images:
 	@echo "Building e2e fixture image (Version: $(VERSION))..."
 
-	docker build \
+	docker buildx build $(PLATFORM_FLAG) --load \
 		-t skiff-e2e-fixture:$(GIT_COMMIT_SHORT) \
 		-t skiff-e2e-fixture:latest \
 		-f test/e2e/images/fixture/Dockerfile test/e2e/images/fixture
 
 	@echo "Exporting fixture image to tar..."
 	@mkdir -p /tmp/skiff-images
-	docker save -o /tmp/skiff-images/skiff-e2e-fixture.tar skiff-e2e-fixture:$(GIT_COMMIT_SHORT)
+	docker save $(SAVE_FLAG) -o /tmp/skiff-images/skiff-e2e-fixture.tar skiff-e2e-fixture:$(GIT_COMMIT_SHORT)
 
 	@echo "Uploading fixture tar to controller VM..."
 	test/vagrant/transport.sh ssh controller "mkdir -p ~/.skiff/images"
-	test/vagrant/transport.sh upload /tmp/skiff-images/skiff-e2e-fixture.tar /home/vagrant/.skiff/images/skiff-e2e-fixture.tar controller
+	test/vagrant/transport.sh upload /tmp/skiff-images/skiff-e2e-fixture.tar .skiff/images/skiff-e2e-fixture.tar controller
 
 	@echo "Converting fixture tar to SIF on controller VM..."
 	test/vagrant/transport.sh ssh controller \
-		"apptainer build --force ~/.skiff/images/skiff-e2e-fixture.sif docker-archive:///home/vagrant/.skiff/images/skiff-e2e-fixture.tar"
+		'PATH="$$HOME/.skiff/tools/bin:$$PATH" apptainer build --force ~/.skiff/images/skiff-e2e-fixture.sif docker-archive://$$HOME/.skiff/images/skiff-e2e-fixture.tar'
 
 	@echo "Writing fixture env file..."
 	@printf 'export FIXTURE_IMAGE_TAG="%s"\nexport FIXTURE_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture.sif"\n' \
 		"$(GIT_COMMIT_SHORT)" > /tmp/skiff-images/fixture.env
-	test/vagrant/transport.sh upload /tmp/skiff-images/fixture.env /home/vagrant/.skiff/fixture.env controller
+	test/vagrant/transport.sh upload /tmp/skiff-images/fixture.env .skiff/fixture.env controller
 
 	@echo "e2e fixture image deployed. Tag: $(GIT_COMMIT_SHORT)"
 	@echo "Run 'make -C test/vagrant e2e' to qualify the deployed images."

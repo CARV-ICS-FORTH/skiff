@@ -107,7 +107,7 @@ stop_holder() {
 }
 e2e_cleanup_register stop_holder
 port_taken() {
-    local job result out rc=0 image="${HOME}/.skiff/images/skiff-bubble.sif"
+    local job result out rc=0 image="${HOME}/.skiff/images/skiff.sif"
     HOLDER_PID=$(runtime_ssh_node "$WORKER_IP" "python3 -c \"import socket,time; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.bind(('0.0.0.0',8472)); time.sleep(600)\" >/dev/null 2>&1 & echo \$!")
     [[ "$HOLDER_PID" =~ ^[0-9]+$ ]] || e2e_die "cannot start a process that holds the overlay port"
     sleep 1

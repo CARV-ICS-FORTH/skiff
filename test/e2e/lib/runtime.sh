@@ -12,6 +12,8 @@
 _E2E_SSH_KEY="${E2E_SSH_KEY:-/home/vagrant/.ssh/id_ed25519}"
 _E2E_SSH_USER="${E2E_SSH_USER:-vagrant}"
 
+# (The remote command runs in a non-interactive shell, which does not read the login profile:
+# the tools that skiff.sh takes out of the image, where they exist, are put first in PATH here.)
 runtime_ssh_node() {
     local node="$1"
     shift
@@ -20,7 +22,7 @@ runtime_ssh_node() {
         -o ConnectTimeout=10 \
         -o ServerAliveInterval=3 \
         -o ServerAliveCountMax=2 \
-        "${_E2E_SSH_USER}@${node}" "$@"
+        "${_E2E_SSH_USER}@${node}" "export PATH=\"\$HOME/.skiff/tools/bin:\$PATH\"; $*"
 }
 
 # After the bubble exits, require successful host observations of every daemon

@@ -380,7 +380,7 @@ PY
 
 collect_candidate_evidence() {
     local manifest="${SKIFF_MANIFEST_PATH:-${HOME}/.skiff/images/manifest.json}"
-    local sif="${HOME}/.skiff/images/skiff-bubble.sif"
+    local sif="${HOME}/.skiff/images/skiff.sif"
     local fixture="${HOME}/.skiff/images/skiff-e2e-fixture.sif"
     local nodes_file="${E2E_LOGDIR}/candidate-nodes.tsv"
     local node ip arch sif_sha version
@@ -394,7 +394,7 @@ collect_candidate_evidence() {
     for node in "$(e2e_node_a)" "$(e2e_node_b)"; do
         ip=$(runtime_node_ip "$node") || return 1
         arch=$(runtime_ssh_node "$ip" "uname -m") || return 1
-        sif_sha=$(runtime_ssh_node "$ip" "sha256sum /home/vagrant/.skiff/images/skiff-bubble.sif | cut -d' ' -f1") || return 1
+        sif_sha=$(runtime_ssh_node "$ip" "sha256sum /home/vagrant/.skiff/images/skiff.sif | cut -d' ' -f1") || return 1
         version=$(e2e_kubectl get node "$node" -o jsonpath='{.status.nodeInfo.kubeletVersion}') || return 1
         printf '%s\t%s\t%s\t%s\n' "$node" "$arch" "$sif_sha" "$version" >> "$nodes_file"
     done

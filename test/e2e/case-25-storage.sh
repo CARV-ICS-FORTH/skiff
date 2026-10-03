@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Case 25: PersistentVolumeClaims and the data of a job (T27, T28, T29). The cluster ships
 # a default StorageClass (Rancher's Local Path Provisioner on the shared home, see
-# images/skiff-bubble/storage.yaml): a claim that names no class gets a directory below
+# images/skiff/storage.yaml): a claim that names no class gets a directory below
 # ~/.skiff/volumes/<this job's name>/, any node can use it, and the standard Kubernetes
 # rules for claims, volumes and reclaim policies apply. What the volumes hold is checked on
 # the filesystem, not only through the API. Failures are made with the immutable attribute

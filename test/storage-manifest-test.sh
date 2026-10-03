@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# The default storage manifest the controller installs (images/skiff-bubble/storage.yaml):
+# The default storage manifest the controller installs (images/skiff/storage.yaml):
 # what the entrypoint does to it (replace the placeholder with the job's volume directory)
 # gives a configuration the provisioner can read, and the settings the design depends on
 # are there (one default class, Delete). The entrypoint's own sed is the one used here.
 set -euo pipefail
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
-manifest="$repo_dir/images/skiff-bubble/storage.yaml"
-entrypoint="$repo_dir/images/skiff-bubble/entrypoint.sh"
+manifest="$repo_dir/images/skiff/storage.yaml"
+entrypoint="$repo_dir/images/skiff/entrypoint.sh"
 fail() { echo "storage-manifest-test: $*" >&2; exit 1; }
 
 [ "$(grep -c '^  config.json:' "$manifest")" = 1 ] || fail "no single config.json"

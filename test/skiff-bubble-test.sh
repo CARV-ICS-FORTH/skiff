@@ -22,7 +22,7 @@ case "$out" in *"required program(s) not found in PATH"*socat*) ;; *) fail "no r
 [ -z "$(ls -A "$empty")" ] || fail "created files before failing without socat"
 
 mkdir -p "$test_dir/bin" "$test_dir/home/.skiff/images"
-: > "$test_dir/home/.skiff/images/skiff-bubble.sif"
+: > "$test_dir/home/.skiff/images/skiff.sif"
 
 cat > "$test_dir/bin/apptainer" <<'STUB'
 #!/usr/bin/env bash
@@ -50,7 +50,7 @@ case "$*" in
         [ -e "$FAKE_DIR/instance-gone" ] && exit 0
         if [ -e "$FAKE_DIR/list-flap" ]; then rm -f "$FAKE_DIR/list-flap"; exit 0; fi
         if [ -e "$FAKE_DIR/list-fails" ]; then echo "FATAL: cannot read the instance directory" >&2; exit 1; fi
-        printf 'INSTANCE NAME PID IP IMAGE\nbubble1 %s /x/skiff-bubble.sif\n' "$(cat "$FAKE_DIR/inst-pid")"
+        printf 'INSTANCE NAME PID IP IMAGE\nbubble1 %s /x/skiff.sif\n' "$(cat "$FAKE_DIR/inst-pid")"
         for n in $(seq 1 400); do printf 'other%s %s /home/user/.apptainer/some/long/path/to/an/image/that/is/not/the/bubble.sif\n' "$n" "$((100000 + n))"; done ;;
     *pgrep*)
         # Is the entrypoint of the bubble running? pgrep says 1 for "no match".
@@ -164,7 +164,7 @@ grep -q -- "--mtu=$SKIFF_POD_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&
 # handoff socket in the scratch directory; the bubble was told where it is, got the
 # scratch directory at the same path, and Apptainer's scratch is below it.
 [ "$(wc -l < "$FAKE_DIR/helper-args" | tr -d ' ')" = 1 ] || fail "the helper was not started exactly once"
-grep -q -- "$HOME/.skiff/images/skiff-bubble.sif /usr/local/bin/plaidctl overlay-socket --bind 192.0.2.10 --port 8472 --handoff $SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/helper-args" \
+grep -q -- "$HOME/.skiff/images/skiff.sif /usr/local/bin/plaidctl overlay-socket --bind 192.0.2.10 --port 8472 --handoff $SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/helper-args" \
     || { cat "$FAKE_DIR/helper-args" >&2; fail "unexpected helper command line"; }
 grep -q -- "--env SKIFF_OVERLAY_HANDOFF=$SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told the handoff path"
 grep -q -- "--bind $SKIFF_TMP_DIR:$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not given the scratch directory at the same path"

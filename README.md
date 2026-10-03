@@ -5,7 +5,7 @@ Skiff allows HPC users to run their own private Kubernetes "mini Cloud" on a typ
 ### Requirements
 
 - **Slurm**, and whole nodes: `skiff.slurm` asks for exclusive nodes and all their memory (`--exclusive --mem=0`), because the fixed ports (the API server's TCP 6443 on the controller, the kubelet's TCP 10250 and the overlay's UDP 8472 on every node) and the node's scratch directory must be the job's alone. A job on shared nodes is refused when something is in the way.
-- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and iproute2** (`ip` and `ss`).
+- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and iproute2** (`ip` and `ss`). iproute2 comes with the system. The other three do not have to be installed: `skiff.sh tools` takes them (and `kubectl`) out of the Skiff image archive into `~/.skiff/tools`, which `skiff.sh` and `skiff.slurm` then put first in `PATH` (they need glibc 2.34 or newer on the host: RHEL 9, Ubuntu 22.04 and later, Debian 12 and later). Or install them with the packages below.
 
   | | Debian / Ubuntu | RHEL family |
   |---|---|---|
@@ -14,7 +14,8 @@ Skiff allows HPC users to run their own private Kubernetes "mini Cloud" on a typ
   | socat | `socat` | `socat` |
   | `ip`, `ss` | `iproute2` | `iproute` |
 
-- **Unprivileged user namespaces**: `user.max_user_namespaces` above 0 and `kernel.unprivileged_userns_clone` not 0 where it exists (on recent Ubuntu, Apptainer's AppArmor profile, which its package installs, is what allows them), and a **subordinate id range** for the user in `/etc/subuid` and `/etc/subgid` (or the site's directory service): the bubbles run as root in a user namespace of yours.
+- **`newuidmap` and `newgidmap`** (package `uidmap`, setuid root: a copy in your home is not, so this is for the administrator) when Apptainer is not the system's own: with a subordinate id range, Apptainer maps ids through them.
+- **Unprivileged user namespaces**: `user.max_user_namespaces` above 0 and `kernel.unprivileged_userns_clone` not 0 where it exists (on Ubuntu 24.04 and later AppArmor allows them only to programs with a profile, which Apptainer's package installs and a copy under `~/.skiff/tools` does not have: with the tools from the image, the administrator sets `kernel.apparmor_restrict_unprivileged_userns=0`), and a **subordinate id range** for the user in `/etc/subuid` and `/etc/subgid` (or the site's directory service): the bubbles run as root in a user namespace of yours.
 - A **shared home directory**.
 
 Skiff was qualified with Apptainer 1.5.4 and slirp4netns 1.2.1 on Ubuntu 24.04 (kernel 6.8, arm64). Older versions are reported and not refused; a failure with one is a reason to upgrade it first.
@@ -166,7 +167,7 @@ skiff/
 - **`plaid`**: CNI-compatible plugin and container TAP initializer.
 - **`plaidctl`**: CLI tool for inspecting endpoints, routes and network statistics.
 
-### Skiff Bubble (`images/skiff-bubble/`)
+### Skiff Bubble (`images/skiff/`)
 
 A rootless Apptainer container runs on each allocated HPC node. One bubble hosts the [K3s](https://k3s.io/) control plane; every bubble runs Skifflet and Plaid, which also translates Service traffic. [slirp4netns](https://github.com/rootless-containers/slirp4netns) provides external access.
 
@@ -186,13 +187,13 @@ make build-skifflet
 make build-plaid
 ```
 
-Build the bubble image with Docker:
+Build the Skiff image with Docker (everything is built in containers, so any platform can be built on any host: `make image PLATFORM=linux/amd64`):
 
 ```bash
-make images
+make image
 ```
 
-**Versions.** The bubble image carries K3s v1.35.0+k3s1 (Kubernetes 1.35, checksummed in `images/skiff-bubble/Dockerfile`) and Apptainer from its PPA; Skifflet is built against Virtual Kubelet v1.14.0 and `client-go` v0.36 (one minor version ahead of the API server, which Kubernetes supports; see `skifflet/go.mod`) with the Go release pinned in `images/skiff-builder/Dockerfile`. Change the K3s version only together with a run of the whole suite: Skifflet implements the kubelet's side of that API.
+**Versions.** The one Skiff image is Debian bookworm (`images/skiff/Dockerfile`, with the base images and the Go release pinned by digest). It carries K3s v1.35.0+k3s1 (Kubernetes 1.35, checksummed) and Apptainer 1.5.4 built from source, with slirp4netns, socat and kubectl: the tools a host needs, in one relocatable tree that `skiff.sh tools` takes out of the image (everything in it needs glibc 2.34 at most, the C library of RHEL 9; the build checks it). Skifflet is built against Virtual Kubelet v1.14.0 and `client-go` v0.36 (one minor version ahead of the API server, which Kubernetes supports; see `skifflet/go.mod`) built with Go 1.26.8. Change the K3s version only together with a run of the whole suite: Skifflet implements the kubelet's side of that API.
 
 ---
 
@@ -207,7 +208,7 @@ vagrant reload
 cd ../..
 ```
 
-This boots two Ubuntu 24.04 VMs (`controller` and `node`) with Slurm and the runtime dependencies installed.
+This boots two Ubuntu 24.04 VMs (`controller` and `node`) with Slurm, and with what a cluster's administrator provides for Skiff and a user cannot: `uidmap`, a subordinate id range and user namespaces allowed. Apptainer, slirp4netns, socat and kubectl are not installed: `make develop` takes them out of the image into `~/.skiff/tools`, as a user does on a cluster.
 
 ### 2. Deploy and Run Local Images
 
@@ -225,6 +226,6 @@ export KUBECONFIG=${HOME}/.skiff/kubeconfig
 kubectl get nodes
 ```
 
-Wait for startup to create the credentials before using `kubectl`. Development jobs select the locally built image with `SKIFF_DEV=1`; ordinary jobs use the published image by default.
+Put the tools first in `PATH` for `kubectl` (`export PATH=$HOME/.skiff/tools/bin:$PATH`) and wait for startup to create the credentials before using it. Development jobs select the locally built image with `SKIFF_DEV=1`; ordinary jobs use the published image by default.
 
 See [test/README.md](test/README.md) for the testing overview, fixture setup and manual test commands.

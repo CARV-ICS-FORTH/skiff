@@ -21,7 +21,7 @@ Rather than running standard rootful container runtimes (like `containerd` or `d
 make build
 ```
 
-This compiles the `skifflet` binary for this host into `bin/skifflet`. The Linux binary that runs in the cluster is built inside the builder container (`make images` from the repository root).
+This compiles the `skifflet` binary for this host into `bin/skifflet`. The Linux binary that runs in the cluster is built inside the builder container (`make image` from the repository root).
 
 ## Running Tests
 

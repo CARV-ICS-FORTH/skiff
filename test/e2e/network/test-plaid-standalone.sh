@@ -25,7 +25,8 @@ HOST_HTTP_PIDS=()
 pass() { echo "[PASS] $1"; }
 fail() { echo "[FAIL] $1" >&2; exit 1; }
 info() { echo ">>> $1"; }
-peer() { ssh -i "${E2E_SSH_KEY:-/home/vagrant/.ssh/id_ed25519}" -o StrictHostKeyChecking=no -o ConnectTimeout=10 "vagrant@${PEER_IP}" "$@"; }
+# (A remote command runs in a non-interactive shell: the tools skiff.sh took out of the image, where there are any, come first in PATH.)
+peer() { ssh -i "${E2E_SSH_KEY:-/home/vagrant/.ssh/id_ed25519}" -o StrictHostKeyChecking=no -o ConnectTimeout=10 "vagrant@${PEER_IP}" "export PATH=\"\$HOME/.skiff/tools/bin:\$PATH\"; $*"; }
 # grep -q for the end of a pipeline under pipefail: an early exit would kill the writer with SIGPIPE.
 grep_q() { local input; input=$(cat); grep -q "$@" <<< "$input"; }
 ip_of() { apptainer exec "instance://$1" ip -4 addr show eth0 | awk '/inet / {print $2}' | cut -d/ -f1; }

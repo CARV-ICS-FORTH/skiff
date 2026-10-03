@@ -12,7 +12,7 @@
 # Source after common.sh and runtime.sh.
 
 STANDALONE_BINS="plaidd plaid plaidctl plaidtainer"
-STANDALONE_BUBBLE_SIF="${HOME}/.skiff/images/skiff-bubble.sif"
+STANDALONE_BUBBLE_SIF="${HOME}/.skiff/images/skiff.sif"
 # The overlay of the standalone daemons: not the cluster's port, which a running cluster holds.
 STANDALONE_VXLAN_PORT=8473
 # Node networks of the standalone daemons (the first node's and the second's).

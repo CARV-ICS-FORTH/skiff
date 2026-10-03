@@ -167,6 +167,7 @@ expect "a node without the host programs is refused" "$status" 1
 for tool in apptainer slirp4netns socat ss ip; do
     grep -q -- "required program(s) not found in PATH:.* $tool" <<< "$out" || { echo "FAIL the message does not name $tool: $out"; failures=$((failures + 1)); }
 done
+expect "and told how to get them from the image" "$(grep -c "skiff.sh tools" <<< "$out")" 1
 mkdir "$nodedir/only-socat-missing"; for tool in apptainer slirp4netns ss ip; do ln -s "$nodedir/tools/$tool" "$nodedir/only-socat-missing/$tool"; done
 out=$(node_check "$nodedir/only-socat-missing:$nodedir/base" "$nodedir/scratch"); status=$?
 expect "only what is missing is named" "$status:$(grep -o 'PATH:.*(' <<< "$out")" "1:PATH: socat ("
@@ -266,5 +267,57 @@ out=$(env -i PATH="$PATH" bash "$repo_dir/scripts/skiff.sh" 2>&1); status=$?
 expect "executing without a command is a usage error" "$status:$(grep -c 'usage: skiff.sh bubble ID' <<< "$out")" "2:1"
 out=$(env -i PATH="$PATH" bash "$repo_dir/scripts/skiff.sh" nonsense 2>&1); status=$?
 expect "executing an unknown command is a usage error" "$status" 2
+
+# --- skiff.sh tools: the programs out of the image archive --------------------------------
+# A docker-archive stand-in: two layers (the first gzip-compressed with the tools, the second
+# plain, without), a manifest that names them, and tools that only say who they are.
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/layer1/opt/skiff/tools/bin" "$work/layer1/opt/skiff/tools/lib" "$work/layer2/etc" "$work/arc/blobs/sha256"
+for tool in apptainer slirp4netns socat kubectl; do
+    printf '#!/bin/sh\necho "%s version 9.9"\necho "second line"\n' "$tool" > "$work/layer1/opt/skiff/tools/bin/$tool"
+    chmod 0755 "$work/layer1/opt/skiff/tools/bin/$tool"
+done
+echo data > "$work/layer1/opt/skiff/tools/lib/libx.so"
+echo hello > "$work/layer2/etc/hello"
+tar -C "$work/layer1" -czf "$work/arc/blobs/sha256/aaa" .
+tar -C "$work/layer2" -cf "$work/arc/blobs/sha256/bbb" .
+printf '[{"Config":"blobs/sha256/ccc","RepoTags":["x:latest"],"Layers":["blobs/sha256/aaa","blobs/sha256/bbb"]}]' > "$work/arc/manifest.json"
+tar -C "$work/arc" -cf "$work/skiff.tar" manifest.json blobs
+# an archive that has layers and no tools
+mkdir -p "$work/arc2/blobs/sha256"
+cp "$work/arc/blobs/sha256/bbb" "$work/arc2/blobs/sha256/bbb"
+printf '[{"Config":"blobs/sha256/ccc","RepoTags":["x:latest"],"Layers":["blobs/sha256/bbb"]}]' > "$work/arc2/manifest.json"
+tar -C "$work/arc2" -cf "$work/other.tar" manifest.json blobs
+mkdir -p "$work/home"
+run_tools() { env -i PATH="$PATH" HOME="$work/home" bash "$repo_dir/scripts/skiff.sh" tools "$@" 2>&1; }
+
+out=$(run_tools "$work/skiff.tar"); status=$?
+expect "tools: the tools come out of the archive" "$status:$([ -x "$work/home/.skiff/tools/bin/socat" ] && echo yes):$([ -f "$work/home/.skiff/tools/lib/libx.so" ] && echo yes)" "0:yes:yes"
+expect "tools: it says what it put there" "$(grep -c 'apptainer .*version 9.9' <<< "$out")" 1
+expect "tools: it leaves nothing but the tools" "$(ls -A "$work/home/.skiff" | tr '\n' ' ')" "tools "
+out=$(run_tools "$work/skiff.tar")
+expect "tools: the same archive again changes nothing" "$(grep -c 'already' <<< "$out")" 1
+out=$(env -i PATH=/usr/bin:/bin HOME="$work/home" bash -c 'source "$1"; command -v apptainer' _ "$repo_dir/scripts/skiff.sh" 2>&1)
+expect "tools: once there, they come first in PATH" "$out" "$work/home/.skiff/tools/bin/apptainer"
+out=$(env -i PATH=/usr/bin:/bin HOME="$work/nohome" bash -c 'source "$1"; echo "$PATH"' _ "$repo_dir/scripts/skiff.sh" 2>&1)
+expect "tools: without them PATH is untouched" "$out" "/usr/bin:/bin"
+out=$(run_tools "$work/other.tar"); status=$?
+expect "tools: an archive without tools is refused and the tools stay" "$status:$(grep -c 'no tools in' <<< "$out"):$([ -x "$work/home/.skiff/tools/bin/socat" ] && echo yes)" "1:1:yes"
+out=$(run_tools "$work/Makefile-not-there"); status=$?
+expect "tools: a missing archive is refused" "$status:$(grep -c 'not found' <<< "$out")" "1:1"
+echo "not an archive" > "$work/junk.tar"
+out=$(run_tools "$work/junk.tar"); status=$?
+expect "tools: a file that is not an image archive is refused" "$status:$(grep -c 'not a docker image archive' <<< "$out")" "1:1"
+mkdir -p "$work/home2/.skiff/images"
+cp "$work/skiff.tar" "$work/home2/.skiff/images/skiff.tar"
+out=$(env -i PATH="$PATH" HOME="$work/home2" bash "$repo_dir/scripts/skiff.sh" tools 2>&1); status=$?
+expect "tools: without a path it takes the development deployment's archive" "$status:$([ -x "$work/home2/.skiff/tools/bin/kubectl" ] && echo yes)" "0:yes"
+# a new archive replaces the tools (and keeps no copy of the old ones)
+printf '#!/bin/sh\necho "apptainer version 10.0"\n' > "$work/layer1/opt/skiff/tools/bin/apptainer"
+tar -C "$work/layer1" -czf "$work/arc/blobs/sha256/aaa" .
+tar -C "$work/arc" -cf "$work/skiff2.tar" manifest.json blobs
+out=$(run_tools "$work/skiff2.tar")
+expect "tools: a new archive replaces the old tools" "$("$work/home/.skiff/tools/bin/apptainer" --version):$(ls -A "$work/home/.skiff" | tr '\n' ' ')" "apptainer version 10.0:tools "
 
 [ "$failures" -eq 0 ] && echo "skiff-config: all checks passed" || { echo "skiff-config: $failures check(s) failed"; exit 1; }

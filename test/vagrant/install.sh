@@ -10,13 +10,10 @@ if [ -b /dev/mapper/ubuntu--vg-ubuntu--lv ]; then
     lvextend -r -l +100%FREE /dev/mapper/ubuntu--vg-ubuntu--lv || true
 fi
 
-# 1. Disable Security
-echo "Disabling security features..."
+# 1. Disable the firewall (AppArmor stays as Ubuntu has it: see the administrator's part below)
+echo "Disabling the firewall..."
 systemctl stop ufw
 systemctl disable ufw
-# AppArmor
-systemctl stop apparmor
-systemctl disable apparmor
 # SELinux is not installed by default on Ubuntu, but just in case
 if command -v setenforce &> /dev/null; then
     setenforce 0
@@ -26,10 +23,6 @@ fi
 # Fix /etc/hosts (Remove 127.0.x.x entries that confuse Slurm)
 sed -i '/127.0.1.1/d' /etc/hosts
 sed -i '/127.0.2.1/d' /etc/hosts
-
-# Disable AppArmor (Kernel parameter required)
-sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="/GRUB_CMDLINE_LINUX_DEFAULT="apparmor=0 /' /etc/default/grub
-update-grub
 
 # Fix Routes: Persistent Fix to remove default route on 10.0.2.x (NAT)
 # so that 192.168.64.x is preferred.
@@ -74,17 +67,23 @@ echo "net.ipv4.ping_group_range = 0 2147483647" > /etc/sysctl.d/99-ping.conf
 sysctl -p /etc/sysctl.d/99-ping.conf
 
 apt-get update
-apt-get install -y software-properties-common
-add-apt-repository -y ppa:apptainer/ppa
-apt-get update
-apt-get install -y git slurm-wlm munge nfs-common avahi-daemon libnss-mdns apptainer slirp4netns socat
+apt-get install -y git slurm-wlm munge nfs-common avahi-daemon libnss-mdns
 
-# kubectl for host-level access to the cluster (the same release as the bubble's Kubernetes)
-KUBECTL_VERSION=v1.35.0
-KUBECTL_ARCH=$(dpkg --print-architecture)
-curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KUBECTL_ARCH}/kubectl"
-echo "$(curl -fsSL "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KUBECTL_ARCH}/kubectl.sha256")  /usr/local/bin/kubectl" | sha256sum -c -
-chmod +x /usr/local/bin/kubectl
+# What an HPC site's administrator provides, and a user cannot: the VMs have exactly this and
+# nothing more, like a cluster after the administrator has done their part.
+#   - uidmap (newuidmap/newgidmap are setuid root) and a subordinate id range for the user
+#     (the bubbles run as root in a user namespace of the user's: --fakeroot)
+#   - unprivileged user namespaces allowed. Ubuntu 24.04's AppArmor restricts them to programs
+#     with a profile, which a program in the user's home does not have; Apptainer's
+#     documentation says to lift the restriction for the whole system.
+# Apptainer, slirp4netns, socat and kubectl are NOT installed: skiff.sh takes them out of the
+# Skiff image into ~/.skiff/tools (make develop), the way a user does on a cluster.
+apt-get install -y uidmap
+for f in /etc/subuid /etc/subgid; do
+    grep -q '^vagrant:' "$f" || echo 'vagrant:100000:65536' >> "$f"
+done
+echo "kernel.apparmor_restrict_unprivileged_userns = 0" > /etc/sysctl.d/99-skiff-userns.conf
+sysctl --system >/dev/null
 
 # Enable mDNS
 # Configure Avahi to only listen on eth0 (Cluster Network) to avoid checking out 10.0.2.15 (NAT)

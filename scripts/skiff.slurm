@@ -119,8 +119,8 @@ export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
 
 if [ "${SKIFF_DEV:-0}" = "1" ]; then
     echo "Development mode: ensuring local .tar image is converted to .sif..."
-    IMAGE_TAR="$IMAGE_DIR/skiff-bubble.tar"
-    IMAGE_SIF="$IMAGE_DIR/skiff-bubble.sif"
+    IMAGE_TAR="$IMAGE_DIR/skiff.tar"
+    IMAGE_SIF="$IMAGE_DIR/skiff.sif"
     if [ -f "$IMAGE_TAR" ]; then
         if [ ! -f "$IMAGE_SIF" ] || [ "$IMAGE_TAR" -nt "$IMAGE_SIF" ]; then
             echo "Converting $IMAGE_TAR to $IMAGE_SIF..."
@@ -135,7 +135,7 @@ if [ "${SKIFF_DEV:-0}" = "1" ]; then
     fi
 else
     echo "Production mode: pre-warming Apptainer cache..."
-    apptainer exec docker://docker.io/chazapis/skiff-bubble:latest /bin/true 2>/dev/null || true
+    apptainer exec docker://docker.io/chazapis/skiff:latest /bin/true 2>/dev/null || true
     apptainer exec docker://registry.k8s.io/pause:3.10 /bin/true 2>/dev/null || true
 fi
 

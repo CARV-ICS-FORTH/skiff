@@ -112,7 +112,7 @@ Plaid is written in Go with zero external C dependencies for the core binaries.
 make build
 ```
 
-The Linux binaries that run in the cluster are built inside the builder container (`make images` from the repository root).
+The Linux binaries that run in the cluster are built inside the builder container (`make image` from the repository root).
 
 ---
 
