@@ -37,7 +37,7 @@ source "\$LIB_DIR/runtime.sh"
 
 wait_clean() {
     local max=300 elapsed=0
-    local nodelist="\${SLURM_JOB_NODELIST:-controller,node}"
+    local nodelist="\${JOB_NODELIST:-\${SLURM_JOB_NODELIST:-}}"
     while [ \$elapsed -lt \$max ]; do
         local ok=1
         for host in \$(scontrol show hostnames "\$nodelist"); do
@@ -63,6 +63,12 @@ check_nodes_ready() {
 TARGET_JOB="\${SKIFF_JOB_ID:-${SKIFF_JOB_ID:-}}"
 if [ -z "\$TARGET_JOB" ]; then
     TARGET_JOB=\$(squeue -u \$(whoami) -h -o "%i" | sed -n 1p || true)
+fi
+
+# The nodes of the job, whatever they are called, while Slurm still has the job's record.
+JOB_NODELIST="\${SLURM_JOB_NODELIST:-}"
+if [ -z "\$JOB_NODELIST" ] && [ -n "\$TARGET_JOB" ]; then
+    JOB_NODELIST=\$(scontrol show job "\$TARGET_JOB" -o 2>/dev/null | tr ' ' '\n' | sed -n 's/^NodeList=//p' | sed -n 1p)
 fi
 
 if [ "\${NO_TEARDOWN:-0}" != "1" ]; then
