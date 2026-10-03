@@ -89,6 +89,16 @@ runtime_controller_node() {
     return 1
 }
 
+# runtime_worker_node: the other node.
+runtime_worker_node() {
+    local controller node
+    controller=$(runtime_controller_node) || return 1
+    for node in "$(e2e_node_a)" "$(e2e_node_b)"; do
+        [ "$node" = "$controller" ] || { echo "$node"; return 0; }
+    done
+    return 1
+}
+
 # runtime_controller_exec COMMAND...: run a command inside the controller's bubble, wherever it is.
 runtime_controller_exec() {
     local node

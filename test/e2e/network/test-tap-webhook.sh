@@ -9,6 +9,7 @@ skiff_config_validate
 
 # The host's kubectl, against the cluster's credentials; and the controller's bubble, which is
 # on whichever node runs the controller (not necessarily this host).
+export E2E_CASE="${E2E_CASE:-NET}"
 # shellcheck source=../lib/common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
 # shellcheck source=../lib/runtime.sh
@@ -61,7 +62,8 @@ if [ ! -f "$webhook_manifest" ]; then
         webhook_manifest="$HOME/.skiff/tap-webhook.yaml"
     fi
 fi
-cat "$webhook_manifest" | kubectl apply -f -
+# (the pods are placed on the controller's node and on the other one, whatever they are called)
+sed -e "s|@CONTROLLER_NODE@|$(runtime_controller_node)|g" -e "s|@WORKER_NODE@|$(runtime_worker_node)|g" "$webhook_manifest" | kubectl apply -f -
 kubectl -n tap-acceptance wait --for=condition=Ready pod/admission-controller pod/admission-node --timeout=180s
 service_ip=$(kubectl -n tap-acceptance get service admission -o jsonpath='{.spec.clusterIP}')
 for attempt in $(seq 1 120); do

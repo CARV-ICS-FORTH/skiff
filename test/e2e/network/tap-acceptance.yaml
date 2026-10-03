@@ -99,7 +99,7 @@ metadata:
   name: client-controller
   namespace: tap-acceptance
 spec:
-  nodeSelector: {kubernetes.io/hostname: controller}
+  nodeSelector: {kubernetes.io/hostname: @CONTROLLER_NODE@}
   containers:
   - name: client
     image: python:3.9-slim
@@ -115,7 +115,7 @@ metadata:
   name: client-node
   namespace: tap-acceptance
 spec:
-  nodeSelector: {kubernetes.io/hostname: node}
+  nodeSelector: {kubernetes.io/hostname: @WORKER_NODE@}
   containers:
   - name: client
     image: python:3.9-slim
@@ -132,7 +132,7 @@ metadata:
   namespace: tap-acceptance
   labels: {app: tap-echo, placement: controller}
 spec:
-  nodeSelector: {kubernetes.io/hostname: controller}
+  nodeSelector: {kubernetes.io/hostname: @CONTROLLER_NODE@}
   containers:
   - name: server
     image: python:3.9-slim
@@ -153,7 +153,7 @@ metadata:
   namespace: tap-acceptance
   labels: {app: tap-echo, placement: node}
 spec:
-  nodeSelector: {kubernetes.io/hostname: node}
+  nodeSelector: {kubernetes.io/hostname: @WORKER_NODE@}
   containers:
   - name: server
     image: python:3.9-slim

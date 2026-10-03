@@ -5,6 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The host's kubectl, against the cluster's credentials; and the controller's bubble, which is
 # on whichever node runs the controller (not necessarily this host).
+export E2E_CASE="${E2E_CASE:-NET}"
 # shellcheck source=../lib/common.sh
 source "$SCRIPT_DIR/../lib/common.sh"
 # shellcheck source=../lib/runtime.sh
@@ -29,7 +30,9 @@ if [ -z "$manifest" ]; then
     fi
 fi
 # The manifest's clients check the cluster's own addresses: fill in this deployment's.
-sed -e "s|@CLUSTER_DOMAIN@|${SKIFF_CLUSTER_DOMAIN}|g" -e "s|@API_SERVICE_IP@|${SKIFF_API_SERVICE_IP}|g" -e "s|@CLUSTER_DNS@|${SKIFF_CLUSTER_DNS}|g" "$manifest" | kubectl apply -f -
+controller_node=$(runtime_controller_node)
+worker_node=$(runtime_worker_node)
+sed -e "s|@CONTROLLER_NODE@|${controller_node}|g" -e "s|@WORKER_NODE@|${worker_node}|g" -e "s|@CLUSTER_DOMAIN@|${SKIFF_CLUSTER_DOMAIN}|g" -e "s|@API_SERVICE_IP@|${SKIFF_API_SERVICE_IP}|g" -e "s|@CLUSTER_DNS@|${SKIFF_CLUSTER_DNS}|g" "$manifest" | kubectl apply -f -
 for pod in client-controller client-node echo-controller echo-node; do
     kubectl -n "$namespace" wait --for=condition=Ready "pod/$pod" --timeout=180s
 done
@@ -40,8 +43,8 @@ controller_echo=$(kubectl -n "$namespace" get pod echo-controller -o jsonpath='{
 node_echo=$(kubectl -n "$namespace" get pod echo-node -o jsonpath='{.status.podIP}')
 controller_service=$(kubectl -n "$namespace" get service echo-controller -o jsonpath='{.spec.clusterIP}')
 node_service=$(kubectl -n "$namespace" get service echo-node -o jsonpath='{.spec.clusterIP}')
-controller_cidr=$(kubectl get node controller -o jsonpath='{.spec.podCIDR}')
-node_cidr=$(kubectl get node node -o jsonpath='{.spec.podCIDR}')
+controller_cidr=$(kubectl get node "$controller_node" -o jsonpath='{.spec.podCIDR}')
+node_cidr=$(kubectl get node "$worker_node" -o jsonpath='{.spec.podCIDR}')
 controller_gateway=$(printf '%s' "$controller_cidr" | awk -F. '{print $1 "." $2 "." $3 ".1"}')
 node_gateway=$(printf '%s' "$node_cidr" | awk -F. '{print $1 "." $2 "." $3 ".1"}')
 # Backends of a Service see the Service engine's address of the client's node (the .2),
