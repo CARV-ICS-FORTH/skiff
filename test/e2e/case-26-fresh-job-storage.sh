@@ -17,7 +17,7 @@ NODES=("$(e2e_node_a)" "$(e2e_node_b)")
 declare -A IPS
 for node in "${NODES[@]}"; do IPS[$node]=$(runtime_node_ip "$node"); done
 ALL_IPS=("${IPS[${NODES[0]}]}" "${IPS[${NODES[1]}]}")
-ARTIFACT_DIR="${SKIFF_ARTIFACT_DIR:-/home/vagrant/skiff}"
+ARTIFACT_DIR="${SKIFF_ARTIFACT_DIR:-$HOME/skiff}"
 CURRENT_JOB="${SKIFF_JOB_ID:-}"
 [[ "$CURRENT_JOB" =~ ^[0-9]+$ ]] || e2e_die "case 26 needs the running job's ID (SKIFF_JOB_ID)"
 

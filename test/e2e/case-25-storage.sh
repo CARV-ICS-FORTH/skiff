@@ -66,6 +66,11 @@ claim_phase() { e2e_kubectl get pvc "$1" -n "$NS" -o jsonpath='{.status.phase}';
 volume_of() { e2e_kubectl get pvc "$1" -n "$NS" -o jsonpath='{.spec.volumeName}'; }
 volume_path() { e2e_kubectl get pv "$(volume_of "$1")" -o jsonpath='{.spec.hostPath.path}'; }
 bound() { [ "$(claim_phase "$1")" = Bound ]; }
+# Two subcases make the filesystem refuse an operation with the immutable attribute (chattr +i),
+# which needs root on the machine that holds the shared home. A user on a cluster has neither
+# root nor that machine (the home is on a storage server, not on a node).
+CHATTR_REASON="needs sudo without a password (chattr +i) on $SHARED_HOME_HOST, the node used as the machine that holds the shared home"
+chattr_available() { runtime_ssh_node "$SHARED_HOME_HOST" "sudo -n true" >/dev/null 2>&1; }
 host_has() { [ "$(runtime_ssh_node "$SHARED_HOME_HOST" "test -e '$1' && echo yes || echo no")" = yes ]; }
 host_lacks() { ! host_has "$1"; }
 volume_gone() { [ -z "$(e2e_kubectl get pv -o name 2>/dev/null | grep -F "$1" || true)" ]; }
@@ -174,7 +179,11 @@ create_failure() {
     e2e_wait_pod_phase "$NS" e2e25-refused-pod Running 120
     e2e_kubectl delete pod e2e25-refused-pod e2e25-other-pod -n "$NS" --timeout=60s > /dev/null
 }
-e2e_subcase_run T27-create-failure create_failure
+if chattr_available; then
+    e2e_subcase_run T27-create-failure create_failure
+else
+    e2e_subcase_unavailable T27-create-failure "$CHATTR_REASON"
+fi
 
 # ---------------------------------------------------------------------------
 # T28-shared-replacement: what a pod wrote survives the pod, and a replacement on the other
@@ -357,7 +366,11 @@ cleanup_retry() {
     e2e_wait_condition 300 "the volume is deleted once the cause is gone" volume_gone "$pvname"
     e2e_wait_condition 60 "and its directory" host_lacks "$dir"
 }
-e2e_subcase_run T29-cleanup-retry cleanup_retry
+if chattr_available; then
+    e2e_subcase_run T29-cleanup-retry cleanup_retry
+else
+    e2e_subcase_unavailable T29-cleanup-retry "$CHATTR_REASON"
+fi
 
 # ---------------------------------------------------------------------------
 # T29-user-owned: a path the user names is the user's: a hostPath volume and a static

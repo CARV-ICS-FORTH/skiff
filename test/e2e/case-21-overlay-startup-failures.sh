@@ -26,7 +26,7 @@ WORKER_IP=""
 for node in "${NODES[@]}"; do [ "${IPS[$node]}" = "$CONTROLLER_IP" ] || WORKER_IP="${IPS[$node]}"; done
 ALL_IPS=("${IPS[${NODES[0]}]}" "${IPS[${NODES[1]}]}")
 
-ARTIFACT_DIR="${SKIFF_ARTIFACT_DIR:-/home/vagrant/skiff}"
+ARTIFACT_DIR="${SKIFF_ARTIFACT_DIR:-$HOME/skiff}"
 CURRENT_JOB="${SKIFF_JOB_ID:-}"
 [[ "$CURRENT_JOB" =~ ^[0-9]+$ ]] || e2e_die "case 21 needs the running job's ID (SKIFF_JOB_ID)"
 

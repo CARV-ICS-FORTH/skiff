@@ -78,11 +78,23 @@ E2E_FAILED=0
 # aggregate through E2E_SUBRESULTS. Outside an aggregate run it only logs.
 e2e_subcase() {
     local id="$1" result="$2"
-    case "$result" in PASS|FAIL|SKIP) ;; *) e2e_fail "invalid subcase result '$result' for $id"; return 0 ;; esac
+    case "$result" in PASS|FAIL|SKIP|UNAVAILABLE) ;; *) e2e_fail "invalid subcase result '$result' for $id"; return 0 ;; esac
     if [ -n "${E2E_SUBRESULTS:-}" ]; then
         printf '%s\t%s\n' "$id" "$result" >> "$E2E_SUBRESULTS"
     fi
     echo -e "[SUBCASE] [E2E-${E2E_CASE:-??}] ${id}: ${result}" >&2
+}
+
+# e2e_subcase_unavailable ID REASON: the subcase cannot run on this host because a capability it
+# needs is missing (root on a node, say), which is a fact about the host and not a failure of
+# Skiff. It is neither a pass nor hidden: the verdict names it with the reason.
+e2e_subcase_unavailable() {
+    local id="$1" reason="$2"
+    if [ -n "${E2E_LOGDIR:-}" ]; then
+        printf '%s\t%s\n' "$id" "$reason" >> "${E2E_LOGDIR}/unavailable.tsv"
+    fi
+    e2e_subcase "$id" UNAVAILABLE
+    echo -e "[E2E-${E2E_CASE:-??}] ${id} cannot run on this host: ${reason}" >&2
 }
 
 # e2e_subcase_run ID COMMAND...: run COMMAND in the current shell and report

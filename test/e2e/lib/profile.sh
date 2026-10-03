@@ -42,16 +42,19 @@ profile_is_required() {
     return 1
 }
 
-# A run passes when every required label PASSED (a missing or skipped one fails it)
-# and no recorded result at all failed: a result that is not required still has to
-# be reported honestly, so a failure beside a passing verdict cannot happen.
+# A run passes when every required label PASSED (a missing or skipped one fails it) and no
+# recorded result at all failed: a result that is not required still has to be reported
+# honestly, so a failure beside a passing verdict cannot happen. A required result that is
+# UNAVAILABLE (the host lacks a capability the check needs: recorded with its reason) is neither
+# a pass nor a failure: the run is INCOMPLETE (status 3) if nothing else is wrong.
 profile_check_results() {
-    local label failed=0
+    local label failed=0 unavailable=0
     while IFS= read -r label; do
-        if [ "${RESULTS[$label]:-MISSING}" != PASS ]; then
-            echo "Required ${label}: ${RESULTS[$label]:-MISSING}" >&2
-            failed=1
-        fi
+        case "${RESULTS[$label]:-MISSING}" in
+            PASS) ;;
+            UNAVAILABLE) unavailable=1; echo "Required ${label}: UNAVAILABLE on this host" >&2 ;;
+            *) echo "Required ${label}: ${RESULTS[$label]:-MISSING}" >&2; failed=1 ;;
+        esac
     done < <(profile_required_cases)
     for label in "${!RESULTS[@]}"; do
         if [ "${RESULTS[$label]}" = FAIL ]; then
@@ -59,21 +62,45 @@ profile_check_results() {
             failed=1
         fi
     done
-    return "$failed"
+    [ "$failed" -eq 0 ] || return 1
+    [ "$unavailable" -eq 0 ] || return 3
+    return 0
+}
+
+# profile_unavailable_count: how many required results could not run here.
+profile_unavailable_count() {
+    local label n=0
+    while IFS= read -r label; do
+        [ "${RESULTS[$label]:-}" = UNAVAILABLE ] && n=$((n + 1))
+    done < <(profile_required_cases)
+    echo "$n"
+}
+
+# profile_unavailable_summary: the required results that could not run here, as
+# "label (reason); label (reason)" (the reasons are in unavailable.tsv of the run).
+profile_unavailable_summary() {
+    local label reason out=""
+    while IFS= read -r label; do
+        [ "${RESULTS[$label]:-}" = UNAVAILABLE ] || continue
+        reason=$(awk -F '\t' -v l="$label" '$1 == l {r = $2} END {print r}' "${E2E_LOGDIR}/unavailable.tsv" 2>/dev/null)
+        out="${out:+$out; }${label} (${reason:-no reason recorded})"
+    done < <(profile_required_cases)
+    printf '%s' "$out"
 }
 
 # Merge a subcase result file (lines of "ID<TAB>PASS|FAIL|SKIP") into one
 # "ID<TAB>RESULT" line per ID in first-seen order. A failure anywhere wins, then
-# a skip; any other value is treated as a failure so malformed evidence cannot pass.
+# a skip, then an unavailable one; any other value is treated as a failure so malformed evidence cannot pass.
 profile_merge_subresults() {
     local file="$1"
     [ -s "$file" ] || return 0
     awk -F '\t' '
+        BEGIN { rank["PASS"] = 0; rank["UNAVAILABLE"] = 1; rank["SKIP"] = 2; rank["FAIL"] = 3 }
         NF != 2 || $1 == "" { bad = 1; next }
         {
-            r = ($2 == "PASS" || $2 == "SKIP") ? $2 : "FAIL"
+            r = ($2 == "PASS" || $2 == "SKIP" || $2 == "UNAVAILABLE") ? $2 : "FAIL"
             if (!($1 in res)) { order[++n] = $1; res[$1] = r }
-            else if (r == "FAIL" || (r == "SKIP" && res[$1] == "PASS")) res[$1] = r
+            else if (rank[r] > rank[res[$1]]) res[$1] = r
         }
         END {
             for (i = 1; i <= n; i++) printf "%s\t%s\n", order[i], res[order[i]]

@@ -9,8 +9,8 @@
 # ---------------------------------------------------------------------------
 # Node SSH helper
 # ---------------------------------------------------------------------------
-_E2E_SSH_KEY="${E2E_SSH_KEY:-/home/vagrant/.ssh/id_ed25519}"
-_E2E_SSH_USER="${E2E_SSH_USER:-vagrant}"
+_E2E_SSH_KEY="${E2E_SSH_KEY:-$HOME/.ssh/id_ed25519}"
+_E2E_SSH_USER="${E2E_SSH_USER:-$(id -un)}"
 
 # (The remote command runs in a non-interactive shell, which does not read the login profile:
 # the tools that skiff.sh takes out of the image, where they exist, are put first in PATH here.)

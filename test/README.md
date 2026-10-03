@@ -55,6 +55,21 @@ bash test/e2e/network/test-tap-acceptance.sh
 bash test/e2e/network/test-tap-webhook.sh
 ```
 
+### Running on a Slurm cluster
+
+The same workflows deploy to any machine reached over ssh, with nothing installed on it beyond what an administrator provides for Skiff (see the top-level README: user namespaces allowed, `uidmap`, a subordinate id range). The build is on your machine, in containers, for the cluster's architecture; the tools come out of the uploaded image:
+
+```bash
+SKIFF_SSH=me@login.example.org make develop e2e-images PLATFORM=linux/amd64
+ssh me@login.example.org
+export PATH=$HOME/.skiff/tools/bin:$PATH     # kubectl, from the image
+cd ~/skiff && SKIFF_DEV=1 bash test/e2e/run-all.sh
+```
+
+The suite inspects the nodes over ssh from the machine it runs on, as the invoking user (`E2E_SSH_USER` and `E2E_SSH_KEY` override; `sync.sh` creates a key in the shared home and authorizes it). Its jobs live as long as the cases that use them: `SBATCH_TIMELIMIT` is 8 hours unless you set it (a site with a shorter maximum says so when the first job is submitted).
+
+What needs root cannot run for a user: NET-1 and NET-2 (sudo without a password on this host and on the nodes) and two subcases of case 25 (`T27-create-failure` and `T29-cleanup-retry` make the filesystem refuse an operation with `chattr +i`, on the machine that holds the shared home). They report **UNAVAILABLE** with the reason, are listed in the verdict and in `unavailable.tsv` of the bundle, and are neither a pass nor a failure: the verdict is `PROFILE INCOMPLETE: N of M required results passed, K could not run on this host and none failed (...)` and the exit status is 3. `PROFILE PASSED` stays for a run in which every required check ran and passed.
+
 ## Qualification Profile and Results
 
 The qualification profile covers a dedicated two-node Slurm allocation with IPv4 TAP networking with Plaid translating Services. A required daemon failure stops the whole job; recovery uses a fresh job. Runtime qualification currently targets ARM64. Building for another architecture does not qualify its runtime behavior.

@@ -45,6 +45,11 @@ done
 # ---------------------------------------------------------------------------
 # Shared state
 # ---------------------------------------------------------------------------
+# The jobs this run submits live as long as the cases that use them, hours for the first; a site's
+# default time limit (an hour is common) would end one in the middle of a case. sbatch honors the
+# environment variable; a site with a shorter maximum says so when the job is submitted, and the
+# user sets SBATCH_TIMELIMIT.
+export SBATCH_TIMELIMIT="${SBATCH_TIMELIMIT:-8:00:00}"
 candidate_ref=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("git_commit", "")[:7])' \
     "${SKIFF_MANIFEST_PATH:-${HOME}/.skiff/images/manifest.json}" 2>/dev/null || true)
 [ -n "$candidate_ref" ] || candidate_ref=unknown
@@ -75,6 +80,8 @@ OVERALL=0
 STANDALONE_IPS="" # the two nodes' addresses, kept for the teardown (the cluster may be gone by then)
 STANDALONE_ACTIVE=0 # set while the standalone Plaid suites have Plaid installed on the nodes
 
+# (A result can also be UNAVAILABLE: a check that cannot run on this host because a capability it
+# needs is missing; the reason is in unavailable.tsv. See profile_check_results.)
 record() {
     local label="$1" result="$2" duration="$3"
     RESULTS["$label"]="$result"
@@ -118,7 +125,7 @@ run_script() {
     local colour
     if [ "$result" = "PASS" ]; then
         colour='\033[0;32m'
-    elif [ "$result" = "SKIP" ]; then
+    elif [ "$result" = "SKIP" ] || [ "$result" = "UNAVAILABLE" ]; then
         colour='\033[1;33m'
     else
         colour='\033[0;31m'
@@ -186,10 +193,37 @@ standalone_cleanup() {
     standalone_teardown $STANDALONE_IPS >> "${E2E_LOGDIR}/NET-standalone.log" 2>&1 || true
 }
 
+# record_unavailable LABEL REASON: LABEL cannot run on this host (a capability it needs is missing).
+record_unavailable() {
+    local label="$1" reason="$2"
+    printf '%s\t%s\n' "$label" "$reason" >> "${E2E_LOGDIR}/unavailable.tsv"
+    record "$label" UNAVAILABLE 0
+    echo -e "  \033[1;33mUNAVAILABLE\033[0m  ${label}  (${reason})" >&2
+}
+
 run_standalone_plaid_tests() {
-    local ip_a ip_b
+    local ip_a ip_b nodes_without_sudo=""
     ip_a=$(runtime_node_ip "$(e2e_node_a)")
     ip_b=$(runtime_node_ip "$(e2e_node_b)")
+    # Both suites install and run Plaid as root: they need sudo without a password, here for
+    # NET-1 (which runs the CNI plugin test as root on this host) and on the nodes for NET-2.
+    # A host where the user has none (a cluster) cannot run them; that is not a failure of Skiff.
+    local need_here=1 need_nodes=1 ip
+    sudo -n true >/dev/null 2>&1 || need_here=0
+    for ip in "$ip_a" "$ip_b"; do
+        runtime_ssh_node "$ip" "sudo -n true" >/dev/null 2>&1 || nodes_without_sudo="${nodes_without_sudo:+$nodes_without_sudo }$ip"
+    done
+    [ -z "$nodes_without_sudo" ] || need_nodes=0
+    if [ "$need_here" -eq 0 ]; then
+        record_unavailable NET-1-plaid-integration "needs sudo without a password on this host ($(hostname)): the CNI plugin test runs as root"
+    fi
+    if [ "$need_nodes" -eq 0 ]; then
+        record_unavailable NET-2-plaid-standalone "needs sudo without a password on the nodes ($nodes_without_sudo): it installs Plaid into /usr/local/bin and /opt/cni/bin"
+        if [ "$need_here" -eq 1 ]; then
+            run_script "NET-1-plaid-integration" sudo "$NETWORK_DIR/test-plaid-integration.sh"
+        fi
+        return 0
+    fi
     STANDALONE_IPS="$ip_a $ip_b"
     STANDALONE_ACTIVE=1
     if ! standalone_prepare "$ip_a" "$ip_b" >> "${E2E_LOGDIR}/NET-standalone.log" 2>&1; then
@@ -200,7 +234,9 @@ run_standalone_plaid_tests() {
         return 0
     fi
 
-    run_script "NET-1-plaid-integration" sudo "$NETWORK_DIR/test-plaid-integration.sh"
+    if [ "$need_here" -eq 1 ]; then
+        run_script "NET-1-plaid-integration" sudo "$NETWORK_DIR/test-plaid-integration.sh"
+    fi
 
     if standalone_start_plaidd "$ip_a" "$STANDALONE_CIDR_A" "$STANDALONE_CIDR_B" "$ip_b" >> "${E2E_LOGDIR}/NET-standalone.log" 2>&1 \
         && standalone_start_plaidd "$ip_b" "$STANDALONE_CIDR_B" "$STANDALONE_CIDR_A" "$ip_a" >> "${E2E_LOGDIR}/NET-standalone.log" 2>&1; then
@@ -265,7 +301,7 @@ run_daemon_failure_matrix() {
             fi
             e2e_wait_condition 90 "prior Slurm job ${prior_job} stopped" \
                 "test -z \"\$(squeue -j ${prior_job} -h -o %i 2>/dev/null)\"" || return 1
-            SKIFF_JOB_ID=$(sbatch --parsable "${SKIFF_ARTIFACT_DIR:-/home/vagrant/skiff}/scripts/skiff.slurm" | cut -d';' -f1) || return 1
+            SKIFF_JOB_ID=$(sbatch --parsable "${SKIFF_ARTIFACT_DIR:-$HOME/skiff}/scripts/skiff.slurm" | cut -d';' -f1) || return 1
             export SKIFF_JOB_ID
             [[ "$SKIFF_JOB_ID" =~ ^[0-9]+$ ]] || return 1
             printf '%s\n' "$SKIFF_JOB_ID" >> "${E2E_LOGDIR}/matrix-job-ids"
@@ -394,7 +430,7 @@ collect_candidate_evidence() {
     for node in "$(e2e_node_a)" "$(e2e_node_b)"; do
         ip=$(runtime_node_ip "$node") || return 1
         arch=$(runtime_ssh_node "$ip" "uname -m") || return 1
-        sif_sha=$(runtime_ssh_node "$ip" "sha256sum /home/vagrant/.skiff/images/skiff.sif | cut -d' ' -f1") || return 1
+        sif_sha=$(runtime_ssh_node "$ip" "sha256sum \$HOME/.skiff/images/skiff.sif | cut -d' ' -f1") || return 1
         version=$(e2e_kubectl get node "$node" -o jsonpath='{.status.nodeInfo.kubeletVersion}') || return 1
         printf '%s\t%s\t%s\t%s\n' "$node" "$arch" "$sif_sha" "$version" >> "$nodes_file"
     done
@@ -483,10 +519,15 @@ fi
 _run_deferred
 runtime_record_disposable end
 
+INCOMPLETE=0
 if [ -z "$ONLY_CASE" ] && [ "$NETWORK_ONLY" -eq 0 ]; then
-    if ! profile_check_results; then
-        OVERALL=1
-    fi
+    profile_status=0
+    profile_check_results || profile_status=$?
+    case "$profile_status" in
+        0) ;;
+        3) INCOMPLETE=1 ;;
+        *) OVERALL=1 ;;
+    esac
 fi
 
 # ---------------------------------------------------------------------------
@@ -513,6 +554,7 @@ for label in "${summary_labels[@]}"; do
     [ "$result" = "PASS" ] && colour='\033[0;32m'
     [ "$result" = "FAIL" ] && colour='\033[0;31m'
     [ "$result" = "SKIP" ] && colour='\033[1;33m'
+    [ "$result" = "UNAVAILABLE" ] && colour='\033[1;33m'
     printf "%-30s ${colour}%-10s\033[0m %s\n" "$label" "$result" "$dur"
 done
 
@@ -535,7 +577,7 @@ done)
 out = {
     'run_id': '${E2E_RUN_ID}',
     'environment': '${ENVIRONMENT}',
-    'overall': '$([ $OVERALL -eq 0 ] && echo PASS || echo FAIL)',
+    'overall': '$(if [ $OVERALL -ne 0 ]; then echo FAIL; elif [ $INCOMPLETE -ne 0 ]; then echo INCOMPLETE; else echo PASS; fi)',
     'cases': results,
 }
 with open('${E2E_LOGDIR}/results.json', 'w') as f:
@@ -546,6 +588,10 @@ PYEOF
 # The verdict says what was covered: a focused run did not check the profile.
 if [ $OVERALL -ne 0 ]; then
     echo -e "\033[0;31m>>> FAILED: see the results marked FAIL or missing above <<<\033[0m"
+elif [ "$INCOMPLETE" -eq 1 ]; then
+    unavailable_count=$(profile_unavailable_count)
+    required_count=$(profile_required_cases | wc -l | tr -d ' ')
+    echo -e "\033[1;33m>>> PROFILE INCOMPLETE: $((required_count - unavailable_count)) of ${required_count} required results passed, ${unavailable_count} could not run on this host and none failed (${ENVIRONMENT}): $(profile_unavailable_summary) <<<\033[0m"
 elif [ -n "$ONLY_CASE" ] || [ "$NETWORK_ONLY" -eq 1 ]; then
     echo -e "\033[1;33m>>> FOCUSED RUN PASSED: ${#RESULTS[@]} results (${ENVIRONMENT}), the qualification profile was not checked <<<\033[0m"
 else
@@ -553,4 +599,7 @@ else
 fi
 echo "========================================================================"
 
-exit $OVERALL
+[ "$OVERALL" -eq 0 ] || exit "$OVERALL"
+# 3: nothing failed, but required checks could not run here (see the verdict)
+[ "$INCOMPLETE" -eq 0 ] || exit 3
+exit 0

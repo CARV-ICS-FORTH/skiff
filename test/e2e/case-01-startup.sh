@@ -21,7 +21,7 @@ set -euo pipefail
 export E2E_CASE=01
 TEARDOWN_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 LIB_DIR=""
-for cand in "\$TEARDOWN_DIR/lib" "\$TEARDOWN_DIR/../lib" "\$TEARDOWN_DIR/../../lib" "/home/vagrant/skiff/test/e2e/lib"; do
+for cand in "\$TEARDOWN_DIR/lib" "\$TEARDOWN_DIR/../lib" "\$TEARDOWN_DIR/../../lib" "\$HOME/skiff/test/e2e/lib"; do
     if [ -f "\$cand/common.sh" ]; then
         LIB_DIR="\$cand"
         break
@@ -74,7 +74,7 @@ if [ "\${NO_TEARDOWN:-0}" != "1" ]; then
     
     REPO_ROOT="\${SKIFF_ARTIFACT_DIR:-\$(git rev-parse --show-toplevel 2>/dev/null || echo ".")}"
     if [ ! -f "\${REPO_ROOT}/scripts/skiff.slurm" ]; then
-        for cand in /home/vagrant/skiff "\$(cd "\$(dirname "\$0")" && pwd)/../../.." "\$(cd "\$(dirname "\$0")" && pwd)/../.."; do
+        for cand in "\$HOME/skiff" "\$(cd "\$(dirname "\$0")" && pwd)/../../.." "\$(cd "\$(dirname "\$0")" && pwd)/../.."; do
             if [ -f "\$cand/scripts/skiff.slurm" ]; then
                 REPO_ROOT="\$cand"
                 break

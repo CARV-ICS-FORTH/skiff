@@ -31,11 +31,18 @@ def validate(record):
     if not re.fullmatch(r"[0-9]+", record.get("job_id", "")):
         raise ValueError("Slurm job identity missing")
     nodes = record.get("nodes") or []
-    if len(nodes) != 2 or {n.get("name") for n in nodes} != {"controller", "node"}:
-        raise ValueError("both runtime nodes must be recorded")
+    names = {n.get("name") for n in nodes}
+    if len(nodes) != 2 or len(names) != 2 or "" in names or None in names:
+        raise ValueError("both runtime nodes must be recorded, under names of their own")
+    if len({n.get("architecture") for n in nodes}) != 1:
+        raise ValueError("the runtime nodes differ in architecture")
+    # The image that was uploaded must be the nodes' architecture (the manifest names its platform).
+    expected = {"linux/amd64": "x86_64", "linux/arm64": "aarch64"}.get(manifest.get("platform", ""))
     for node in nodes:
-        if node.get("architecture") != "aarch64":
+        if node.get("architecture") not in ("aarch64", "x86_64"):
             raise ValueError("unqualified runtime architecture")
+        if expected and node.get("architecture") != expected:
+            raise ValueError("the image is built for %s and the node is %s" % (manifest.get("platform"), node.get("architecture")))
         if node.get("sif_sha256") != record.get("sif_sha256"):
             raise ValueError("node image digest mismatch")
         if node.get("kubelet_version") != manifest.get("version"):
@@ -68,6 +75,12 @@ def self_test():
                   nodes=[dict(name=name, architecture="aarch64", sif_sha256=sha,
                               kubelet_version="test") for name in ("controller", "node")])
     validate(record)
+    # Any two distinct node names, on either qualified architecture, with an image built for it.
+    other = json.loads(json.dumps(record))
+    other["manifest"]["platform"] = "linux/amd64"
+    for node, name in zip(other["nodes"], ("k8s-node1", "k8s-node2")):
+        node.update(name=name, architecture="x86_64")
+    validate(other)
     for mutation in (
         lambda r: r["manifest"].update(git_dirty=True),
         lambda r: r["manifest"].pop("builder_image_id"),
@@ -75,6 +88,10 @@ def self_test():
         lambda r: r["nodes"][1].update(sif_sha256="c" * 64),
         lambda r: r["nodes"][0].update(kubelet_version="wrong"),
         lambda r: r["nodes"].pop(),
+        lambda r: r["nodes"][1].update(name=r["nodes"][0]["name"]),
+        lambda r: r["nodes"][1].update(architecture="x86_64"),
+        lambda r: r["nodes"][0].update(architecture="riscv64") or r["nodes"][1].update(architecture="riscv64"),
+        lambda r: r["manifest"].update(platform="linux/amd64"),
         lambda r: r.update(fixture_image_tag=""),
         lambda r: r.update(job_id=""),
     ):

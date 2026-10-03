@@ -54,3 +54,26 @@ if E2E_LOGDIR="$tmp/results" bash "$(dirname "$0")/../run-all.sh" > "$tmp/stale.
     echo "stale qualification evidence was reused" >&2; exit 1
 fi
 grep -q 'Refusing to reuse existing qualification results' "$tmp/stale.log"
+
+# A required result that cannot run on this host (a capability it needs is missing) is neither a
+# pass nor a failure: the run is incomplete (status 3), unless something failed too.
+RESULTS[T99-beta]=UNAVAILABLE
+status=0; profile_check_results 2>/dev/null || status=$?
+[ "$status" -eq 3 ] || { echo "an unavailable required result gave status $status, want 3" >&2; exit 1; }
+RESULTS[E2E-08]=FAIL
+status=0; profile_check_results 2>/dev/null || status=$?
+[ "$status" -eq 1 ] || { echo "a failure beside an unavailable result gave status $status, want 1" >&2; exit 1; }
+RESULTS[E2E-08]=PASS
+RESULTS[E2E-08]=SKIP
+status=0; profile_check_results 2>/dev/null || status=$?
+[ "$status" -eq 1 ] || { echo "a skip beside an unavailable result gave status $status, want 1" >&2; exit 1; }
+RESULTS[E2E-08]=PASS
+E2E_LOGDIR="$tmp"
+printf 'T99-beta\tneeds root on the node\n' > "$tmp/unavailable.tsv"
+[ "$(profile_unavailable_summary)" = "T99-beta (needs root on the node)" ] || { echo "unavailable summary: $(profile_unavailable_summary)" >&2; exit 1; }
+RESULTS[T99-beta]=PASS
+[ -z "$(profile_unavailable_summary)" ] || { echo "a passing result listed as unavailable" >&2; exit 1; }
+[ "$(merged 'A\tPASS\nA\tUNAVAILABLE\n')" = "A=UNAVAILABLE;" ] || { echo "an unavailable result was lost" >&2; exit 1; }
+[ "$(merged 'A\tUNAVAILABLE\nA\tPASS\n')" = "A=UNAVAILABLE;" ] || { echo "an unavailable result was overridden by a pass" >&2; exit 1; }
+[ "$(merged 'A\tUNAVAILABLE\nA\tSKIP\n')" = "A=SKIP;" ] || { echo "a skip was overridden by an unavailable result" >&2; exit 1; }
+[ "$(merged 'A\tUNAVAILABLE\nA\tFAIL\n')" = "A=FAIL;" ] || { echo "a failure was overridden by an unavailable result" >&2; exit 1; }

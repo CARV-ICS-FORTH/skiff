@@ -237,7 +237,7 @@ spec:
 EOF
 }
 volume_roots() {
-    local out ip dir_state="e2e32-${E2E_RUN_ID}" dir_scratch="${SKIFF_TMP_DIR}/e2e32-${E2E_RUN_ID}" elsewhere="/home/vagrant/e2e32-elsewhere-${E2E_RUN_ID}"
+    local out ip dir_state="e2e32-${E2E_RUN_ID}" dir_scratch="${SKIFF_TMP_DIR}/e2e32-${E2E_RUN_ID}" elsewhere="${HOME}/e2e32-elsewhere-${E2E_RUN_ID}"
     ip=$(runtime_node_ip "$NODE_A")
     # Below ~/.skiff: the pod writes, the host's ~/.skiff has the file.
     volume_pod e2e32-state "/root/.skiff/${dir_state}"
