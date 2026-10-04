@@ -478,6 +478,23 @@ skiff_check_node() {
         fi
     fi
 
+    # slirp4netns creates the bubble's uplink (tap0), and Plaid its own interfaces and every pod's, by
+    # opening /dev/net/tun. Without it (the tun module not loaded, no device node, a mode a user cannot
+    # open, a job's device cgroup that denies it) nothing in the bubble has a network, and the bubble
+    # would only report, 30 s into its start, that tap0 never appeared.
+    local tun why=""
+    tun=$(_skiff_sys /dev/net/tun)
+    # (Existence first: opening for reading and writing would create a file that is not there.)
+    if [ ! -e "$tun" ]; then
+        why="does not exist (the tun kernel module is not loaded, or the device is not there)"
+    elif ! ( exec 3<>"$tun" ) 2>/dev/null; then
+        why="cannot be opened by $(id -un) (mode $(stat -c %a "$tun" 2>/dev/null || echo unknown); or a device cgroup of the job denies it)"
+    fi
+    if [ -n "$why" ]; then
+        echo "$host: /dev/net/tun $why; Skiff requires it (slirp4netns and Plaid create their network interfaces through it): please contact your administrator and request that the tun module be loaded (modprobe tun), that /dev/net/tun be accessible to users (mode 0666) and, where Slurm constrains devices, that jobs be allowed to use it" >&2
+        errors=$((errors + 1))
+    fi
+
     # The bubble runs as root in a user namespace of the user's (--fakeroot): that needs a
     # range of subordinate ids for the user, in the files or in the site's directory service.
     local user subuid subgid

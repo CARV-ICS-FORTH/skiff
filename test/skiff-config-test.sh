@@ -150,7 +150,8 @@ esac
 EOF2
 chmod +x "$nodedir/fake/stat"
 # a host that has everything
-mkdir -p "$nodedir/sys/proc/sys/user" "$nodedir/sys/proc/sys/kernel" "$nodedir/sys/etc"
+mkdir -p "$nodedir/sys/proc/sys/user" "$nodedir/sys/proc/sys/kernel" "$nodedir/sys/etc" "$nodedir/sys/dev/net"
+: > "$nodedir/sys/dev/net/tun"   # (a character device on a real host; opening it is what matters)
 echo 7372 > "$nodedir/sys/proc/sys/user/max_user_namespaces"
 echo "$user:100000:65536" > "$nodedir/sys/etc/subuid"
 echo "$user:100000:65536" > "$nodedir/sys/etc/subgid"
@@ -192,6 +193,20 @@ expect "a kernel that denies them to users is refused" "$status:$(grep -c 'kerne
 echo 1 > "$nodedir/sys/proc/sys/kernel/unprivileged_userns_clone"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
 expect "and one that allows them is fine" "$status:$out" "0:"
+
+# /dev/net/tun: slirp4netns and Plaid make their interfaces through it
+mv "$nodedir/sys/dev/net/tun" "$nodedir/sys/dev/net/tun.away"
+out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+expect "a node without /dev/net/tun is refused, with what to ask for" "$status:$(grep -c '/dev/net/tun does not exist' <<< "$out"):$(grep -c 'contact your administrator and request that the tun module be loaded' <<< "$out")" "1:1:1"
+mv "$nodedir/sys/dev/net/tun.away" "$nodedir/sys/dev/net/tun"
+if [ "$(id -u)" -ne 0 ]; then   # (root opens anything)
+    chmod 000 "$nodedir/sys/dev/net/tun"
+    out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+    expect "one a user cannot open is refused too, with its mode" "$status:$(grep -c '/dev/net/tun cannot be opened by .* (mode 0' <<< "$out")" "1:1"
+    chmod 644 "$nodedir/sys/dev/net/tun"
+fi
+out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+expect "and a node with it is fine" "$status:$out" "0:"
 
 # subordinate ids
 mv "$nodedir/sys/etc/subuid" "$nodedir/sys/etc/subuid.away"
