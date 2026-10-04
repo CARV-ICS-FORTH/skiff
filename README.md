@@ -18,7 +18,9 @@ Skiff allows HPC users to run their own private Kubernetes "mini Cloud" on a typ
 - **Unprivileged user namespaces**: `user.max_user_namespaces` above 0 and `kernel.unprivileged_userns_clone` not 0 where it exists (on Ubuntu 24.04 and later AppArmor allows them only to programs with a profile, which Apptainer's package installs and a copy under `~/.skiff/tools` does not have: with the tools from the image, the administrator sets `kernel.apparmor_restrict_unprivileged_userns=0`), and a **subordinate id range** for the user in `/etc/subuid` and `/etc/subgid` (or the site's directory service): the bubbles run as root in a user namespace of yours.
 - A **shared home directory**.
 
-Skiff was qualified with Apptainer 1.5.4 and slirp4netns 1.2.1 on Ubuntu 24.04 (kernel 6.8, arm64). Older versions are reported and not refused; a failure with one is a reason to upgrade it first.
+**What needs an administrator** is at most three things, none of them a package of Skiff's (everything else comes out of the image, as a user): on Ubuntu 24.04 and later, `kernel.apparmor_restrict_unprivileged_userns=0` (or Apptainer installed as a system package, which has its own AppArmor profile); the package `uidmap`; and a subordinate id range for the user on every compute node (`usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <user>`). The node check names each one that is missing, with what to ask for.
+
+Skiff was qualified with Apptainer 1.5.4 and slirp4netns 1.2.1 on Ubuntu 24.04 (kernel 6.8): on two-node arm64 VMs, and on a three-node amd64 Slurm cluster (Slurm 23.11, cgroup process tracking, a shared NFS home) by an ordinary user, where everything passed except the checks that need root, which cannot run without it (see [test/README.md](test/README.md)). Older versions are reported and not refused; a failure with one is a reason to upgrade it first.
 
 **Check a node before you submit.** The job runs this check on every allocated node before anything starts, all problems at once, each with what to do about it; you can run it yourself on a compute node:
 
@@ -232,3 +234,16 @@ kubectl get nodes
 Put the tools first in `PATH` for `kubectl` (`export PATH=$HOME/.skiff/tools/bin:$PATH`) and wait for startup to create the credentials before using it. Development jobs select the locally built image with `SKIFF_DEV=1`; ordinary jobs use the published image by default.
 
 See [test/README.md](test/README.md) for the testing overview, fixture setup and manual test commands.
+
+## Evaluating on a Slurm Cluster
+
+The same workflows deploy to any machine you can ssh to, with nothing installed on it beyond what an administrator provides (above). The images are built on your machine, in containers, for the cluster's architecture, and the tools come out of the uploaded image:
+
+```bash
+SKIFF_SSH=me@login.example.org make develop e2e-images PLATFORM=linux/amd64
+ssh me@login.example.org
+export PATH=$HOME/.skiff/tools/bin:$PATH
+cd ~/skiff && SKIFF_DEV=1 bash test/e2e/run-all.sh --smoke --nodes 3   # a short run first; without --smoke, the whole suite
+```
+
+The suite starts clusters of `--nodes N` nodes (default 2) and its cases use all of them. A check that needs a capability the account does not have (root) is reported as UNAVAILABLE with its reason, and a run in which nothing failed and some of those could not run ends as `PROFILE INCOMPLETE`, not as passed. See [test/README.md](test/README.md).
