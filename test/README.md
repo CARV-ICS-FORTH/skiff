@@ -20,7 +20,7 @@ Some shell regressions require Bash 4 or later. On systems with an older Bash, r
 
 ## VM Tests
 
-Start the Vagrant environment following the top-level README, then build and deploy both the bubble and test fixture images:
+Start the Vagrant environment following the [Skiff Guide](../GUIDE.md#evaluating-locally-with-vagrant), then build and deploy both the bubble and test fixture images:
 
 ```bash
 make develop e2e-images
@@ -61,7 +61,7 @@ The suite starts clusters of `E2E_NODES` nodes (default 2; `run-all.sh --nodes N
 
 ### Running on a Slurm cluster
 
-The same workflows deploy to any machine reached over ssh, with nothing installed on it beyond what an administrator provides for Skiff (see the top-level README: user namespaces allowed, `uidmap`, a subordinate id range). The build is on your machine, in containers, for the cluster's architecture; the tools come out of the uploaded image:
+The same workflows deploy to any machine reached over ssh, with nothing installed on it beyond what an administrator provides for Skiff (see the [requirements](../GUIDE.md#requirements): user namespaces allowed, `uidmap`, a subordinate id range). The build is on your machine, in containers, for the cluster's architecture; the tools come out of the uploaded image:
 
 ```bash
 SKIFF_SSH=me@login.example.org make develop e2e-images PLATFORM=linux/amd64
@@ -111,7 +111,7 @@ T01–T03, T19 and the unit and race parts of the other groups are unit and Linu
 
 Supported probes are HTTP, TCP and exec (startup, readiness and liveness, with named ports); `grpc` probes, host namespaces, ephemeral containers, restartable init containers and the other forms in the support table of [skifflet/README.md](../skifflet/README.md) are refused at creation, and the refusal is tested with a healthy sentinel pod running beside them. Standalone Plaid, NET-1 (the CNI plugin against a standalone `plaidd`) and NET-2 (`plaidd` and `plaidtainer` on their own, as an ordinary user, on both nodes), is part of the profile: the binaries are taken from the uploaded image for the duration of the two suites and removed again (`e2e/lib/standalone.sh`), so the candidate under test is what runs. See [plaid/README.md](../plaid/README.md).
 
-The default profile runs with the standard lab network. The alternative-network scenario (case 17, T18) is a separate fresh deployment, not a mode of the aggregate: source a file that exports the `SKIFF_*` network variables described in the top-level README (for example `SKIFF_POD_CIDR=10.200.0.0/16 SKIFF_SERVICE_CIDR=10.201.0.0/16 SKIFF_CLUSTER_DNS=10.201.0.10 SKIFF_CLUSTER_DOMAIN=lab.test SKIFF_POD_MTU=1400 SKIFF_TMP_DIR=/var/tmp/skiff-alt`; a scratch directory outside `/tmp` also checks that the bubbles are given it), submit a new job, run the aggregate against it, and restore the standard configuration by submitting a new job without them.
+The default profile runs with the standard lab network. The alternative-network scenario (case 17, T18) is a separate fresh deployment, not a mode of the aggregate: source a file that exports the `SKIFF_*` network variables described in the [Skiff Guide](../GUIDE.md#configuration) (for example `SKIFF_POD_CIDR=10.200.0.0/16 SKIFF_SERVICE_CIDR=10.201.0.0/16 SKIFF_CLUSTER_DNS=10.201.0.10 SKIFF_CLUSTER_DOMAIN=lab.test SKIFF_POD_MTU=1400 SKIFF_TMP_DIR=/var/tmp/skiff-alt`; a scratch directory outside `/tmp` also checks that the bubbles are given it), submit a new job, run the aggregate against it, and restore the standard configuration by submitting a new job without them.
 
 T20 counts what disposable workloads can leave behind: application processes, the namespace's pod directories, IP leases, network namespaces, unpacked root filesystems, and the open descriptors of Skifflet and Plaidd (with an allowance of five). Volume data and image caches are retained on purpose and are not counted. Ten cycles is a regression run and not a measure of endurance.
 

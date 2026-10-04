@@ -2,249 +2,53 @@
 
 Skiff allows HPC users to run their own private Kubernetes "mini Cloud" on a typical HPC cluster and issue commands using Kubernetes-native tools without requiring root privileges.
 
-### Requirements
+A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, each node inside a rootless [Apptainer](https://apptainer.org/) container (a "bubble"). Pods run as unprivileged processes on those nodes, with the cluster network, Services, DNS and volumes Kubernetes users expect. When the job ends, the cluster is gone.
 
-- **Slurm**, and whole nodes: `skiff.slurm` asks for exclusive nodes and all their memory (`--exclusive --mem=0`), because the fixed ports (the API server's TCP 6443 on the controller, the kubelet's TCP 10250 and the overlay's UDP 8472 on every node) and the node's scratch directory must be the job's alone. A job on shared nodes is refused when something is in the way.
-- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and iproute2** (`ip` and `ss`). iproute2 comes with the system. The other three do not have to be installed: `skiff.sh tools` takes them (and `kubectl`) out of the Skiff image archive into `~/.skiff/tools`, which `skiff.sh` and `skiff.slurm` then put first in `PATH` (they need glibc 2.34 or newer on the host: RHEL 9, Ubuntu 22.04 and later, Debian 12 and later). Or install them with the packages below.
+## Get started
 
-  | | Debian / Ubuntu | RHEL family |
-  |---|---|---|
-  | Apptainer | `apptainer` (release `.deb`, or the project's PPA) | `apptainer` (EPEL) |
-  | slirp4netns | `slirp4netns` | `slirp4netns` |
-  | socat | `socat` | `socat` |
-  | `ip`, `ss` | `iproute2` | `iproute` |
+1. **Download** the scripts to your home directory on the cluster (it must be shared by the compute nodes):
 
-- **`newuidmap` and `newgidmap`** (package `uidmap`, setuid root: a copy in your home is not, so this is for the administrator) when Apptainer is not the system's own: with a subordinate id range, Apptainer maps ids through them.
-- **Unprivileged user namespaces**: `user.max_user_namespaces` above 0 and `kernel.unprivileged_userns_clone` not 0 where it exists (on Ubuntu 24.04 and later AppArmor allows them only to programs with a profile, which Apptainer's package installs and a copy under `~/.skiff/tools` does not have: with the tools from the image, the administrator sets `kernel.apparmor_restrict_unprivileged_userns=0`), and a **subordinate id range** for the user in `/etc/subuid` and `/etc/subgid` (or the site's directory service): the bubbles run as root in a user namespace of yours.
-- **`/dev/net/tun`**, openable by users: slirp4netns and Plaid create their network interfaces through it (the `tun` kernel module loaded, the device mode 0666, and where Slurm constrains devices, allowed to jobs). Without it nothing in the cluster has a network.
-- A **shared home directory**.
+   ```bash
+   git clone https://github.com/CARV-ICS-FORTH/skiff.git ~/skiff
+   cd ~/skiff/scripts
+   ```
 
-**What needs an administrator** is at most four things, none of them a package of Skiff's (everything else comes out of the image, as a user): the `tun` device above, when a node lacks it; on Ubuntu 24.04 and later, `kernel.apparmor_restrict_unprivileged_userns=0` (or Apptainer installed as a system package, which has its own AppArmor profile); the package `uidmap`; and a subordinate id range for the user on every compute node (`usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <user>`). The node check names each one that is missing, with what to ask for.
+2. **Check** that a compute node has what Skiff needs:
 
-Skiff was qualified with Apptainer 1.5.4 and slirp4netns 1.2.1 on Ubuntu 24.04 (kernel 6.8): on two-node arm64 VMs, and on a three-node amd64 Slurm cluster (Slurm 23.11, cgroup process tracking, a shared NFS home) by an ordinary user, where everything passed except the checks that need root, which cannot run without it (see [test/README.md](test/README.md)). Older versions are reported and not refused; a failure with one is a reason to upgrade it first.
+   ```bash
+   srun -N1 bash skiff.sh check
+   ```
 
-**Check a node before you submit.** The job runs this check on every allocated node before anything starts, all problems at once, each with what to do about it; you can run it yourself on a compute node:
+   It lists everything that is missing, each with what to do about it (some things only your administrator can provide, and it says what to ask for). Fix what it reports and run it again until the node is "ready for Skiff".
 
-```bash
-srun -N1 bash ~/skiff/skiff.sh check
-```
+3. **Submit** the cluster as a job; `--nodes` is its size:
 
-Copy `skiff.slurm` and `skiff.sh` from `scripts/` to your HPC account under `~/skiff/` and submit a job using the published image:
+   ```bash
+   sbatch --nodes=2 skiff.slurm
+   ```
 
-```bash
-cd ~/skiff
-sbatch --nodes=2 skiff.slurm
-```
+4. **Use** it. When the job's output says the cluster is up, point `kubectl` at it:
 
-After startup creates the cluster credentials (the job's output says when, and how to connect), configure and use `kubectl`. If you took the tools out of the Skiff image, `kubectl` is the one in `~/.skiff/tools/bin` (Kubernetes 1.35, the cluster's version): run it by its path or put the directory first in your `PATH`:
+   ```bash
+   export KUBECONFIG=${HOME}/.skiff/kubeconfig
+   kubectl get nodes
+   ```
 
-```bash
-export KUBECONFIG=${HOME}/.skiff/kubeconfig
-export PATH=${HOME}/.skiff/tools/bin:${PATH}    # only if you ran skiff.sh tools
-kubectl get nodes
-```
+   (If the tools came from `skiff.sh tools`, `kubectl` is `~/.skiff/tools/bin/kubectl`.)
 
-If the site already provides Apptainer, slirp4netns, socat and `kubectl`, you do not need `skiff.sh tools`: without it nothing changes and the system's programs are used. If you run it anyway, the extracted ones come first in `PATH` and the check says which system program each one replaces; remove `~/.skiff/tools` to go back (this matters for Apptainer on Ubuntu 24.04 and later: the system package comes with the AppArmor profile that lets it create user namespaces, a copy in your home does not).
+5. **Stop** it by ending the job, which stops the pods before the cluster goes:
 
-### Network configuration
+   ```bash
+   scancel --batch --signal=TERM <job ID>
+   ```
 
-The defaults suit most sites. To change them (for example when a range overlaps your site's network), set the variables when submitting the job; they are checked together before anything starts, and every part of the cluster receives the same values:
+If something goes wrong, see the [requirements](GUIDE.md#requirements): the check in step 2 and the job's output name what is missing.
 
-```bash
-sbatch --nodes=2 --export=ALL,SKIFF_POD_CIDR=10.200.0.0/16,SKIFF_SERVICE_CIDR=10.201.0.0/16,SKIFF_POD_MTU=1400 skiff.slurm
-```
+## Learn more
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `SKIFF_POD_CIDR` | `10.244.0.0/16` | Pod network; Kubernetes gives each node a /24 of it |
-| `SKIFF_SERVICE_CIDR` | `10.43.0.0/16` | Service network (the API Service is its first address) |
-| `SKIFF_CLUSTER_DNS` | 10th Service address (`10.43.0.10`) | Address of the cluster DNS Service, inside the Service network |
-| `SKIFF_CLUSTER_DOMAIN` | `cluster.local` | Cluster DNS domain |
-| `SKIFF_POD_MTU` | link MTU less 50 (`1450`) | MTU of pod interfaces; at most `SKIFF_UPLINK_MTU` - 50 |
-| `SKIFF_UPLINK_MTU` | `1500` | MTU of the links between the bubbles |
-| `SKIFF_TMP_DIR` | `/tmp/.skiff` | The node's scratch directory (see below) |
+The [Skiff Guide](GUIDE.md) has the rest:
 
-Each bubble's log starts with the effective configuration.
+- **Using Skiff**: [requirements](GUIDE.md#requirements), [configuration](GUIDE.md#configuration), [the directories Skiff uses](GUIDE.md#directories), [storage](GUIDE.md#storage), [containers](GUIDE.md#containers), [images](GUIDE.md#images) and [what to do when a job ends unexpectedly](GUIDE.md#when-a-job-ends-unexpectedly).
+- **Developing Skiff**: the [architecture](GUIDE.md#architecture-and-components), [building](GUIDE.md#building) and testing it [locally with Vagrant](GUIDE.md#evaluating-locally-with-vagrant) or [on a Slurm cluster](GUIDE.md#evaluating-on-a-slurm-cluster).
 
-### Directories
-
-Skiff uses two locations, and nothing else on the host:
-
-- **`~/.skiff`** on the shared home is fixed, not a setting: the credentials (`kubeconfig`), images, caches and volume data every node must find at the same place. The bubbles run as root, so inside the cluster it is **`/root/.skiff`**; use that spelling in a `hostPath` or PersistentVolume (`~/.skiff/data` on the host is `/root/.skiff/data` for a pod).
-- **`SKIFF_TMP_DIR`** (default `/tmp/.skiff`) is the node's scratch directory: pod runtime state, and where Apptainer unpacks and converts images. It must be node-local (it holds sockets and unpacked images, so a shared filesystem is refused), writable, and have room for the images you run: set it when `/tmp` is small or a RAM disk. It is checked on every node before anything starts, it is disposable, and the bubbles see it at the same path.
-
-To keep the data on other storage (a project filesystem instead of a small home), make `~/.skiff` a symlink to a directory that every node sees at the same path: the whole suite was run that way. A symlink inside `~/.skiff` would dangle in the bubble, which sees only what is bound into it.
-
-A volume may use only these two locations. A `hostPath`, or a PersistentVolume bound by a claim, anywhere else is refused with a message naming the two (the bubble does not see the rest of the host, so a directory created there would be lost with it).
-
-### Storage
-
-A PersistentVolumeClaim just works: the cluster has a default StorageClass, `local-path` ([Local Path Provisioner](https://github.com/rancher/local-path-provisioner) on your shared home directory), so a claim that names no class gets a directory of its own, bound at once and usable from any node of the job:
-
-```yaml
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata: {name: results}
-spec:
-  accessModes: [ReadWriteOnce]       # ReadWriteMany works too: the directory is on the shared home
-  resources: {requests: {storage: 10Gi}}
----
-apiVersion: v1
-kind: Pod
-metadata: {name: writer}
-spec:
-  containers:
-  - name: app
-    image: busybox
-    command: ["sh", "-c", "echo done > /data/result; sleep 3600"]
-    volumeMounts: [{name: data, mountPath: /data}]
-  volumes:
-  - name: data
-    persistentVolumeClaim: {claimName: results}
-```
-
-```bash
-kubectl apply -f results.yaml
-kubectl delete pod writer          # the data stays with the claim: a new pod on any node finds it
-cat ~/.skiff/volumes/*/pvc-*_default_results/result      # and so can you, on the host
-kubectl delete pvc results         # the standard Delete reclaim policy: the directory is removed
-```
-
-What to know:
-
-- The data of a job's claims is in `~/.skiff/volumes/<job ID>-<random>/pvc-<claim UID>_<namespace>_<claim>/`. Each job has a directory of its own (the random part keeps a reused Slurm job ID from finding an old one) and a new cluster starts without the old claims, so a claim of the same name in a new job gets a new, empty directory. **Ending a job does not delete claims**: whatever you did not delete stays there for you to collect or remove (`rm -rf ~/.skiff/volumes/<job>`).
-- `storageClassName: ""` asks for no provisioning, as in Kubernetes.
-- The requested size is **not a limit**: the shared filesystem decides, and nothing reserves or checks space.
-- To use data that already exists, give a pod a `hostPath` volume or create a PersistentVolume (`hostPath` or `local`) for a directory below `~/.skiff` (`/root/.skiff` in the cluster) or the scratch directory; those paths are the user's and are never removed by Skiff.
-- Pods placed with `nodeName` work too, because claims are bound without waiting for a pod. The first claim of a cluster pulls two small images (the provisioner and its helper) from Docker Hub onto the nodes that need them, as CoreDNS is pulled.
-
-### Containers
-
-- A container's **root filesystem is writable** and private to it, as in Kubernetes: what it writes anywhere outside its volumes goes to a layer on the node's disk (in the scratch directory), as large as the disk allows, empty at every start of the container (a restart finds nothing of what the attempt before wrote), and removed with the pod. Ephemeral-storage requests and limits are accepted and **not enforced**: the disk decides.
-- `kubectl top node` and `kubectl top pod` work (K3s's metrics-server is enabled and Skifflet serves the usage). The numbers come from the processes of each container, an approximation of what a cgroup would say: CPU time is exact for those processes, memory is their proportional share of the pages they hold.
-- CPU and memory **requests** decide where pods fit, against what the job grants; **limits** are not enforced (Slurm and the node are the authority).
-
-### Images
-
-A pod's image is pulled by Apptainer from the registry it names (Docker Hub, `registry.k8s.io`, ... reachable from the compute nodes), converted once and cached on the shared home (`~/.skiff/.images`); `imagePullPolicy` is honored. An absolute path to a SIF file the cluster can see (below `/root/.skiff`) is used as it is, with no registry. Not supported: `imagePullSecrets` and private registries, registry mirrors, hosts without access to a registry (use SIF files). The unpacked image of a running container, and what it writes, are on the scratch directory (`SKIFF_TMP_DIR`): size it for the images you run. The cluster's own add-ons are pulled the same way, from Docker Hub, onto the nodes that run them: CoreDNS, metrics-server and, with the first claim, the storage provisioner and its helper; a site whose compute nodes cannot reach a registry cannot start a cluster until that is solved (pre-pulled images are not supported yet).
-
-### Stopping the cluster
-
-End the job with `scancel --batch --signal=TERM <job ID>` (Slurm itself does the same a minute before the time limit): every pod is stopped by its own termination sequence (its `preStop` hook, `SIGTERM`, its grace period, at most 20 s) and then the cluster goes. A plain `scancel` signals every process of the job at once and Slurm kills what is left after 30 s: the pods get `SIGTERM` at the same time as the daemons (a test pod's handler did finish its work), but their `preStop` hooks are not run first and nothing is ordered. Either way, the claims and the data of the job are not deleted.
-
-### When a job ends unexpectedly
-
-A bubble or an essential daemon that ends takes the whole job with it (the cluster is for one allocation). The job's output says what ended first and how, and the same account is kept in `~/.skiff/job-results/<job ID>.cause` (next to `<job ID>.exit`): the process, its exit status or the signal that killed it, the host and the time, and the last line the bubble itself logged. If you ask for help, send that file, the job's output file and the bubble logs (`~/.apptainer/instances/logs/<node>/<user>/bubble*.out`).
-
-## Architecture & Components
-
-Skiff is organized as a unified monorepo:
-
-```text
-skiff/
-├── Makefile                 # Build, tests and image deployment
-├── skifflet/                # Virtual Kubelet provider and Pod lifecycle
-├── plaid/                   # Rootless networking tools
-├── images/                  # Bubble and builder container definitions
-├── scripts/                 # User-facing cluster deployment
-│   ├── skiff.sh             # Configuration, preflight and the per-node bubble
-│   └── skiff.slurm          # Slurm batch job
-├── test/                    # Regressions, end-to-end tests and fixtures
-│   ├── e2e/                # Two-node acceptance suite
-│   └── vagrant/            # Development VMs and their test commands
-└── benchmarks/              # Spark, BERT and Dask workloads
-```
-
-### Skifflet (`skifflet/`)
-
-`skifflet` is a Kubernetes [Virtual Kubelet](https://github.com/virtual-kubelet/virtual-kubelet) provider tailored for HPC environments:
-
-- Registers as a standard Kubernetes node in K3s.
-- Materializes Pods in unprivileged user space using [Apptainer](https://apptainer.org/) and `plaidtainer`.
-- Uses the standard Kubernetes pause container (`registry.k8s.io/pause:3.10`) to hold Pod network namespaces and manages init/application processes, probes and cleanup.
-- Mounts Kubernetes volumes, including ConfigMaps, Secrets, EmptyDir, HostPath, DownwardAPI and Projected volumes, into container filesystems.
-
-### Plaid (`plaid/`)
-
-`plaid` provides rootless user-space networking:
-
-- **`plaidd`**: Virtual Ethernet switch and cross-node VXLAN overlay router over UDP port 8472.
-- **`plaidtainer`**: Apptainer wrapper that configures TAP interfaces and attaches containers to the Plaid subnet.
-- **`plaid`**: CNI-compatible plugin and container TAP initializer.
-- **`plaidctl`**: CLI tool for inspecting endpoints, routes and network statistics.
-
-### Skiff Bubble (`images/skiff/`)
-
-A rootless Apptainer container runs on each allocated HPC node. One bubble hosts the [K3s](https://k3s.io/) control plane; every bubble runs Skifflet and Plaid, which also translates Service traffic. [slirp4netns](https://github.com/rootless-containers/slirp4netns) provides external access.
-
-Plaid attaches a `plaid0` TAP to each bubble's kernel at the first address of its node PodCIDR, for example `10.244.1.1`. Pod-to-Pod traffic uses Plaid's overlay directly. NodePort Services are published on every node's host through slirp4netns (from another host; see the Plaid README for what is not published). Service traffic is translated by Plaid itself (there is no kube-proxy): destination NAT to a backend, source NAT to the node network's `.2`, which the backends answer; external traffic uses bubble-local forwarding and SNAT through slirp.
-
-Skifflet registers its Node, then waits for the TAP gateway before launching Pods. Startup checks the Kubernetes API Service and cluster DNS. The Service and pod networks, the cluster DNS address, domain and MTU are the settings described above; the API Service is the first address of the Service network.
-
----
-
-## Building
-
-Build both modules or an individual component:
-
-```bash
-make build
-make build-skifflet
-make build-plaid
-```
-
-Build the Skiff image with Docker (everything is built in containers, so any platform can be built on any host: `make image PLATFORM=linux/amd64`):
-
-```bash
-make image
-```
-
-**Versions.** The one Skiff image is Debian bookworm (`images/skiff/Dockerfile`, with the base images and the Go release pinned by digest). It carries K3s v1.35.0+k3s1 (Kubernetes 1.35, checksummed) and Apptainer 1.5.4 built from source, with slirp4netns, socat and kubectl: the tools a host needs, in one relocatable tree that `skiff.sh tools` takes out of the image (everything in it needs glibc 2.34 at most, the C library of RHEL 9; the build checks it). Skifflet is built against Virtual Kubelet v1.14.0 and `client-go` v0.36 (one minor version ahead of the API server, which Kubernetes supports; see `skifflet/go.mod`) built with Go 1.26.8. Change the K3s version only together with a run of the whole suite: Skifflet implements the kubelet's side of that API.
-
----
-
-## Evaluating Locally with Vagrant
-
-### 1. Start the Environment
-
-```bash
-cd test/vagrant
-vagrant up
-vagrant reload
-cd ../..
-```
-
-This boots two Ubuntu 24.04 VMs (`controller` and `node`) with Slurm, and with what a cluster's administrator provides for Skiff and a user cannot: `uidmap`, a subordinate id range and user namespaces allowed. Apptainer, slirp4netns, socat and kubectl are not installed: `make develop` takes them out of the image into `~/.skiff/tools`, as a user does on a cluster.
-
-### 2. Deploy and Run Local Images
-
-```bash
-make develop
-ssh vagrant@controller.local
-```
-
-This builds the bubble image, uploads and converts it to an Apptainer SIF image, and synchronizes deployment scripts and tests. In the controller VM, submit a development job:
-
-```bash
-cd ~/skiff/scripts
-SKIFF_DEV=1 sbatch --nodes=2 skiff.slurm
-export KUBECONFIG=${HOME}/.skiff/kubeconfig
-kubectl get nodes
-```
-
-Put the tools first in `PATH` for `kubectl` (`export PATH=$HOME/.skiff/tools/bin:$PATH`) and wait for startup to create the credentials before using it. Development jobs select the locally built image with `SKIFF_DEV=1`; ordinary jobs use the published image by default.
-
-See [test/README.md](test/README.md) for the testing overview, fixture setup and manual test commands.
-
-## Evaluating on a Slurm Cluster
-
-The same workflows deploy to any machine you can ssh to, with nothing installed on it beyond what an administrator provides (above). The images are built on your machine, in containers, for the cluster's architecture, and the tools come out of the uploaded image:
-
-```bash
-SKIFF_SSH=me@login.example.org make develop e2e-images PLATFORM=linux/amd64
-ssh me@login.example.org
-export PATH=$HOME/.skiff/tools/bin:$PATH
-cd ~/skiff && SKIFF_DEV=1 bash test/e2e/run-all.sh --smoke --nodes 3   # a short run first; without --smoke, the whole suite
-```
-
-The suite starts clusters of `--nodes N` nodes (default 2) and its cases use all of them. A check that needs a capability the account does not have (root) is reported as UNAVAILABLE with its reason, and a run in which nothing failed and some of those could not run ends as `PROFILE INCOMPLETE`, not as passed. See [test/README.md](test/README.md).
+The components have their own documents: [Skifflet](skifflet/README.md), [Plaid](plaid/README.md) and the [tests](test/README.md).
