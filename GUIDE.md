@@ -28,14 +28,14 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 ## Requirements
 
 - **Slurm**, and whole nodes: `skiff.slurm` asks for exclusive nodes and all their memory (`--exclusive --mem=0`), because the fixed ports (the API server's TCP 6443 on the controller, the kubelet's TCP 10250 and the overlay's UDP 8472 on every node) and the node's scratch directory must be the job's alone. A job on shared nodes is refused when something is in the way.
-- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and iproute2** (`ip` and `ss`). iproute2 comes with the system. The other three do not have to be installed: `skiff.sh tools` takes them (and `kubectl`) out of the Skiff image archive into `~/.skiff/tools`, which `skiff.sh` and `skiff.slurm` then put first in `PATH` (they need glibc 2.34 or newer on the host: RHEL 9, Ubuntu 22.04 and later, Debian 12 and later). Or install them with the packages below.
+- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and `ip`** (iproute2). `ip` comes with the system. The other three do not have to be installed: `skiff.sh tools` takes them (and `kubectl`) out of the Skiff image archive into `~/.skiff/tools`, which `skiff.sh` and `skiff.slurm` then put first in `PATH` (they need glibc 2.34 or newer on the host: RHEL 9, Ubuntu 22.04 and later, Debian 12 and later). Or install them with the packages below.
 
   | | Debian / Ubuntu | RHEL family |
   |---|---|---|
   | Apptainer | `apptainer` (release `.deb`, or the project's PPA) | `apptainer` (EPEL) |
   | slirp4netns | `slirp4netns` | `slirp4netns` |
   | socat | `socat` | `socat` |
-  | `ip`, `ss` | `iproute2` | `iproute` |
+  | `ip` | `iproute2` | `iproute` |
 
 - **`newuidmap` and `newgidmap`** (package `uidmap`; setuid root, or on the RHEL family given the file capabilities `cap_setuid` and `cap_setgid`: a copy in your home has neither, so this is for the administrator) when Apptainer is not the system's own: with a subordinate id range, Apptainer maps ids through them.
 - **Unprivileged user namespaces**: `user.max_user_namespaces` above 0 and `kernel.unprivileged_userns_clone` not 0 where it exists (on Ubuntu 24.04 and later AppArmor allows them only to programs with a profile, which Apptainer's package installs and a copy under `~/.skiff/tools` does not have: with the tools from the image, the administrator sets `kernel.apparmor_restrict_unprivileged_userns=0`), and a **subordinate id range** for the user in `/etc/subuid` and `/etc/subgid` (or the site's directory service): the bubbles run as root in a user namespace of yours.

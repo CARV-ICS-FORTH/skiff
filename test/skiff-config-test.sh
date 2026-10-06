@@ -132,12 +132,6 @@ user=$(id -un)
 printf '#!/bin/sh\ncase "$1" in buildcfg) echo "LIBEXECDIR=${FAKE_LIBEXEC:-}" ;; *) echo "apptainer version ${FAKE_APPTAINER:-1.5.4}" ;; esac\n' > "$nodedir/tools/apptainer"
 printf '#!/bin/sh\necho "slirp4netns version ${FAKE_SLIRP:-1.2.1}"\necho "commit: abcdef"\n' > "$nodedir/tools/slirp4netns"
 for tool in socat ip newuidmap newgidmap; do printf '#!/bin/sh\n' > "$nodedir/tools/$tool"; done
-# ss: what listens on this host (FAKE_TCP and FAKE_UDP are lines of its output).
-cat > "$nodedir/tools/ss" <<'EOF2'
-#!/bin/sh
-echo "State Recv-Q Send-Q Local Address:Port Peer Address:Port"
-case "$1" in -ltn) echo "${FAKE_TCP:-}" ;; -lun) echo "${FAKE_UDP:-}" ;; esac
-EOF2
 chmod +x "$nodedir/tools/"*
 chmod u+s "$nodedir/tools/newuidmap" "$nodedir/tools/newgidmap"   # (setuid root on a real host)
 # stat: the owner of the scratch directory and the kind of filesystem it is on.
@@ -155,6 +149,13 @@ mkdir -p "$nodedir/sys/proc/sys/user" "$nodedir/sys/proc/sys/kernel" "$nodedir/s
 echo 7372 > "$nodedir/sys/proc/sys/user/max_user_namespaces"
 echo "$user:100000:65536" > "$nodedir/sys/etc/subuid"
 echo "$user:100000:65536" > "$nodedir/sys/etc/subgid"
+# what listens on the host: /proc/net/{tcp,tcp6,udp,udp6}, with nothing in them
+mkdir -p "$nodedir/sys/proc/net"
+no_sockets() { for f in tcp tcp6 udp udp6; do echo "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode" > "$nodedir/sys/proc/net/$f"; done; }
+socket() { # socket FILE ADDRESS:PORT(hex) STATE(hex): one more socket in /proc/net/FILE
+    printf '   0: %s 00000000:0000 %s 00000000:00000000 00:00000000 00000000     0        0 1 1 0000000000000000 100 0 0 10 0\n' "$2" "$3" >> "$nodedir/sys/proc/net/$1"
+}
+no_sockets
 node_check() { # node_check PATH_DIRS TMP_DIR [ROLE [VAR=value...]]: output and status of skiff_check_node
     local path="$1" tmp="$2" role="${3:-}"
     shift 3 2>/dev/null || shift $#
@@ -166,11 +167,11 @@ expect "a node that has everything, and nothing to report" "$status:$out" "0:"
 [ -d "$nodedir/scratch" ] || { echo "FAIL the scratch directory was not created"; failures=$((failures + 1)); }
 out=$(node_check "$nodedir/base" "$nodedir/scratch"); status=$?
 expect "a node without the host programs is refused" "$status" 1
-for tool in apptainer slirp4netns socat ss ip; do
+for tool in apptainer slirp4netns socat ip; do
     grep -q -- "required program(s) not found in PATH:.* $tool" <<< "$out" || { echo "FAIL the message does not name $tool: $out"; failures=$((failures + 1)); }
 done
 expect "and told how to get them from the image" "$(grep -c "skiff.sh tools" <<< "$out")" 1
-mkdir "$nodedir/only-socat-missing"; for tool in apptainer slirp4netns ss ip; do ln -s "$nodedir/tools/$tool" "$nodedir/only-socat-missing/$tool"; done
+mkdir "$nodedir/only-socat-missing"; for tool in apptainer slirp4netns ip; do ln -s "$nodedir/tools/$tool" "$nodedir/only-socat-missing/$tool"; done
 out=$(node_check "$nodedir/only-socat-missing:$nodedir/base" "$nodedir/scratch"); status=$?
 expect "only what is missing is named" "$status:$(grep -o 'PATH:.*(' <<< "$out")" "1:PATH: socat ("
 
@@ -251,19 +252,30 @@ expect "an unrestricted node is not asked" "$status:$out" "0:"
 rm "$nodedir/sys/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
 
 # ports: the controller needs three, a node two; TCP and UDP are told apart
-used_tcp="LISTEN 0 4096 0.0.0.0:6443 0.0.0.0:*"
-out=$(node_check "$GOOD" "$nodedir/scratch" controller FAKE_TCP="$used_tcp"); status=$?
+socket tcp 00000000:192B 0A   # 6443, listening
+out=$(node_check "$GOOD" "$nodedir/scratch" controller); status=$?
 expect "the API port taken on the controller is refused" "$status:$(grep -c 'port 6443/tcp is already in use' <<< "$out")" "1:1"
-out=$(node_check "$GOOD" "$nodedir/scratch" node FAKE_TCP="$used_tcp"); status=$?
+out=$(node_check "$GOOD" "$nodedir/scratch" node); status=$?
 expect "the same port is not the business of a worker" "$status:$out" "0:"
-out=$(node_check "$GOOD" "$nodedir/scratch" node FAKE_TCP="LISTEN 0 128 [::]:10250 [::]:*"); status=$?
+no_sockets; socket tcp 00000000:192B 01   # 6443, but an established connection and not a listener
+out=$(node_check "$GOOD" "$nodedir/scratch" controller); status=$?
+expect "a connection from that port is not a listener" "$status:$out" "0:"
+no_sockets; socket tcp6 00000000000000000000000000000000:280A 0A   # 10250 on IPv6
+out=$(node_check "$GOOD" "$nodedir/scratch" node); status=$?
 expect "the kubelet port taken (IPv6 too) is refused on a worker" "$status:$(grep -c 'port 10250/tcp is already in use' <<< "$out")" "1:1"
-out=$(node_check "$GOOD" "$nodedir/scratch" node FAKE_UDP="UNCONN 0 0 0.0.0.0:8472 0.0.0.0:*"); status=$?
+no_sockets; socket udp 00000000:2118 07   # 8472, unconnected
+out=$(node_check "$GOOD" "$nodedir/scratch" node); status=$?
 expect "the overlay's UDP port taken is refused" "$status:$(grep -c 'port 8472/udp is already in use' <<< "$out")" "1:1"
-out=$(node_check "$GOOD" "$nodedir/scratch" node FAKE_UDP="UNCONN 0 0 0.0.0.0:18472 0.0.0.0:*" FAKE_TCP="LISTEN 0 1 0.0.0.0:110250 0.0.0.0:*"); status=$?
+no_sockets; socket tcp 00000000:2118 0A   # 8472, but TCP
+out=$(node_check "$GOOD" "$nodedir/scratch" node); status=$?
+expect "TCP and UDP are told apart" "$status:$out" "0:"
+no_sockets; socket udp 00000000:4828 07; socket tcp 00000000:403B 0A   # 18472 and 16443
+out=$(node_check "$GOOD" "$nodedir/scratch" node); status=$?
 expect "another port that ends the same way is not mistaken for it" "$status:$out" "0:"
-out=$(node_check "$GOOD" "$nodedir/scratch" "" FAKE_TCP="LISTEN 0 1 0.0.0.0:6443 0.0.0.0:*"); status=$?
+no_sockets; socket tcp 00000000:192B 0A
+out=$(node_check "$GOOD" "$nodedir/scratch" ""); status=$?
 expect "without a role every port counts" "$status" 1
+no_sockets
 
 # the scratch directory
 : > "$nodedir/a-file"
@@ -290,8 +302,10 @@ check_cmd() { env -i PATH="$GOOD" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROO
 out=$(check_cmd); status=$?
 expect "the check command on a ready node says so" "$status:$(grep -c ': ready for Skiff' <<< "$out")" "0:1"
 expect "and says what the node is" "$(grep -c 'kernel .*cgroup' <<< "$out"):$(grep -c 'apptainer 1.5.4' <<< "$out"):$(grep -c 'scratch ' <<< "$out")" "1:1:1"
-out=$(check_cmd FAKE_TCP="$used_tcp"); status=$?
+socket tcp 00000000:192B 0A
+out=$(check_cmd); status=$?
 expect "and on a node that is not, says that and why" "$status:$(grep -c 'NOT ready for Skiff' <<< "$out"):$(grep -c 'port 6443/tcp' <<< "$out")" "1:1:1"
+no_sockets
 out=$(check_cmd SKIFF_POD_CIDR=10.0.0.0/33); status=$?
 expect "an invalid setting is part of the check" "$status:$(grep -c 'SKIFF_POD_CIDR' <<< "$out")" "1:1"
 out=$(env -i PATH="$GOOD" "$BASH" "$repo_dir/scripts/skiff.sh" check nonsense 2>&1); status=$?

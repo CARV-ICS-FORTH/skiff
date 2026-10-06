@@ -344,8 +344,8 @@ skiff_config_export() {
 # The programs the scripts run on the allocated nodes themselves, outside the bubble:
 # Apptainer (the bubble), slirp4netns (the bubble's link to the outside), socat (the relays
 # that publish the API and the kubelet on the host address, and the client of slirp4netns's
-# API) and iproute2 (ip and ss, which find the host address and the ports in use).
-SKIFF_HOST_TOOLS="apptainer slirp4netns socat ss ip"
+# API) and ip (iproute2, which finds the host address).
+SKIFF_HOST_TOOLS="apptainer slirp4netns socat ip"
 
 # The versions Skiff was qualified with (Ubuntu, kernel 6.8, arm64). Older ones may work and
 # are not refused; they are reported, because a failure with one is a reason to upgrade
@@ -386,11 +386,19 @@ _skiff_version_older() {
     return 1
 }
 
-# _skiff_port_taken PROTO PORT: succeeds when something on this host listens there.
+# _skiff_port_taken PROTO PORT: succeeds when something on this host listens there: a TCP
+# socket in state LISTEN (0A) or a UDP socket not connected (07) in /proc/net, IPv4 or IPv6.
 _skiff_port_taken() {
-    local flag=-ltn
-    [ "$1" = udp ] && flag=-lun
-    skiff_listed ":$2 " ss "$flag"
+    local proto="$1" port state=0A file local_addr st
+    port=$(printf '%04X' "$2")
+    [ "$proto" = udp ] && state=07
+    for file in "$(_skiff_sys "/proc/net/$proto")" "$(_skiff_sys "/proc/net/${proto}6")"; do
+        [ -r "$file" ] || continue
+        while read -r _ local_addr _ st _; do
+            if [ "${local_addr##*:}" = "$port" ] && [ "$st" = "$state" ]; then return 0; fi
+        done < "$file"
+    done
+    return 1
 }
 
 # skiff_check_node [controller|node]: what a node needs before a bubble can start on it,
@@ -411,7 +419,7 @@ skiff_check_node() {
         command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
     done
     if [ -n "$missing" ]; then
-        echo "$host: required program(s) not found in PATH:$missing (Skiff needs: $SKIFF_HOST_TOOLS; ip and ss are in iproute2. Take apptainer, slirp4netns and socat out of the Skiff image with 'skiff.sh tools', or install them with the system's package manager)" >&2
+        echo "$host: required program(s) not found in PATH:$missing (Skiff needs: $SKIFF_HOST_TOOLS; ip is in iproute2. Take apptainer, slirp4netns and socat out of the Skiff image with 'skiff.sh tools', or install them with the system's package manager)" >&2
         errors=$((errors + 1))
     fi
     for tool in apptainer slirp4netns; do
@@ -509,20 +517,18 @@ skiff_check_node() {
         errors=$((errors + 1))
     fi
 
-    # The ports. Skipped when ss is missing (already reported above).
-    if command -v ss >/dev/null 2>&1; then
-        case "$role" in
-            controller) ports=$SKIFF_PORTS_CONTROLLER ;;
-            node) ports=$SKIFF_PORTS_NODE ;;
-            *) ports=$SKIFF_PORTS_CONTROLLER ;;
-        esac
-        for port in $ports; do
-            if _skiff_port_taken "${port%%:*}" "${port##*:}"; then
-                echo "$host: port ${port##*:}/${port%%:*} is already in use; Skiff needs it (the nodes of a job must be the job's alone: another cluster, or something else, is using this node)" >&2
-                errors=$((errors + 1))
-            fi
-        done
-    fi
+    # The ports.
+    case "$role" in
+        controller) ports=$SKIFF_PORTS_CONTROLLER ;;
+        node) ports=$SKIFF_PORTS_NODE ;;
+        *) ports=$SKIFF_PORTS_CONTROLLER ;;
+    esac
+    for port in $ports; do
+        if _skiff_port_taken "${port%%:*}" "${port##*:}"; then
+            echo "$host: port ${port##*:}/${port%%:*} is already in use; Skiff needs it (the nodes of a job must be the job's alone: another cluster, or something else, is using this node)" >&2
+            errors=$((errors + 1))
+        fi
+    done
 
     # The scratch directory.
     if [ -d "$SKIFF_TMP_DIR" ]; then

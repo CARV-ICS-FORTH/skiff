@@ -85,7 +85,6 @@ except socket.timeout: pass' "$*" ;;
     *) exec sleep 300 ;;
 esac
 STUB
-printf '#!/usr/bin/env bash\nexit 0\n' > "$test_dir/bin/ss"
 # scontrol: what Slurm is configured to offer on the node
 cat > "$test_dir/bin/scontrol" <<'STUB'
 #!/usr/bin/env bash
