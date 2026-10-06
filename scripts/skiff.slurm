@@ -78,7 +78,7 @@ skiff_config_export
 skiff_config_print
 
 # What every allocated node needs (the host programs and their versions, user namespaces,
-# a subordinate id range, the fixed ports, a usable scratch directory of its own) is
+# a subordinate id range (a warning when there is none), the fixed ports, a usable scratch directory of its own) is
 # checked on the nodes themselves, all of them and all problems at once, before anything
 # starts. `skiff.sh check` is the same check, which a user can run before submitting.
 echo "Checking the allocated nodes..."

@@ -5,6 +5,7 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 **Using Skiff**
 
 - [Requirements](#requirements)
+- [Without a subordinate id range](#without-a-subordinate-id-range)
 - [Running a cluster](#running-a-cluster)
 - [Configuration](#configuration)
 - [Directories](#directories)
@@ -37,14 +38,28 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
   | socat | `socat` | `socat` |
   | `ip` | `iproute2` | `iproute` |
 
-- **`newuidmap` and `newgidmap`** (package `uidmap`; setuid root, or on the RHEL family given the file capabilities `cap_setuid` and `cap_setgid`: a copy in your home has neither, so this is for the administrator) when Apptainer is not the system's own: with a subordinate id range, Apptainer maps ids through them.
-- **Unprivileged user namespaces**: `user.max_user_namespaces` above 0 and `kernel.unprivileged_userns_clone` not 0 where it exists (on Ubuntu 24.04 and later AppArmor allows them only to programs with a profile, which Apptainer's package installs and a copy under `~/.skiff/tools` does not have: with the tools from the image, the administrator sets `kernel.apparmor_restrict_unprivileged_userns=0`), and a **subordinate id range** for the user in `/etc/subuid` and `/etc/subgid` (or the site's directory service): the bubbles run as root in a user namespace of yours.
+- **`newuidmap` and `newgidmap`**, when the user has a subordinate id range (see below) and Apptainer is not the system's own: Apptainer maps ids through them (package `uidmap`; setuid root, or on the RHEL family given the file capabilities `cap_setuid` and `cap_setgid`: a copy in your home has neither, so this is for the administrator). Without a range they are not needed.
+- **Unprivileged user namespaces**: `user.max_user_namespaces` above 0 and `kernel.unprivileged_userns_clone` not 0 where it exists (on Ubuntu 24.04 and later AppArmor allows them only to programs with a profile, which Apptainer's package installs and a copy under `~/.skiff/tools` does not have: with the tools from the image, the administrator sets `kernel.apparmor_restrict_unprivileged_userns=0`): the bubbles run as root in a user namespace of yours.
+- A **subordinate id range** for the user in `/etc/subuid` and `/etc/subgid` (or the site's directory service) is not required, and the node check only warns when there is none: [without it](#without-a-subordinate-id-range) the cluster runs with a single id, which is enough for most workloads, and a few cannot run.
 - **`/dev/net/tun`**, openable by users: slirp4netns and Plaid create their network interfaces through it (the `tun` kernel module loaded, the device mode 0666, and where Slurm constrains devices, allowed to jobs). Without it nothing in the cluster has a network.
 - A **shared home directory**.
 
-**What needs an administrator** is at most four things, none of them a package of Skiff's (everything else comes out of the image, as a user): the `tun` device above, when a node lacks it; on Ubuntu 24.04 and later, `kernel.apparmor_restrict_unprivileged_userns=0` (or Apptainer installed as a system package, which has its own AppArmor profile); the package `uidmap`; and a subordinate id range for the user on every compute node (`usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <user>`). The node check names each one that is missing, with what to ask for.
+**What needs an administrator** is at most these, none of them a package of Skiff's (everything else comes out of the image, as a user): user namespaces allowed (`user.max_user_namespaces` above 0), when a node has them off; the `tun` device above, when a node lacks it; on Ubuntu 24.04 and later, `kernel.apparmor_restrict_unprivileged_userns=0` (or Apptainer installed as a system package, which has its own AppArmor profile); and, to lift the limits of a single id, the package `uidmap` and a subordinate id range for the user on every compute node (`usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <user>`). The node check names each one that is missing, with what to ask for.
 
 Skiff was qualified with Apptainer 1.5.4 and slirp4netns 1.2.1 on Ubuntu 24.04 (kernel 6.8): on two-node arm64 VMs, and on a three-node amd64 Slurm cluster (Slurm 23.11, cgroup process tracking, a shared NFS home) by an ordinary user, where everything passed except the checks that need root, which cannot run without it (see [test/README.md](test/README.md)). Older versions are reported and not refused; a failure with one is a reason to upgrade it first.
+
+## Without a subordinate id range
+
+A range of subordinate ids (`/etc/subuid` and `/etc/subgid`) is not required. Without one the node check **warns**, the job starts, and the bubble's log says `Single-id bubble`: Apptainer maps only your own id, as root, into the bubble (and, from there, into each container), so the whole cluster runs with **one id**, yours. Everything a container writes on a volume belongs to you, as it does with a range.
+
+What works: the cluster itself (nodes, DNS, Services, NodePorts, volumes and claims, logs, exec, probes, metrics), the system add-ons, and any pod that runs as one user: as root, or as one other user with `runAsUser`, `runAsGroup` or `runAsNonRoot`. Different pods may use different ids, since each container has a namespace of its own: one root, another as uid 1000.
+
+What cannot work is anything that needs **a second id inside one container**, because that id does not exist and the kernel answers `EINVAL` or `EPERM`:
+
+- `chown` to another user or group, and archives that restore ownership: `tar -x` as root fails to give a file to the id in the archive (`--no-same-owner` extracts them as the one id);
+- programs that start as root and then switch to another user, or give their own files to one, which is how the official images of nginx, postgres and redis start: as shipped, all three stop at their first `chown` (`chown("/var/cache/nginx/client_temp", 101) failed (22: Invalid argument)`, `chown: /var/lib/postgresql/data: Invalid argument`); `su` or `sudo` to another user; an init container that chowns a volume for the main container.
+
+Such a pod fails at that step with `Invalid argument` or `Operation not permitted`. Many of these images run when the pod starts as the user the image expects, which needs no second id (Skiff takes the user from the pod's `securityContext`, not from the image's `USER`): postgres with `runAsUser: 70`, redis with `runAsUser: 999` and nginx's unprivileged image with `runAsUser: 101` all ran in a cluster without a range. Otherwise ask your administrator for the range (and, where Apptainer is not the system's own, `newuidmap` and `newgidmap`): `usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <user>` on every compute node. The node check says so, and nothing else changes: with a range the bubble starts as it always did.
 
 ## Running a cluster
 
