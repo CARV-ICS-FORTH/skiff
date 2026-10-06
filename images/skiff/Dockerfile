@@ -124,11 +124,15 @@ RUN curl -fsSLo /tmp/socat.tgz "http://www.dest-unreach.org/socat/download/socat
     make -j"$(nproc)" >/dev/null && install -m 0755 socat "${TOOLS}/bin/socat" && \
     rm -rf /tmp/socat*
 
-# Make the tree self-contained: copy the shared libraries the programs need beyond the C
-# library, point each program at them (DT_RPATH, which also covers the libraries' own
-# dependencies), and refuse a program that needs a newer C library than RHEL 9 has.
+# Make the tree self-contained: strip what was built here (Apptainer keeps its symbol tables and
+# debug information: its two large programs, apptainer and starter, are half the size without
+# them; the stack traces of a Go program do not depend on them), copy the shared libraries the
+# programs need beyond the C library, point each program at them (DT_RPATH, which also covers
+# the libraries' own dependencies), and refuse a program that needs a newer C library than
+# RHEL 9 has. slirp4netns and kubectl are release binaries, already stripped.
 RUN set -e; mkdir -p "${TOOLS}/lib"; \
     progs="${TOOLS}/bin/apptainer ${TOOLS}/bin/socat ${TOOLS}/libexec/apptainer/bin/*"; \
+    for f in $progs; do strip --strip-unneeded "$f"; done; \
     for f in $progs; do \
         ldd "$f" 2>/dev/null | awk '/=> \//{print $3}' | \
         grep -vE '/(libc|libm|libdl|libpthread|librt|libresolv|libutil|libnsl|ld-linux[^/]*)\.so' | \
@@ -148,11 +152,14 @@ RUN set -e; mkdir -p "${TOOLS}/lib"; \
 FROM ${BASE_IMAGE}
 WORKDIR /
 
-# Basic utilities, iptables and nscd. The outer slirp4netns runs on the HPC host (from the
-# tools). drill (ldnsutils) answers the DNS readiness check in entrypoint.sh; dig would pull
-# in libxml2 and libicu (about 45 MB).
+# What the bubble itself runs: curl (the API check in entrypoint.sh), ip (iproute2), iptables
+# (Plaid's NodePorts), pgrep (procps: the supervisor looks for entrypoint.sh in the instance),
+# newuidmap (uidmap) and openssl (with ca-certificates: the kubelet certificates). The outer
+# slirp4netns runs on the HPC host (from the tools). drill (ldnsutils) answers the DNS
+# readiness check in entrypoint.sh; dig would pull in libxml2 and libicu (about 45 MB). No
+# ping and no nscd: nothing in the bubble uses them (the tests that ping run in the fixture image).
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl ldnsutils iproute2 iputils-ping iptables nscd procps uidmap && \
+    apt-get install -y --no-install-recommends ca-certificates curl ldnsutils iproute2 iptables procps uidmap && \
     rm -rf /var/lib/apt/lists/*
 
 # The tools, where the image itself uses them from, too.
