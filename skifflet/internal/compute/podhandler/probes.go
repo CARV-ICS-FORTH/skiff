@@ -47,7 +47,7 @@ const (
 	minKillGrace = 2 * time.Second
 
 	// probeUserAgent is what the kubelet's HTTP probes call themselves.
-	probeUserAgent = "kube-probe/1.35"
+	probeUserAgent = "kube-probe/1.36"
 )
 
 // execRunner runs a command probe's command inside the container.

@@ -61,7 +61,7 @@ cd ~/skiff/scripts
 sbatch --nodes=2 skiff.slurm
 ```
 
-After startup creates the cluster credentials (the job's output says when, and how to connect), configure and use `kubectl`. If you took the tools out of the Skiff image, `kubectl` is the one in `~/.skiff/tools/bin` (Kubernetes 1.35, the cluster's version): run it by its path or put the directory first in your `PATH`:
+After startup creates the cluster credentials (the job's output says when, and how to connect), configure and use `kubectl`. If you took the tools out of the Skiff image, `kubectl` is the one in `~/.skiff/tools/bin` (Kubernetes 1.36, the cluster's version): run it by its path or put the directory first in your `PATH`:
 
 ```bash
 export KUBECONFIG=${HOME}/.skiff/kubeconfig
@@ -226,7 +226,7 @@ Build the Skiff image with Docker (everything is built in containers, so any pla
 make image
 ```
 
-**Versions.** The one Skiff image is Debian bookworm (`images/skiff/Dockerfile`, with the base images and the Go release pinned by digest). It carries K3s v1.35.0+k3s1 (Kubernetes 1.35, checksummed) and Apptainer 1.5.4 built from source, with slirp4netns, socat and kubectl: the tools a host needs, in one relocatable tree that `skiff.sh tools` takes out of the image (everything in it needs glibc 2.34 at most, the C library of RHEL 9; the build checks it). Skifflet is built against Virtual Kubelet v1.14.0 and `client-go` v0.36 (one minor version ahead of the API server, which Kubernetes supports; see `skifflet/go.mod`) built with Go 1.26.8. Change the K3s version only together with a run of the whole suite: Skifflet implements the kubelet's side of that API.
+**Versions.** The one Skiff image is Debian bookworm (`images/skiff/Dockerfile`, with the base images and the Go release pinned by digest). It carries K3s v1.36.5+k3s1 (Kubernetes 1.36, checksummed) and Apptainer 1.5.4 built from source, with slirp4netns, socat and kubectl: the tools a host needs, in one relocatable tree that `skiff.sh tools` takes out of the image (everything in it needs glibc 2.34 at most, the C library of RHEL 9; the build checks it). Skifflet is built against Virtual Kubelet v1.14.0 and `client-go` v0.36 (the API server's own minor version; plaid uses the same Kubernetes libraries, see the `go.mod` files) built with Go 1.26.8. Change the K3s version only together with a run of the whole suite: Skifflet implements the kubelet's side of that API.
 
 ## Evaluating locally with Vagrant
 

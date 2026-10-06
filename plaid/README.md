@@ -28,7 +28,7 @@ Flows are pinned to their backend; a backend that stops being ready keeps the fl
 
 The table comes from the Kubernetes connector inside `plaidd`, which watches Services and EndpointSlices (unless `--disable-kubernetes`, when `plaidctl service set` provides it).
 
-Supported: IPv4 ClusterIP Services with TCP and UDP ports, multiple and named ports, local, remote and hairpin backends, selectorless Services (the API Service), readiness and `publishNotReadyAddresses`, and, when no endpoint is ready, serving terminating endpoints (as kube-proxy 1.35). Headless and ExternalName Services have no cluster IP and are not translated. Not supported, with a Warning event on the Service and the Service (or port) not served: session affinity, `internalTrafficPolicy: Local`, SCTP, IPv6-only Services; `externalIPs` are ignored with an event. IP fragments, ICMP and other protocols addressed to a Service are dropped and counted; fragmented UDP and the translation of ICMP errors are future work.
+Supported: IPv4 ClusterIP Services with TCP and UDP ports, multiple and named ports, local, remote and hairpin backends, selectorless Services (the API Service), readiness and `publishNotReadyAddresses`, and, when no endpoint is ready, serving terminating endpoints (as kube-proxy 1.36). Headless and ExternalName Services have no cluster IP and are not translated. Not supported, with a Warning event on the Service and the Service (or port) not served: session affinity, `internalTrafficPolicy: Local`, SCTP, IPv6-only Services; `externalIPs` are ignored with an event. IP fragments, ICMP and other protocols addressed to a Service are dropped and counted; fragmented UDP and the translation of ICMP errors are future work.
 
 ### NodePort Services
 

@@ -57,7 +57,7 @@ ARG TARGETARCH
 ARG APPTAINER_VERSION=1.5.4
 ARG APPTAINER_SHA=ec1f51e696ba384f90bc7ab2c7a438fee70da98763d001b8f3175d14a91cfcf6
 ARG SLIRP4NETNS_VERSION=v1.2.1
-ARG KUBECTL_VERSION=v1.35.0
+ARG KUBECTL_VERSION=v1.36.5
 ARG SOCAT_VERSION=1.8.1.3
 ARG SOCAT_SHA=06602ffd591e98c75b3dc1d66f0f19136cc666b0b2d95caad987d6ab2cb28097
 ENV TOOLS=/opt/skiff/tools
@@ -108,8 +108,8 @@ RUN case "${TARGETARCH}" in \
 
 # kubectl: the release binary, of the same Kubernetes as the cluster's.
 RUN case "${TARGETARCH}" in \
-        amd64) SUM=a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989 ;; \
-        arm64) SUM=58f82f9fe796c375c5c4b8439850b0f3f4d401a52434052f2df46035a8789e25 ;; \
+        amd64) SUM=33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b430248648e ;; \
+        arm64) SUM=88fc1aca8fd0c1b44fe379f67c39bd6858bdfc50241dc55775f84d0f5b31da3a ;; \
         *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
     esac && \
     curl -fsSLo "${TOOLS}/bin/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" && \
@@ -175,13 +175,13 @@ RUN if [ "${TARGETARCH}" = "amd64" ]; then \
     rm /cni-plugins-linux-${TARGETARCH}-v1.9.0.tgz
 
 # K3s
-ARG K3S_VERSION=v1.35.0+k3s1
+ARG K3S_VERSION=v1.36.5+k3s1
 RUN if [ "${TARGETARCH}" = "amd64" ]; then \
         K3S_ARCH=""; \
-        K3S_SHA="959c9310a6ab893958d1c95bc5d7609de9d7884630c8832180f059369b6dc331"; \
+        K3S_SHA="d73847bcd3c5fccef0115b372e2f9a91f3032dc84bbf71518a4617565294d313"; \
     elif [ "${TARGETARCH}" = "arm64" ]; then \
         K3S_ARCH="-${TARGETARCH}"; \
-        K3S_SHA="c0b1673a1f2b740cb7bb08355c885efb6a4aa5c8022e5bb306c621c8c1492883"; \
+        K3S_SHA="135e34cb9e8a1cfae3cb55577789e93501efe7edc080a8b2630458a85b07721e"; \
     else \
         echo "Unsupported architecture: ${TARGETARCH}" && exit 1; \
     fi && \
