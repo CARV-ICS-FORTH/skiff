@@ -37,7 +37,7 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
   | socat | `socat` | `socat` |
   | `ip`, `ss` | `iproute2` | `iproute` |
 
-- **`newuidmap` and `newgidmap`** (package `uidmap`, setuid root: a copy in your home is not, so this is for the administrator) when Apptainer is not the system's own: with a subordinate id range, Apptainer maps ids through them.
+- **`newuidmap` and `newgidmap`** (package `uidmap`; setuid root, or on the RHEL family given the file capabilities `cap_setuid` and `cap_setgid`: a copy in your home has neither, so this is for the administrator) when Apptainer is not the system's own: with a subordinate id range, Apptainer maps ids through them.
 - **Unprivileged user namespaces**: `user.max_user_namespaces` above 0 and `kernel.unprivileged_userns_clone` not 0 where it exists (on Ubuntu 24.04 and later AppArmor allows them only to programs with a profile, which Apptainer's package installs and a copy under `~/.skiff/tools` does not have: with the tools from the image, the administrator sets `kernel.apparmor_restrict_unprivileged_userns=0`), and a **subordinate id range** for the user in `/etc/subuid` and `/etc/subgid` (or the site's directory service): the bubbles run as root in a user namespace of yours.
 - **`/dev/net/tun`**, openable by users: slirp4netns and Plaid create their network interfaces through it (the `tun` kernel module loaded, the device mode 0666, and where Slurm constrains devices, allowed to jobs). Without it nothing in the cluster has a network.
 - A **shared home directory**.

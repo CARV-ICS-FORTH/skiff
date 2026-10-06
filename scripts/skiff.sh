@@ -452,8 +452,9 @@ skiff_check_node() {
     fi
 
     # An Apptainer that is not installed setuid maps the ids of its user namespaces (--fakeroot,
-    # which the bubble needs) through newuidmap and newgidmap, which must be setuid root: only
-    # an administrator can install them (package uidmap); a copy in the user's home is not setuid.
+    # which the bubble needs) through newuidmap and newgidmap, which must be setuid root or, as on
+    # the RHEL family, carry the file capabilities cap_setuid / cap_setgid: only an administrator
+    # can install them (package uidmap, shadow-utils); a copy in the user's home has neither.
     if [ -n "$apptainer_path" ]; then
         local libexec suid=no idmap idmap_path idmap_missing="" idmap_plain=""
         libexec=$(apptainer buildcfg 2>/dev/null | sed -n 's/^LIBEXECDIR=//p') || true
@@ -463,7 +464,7 @@ skiff_check_node() {
                 idmap_path=$(command -v "$idmap" 2>/dev/null || true)
                 if [ -z "$idmap_path" ]; then
                     idmap_missing="${idmap_missing:+$idmap_missing and }$idmap"
-                elif [ ! -u "$idmap_path" ]; then
+                elif [ ! -u "$idmap_path" ] && ! PATH="$PATH:/usr/sbin:/sbin" getcap "$idmap_path" 2>/dev/null | grep -q 'cap_set[ug]id'; then
                     idmap_plain="${idmap_plain:+$idmap_plain and }$idmap ($idmap_path)"
                 fi
             done
@@ -472,7 +473,7 @@ skiff_check_node() {
                 errors=$((errors + 1))
             fi
             if [ -n "$idmap_plain" ]; then
-                echo "$host: $idmap_plain not setuid root, and the Apptainer in use ($apptainer_path) is not installed setuid, so it cannot map the ids of its user namespaces (--fakeroot). Skiff requires the system's newuidmap and newgidmap: please contact your administrator and request that the package uidmap be installed" >&2
+                echo "$host: $idmap_plain neither setuid root nor given file capabilities, and the Apptainer in use ($apptainer_path) is not installed setuid, so it cannot map the ids of its user namespaces (--fakeroot). Skiff requires the system's newuidmap and newgidmap: please contact your administrator and request that the package uidmap be installed" >&2
                 errors=$((errors + 1))
             fi
         fi

@@ -227,7 +227,7 @@ for f in newuidmap newgidmap; do printf '#!/bin/sh\n' > "$nodedir/notsuid/$f"; c
 out=$(node_check "$nodedir/nouidmap:$nodedir/base" "$nodedir/scratch"); status=$?
 expect "missing newuidmap and newgidmap are refused, naming the package to ask for" "$status:$(grep -c 'newuidmap and newgidmap not installed' <<< "$out"):$(grep -c 'contact your administrator and request that the package uidmap be installed' <<< "$out")" "1:1:1"
 out=$(node_check "$nodedir/notsuid:$nodedir/base" "$nodedir/scratch"); status=$?
-expect "copies that are not setuid root are refused too" "$status:$(grep -c 'newuidmap (.*) and newgidmap (.*) not setuid root' <<< "$out")" "1:1"
+expect "copies that are not setuid root are refused too" "$status:$(grep -c 'newuidmap (.*) and newgidmap (.*) neither setuid root nor given file capabilities' <<< "$out")" "1:1"
 mkdir -p "$nodedir/suidlibexec/apptainer/bin"; : > "$nodedir/suidlibexec/apptainer/bin/starter-suid"; chmod u+s "$nodedir/suidlibexec/apptainer/bin/starter-suid"
 out=$(node_check "$nodedir/nouidmap:$nodedir/base" "$nodedir/scratch" "" FAKE_LIBEXEC="$nodedir/suidlibexec"); status=$?
 expect "an Apptainer installed setuid needs neither" "$status:$out" "0:"
