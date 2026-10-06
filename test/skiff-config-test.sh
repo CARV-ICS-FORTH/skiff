@@ -209,14 +209,25 @@ fi
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
 expect "and a node with it is fine" "$status:$out" "0:"
 
-# subordinate ids
+# subordinate ids: without a range the bubble has a single id, which works and is warned about
 mv "$nodedir/sys/etc/subuid" "$nodedir/sys/etc/subuid.away"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
-expect "a user without subordinate ids is refused, with the line to add and who to ask" "$status:$(grep -c "contact your administrator and request that the line \"$user:100000:65536\" be added to /etc/subuid and /etc/subgid" <<< "$out")" "1:1"
+expect "a user without subordinate ids is not refused, and is warned, with the line to add and who to ask" "$status:$(grep -c "WARNING: no subordinate user/group id range for $user: the cluster will run with a single id" <<< "$out"):$(grep -c "ask your administrator to add the line \"$user:100000:65536\" to /etc/subuid and /etc/subgid" <<< "$out")" "0:1:1"
 printf '#!/bin/sh\nexit 0\n' > "$nodedir/tools/getsubids"; chmod +x "$nodedir/tools/getsubids"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
-expect "unless the site's directory service has a range (getsubids)" "$status:$out" "0:"
-rm "$nodedir/tools/getsubids"; mv "$nodedir/sys/etc/subuid.away" "$nodedir/sys/etc/subuid"
+expect "no warning when the site's directory service has a range (getsubids)" "$status:$out" "0:"
+rm "$nodedir/tools/getsubids"
+mv "$nodedir/sys/etc/subuid.away" "$nodedir/sys/etc/subuid"
+mv "$nodedir/sys/etc/subgid" "$nodedir/sys/etc/subgid.away"
+out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+expect "a range for the user ids and none for the group ids is no range" "$status:$(grep -c 'WARNING: no subordinate' <<< "$out")" "0:1"
+mv "$nodedir/sys/etc/subgid.away" "$nodedir/sys/etc/subgid"
+out=$(env -i PATH="$GOOD" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" "$repo_dir/scripts/skiff.sh" check node 2>&1); status=$?
+expect "a node with a range says plainly that it is ready" "$status:$(grep -c ': ready for Skiff$' <<< "$out")" "0:1"
+mv "$nodedir/sys/etc/subuid" "$nodedir/sys/etc/subuid.away"
+out=$(env -i PATH="$GOOD" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" "$repo_dir/scripts/skiff.sh" check node 2>&1); status=$?
+expect "and without one that it is ready with the warning" "$status:$(grep -c ': ready for Skiff, with the warning above$' <<< "$out")" "0:1"
+mv "$nodedir/sys/etc/subuid.away" "$nodedir/sys/etc/subuid"
 
 
 # newuidmap and newgidmap: an Apptainer that is not installed setuid maps ids through them
@@ -234,6 +245,10 @@ out=$(node_check "$nodedir/nouidmap:$nodedir/base" "$nodedir/scratch" "" FAKE_LI
 expect "an Apptainer installed setuid needs neither" "$status:$out" "0:"
 out=$(node_check "$nodedir/base" "$nodedir/scratch"); status=$?
 expect "without Apptainer they are not asked about (it is already reported)" "$(grep -c 'newuidmap' <<< "$out")" 0
+mv "$nodedir/sys/etc/subuid" "$nodedir/sys/etc/subuid.away"
+out=$(node_check "$nodedir/nouidmap:$nodedir/base" "$nodedir/scratch"); status=$?
+expect "without a range newuidmap and newgidmap are not needed: only the warning" "$status:$(grep -c . <<< "$out"):$(grep -c 'newuidmap' <<< "$out")" "0:1:0"
+mv "$nodedir/sys/etc/subuid.away" "$nodedir/sys/etc/subuid"
 
 # AppArmor's restriction of user namespaces (Ubuntu 24.04 and later)
 mkdir "$nodedir/unshare-fails" "$nodedir/unshare-ok"

@@ -5,6 +5,20 @@ set -euo pipefail
 mkdir -p /var/log
 exec > >(tee -a /var/log/entrypoint.log) 2>&1
 
+# A bubble started without a range of subordinate ids (the user has none in /etc/subuid) has a
+# user namespace of a single id: the user's own, root here. Apptainer unpacks an image (--unsquash,
+# which every container of Skifflet uses) in a namespace of the same id as seen from outside, read
+# from /proc/self/uid_map, and looks it up in this image's passwd and group: without an entry it
+# stops with "unknown userid". Give it one. With a range the namespace has more ids and this is
+# not needed, and nothing is touched.
+read -r _ uid_outside uid_count < /proc/self/uid_map
+read -r _ gid_outside _ < /proc/self/gid_map
+if [ "$(grep -c . /proc/self/uid_map)" -eq 1 ] && [ "$uid_count" = 1 ]; then
+    getent passwd "$uid_outside" >/dev/null || echo "skiff-user:x:${uid_outside}:${gid_outside}::/root:/bin/bash" >> /etc/passwd
+    getent group "$gid_outside" >/dev/null || echo "skiff-user:x:${gid_outside}:" >> /etc/group
+    echo "Single-id bubble (no subordinate id range): ids ${uid_outside}:${gid_outside} named for Apptainer's image unpacking"
+fi
+
 # Default values if not provided
 HOST_IP=${HOST_IP:-$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") a=$(i+1)} END {print a}' || echo "127.0.0.1")}
 SKIFF_ROLE=${SKIFF_ROLE:-controller}

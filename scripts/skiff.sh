@@ -363,6 +363,16 @@ SKIFF_PORTS_NODE="tcp:10250 udp:8472"
 # elsewhere, for the tests: what a host lacks cannot be made to happen on a test machine).
 _skiff_sys() { printf '%s%s' "${SKIFF_SYS_ROOT:-}" "$1"; }
 
+# _skiff_has_id_range USER: succeeds when USER has a range of subordinate user and group ids,
+# in /etc/subuid and /etc/subgid or in the site's directory service.
+_skiff_has_id_range() {
+    local user="$1"
+    if grep -q "^$user:" "$(_skiff_sys /etc/subuid)" 2>/dev/null && grep -q "^$user:" "$(_skiff_sys /etc/subgid)" 2>/dev/null; then
+        return 0
+    fi
+    command -v getsubids >/dev/null 2>&1 && getsubids "$user" >/dev/null 2>&1
+}
+
 # _skiff_version TOOL: the dotted version a program reports with --version, empty if it
 # reports none.
 _skiff_version() {
@@ -409,10 +419,11 @@ _skiff_port_taken() {
 #
 #   the programs, with their versions     (older than the qualified ones: reported, not refused)
 #   unprivileged user namespaces          (the bubble, and every container in it, run in one)
-#   a subordinate id range for the user   (the bubble is started with --fakeroot)
+#   a subordinate id range for the user   (without one: a warning, the bubble has a single id)
 #   the fixed ports, free                 (the nodes are the job's alone)
 #   the scratch directory                 (usable, node-local, and not another user's)
 skiff_check_node() {
+    SKIFF_CHECK_WARNINGS=0
     local role="${1:-}" tool missing="" errors=0 fstype owner host version qualified ports port
     host=$(hostname)
     for tool in $SKIFF_HOST_TOOLS; do
@@ -459,11 +470,15 @@ skiff_check_node() {
         errors=$((errors + 1))
     fi
 
-    # An Apptainer that is not installed setuid maps the ids of its user namespaces (--fakeroot,
-    # which the bubble needs) through newuidmap and newgidmap, which must be setuid root or, as on
-    # the RHEL family, carry the file capabilities cap_setuid / cap_setgid: only an administrator
-    # can install them (package uidmap, shadow-utils); a copy in the user's home has neither.
-    if [ -n "$apptainer_path" ]; then
+    # With a range of subordinate ids (see below), an Apptainer that is not installed setuid maps the
+    # ids of its user namespaces (--fakeroot, which the bubble needs) through newuidmap and newgidmap,
+    # which must be setuid root or, as on the RHEL family, carry the file capabilities cap_setuid /
+    # cap_setgid: only an administrator can install them (package uidmap, shadow-utils); a copy in
+    # the user's home has neither. Without a range it maps only the user's own id and needs neither.
+    local user has_range=no
+    user=$(id -un)
+    if _skiff_has_id_range "$user"; then has_range=yes; fi
+    if [ -n "$apptainer_path" ] && [ "$has_range" = yes ]; then
         local libexec suid=no idmap idmap_path idmap_missing="" idmap_plain=""
         libexec=$(apptainer buildcfg 2>/dev/null | sed -n 's/^LIBEXECDIR=//p') || true
         if [ -n "$libexec" ] && [ -u "$libexec/apptainer/bin/starter-suid" ]; then suid=yes; fi
@@ -504,17 +519,13 @@ skiff_check_node() {
         errors=$((errors + 1))
     fi
 
-    # The bubble runs as root in a user namespace of the user's (--fakeroot): that needs a
-    # range of subordinate ids for the user, in the files or in the site's directory service.
-    local user subuid subgid
-    user=$(id -un)
-    subuid=no
-    subgid=no
-    if grep -q "^$user:" "$(_skiff_sys /etc/subuid)" 2>/dev/null; then subuid=yes; fi
-    if grep -q "^$user:" "$(_skiff_sys /etc/subgid)" 2>/dev/null; then subgid=yes; fi
-    if { [ "$subuid" = no ] || [ "$subgid" = no ]; } && ! { command -v getsubids >/dev/null 2>&1 && getsubids "$user" >/dev/null 2>&1; }; then
-        echo "$host: no subordinate user/group id range for $user (Skiff starts its bubble with --fakeroot and requires one): please contact your administrator and request that the line \"$user:100000:65536\" be added to /etc/subuid and /etc/subgid on every compute node (usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user)" >&2
-        errors=$((errors + 1))
+    # The bubble runs as root in a user namespace of the user's (--fakeroot). With a range of
+    # subordinate ids for the user (in the files or in the site's directory service) the namespace
+    # has 65536 more ids besides the user's own, mapped to root; without one it has only that one.
+    # That is enough to run a cluster, and the limits are said here, not refused.
+    if [ "$has_range" = no ]; then
+        echo "$host: WARNING: no subordinate user/group id range for $user: the cluster will run with a single id (yours, which is root in the bubble and the id of every container). What needs a second id inside one container will fail: chown to another user, and programs that start as root and switch to another user (nginx, postgres, redis, ...). Pods that run as one user, root or not, are fine. To lift the limit, ask your administrator to add the line \"$user:100000:65536\" to /etc/subuid and /etc/subgid on every compute node (usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $user)" >&2
+        SKIFF_CHECK_WARNINGS=$((SKIFF_CHECK_WARNINGS + 1))
     fi
 
     # The ports.
@@ -587,7 +598,9 @@ skiff_check() {
     skiff_config_validate || status=1
     skiff_node_report
     skiff_check_node "$role" || status=1
-    if [ "$status" -eq 0 ]; then
+    if [ "$status" -eq 0 ] && [ "${SKIFF_CHECK_WARNINGS:-0}" -gt 0 ]; then
+        echo "$(hostname): ready for Skiff, with the warning above"
+    elif [ "$status" -eq 0 ]; then
         echo "$(hostname): ready for Skiff"
     else
         echo "$(hostname): NOT ready for Skiff: see the problems above" >&2
