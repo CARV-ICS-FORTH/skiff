@@ -13,6 +13,8 @@ if [ -f "${HOME}/.skiff/fixture.env" ]; then
 fi
 FIXTURE_IMAGE_TAG="${FIXTURE_IMAGE_TAG:-3b2c5f4}"
 FIXTURE_IMAGE="${FIXTURE_IMAGE:-/var/lib/skiff/images/skiff-e2e-fixture.sif}"
+# The same image with a named USER (appuser, 4321:4322), for the tests of the image's user.
+FIXTURE_USER_IMAGE="${FIXTURE_USER_IMAGE:-/var/lib/skiff/images/skiff-e2e-fixture-user.sif}"
 FIXTURE_REGISTRY="${FIXTURE_REGISTRY:-/var/lib/skiff/images}"
 
 

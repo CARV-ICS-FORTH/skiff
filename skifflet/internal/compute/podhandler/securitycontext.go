@@ -18,13 +18,12 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"skifflet/internal/compute/image"
 )
 
 const (
-	RootUID   = 0
-	RootGID   = 0
-	NobodyUID = 65534
-	NobodyGID = 65534
+	RootUID = 0
+	RootGID = 0
 )
 
 // DetermineEffectiveSecurityContext returns a synthesized SecurityContext for reading effective configurations
@@ -145,31 +144,45 @@ func securityContextFromPodSecurityContext(pod *corev1.Pod) *corev1.SecurityCont
 	return synthesized
 }
 
-func DetermineEffectiveRunAsUser(sc *corev1.SecurityContext) (uid int64, gid int64) {
+// DetermineEffectiveRunAsUser is the user and group a container runs as, in the order the
+// kubelet and the container runtime use: the pod's runAsUser and runAsGroup, then the user
+// the image says (its USER, with the group of its passwd entry), then root. runAsNonRoot
+// refuses a container that would run as root, as the kubelet does: with a runAsUser of 0 the
+// pod contradicts itself; without a user, the image "will run as root". The error is a
+// ConfigError, which keeps the container waiting (CreateContainerConfigError).
+func DetermineEffectiveRunAsUser(sc *corev1.SecurityContext, img image.User) (uid int64, gid int64, err error) {
 	uid = RootUID
 	gid = RootGID
 
-	// Change to "nobody:nobody" if RunAsNonRoot is specified, but not the specific user.
-	if sc.RunAsNonRoot != nil && *sc.RunAsNonRoot {
-		uid = NobodyUID
-		gid = NobodyGID
+	if img.Set {
+		uid, gid = img.UID, img.GID
 	}
 
 	if sc.RunAsUser != nil {
 		uid = *sc.RunAsUser
+		if sc.RunAsGroup == nil {
+			gid = RootGID
+		}
 	}
 
 	if sc.RunAsGroup != nil {
 		gid = *sc.RunAsGroup
 	}
 
-	return uid, gid
+	if sc.RunAsNonRoot != nil && *sc.RunAsNonRoot && uid == RootUID {
+		if sc.RunAsUser != nil {
+			return 0, 0, configErrorf("container's runAsUser breaks non-root policy")
+		}
+		return 0, 0, configErrorf("container has runAsNonRoot and image will run as root")
+	}
+
+	return uid, gid, nil
 }
 
 // UnappliedSecurityContext lists the securityContext fields of a pod that Skifflet accepts and
 // does not apply, as the text of an event. What it applies is the user and group a
-// container runs as (runAsUser, runAsGroup) and runAsNonRoot (the user nobody when none is
-// given). The rest has no equivalent here: a container runs without privileges in a user
+// container runs as (runAsUser, runAsGroup, the image's user) and runAsNonRoot (a container
+// that would run as root is refused). The rest has no equivalent here: a container runs without privileges in a user
 // namespace of the job's user, with a writable root filesystem of its own, its volumes are
 // writable by any user (so a group for them, fsGroup, is not needed to write), and the
 // capabilities, filters and labels of a Linux security module are not Skiff's to set. A

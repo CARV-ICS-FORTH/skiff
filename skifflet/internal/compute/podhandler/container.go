@@ -16,6 +16,7 @@ package podhandler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,17 +47,15 @@ func findVolume(pod *corev1.Pod, name string) *corev1.Volume {
 	return nil
 }
 
+// imageUserOf says who an image runs as (its USER); tests replace it, since their images are
+// files that are not SIFs.
+var imageUserOf = func(ctx context.Context, img *image.Image) (image.User, error) { return img.User(ctx) }
+
 // buildContainer resolves everything one container needs to run: environment,
 // mounts and image. It reads the pod as the lifecycle owner knows it now, so the
 // pod IP is available to the environment.
 func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Container) (Container, error) {
 	pod := h.lifecycle.GetPod()
-
-	/*---------------------------------------------------
-	 * Determine the effective security context
-	 *---------------------------------------------------*/
-	effectiSecurityContext := DetermineEffectiveSecurityContext(pod, container)
-	uid, gid := DetermineEffectiveRunAsUser(effectiSecurityContext)
 
 	/*---------------------------------------------------
 	 * Resolve Container Environment Pipeline
@@ -164,6 +163,26 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 
 	if err != nil {
 		return Container{}, fmt.Errorf("ImagePull error. Image:%s: %w", container.Image, err)
+	}
+
+	/*---------------------------------------------------
+	 * Determine the user: the pod's, else the image's, else root
+	 *---------------------------------------------------*/
+	imageUser, err := imageUserOf(pullCtx, img)
+	if err != nil {
+		var notFound *image.NotFoundError
+		if errors.As(err, &notFound) {
+			return Container{}, &ConfigError{Message: notFound.Message, Reason: "CreateContainerError"}
+		}
+		return Container{}, fmt.Errorf("image %s: %w", container.Image, err)
+	}
+	uid, gid, err := DetermineEffectiveRunAsUser(DetermineEffectiveSecurityContext(pod, container), imageUser)
+	if err != nil {
+		var cfg *ConfigError
+		if errors.As(err, &cfg) {
+			return Container{}, &ConfigError{Message: fmt.Sprintf("%s (pod: \"%s_%s(%s)\", container: %s)", cfg.Message, pod.Name, pod.Namespace, pod.UID, container.Name), Reason: cfg.Reason}
+		}
+		return Container{}, err
 	}
 
 	executionMode := "exec"

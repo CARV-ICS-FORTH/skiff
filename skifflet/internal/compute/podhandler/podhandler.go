@@ -621,7 +621,7 @@ func (h *PodHandler) prepareContainer(ctx context.Context, spec *corev1.Containe
 			if message := err.Error(); message != lastMessage {
 				lastMessage = message
 				h.logger.Info("container configuration cannot be resolved; waiting", "container", spec.Name, "reason", message)
-				pl.SetContainerWaiting(spec.Name, init, "CreateContainerConfigError", message)
+				pl.SetContainerWaiting(spec.Name, init, configReason(err), message)
 				pl.ContainerEvent(spec.Name, corev1.EventTypeWarning, "Failed", "Error: %s", message)
 			}
 			select {
@@ -919,6 +919,10 @@ func PreparePod(pl *PodLifecycle) {
 			pl.Fail("NetnsIPError", "sandbox eth0 address does not match handshake: assigned=%s observed=%s error=%v", podIP, observedIP, observeErr)
 			return
 		}
+	}
+
+	if err := allowUnprivilegedPorts(containerPID); err != nil {
+		h.logger.Info("could not let non-root containers bind low ports", "pod", h.podKey, "error", err.Error())
 	}
 
 	var endpointID string

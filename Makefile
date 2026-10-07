@@ -149,25 +149,30 @@ develop: builder image
 e2e-images:
 	@echo "Building e2e fixture image (Version: $(VERSION))..."
 
-	docker buildx build $(PLATFORM_FLAG) --load \
+	docker buildx build $(PLATFORM_FLAG) --load --target fixture \
 		-t skiff-e2e-fixture:$(GIT_COMMIT_SHORT) \
 		-t skiff-e2e-fixture:latest \
+		-f test/e2e/images/fixture/Dockerfile test/e2e/images/fixture
+	docker buildx build $(PLATFORM_FLAG) --load --target fixture-user \
+		-t skiff-e2e-fixture-user:$(GIT_COMMIT_SHORT) \
 		-f test/e2e/images/fixture/Dockerfile test/e2e/images/fixture
 
 	@echo "Exporting fixture image to tar..."
 	@mkdir -p /tmp/skiff-images
 	docker save $(SAVE_FLAG) -o /tmp/skiff-images/skiff-e2e-fixture.tar skiff-e2e-fixture:$(GIT_COMMIT_SHORT)
+	docker save $(SAVE_FLAG) -o /tmp/skiff-images/skiff-e2e-fixture-user.tar skiff-e2e-fixture-user:$(GIT_COMMIT_SHORT)
 
 	@echo "Uploading fixture tar to controller VM..."
 	test/vagrant/transport.sh ssh controller "mkdir -p ~/.skiff/images"
 	test/vagrant/transport.sh upload /tmp/skiff-images/skiff-e2e-fixture.tar .skiff/images/skiff-e2e-fixture.tar controller
+	test/vagrant/transport.sh upload /tmp/skiff-images/skiff-e2e-fixture-user.tar .skiff/images/skiff-e2e-fixture-user.tar controller
 
 	@echo "Converting fixture tar to SIF on controller VM..."
 	test/vagrant/transport.sh ssh controller \
-		'PATH="$$HOME/.skiff/tools/bin:$$PATH" apptainer build --force ~/.skiff/images/skiff-e2e-fixture.sif docker-archive://$$HOME/.skiff/images/skiff-e2e-fixture.tar'
+		'export PATH="$$HOME/.skiff/tools/bin:$$PATH"; apptainer build --force ~/.skiff/images/skiff-e2e-fixture.sif docker-archive://$$HOME/.skiff/images/skiff-e2e-fixture.tar && apptainer build --force ~/.skiff/images/skiff-e2e-fixture-user.sif docker-archive://$$HOME/.skiff/images/skiff-e2e-fixture-user.tar'
 
 	@echo "Writing fixture env file..."
-	@printf 'export FIXTURE_IMAGE_TAG="%s"\nexport FIXTURE_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture.sif"\n' \
+	@printf 'export FIXTURE_IMAGE_TAG="%s"\nexport FIXTURE_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture.sif"\nexport FIXTURE_USER_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture-user.sif"\n' \
 		"$(GIT_COMMIT_SHORT)" > /tmp/skiff-images/fixture.env
 	test/vagrant/transport.sh upload /tmp/skiff-images/fixture.env .skiff/fixture.env controller
 

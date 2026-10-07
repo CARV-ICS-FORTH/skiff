@@ -21,12 +21,23 @@ import (
 // CreateContainerConfigError, keeps the container waiting and tries again, so that
 // what is created later lets it start; Skifflet does the same for that one
 // container and leaves the others of the pod alone.
-type ConfigError struct{ Message string }
+//
+// Reason is the reason the container waits with; CreateContainerConfigError when it is empty.
+type ConfigError struct{ Message, Reason string }
 
 func (e *ConfigError) Error() string { return e.Message }
 
 func configErrorf(format string, args ...any) error {
 	return &ConfigError{Message: fmt.Sprintf(format, args...)}
+}
+
+// configReason is the reason the container waits with for err, a ConfigError.
+func configReason(err error) string {
+	var c *ConfigError
+	if errors.As(err, &c) && c.Reason != "" {
+		return c.Reason
+	}
+	return "CreateContainerConfigError"
 }
 
 // IsConfigError says whether err is (or wraps) a ConfigError.

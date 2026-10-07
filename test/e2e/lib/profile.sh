@@ -32,7 +32,7 @@ profile_required_cases() {
         T23-translation T23-named-ports T23-dns T23-bubble T23-large T23-selectorless T23-untranslated T23-no-local-backend \
         T24-pinned T24-refusal T24-unsupported T24-no-kube-proxy T24-counters \
         T25-tcp-udp T25-slirp-state T25-changes T25-no-backends T25-drain T25-bind-collision T25-unsupported T25-reconcile T25-cleanup \
-        T42-concurrent-pull T43-second-id
+        T42-concurrent-pull T43-second-id T44-image-user
 }
 
 profile_is_required() {
