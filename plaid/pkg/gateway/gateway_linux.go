@@ -26,38 +26,16 @@ type Config struct {
 }
 
 type Attachment struct {
-	File                                     *os.File
-	cfg                                      Config
-	sysctls                                  map[string]string
-	routeAdded, serviceRouteAdded            bool
-	natTouched, forwardTouched, inputTouched bool
+	File                          *os.File
+	cfg                           Config
+	sysctls                       map[string]string
+	routeAdded, serviceRouteAdded bool
 }
 
 func run(bin string, args ...string) error {
 	out, err := exec.Command(bin, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s %s: %w: %s", bin, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-func rule(table, action, chain string, spec ...string) error {
-	args := []string{"-w", "-t", table, action, chain}
-	return run("iptables", append(args, spec...)...)
-}
-
-func ensureJump(table, parent, child string) error {
-	if rule(table, "-C", parent, "-j", child) == nil {
-		return nil
-	}
-	return rule(table, "-I", parent, "1", "-j", child)
-}
-
-func ensureChain(table, chain string) error {
-	if err := rule(table, "-N", chain); err != nil {
-		if check := rule(table, "-F", chain); check != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -130,42 +108,12 @@ func Start(cfg Config) (_ *Attachment, err error) {
 			return nil, err
 		}
 	}
-	if err = ensureChain("nat", "PLAID-EGRESS"); err != nil {
-		return nil, err
-	}
-	a.natTouched = true
-	if err = rule("nat", "-A", "PLAID-EGRESS", "-s", cfg.ClusterCIDR.String(), "!", "-d", cfg.ClusterCIDR.String(), "-o", cfg.Uplink, "-j", "SNAT", "--to-source", cfg.GuestAddress.String()); err != nil {
-		return nil, err
-	}
-	if err = ensureJump("nat", "POSTROUTING", "PLAID-EGRESS"); err != nil {
-		return nil, err
-	}
-	if err = ensureChain("filter", "PLAID-FORWARD"); err != nil {
-		return nil, err
-	}
-	a.forwardTouched = true
-	for _, spec := range [][]string{
-		{"-i", cfg.Name, "-o", cfg.Name, "-j", "ACCEPT"},
-		{"-i", cfg.Name, "-o", cfg.Uplink, "-j", "ACCEPT"},
-		{"-i", cfg.Uplink, "-o", cfg.Name, "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
-		// New connections that the NodePort destination NAT (PLAID-NODEPORT) has redirected to a Service.
-		{"-i", cfg.Uplink, "-o", cfg.Name, "-m", "conntrack", "--ctstate", "DNAT", "-j", "ACCEPT"},
-	} {
-		if err = rule("filter", "-A", "PLAID-FORWARD", spec...); err != nil {
-			return nil, err
-		}
-	}
-	if err = ensureJump("filter", "FORWARD", "PLAID-FORWARD"); err != nil {
-		return nil, err
-	}
-	if err = ensureChain("filter", "PLAID-INPUT"); err != nil {
-		return nil, err
-	}
-	a.inputTouched = true
-	if err = rule("filter", "-A", "PLAID-INPUT", "-i", cfg.Name, "-d", cfg.GatewayIP.String(), "-j", "ACCEPT"); err != nil {
-		return nil, err
-	}
-	if err = ensureJump("filter", "INPUT", "PLAID-INPUT"); err != nil {
+	// Pod traffic to the outside is forwarded by the bubble's kernel to the uplink as it is, with
+	// the pod's own source address, and needs no source NAT: slirp4netns, the uplink's other end,
+	// opens its own connections for it. It answers to the packet's source address, though, and
+	// resolves that address with ARP on the uplink; the kernel answers for addresses that it
+	// routes through another interface (the pods, through plaid0) only with proxy ARP.
+	if err = sysctl(a, "net.ipv4.conf."+cfg.Uplink+".proxy_arp", "1"); err != nil {
 		return nil, err
 	}
 	return a, nil
@@ -174,17 +122,6 @@ func Start(cfg Config) (_ *Attachment, err error) {
 func (a *Attachment) Close() error {
 	if a == nil {
 		return nil
-	}
-	for _, item := range []struct {
-		table, parent, child string
-		touched              bool
-	}{{"nat", "POSTROUTING", "PLAID-EGRESS", a.natTouched}, {"filter", "FORWARD", "PLAID-FORWARD", a.forwardTouched}, {"filter", "INPUT", "PLAID-INPUT", a.inputTouched}} {
-		if !item.touched {
-			continue
-		}
-		_ = rule(item.table, "-D", item.parent, "-j", item.child)
-		_ = rule(item.table, "-F", item.child)
-		_ = rule(item.table, "-X", item.child)
 	}
 	if a.serviceRouteAdded {
 		_ = run("ip", "route", "del", a.cfg.ServiceCIDR.String(), "dev", a.cfg.Name)

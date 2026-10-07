@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Case 22: Service translation by Plaid, with no kube-proxy (T23, T24). Pods on both nodes
+# Case 22: Service translation by Plaid, with no kube-proxy (T23, T24), and pod egress (T45). Pods on both nodes
 # and the bubbles themselves reach Services with TCP and UDP, named and numbered ports,
 # local, remote and hairpin backends and backends outside the pod network; what is
 # refused or left alone is (headless, ExternalName, no endpoints, unsupported settings); a
@@ -435,5 +435,26 @@ counters() {
     done
 }
 e2e_subcase_run T24-counters counters
+
+# ---------------------------------------------------------------------------
+# T45-egress: a pod reaches an address outside the pod and Service networks, here the API
+# server's address on the host network (so it needs no registry or Internet), through the
+# bubble's kernel and the uplink, from every node. There is no source NAT: the uplink answers
+# for the pods' addresses (proxy ARP, which slirp4netns needs to send the replies) and the
+# bubble holds no netfilter chain of Plaid's for it.
+# ---------------------------------------------------------------------------
+egress() {
+    local node client
+    e2e_assert_nonempty "the API server's host address" "$API_HOST"
+    for node in "${NODES[@]}"; do
+        e2e_assert_eq "proxy ARP on the uplink of $node" "$(runtime_bubble_exec "$node" 'cat /proc/sys/net/ipv4/conf/tap0/proxy_arp')" 1
+        e2e_assert_eq "no egress NAT chain in the bubble of $node" "$(runtime_bubble_exec "$node" 'iptables -t nat -S 2>/dev/null | grep -c PLAID-EGRESS || true')" 0
+    done
+    for client in "${CLIENTS[@]}"; do
+        e2e_assert_eq "$client on ${NODE_OF[$client]} reaches the API server's host address" \
+            "$(in_pod "$client" curl -ksS --max-time 8 -o /dev/null -w '%{http_code}' "https://${API_HOST}:6443/version")" 401
+    done
+}
+e2e_subcase_run T45-egress egress
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

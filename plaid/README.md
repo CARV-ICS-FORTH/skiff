@@ -6,13 +6,13 @@
 
 **Plaid** is a user-space container network stack and CNI plugin. It switches local pod frames and carries remote pod frames over a VXLAN socket. Its gateway backend can be `tap`, `slirp`, or `none`.
 
-Plaid is designed for HPC clusters and unprivileged Apptainer workloads. In a Skiff bubble, the TAP backend uses routes and iptables inside the bubble's private network namespace; it does not configure physical-host routes or NAT. Standalone slirp mode remains available when network-administration privileges are unavailable.
+Plaid is designed for HPC clusters and unprivileged Apptainer workloads. In a Skiff bubble, the TAP backend uses routes and sysctls inside the bubble's private network namespace (and, for NodePort Services, iptables); it does not configure physical-host routes or NAT. Standalone slirp mode remains available when network-administration privileges are unavailable.
 
 ### Gateway modes
 
 | Mode | Gateway and DNS behavior |
 | --- | --- |
-| `tap` | Creates `plaid0` at the node PodCIDR `.1`, routes the cluster PodCIDR through it, and forwards non-PodCIDR pod traffic to the bubble kernel. Plaid translates Service traffic itself (see below) and owns the `PLAID-EGRESS`, `PLAID-FORWARD`, and `PLAID-INPUT` chains. Pass `--uplink=tap0`, `--uplink-address=<outer slirp guest IP>`, and `--resolver=<cluster DNS Service IP>` in Skiff. |
+| `tap` | Creates `plaid0` at the node PodCIDR `.1`, routes the cluster PodCIDR through it, and forwards non-PodCIDR pod traffic to the bubble kernel, which sends it to the uplink as it is, with the pod's own source address and no NAT: slirp4netns, the uplink's other end, opens the connections itself, and Plaid turns on proxy ARP on the uplink so that the kernel answers the ARP requests slirp4netns makes for the pods' addresses. Plaid translates Service traffic itself (see below). Pass `--uplink=tap0`, `--uplink-address=<outer slirp guest IP>`, and `--resolver=<cluster DNS Service IP>` in Skiff. |
 | `slirp` | Standalone userspace gateway with the `.2` host alias and `.3` DNS alias. This is the default for direct Plaid use outside a Skiff bubble. |
 | `none` | No outbound gateway backend. |
 
