@@ -44,19 +44,26 @@ func ParseEthernet(data []byte) (*EthernetFrame, error) {
 	return frame, nil
 }
 
-// Marshal encodes an EthernetFrame into raw bytes.
+// Marshal encodes an EthernetFrame into a newly allocated slice.
 func (f *EthernetFrame) Marshal() ([]byte, error) {
+	buf, err := f.MarshalTo(make([]byte, 0, EthernetHeaderLen+len(f.Payload)))
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// MarshalTo appends the encoded frame to dst and returns the extended slice. On error
+// dst is returned as it was.
+func (f *EthernetFrame) MarshalTo(dst []byte) ([]byte, error) {
 	if len(f.DstMAC) != 6 || len(f.SrcMAC) != 6 {
-		return nil, ErrInvalidMAC
+		return dst, ErrInvalidMAC
 	}
 
-	buf := make([]byte, EthernetHeaderLen+len(f.Payload))
-	copy(buf[0:6], f.DstMAC)
-	copy(buf[6:12], f.SrcMAC)
-	binary.BigEndian.PutUint16(buf[12:14], f.EtherType)
-	copy(buf[14:], f.Payload)
-
-	return buf, nil
+	dst = append(dst, f.DstMAC...)
+	dst = append(dst, f.SrcMAC...)
+	dst = binary.BigEndian.AppendUint16(dst, f.EtherType)
+	return append(dst, f.Payload...), nil
 }
 
 // IsBroadcast returns true if the destination MAC is ff:ff:ff:ff:ff:ff.

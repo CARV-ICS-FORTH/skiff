@@ -3,7 +3,10 @@ package vxlan
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
+	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -100,39 +103,20 @@ func TestOverlayEngineEndToEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Node A setup (port 0 selects random free port)
-	routesA := NewRouteTable()
-	injA := newMockInjector()
-	engineA := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1", Port: 0, DefaultVNI: 1}, routesA, injA)
-	if err := engineA.Start(ctx); err != nil {
-		t.Fatalf("Failed to start engine A: %v", err)
-	}
-	defer engineA.Close()
-
 	// Node B setup (port 0 selects random free port)
-	routesB := NewRouteTable()
 	injB := newMockInjector()
-	engineB := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1", Port: 0, DefaultVNI: 1}, routesB, injB)
+	engineB := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1", Port: 0, DefaultVNI: 1}, NewRouteTable(), injB)
 	if err := engineB.Start(ctx); err != nil {
 		t.Fatalf("Failed to start engine B: %v", err)
 	}
 	defer engineB.Close()
 
-	portA := engineA.LocalPort()
-	portB := engineB.LocalPort()
-
-	// Configure route from Node A to Node B's subnet 10.244.2.0/24
-	_, snB, _ := net.ParseCIDR("10.244.2.0/24")
-	vtepMAC_B, _ := net.ParseMAC("02:00:00:00:00:02")
-	routesA.AddRoute(&RouteEntry{
-		Subnet:       snB,
-		RemoteHostIP: net.ParseIP("127.0.0.1"),
-		VtepMAC:      vtepMAC_B,
-		VNI:          1,
-		Port:         portB,
-	})
-
-	_ = portA
+	// Node A setup, with a route to Node B's subnet 10.244.2.0/24
+	engineA := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1", Port: 0, DefaultVNI: 1}, routeTo(engineB.LocalPort()), newMockInjector())
+	if err := engineA.Start(ctx); err != nil {
+		t.Fatalf("Failed to start engine A: %v", err)
+	}
+	defer engineA.Close()
 
 	// Construct inner Ethernet frame on Node A
 	srcMAC, _ := net.ParseMAC("02:00:00:00:01:05")
@@ -167,5 +151,202 @@ func TestOverlayEngineEndToEnd(t *testing.T) {
 	}
 	if !bytes.Equal(receivedFrame.Payload, innerFrame.Payload) {
 		t.Errorf("Payload mismatch: %s vs %s", receivedFrame.Payload, innerFrame.Payload)
+	}
+}
+
+// routeTo is the route table of an engine whose only route, 10.244.2.0/24, leads to the
+// overlay socket on the loopback address at port.
+func routeTo(port int) *RouteTable {
+	rt := NewRouteTable()
+	_, subnet, _ := net.ParseCIDR("10.244.2.0/24")
+	rt.AddRoute(&RouteEntry{Subnet: subnet, RemoteHostIP: loopback, VNI: 1, Port: port})
+	return rt
+}
+
+// fixture is an engine whose routes lead to loopback sockets the test owns, one per route:
+// 10.244.N.0/24 goes to sinks[N-2], with the VNI 7 and the VTEP MAC 02:00:00:00:00:02. The
+// engine binds to 127.0.0.1 unless cfg says otherwise.
+type fixture struct {
+	oe    *OverlayEngine
+	sinks []*net.UDPConn
+}
+
+func newFixture(tb testing.TB, cfg OverlayConfig, sinks int) *fixture {
+	tb.Helper()
+	routes := NewRouteTable()
+	f := &fixture{}
+	for i := 0; i < sinks; i++ {
+		sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: loopback})
+		if err != nil {
+			tb.Skipf("cannot open a loopback UDP socket: %v", err)
+		}
+		_ = sink.SetReadBuffer(8 << 20)
+		tb.Cleanup(func() { sink.Close() })
+		f.sinks = append(f.sinks, sink)
+		_, subnet, _ := net.ParseCIDR(fmt.Sprintf("10.244.%d.0/24", i+2))
+		vtep, _ := net.ParseMAC("02:00:00:00:00:02")
+		routes.AddRoute(&RouteEntry{Subnet: subnet, RemoteHostIP: loopback, VtepMAC: vtep, VNI: 7, Port: sink.LocalAddr().(*net.UDPAddr).Port})
+	}
+	if cfg.BindAddress == "" {
+		cfg.BindAddress = "127.0.0.1"
+	}
+	f.oe = NewOverlayEngine(cfg, routes, nil)
+	if err := f.oe.Start(context.Background()); err != nil {
+		tb.Fatalf("Failed to start engine: %v", err)
+	}
+	tb.Cleanup(func() { f.oe.Close() })
+	return f
+}
+
+// dst is an address behind sinks[sink].
+func (f *fixture) dst(sink int) net.IP { return net.IPv4(10, 244, byte(sink+2), 10) }
+
+func BenchmarkSend(b *testing.B) {
+	for _, size := range []int{1400, 8900} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			engine := newFixture(b, OverlayConfig{}, 1).oe
+			srcMAC, _ := net.ParseMAC("02:00:00:00:01:05")
+			dstMAC, _ := net.ParseMAC("02:00:00:00:02:10")
+			frame := &packet.EthernetFrame{
+				DstMAC:    dstMAC,
+				SrcMAC:    srcMAC,
+				EtherType: packet.EtherTypeIPv4,
+				Payload:   make([]byte, size),
+			}
+			target := net.ParseIP("10.244.2.10")
+
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if err := engine.Send(frame, target); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// referenceDatagram is the datagram Send must produce, laid out byte by byte: the
+// VXLAN header, then the inner frame addressed to the route's VTEP.
+func referenceDatagram(vni uint32, dst, src net.HardwareAddr, payload []byte) []byte {
+	out := []byte{0x08, 0, 0, 0, byte(vni >> 16), byte(vni >> 8), byte(vni), 0}
+	out = append(out, dst...)
+	out = append(out, src...)
+	out = append(out, 0x08, 0x00)
+	return append(out, payload...)
+}
+
+func testFrame(size int) *packet.EthernetFrame {
+	srcMAC, _ := net.ParseMAC("02:00:00:00:01:05")
+	dstMAC, _ := net.ParseMAC("02:00:00:00:02:10")
+	payload := make([]byte, size)
+	for i := range payload {
+		payload[i] = byte(i*13 + 5)
+	}
+	return &packet.EthernetFrame{DstMAC: dstMAC, SrcMAC: srcMAC, EtherType: packet.EtherTypeIPv4, Payload: payload}
+}
+
+func TestSendDatagramEncoding(t *testing.T) {
+	f := newFixture(t, OverlayConfig{}, 1)
+	engine, sink := f.oe, f.sinks[0]
+	vtepMAC, _ := net.ParseMAC("02:00:00:00:00:02")
+	buf := make([]byte, 65535)
+
+	for i, size := range []int{0, 1400, 8900} {
+		frame := testFrame(size)
+		want := referenceDatagram(7, vtepMAC, frame.SrcMAC, frame.Payload)
+
+		if err := engine.Send(frame, net.ParseIP("10.244.2.10")); err != nil {
+			t.Fatalf("Send(%d) failed: %v", size, err)
+		}
+		sink.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, _, err := sink.ReadFromUDP(buf)
+		if err != nil {
+			t.Fatalf("no datagram for payload %d: %v", size, err)
+		}
+		if !bytes.Equal(buf[:n], want) {
+			t.Errorf("payload %d: datagram differs from the reference encoding (got %d bytes, want %d)", size, n, len(want))
+		}
+		if got := engine.Stats().TxPackets; got != uint64(i+1) {
+			t.Errorf("TxPackets = %d after %d sends", got, i+1)
+		}
+	}
+	if got := engine.Stats().TxErrors; got != 0 {
+		t.Errorf("TxErrors = %d, want 0", got)
+	}
+}
+
+func TestSendErrorsAreCounted(t *testing.T) {
+	engine := newFixture(t, OverlayConfig{}, 1).oe
+	_, badIP, _ := net.ParseCIDR("10.244.3.0/24")
+	engine.routes.AddRoute(&RouteEntry{Subnet: badIP, RemoteHostIP: net.IP{1, 2, 3}, VNI: 1, Port: 8472})
+	_, badPort, _ := net.ParseCIDR("10.244.4.0/24")
+	engine.routes.AddRoute(&RouteEntry{Subnet: badPort, RemoteHostIP: loopback, VNI: 1, Port: 70000})
+	_, noMAC, _ := net.ParseCIDR("10.244.5.0/24")
+	engine.routes.AddRoute(&RouteEntry{Subnet: noMAC, RemoteHostIP: loopback, VNI: 1, Port: 8472})
+
+	badFrame := testFrame(10)
+	badFrame.SrcMAC = badFrame.SrcMAC[:4]
+
+	for i, tc := range []struct {
+		name  string
+		frame *packet.EthernetFrame
+		dst   string
+	}{
+		{"no route", testFrame(10), "10.9.9.9"},
+		{"bad remote address", testFrame(10), "10.244.3.1"},
+		{"bad remote port", testFrame(10), "10.244.4.1"},
+		{"bad inner MAC", badFrame, "10.244.5.1"},
+	} {
+		if err := engine.Send(tc.frame, net.ParseIP(tc.dst)); err == nil {
+			t.Errorf("%s: Send succeeded", tc.name)
+		}
+		if got := engine.Stats().TxErrors; got != uint64(i+1) {
+			t.Errorf("%s: TxErrors = %d, want %d", tc.name, got, i+1)
+		}
+	}
+	if got := engine.Stats().TxPackets; got != 0 {
+		t.Errorf("TxPackets = %d, want 0", got)
+	}
+}
+
+// TestSendDoesNotAllocatePerByte checks that Send allocates nothing that grows with
+// the frame: it encodes into a pooled buffer and writes from it.
+func TestSendDoesNotAllocatePerByte(t *testing.T) {
+	engine := newFixture(t, OverlayConfig{}, 1).oe
+	target := net.ParseIP("10.244.2.10")
+
+	measure := func(size int) (allocs float64, bytesPerOp uint64) {
+		frame := testFrame(size)
+		send := func() {
+			if err := engine.Send(frame, target); err != nil {
+				t.Fatal(err)
+			}
+		}
+		allocs = testing.AllocsPerRun(100, send)
+
+		const runs = 5000
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		for i := 0; i < runs; i++ {
+			send()
+		}
+		runtime.ReadMemStats(&after)
+		return allocs, (after.TotalAlloc - before.TotalAlloc) / runs
+	}
+
+	smallAllocs, smallBytes := measure(100)
+	bigAllocs, bigBytes := measure(8900)
+	t.Logf("100-byte payload: %v allocs, %d B per Send; 8900-byte payload: %v allocs, %d B per Send",
+		smallAllocs, smallBytes, bigAllocs, bigBytes)
+
+	if smallAllocs != bigAllocs || bigAllocs > 2 {
+		t.Errorf("allocs per Send: %v for 100 bytes, %v for 8900, want equal and at most 2", smallAllocs, bigAllocs)
+	}
+	// A copy of the frame would add 8800 bytes or more. The race detector makes the
+	// pool drop buffers at random, which costs the same for both sizes but is noisy.
+	if bigBytes > smallBytes+4096 {
+		t.Errorf("bytes per Send grow with the frame: %d for 100 bytes, %d for 8900", smallBytes, bigBytes)
 	}
 }

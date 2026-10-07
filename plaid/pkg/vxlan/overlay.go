@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
+	"net/netip"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -198,29 +200,33 @@ func (oe *OverlayEngine) Send(frame *packet.EthernetFrame, dstIP net.IP) (err er
 		frame.DstMAC = route.VtepMAC
 	}
 
-	frameBytes, err := frame.Marshal()
-	if err != nil {
-		return fmt.Errorf("failed to marshal inner frame: %w", err)
-	}
-
 	vni := route.VNI
 	if vni == 0 {
 		vni = oe.cfg.DefaultVNI
 	}
-
-	vxlanPayload := packet.MarshalVXLAN(vni, frameBytes)
 
 	remotePort := route.Port
 	if remotePort <= 0 {
 		remotePort = oe.cfg.Port
 	}
 
-	remoteAddr := &net.UDPAddr{
-		IP:   route.RemoteHostIP,
-		Port: remotePort,
+	remoteIP, ok := netip.AddrFromSlice(route.RemoteHostIP)
+	if !ok || remotePort > math.MaxUint16 {
+		return fmt.Errorf("invalid overlay remote address %s port %d", route.RemoteHostIP, remotePort)
+	}
+	remoteAddr := netip.AddrPortFrom(remoteIP.Unmap(), uint16(remotePort))
+
+	// The header and the frame go into one pooled buffer; the write is synchronous, so
+	// the buffer is free again once it returns.
+	buf := packet.GetBuffer()
+	defer buf.Release()
+	buf.B = packet.AppendVXLANHeader(buf.B, vni)
+	buf.B, err = frame.MarshalTo(buf.B)
+	if err != nil {
+		return fmt.Errorf("failed to marshal inner frame: %w", err)
 	}
 
-	_, err = conn.WriteToUDP(vxlanPayload, remoteAddr)
+	_, err = conn.WriteToUDPAddrPort(buf.B, remoteAddr)
 	return err
 }
 

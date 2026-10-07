@@ -2,6 +2,7 @@ package packet
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"testing"
 )
@@ -253,5 +254,117 @@ func TestVXLANPacket(t *testing.T) {
 	}
 	if !bytes.Equal(parsed.InnerFrame.Payload, inner.Payload) {
 		t.Errorf("Inner frame payload mismatch")
+	}
+}
+
+// referenceFrame lays a frame out byte by byte, independently of Marshal.
+func referenceFrame(dst, src [6]byte, etherType uint16, payload []byte) []byte {
+	out := append([]byte(nil), dst[:]...)
+	out = append(out, src[:]...)
+	out = append(out, byte(etherType>>8), byte(etherType))
+	return append(out, payload...)
+}
+
+func testPayload(n int) []byte {
+	p := make([]byte, n)
+	for i := range p {
+		p[i] = byte(i*7 + 3)
+	}
+	return p
+}
+
+func TestMarshalToMatchesMarshal(t *testing.T) {
+	dst := [6]byte{0x02, 0x42, 0x0a, 0xf4, 0x02, 0x02}
+	src := [6]byte{0x02, 0x42, 0x0a, 0xf4, 0x01, 0x02}
+
+	for _, n := range []int{0, 1, 1400, 8900, 65535 - EthernetHeaderLen} {
+		frame := &EthernetFrame{DstMAC: dst[:], SrcMAC: src[:], EtherType: EtherTypeIPv4, Payload: testPayload(n)}
+		want := referenceFrame(dst, src, EtherTypeIPv4, frame.Payload)
+
+		marshaled, err := frame.Marshal()
+		if err != nil {
+			t.Fatalf("Marshal(%d) failed: %v", n, err)
+		}
+		if !bytes.Equal(marshaled, want) {
+			t.Errorf("Marshal(%d) differs from the reference encoding", n)
+		}
+		appended, err := frame.MarshalTo(nil)
+		if err != nil {
+			t.Fatalf("MarshalTo(%d) failed: %v", n, err)
+		}
+		if !bytes.Equal(appended, marshaled) {
+			t.Errorf("MarshalTo(%d) differs from Marshal", n)
+		}
+	}
+}
+
+func TestMarshalToAppends(t *testing.T) {
+	dst := [6]byte{1, 2, 3, 4, 5, 6}
+	src := [6]byte{7, 8, 9, 10, 11, 12}
+	frame := &EthernetFrame{DstMAC: dst[:], SrcMAC: src[:], EtherType: EtherTypeARP, Payload: []byte("abc")}
+
+	prefix := []byte("prefix")
+	got, err := frame.MarshalTo(append([]byte(nil), prefix...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]byte(nil), prefix...), referenceFrame(dst, src, EtherTypeARP, frame.Payload)...)
+	if !bytes.Equal(got, want) {
+		t.Errorf("MarshalTo = %x, want %x", got, want)
+	}
+}
+
+func TestMarshalToInvalidMAC(t *testing.T) {
+	mac := net.HardwareAddr{1, 2, 3, 4, 5, 6}
+	for name, f := range map[string]*EthernetFrame{
+		"short dst": {DstMAC: mac[:5], SrcMAC: mac},
+		"long src":  {DstMAC: mac, SrcMAC: append(mac[:6:6], 7)},
+		"nil dst":   {SrcMAC: mac},
+		"nil src":   {DstMAC: mac},
+	} {
+		prefix := []byte("keep")
+		got, err := f.MarshalTo(prefix)
+		if !errors.Is(err, ErrInvalidMAC) {
+			t.Errorf("%s: MarshalTo error = %v, want ErrInvalidMAC", name, err)
+		}
+		if !bytes.Equal(got, []byte("keep")) {
+			t.Errorf("%s: MarshalTo changed dst to %q", name, got)
+		}
+		if b, err := f.Marshal(); b != nil || !errors.Is(err, ErrInvalidMAC) {
+			t.Errorf("%s: Marshal = %v, %v, want nil, ErrInvalidMAC", name, b, err)
+		}
+	}
+}
+
+func TestMarshalVXLANEncoding(t *testing.T) {
+	inner := testPayload(100)
+	for _, vni := range []uint32{0, 1, 0x123456, 0xffffff} {
+		want := append([]byte{0x08, 0, 0, 0, byte(vni >> 16), byte(vni >> 8), byte(vni), 0}, inner...)
+		if got := MarshalVXLAN(vni, inner); !bytes.Equal(got, want) {
+			t.Errorf("MarshalVXLAN(%#x) = %x, want %x", vni, got, want)
+		}
+		if got := AppendVXLANHeader([]byte{0xee}, vni); !bytes.Equal(got, append([]byte{0xee}, want[:VXLANHeaderLen]...)) {
+			t.Errorf("AppendVXLANHeader(%#x) = %x", vni, got)
+		}
+	}
+}
+
+func TestBufferPool(t *testing.T) {
+	a := GetBuffer()
+	if len(a.B) != 0 || cap(a.B) < VXLANHeaderLen+65535 {
+		t.Fatalf("new buffer has len %d cap %d", len(a.B), cap(a.B))
+	}
+	a.B = append(a.B, "dirty"...)
+	a.Release()
+	a.Release() // a second release must not put it in the pool twice
+
+	b, c := GetBuffer(), GetBuffer()
+	defer b.Release()
+	defer c.Release()
+	if len(b.B) != 0 || len(c.B) != 0 {
+		t.Errorf("released buffers came back with %d and %d bytes", len(b.B), len(c.B))
+	}
+	if &b.B[:1][0] == &c.B[:1][0] {
+		t.Errorf("two held buffers share a backing array")
 	}
 }

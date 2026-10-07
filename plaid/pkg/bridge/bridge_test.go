@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"encoding/binary"
 	"net"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"plaid/pkg/packet"
+	"plaid/pkg/packet/packettest"
 )
 
 // mockEndpoint is an in-memory test endpoint.
@@ -489,5 +492,123 @@ func TestBridgeFloodNonBlockingLock(t *testing.T) {
 	case <-floodDone:
 	case <-time.After(1 * time.Second):
 		t.Fatalf("flood did not finish after release")
+	}
+}
+
+// referenceFrame lays a frame out byte by byte, independently of Marshal.
+func referenceFrame(dst, src net.HardwareAddr, etherType uint16, payload []byte) []byte {
+	out := append([]byte(nil), dst...)
+	out = append(out, src...)
+	out = append(out, byte(etherType>>8), byte(etherType))
+	return append(out, payload...)
+}
+
+func TestBridgeDeliversReferenceEncoding(t *testing.T) {
+	const experimental = 0x88b5
+	bcastMAC, _ := net.ParseMAC("ff:ff:ff:ff:ff:ff")
+	extMAC := net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x99, 0x99}
+
+	for _, size := range []int{1, 1400, 8900} {
+		payload := bytes.Repeat([]byte{0xa5, 0x5a, 0x01}, size)[:size]
+
+		// InjectFrame to a known MAC: the destination is the pod's, the source the gateway's.
+		b, pod1, pod2 := setupTestBridge()
+		if err := b.InjectFrame(&packet.EthernetFrame{DstMAC: pod1.MAC(), SrcMAC: extMAC, EtherType: experimental, Payload: payload}); err != nil {
+			t.Fatalf("InjectFrame(%d) failed: %v", size, err)
+		}
+		if want := referenceFrame(pod1.MAC(), b.gatewayMAC, experimental, payload); !bytes.Equal(pod1.LastPacket(), want) {
+			t.Errorf("InjectFrame(%d): pod1 got %d bytes that differ from the reference encoding", size, len(pod1.LastPacket()))
+		}
+
+		// InjectFrame of a broadcast: every endpoint gets the frame as it is.
+		if err := b.InjectFrame(&packet.EthernetFrame{DstMAC: bcastMAC, SrcMAC: extMAC, EtherType: experimental, Payload: payload}); err != nil {
+			t.Fatalf("InjectFrame broadcast (%d) failed: %v", size, err)
+		}
+		want := referenceFrame(bcastMAC, extMAC, experimental, payload)
+		for _, pod := range []*mockEndpoint{pod1, pod2} {
+			if !bytes.Equal(pod.LastPacket(), want) {
+				t.Errorf("InjectFrame broadcast (%d): %s got %d bytes that differ from the reference encoding", size, pod.id, len(pod.LastPacket()))
+			}
+		}
+
+		// Local pod through the gateway: the destination MAC is rewritten to the pod's.
+		udp := packettest.UDP("10.244.1.2", 1000, "10.244.1.3", 2000, string(payload), false)
+		frame := &packet.EthernetFrame{DstMAC: b.gatewayMAC, SrcMAC: pod1.MAC(), EtherType: packet.EtherTypeIPv4, Payload: udp}
+		raw, _ := frame.Marshal()
+		if err := b.ProcessFrame(pod1, raw); err != nil {
+			t.Fatalf("ProcessFrame(%d) failed: %v", size, err)
+		}
+		if want := referenceFrame(pod2.MAC(), pod1.MAC(), packet.EtherTypeIPv4, udp); !bytes.Equal(pod2.LastPacket(), want) {
+			t.Errorf("local pod rewrite (%d): pod2 got %d bytes that differ from the reference encoding", size, len(pod2.LastPacket()))
+		}
+	}
+}
+
+// checkEndpoint verifies each frame while Write is running, which is when a buffer
+// shared with another sender would show: the header must be the one the bridge sets
+// and the payload one repeated byte.
+type checkEndpoint struct {
+	mockEndpoint
+	src       net.HardwareAddr
+	frames    atomic.Int64
+	corrupted atomic.Int64
+}
+
+func (c *checkEndpoint) Write(frame []byte) error {
+	runtime.Gosched() // give other senders the chance to reuse the buffer
+	ok := len(frame) > packet.EthernetHeaderLen &&
+		bytes.Equal(frame[:6], c.mac) && bytes.Equal(frame[6:12], c.src)
+	if ok {
+		payload := frame[packet.EthernetHeaderLen:]
+		ok = len(payload) == int(payload[0])*50 && len(bytes.Trim(payload, string(payload[:1]))) == 0
+	}
+	c.frames.Add(1)
+	if !ok {
+		c.corrupted.Add(1)
+	}
+	return nil
+}
+
+func TestBridgeWriteBufferReuseUnderConcurrency(t *testing.T) {
+	b, _, _ := setupTestBridge()
+	newCheck := func(id, ip, mac string) *checkEndpoint {
+		c := &checkEndpoint{mockEndpoint: *newMockEndpoint(id, id, ip, mac), src: b.gatewayMAC}
+		_ = b.AddEndpoint(c)
+		return c
+	}
+	a := newCheck("check-a", "10.244.1.20", "02:00:00:00:00:20")
+	c := newCheck("check-c", "10.244.1.21", "02:00:00:00:00:21")
+	extMAC := net.HardwareAddr{0x02, 0x00, 0x00, 0x00, 0x99, 0x99}
+
+	const goroutines, rounds = 32, 200
+	var wg sync.WaitGroup
+	for g := 1; g <= goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// The length and the byte are tied to g, so a mix of two senders is detectable.
+			payload := bytes.Repeat([]byte{byte(g)}, g*50)
+			for i := 0; i < rounds; i++ {
+				target := a
+				if i%2 == 1 {
+					target = c
+				}
+				frame := &packet.EthernetFrame{DstMAC: target.MAC(), SrcMAC: extMAC, EtherType: 0x88b5, Payload: payload}
+				if err := b.InjectFrame(frame); err != nil {
+					t.Errorf("InjectFrame failed: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	for _, ep := range []*checkEndpoint{a, c} {
+		if ep.frames.Load() != goroutines*rounds/2 {
+			t.Errorf("%s received %d frames, want %d", ep.id, ep.frames.Load(), goroutines*rounds/2)
+		}
+		if n := ep.corrupted.Load(); n != 0 {
+			t.Errorf("%s received %d corrupted frames", ep.id, n)
+		}
 	}
 }

@@ -57,17 +57,16 @@ func ParseVXLAN(data []byte) (*VXLANPacket, error) {
 	}, nil
 }
 
+// AppendVXLANHeader appends the 8-byte VXLAN header for vni to dst.
+func AppendVXLANHeader(dst []byte, vni uint32) []byte {
+	// bytes 1, 2, 3 and 7 are reserved (0)
+	return append(dst, VXLANFlags, 0, 0, 0, byte(vni>>16), byte(vni>>8), byte(vni), 0)
+}
+
 // MarshalVXLAN encapsulates an inner Ethernet frame with a VXLAN header.
 func MarshalVXLAN(vni uint32, innerFrameBytes []byte) []byte {
-	buf := make([]byte, VXLANHeaderLen+len(innerFrameBytes))
-	buf[0] = VXLANFlags
-	// bytes 1, 2, 3 reserved (0)
-	buf[4] = byte(vni >> 16)
-	buf[5] = byte(vni >> 8)
-	buf[6] = byte(vni)
-	// byte 7 reserved (0)
-	copy(buf[VXLANHeaderLen:], innerFrameBytes)
-	return buf
+	buf := AppendVXLANHeader(make([]byte, 0, VXLANHeaderLen+len(innerFrameBytes)), vni)
+	return append(buf, innerFrameBytes...)
 }
 
 // Marshal encodes a VXLANPacket into raw bytes.
