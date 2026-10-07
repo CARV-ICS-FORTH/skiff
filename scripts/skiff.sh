@@ -482,7 +482,7 @@ skiff_check_node() {
     user=$(id -un)
     if _skiff_has_id_range "$user"; then has_range=yes; fi
     if [ -n "$apptainer_path" ] && [ "$has_range" = yes ]; then
-        local libexec suid=no idmap idmap_path idmap_missing="" idmap_plain=""
+        local libexec suid=no idmap idmap_path idmap_caps idmap_missing="" idmap_plain=""
         libexec=$(apptainer buildcfg 2>/dev/null | sed -n 's/^LIBEXECDIR=//p') || true
         if [ -n "$libexec" ] && [ -u "$libexec/apptainer/bin/starter-suid" ]; then suid=yes; fi
         if [ "$suid" = no ]; then
@@ -490,7 +490,10 @@ skiff_check_node() {
                 idmap_path=$(command -v "$idmap" 2>/dev/null || true)
                 if [ -z "$idmap_path" ]; then
                     idmap_missing="${idmap_missing:+$idmap_missing and }$idmap"
-                elif [ ! -u "$idmap_path" ] && ! PATH="$PATH:/usr/sbin:/sbin" getcap "$idmap_path" 2>/dev/null | grep -q 'cap_set[ug]id'; then
+                    continue
+                fi
+                idmap_caps=$(PATH="$PATH:/usr/sbin:/sbin" getcap "$idmap_path" 2>/dev/null || true)
+                if [ ! -u "$idmap_path" ] && [[ "$idmap_caps" != *cap_set[ug]id* ]]; then
                     idmap_plain="${idmap_plain:+$idmap_plain and }$idmap ($idmap_path)"
                 fi
             done
