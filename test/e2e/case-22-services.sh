@@ -407,14 +407,13 @@ YAML
 e2e_subcase_run T24-unsupported unsupported
 
 # ---------------------------------------------------------------------------
-# T24-no-kube-proxy: there is none, and no kernel Service rules either; the engine's table
-# comes from Kubernetes and is complete.
+# T24-no-kube-proxy: there is none (the bubble has no netfilter tools either); the engine's
+# table comes from Kubernetes and is complete.
 # ---------------------------------------------------------------------------
 no_kube_proxy() {
     local node status
     for node in "${NODES[@]}"; do
         e2e_assert_eq "no kube-proxy process in the bubble of $node" "$(runtime_bubble_exec "$node" 'pgrep -x kube-proxy || true')" ""
-        e2e_assert_eq "no kube-proxy rules in the bubble of $node" "$(runtime_bubble_exec "$node" 'iptables -t nat -S | grep -c KUBE || true')" 0
         status=$(runtime_plaidctl "$node" status)
         e2e_assert_contains "the table of $node comes from Kubernetes" "$status" "table from kubernetes (synced=true)"
         e2e_assert_contains "the watch of $node is healthy" "$status" "watch errors=0"
@@ -439,16 +438,15 @@ e2e_subcase_run T24-counters counters
 # ---------------------------------------------------------------------------
 # T45-egress: a pod reaches an address outside the pod and Service networks, here the API
 # server's address on the host network (so it needs no registry or Internet), through the
-# bubble's kernel and the uplink, from every node. There is no source NAT: the uplink answers
-# for the pods' addresses (proxy ARP, which slirp4netns needs to send the replies) and the
-# bubble holds no netfilter chain of Plaid's for it.
+# bubble's kernel and the uplink, from every node. There is no source NAT (and no netfilter
+# in the bubble at all): the uplink answers for the pods' addresses (proxy ARP, which
+# slirp4netns needs to send the replies).
 # ---------------------------------------------------------------------------
 egress() {
     local node client
     e2e_assert_nonempty "the API server's host address" "$API_HOST"
     for node in "${NODES[@]}"; do
         e2e_assert_eq "proxy ARP on the uplink of $node" "$(runtime_bubble_exec "$node" 'cat /proc/sys/net/ipv4/conf/tap0/proxy_arp')" 1
-        e2e_assert_eq "no egress NAT chain in the bubble of $node" "$(runtime_bubble_exec "$node" 'iptables -t nat -S 2>/dev/null | grep -c PLAID-EGRESS || true')" 0
     done
     for client in "${CLIENTS[@]}"; do
         e2e_assert_eq "$client on ${NODE_OF[$client]} reaches the API server's host address" \

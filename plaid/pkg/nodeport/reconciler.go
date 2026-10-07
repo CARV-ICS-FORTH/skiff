@@ -1,21 +1,24 @@
 // Package nodeport publishes Kubernetes NodePort Services on the physical host. A NodePort
 // is a port of every node that reaches the Service. Here the physical host's port is a
 // listener that slirp4netns keeps for the bubble (asked for through its API socket), which
-// hands connections to the bubble's uplink address at the same port; a bubble-local
-// destination NAT then turns that into the Service's cluster IP and port, and the
-// Service engine does the rest (backend choice, return translation). Nothing in the
-// engine knows about NodePorts.
+// hands connections to the Service's cluster IP and port: the forward's guest is the cluster
+// IP. slirp4netns resolves that address with ARP on the uplink, which the bubble's kernel
+// answers (proxy ARP, set by the gateway) as it routes the Service range to the Service
+// engine; the engine does the rest (backend choice, return translation). Nothing in the
+// engine knows about NodePorts, and nothing in the kernel is configured for them.
 //
-// The Reconciler owns the forwards and the rules, and nothing else. A forward is its own if
-// it has the shape of one it would make: the host address, the bubble's uplink address as
-// guest, the same port on both sides, inside the NodePort range. The fixed forwards of the
-// deployment (the API and kubelet ports) and anything else slirp4netns has are never touched,
-// and ownership needs no memory: a restarted daemon finds its own forwards again.
+// The Reconciler owns the forwards, and nothing else. A forward is its own if it has the
+// shape of one it would make: the host address, a port inside the NodePort range, and an
+// address of the Service range as guest. The fixed forwards of the deployment (the API and
+// kubelet ports) and anything else slirp4netns has are never touched, and ownership needs no
+// memory: a restarted daemon finds its own forwards again. A forward that points at another
+// Service than the port's now is made again.
 package nodeport
 
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"sync"
 	"time"
@@ -42,25 +45,14 @@ type mappingKey struct {
 
 func (m Mapping) key() mappingKey { return mappingKey{m.Proto, m.Port} }
 
+// guest is where the forward for the mapping points: the Service's cluster IP and port.
+func (m Mapping) guest() (string, int) { return net.IP(m.ClusterIP[:]).String(), int(m.ServicePort) }
+
 // Forwarder is slirp4netns's API as far as the reconciler uses it.
 type Forwarder interface {
 	ListHostFwd(ctx context.Context) ([]slirpapi.Entry, error)
 	AddHostFwd(ctx context.Context, proto, hostAddr string, hostPort int, guestAddr string, guestPort int) (int, error)
 	RemoveHostFwd(ctx context.Context, id int) error
-}
-
-// Rule is one destination NAT of the bubble's kernel: traffic that came in on the uplink for
-// the node port is sent to the Service.
-type Rule struct {
-	Proto    string
-	Port     int
-	DestIP   [4]byte
-	DestPort uint16
-}
-
-// Rules applies the complete set of rules, replacing the previous set atomically.
-type Rules interface {
-	Apply(ctx context.Context, rules []Rule) error
 }
 
 // Reporter receives events about Services.
@@ -78,10 +70,10 @@ const (
 
 // Config configures a reconciler.
 type Config struct {
-	HostAddr  string // the physical host's address the forwards listen on
-	GuestAddr string // the bubble's uplink address they forward to
-	RangeLow  int    // the NodePort range (default 30000-32767, Kubernetes' own)
-	RangeHigh int
+	HostAddr    string     // the physical host's address the forwards listen on
+	ServiceCIDR *net.IPNet // the Service range: the forwards' guests are addresses of it
+	RangeLow    int        // the NodePort range (default 30000-32767, Kubernetes' own)
+	RangeHigh   int
 	// RetryMin and RetryMax bound the backoff for a port that could not be published.
 	RetryMin, RetryMax time.Duration
 	// Resync is how often the forwards are compared with what they should be, to repair drift.
@@ -119,24 +111,21 @@ type portState struct {
 	added     bool // a forward was made by this reconciler at some point
 }
 
-// Reconciler keeps slirp4netns's forwards and the kernel's rules in line with the desired mappings.
+// Reconciler keeps slirp4netns's forwards in line with the desired mappings.
 type Reconciler struct {
 	cfg Config
 	fwd Forwarder
-	rul Rules
 	rep Reporter
 
-	mu       sync.Mutex
-	desired  map[mappingKey]Mapping
-	state    map[mappingKey]*portState
-	applied  []Rule
-	haveRule bool
-	status   Status
-	kick     chan struct{}
+	mu      sync.Mutex
+	desired map[mappingKey]Mapping
+	state   map[mappingKey]*portState
+	status  Status
+	kick    chan struct{}
 }
 
 // New creates a reconciler.
-func New(cfg Config, fwd Forwarder, rules Rules, rep Reporter) *Reconciler {
+func New(cfg Config, fwd Forwarder, rep Reporter) *Reconciler {
 	if cfg.RangeLow == 0 && cfg.RangeHigh == 0 {
 		cfg.RangeLow, cfg.RangeHigh = 30000, 32767
 	}
@@ -152,7 +141,7 @@ func New(cfg Config, fwd Forwarder, rules Rules, rep Reporter) *Reconciler {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Reconciler{cfg: cfg, fwd: fwd, rul: rules, rep: rep,
+	return &Reconciler{cfg: cfg, fwd: fwd, rep: rep,
 		desired: map[mappingKey]Mapping{}, state: map[mappingKey]*portState{}, kick: make(chan struct{}, 1)}
 }
 
@@ -222,16 +211,17 @@ func (r *Reconciler) nextWake() time.Duration {
 }
 
 func (r *Reconciler) owned(e slirpapi.Entry) bool {
+	guest := net.ParseIP(e.GuestAddr)
 	return (e.Proto == "tcp" || e.Proto == "udp") &&
-		e.HostAddr == r.cfg.HostAddr && e.GuestAddr == r.cfg.GuestAddr &&
-		e.HostPort == e.GuestPort && e.HostPort >= r.cfg.RangeLow && e.HostPort <= r.cfg.RangeHigh
+		e.HostAddr == r.cfg.HostAddr && e.HostPort >= r.cfg.RangeLow && e.HostPort <= r.cfg.RangeHigh &&
+		guest != nil && r.cfg.ServiceCIDR != nil && r.cfg.ServiceCIDR.Contains(guest)
 }
 
 func (r *Reconciler) inRange(port int) bool { return port >= r.cfg.RangeLow && port <= r.cfg.RangeHigh }
 
 // Reconcile makes one pass: it lists the forwards, removes the ones that are ours and no
-// longer wanted, sets the kernel's rules, and makes the forwards that are missing (those
-// that failed wait for their backoff).
+// longer wanted or that point at another Service than the port's now, and makes the forwards
+// that are missing (those that failed wait for their backoff).
 func (r *Reconciler) Reconcile(ctx context.Context) {
 	r.mu.Lock()
 	desired := make([]Mapping, 0, len(r.desired))
@@ -265,6 +255,8 @@ func (r *Reconciler) Reconcile(ctx context.Context) {
 		return
 	}
 	have := map[mappingKey]bool{}
+	replaced := map[mappingKey]bool{} // the port's forward pointed at another Service: made again
+	blocked := map[mappingKey]bool{}  // ... and could not be removed: not made again in this pass
 	var removed, repaired uint64
 	var passErr error
 	for _, e := range actual {
@@ -272,19 +264,22 @@ func (r *Reconciler) Reconcile(ctx context.Context) {
 			continue
 		}
 		k := mappingKey{e.Proto, e.HostPort}
-		if _, want := wantedSet[k]; want {
-			have[k] = true
-			continue
+		m, want := wantedSet[k]
+		if want {
+			if guestAddr, guestPort := m.guest(); e.GuestAddr == guestAddr && e.GuestPort == guestPort {
+				have[k] = true
+				continue
+			}
+			replaced[k] = true
 		}
 		if err := r.fwd.RemoveHostFwd(ctx, e.ID); err != nil {
 			passErr = fmt.Errorf("removing the forward of %s port %d: %w", e.Proto, e.HostPort, err)
+			blocked[k] = true
 			continue
 		}
-		removed++
-	}
-
-	if err := r.applyRules(ctx, wanted); err != nil {
-		passErr = err
+		if !want {
+			removed++
+		}
 	}
 
 	now := r.cfg.Now()
@@ -303,13 +298,17 @@ func (r *Reconciler) Reconcile(ctx context.Context) {
 			r.mu.Unlock()
 			continue
 		}
-		if st.exposed {
+		if blocked[k] {
+			continue
+		}
+		if st.exposed && !replaced[k] {
 			repaired++ // it was there and is gone
 		}
 		if !st.nextRetry.IsZero() && now.Before(st.nextRetry) {
 			continue
 		}
-		_, err := r.fwd.AddHostFwd(ctx, m.Proto, r.cfg.HostAddr, m.Port, r.cfg.GuestAddr, m.Port)
+		guestAddr, guestPort := m.guest()
+		_, err := r.fwd.AddHostFwd(ctx, m.Proto, r.cfg.HostAddr, m.Port, guestAddr, guestPort)
 		r.mu.Lock()
 		if err == nil {
 			wasFailing := st.everFail
@@ -339,35 +338,6 @@ func (r *Reconciler) Reconcile(ctx context.Context) {
 		r.event(m, true, reason, msg, err.Error()) // a failed port is the port's state, not the pass's error
 	}
 	r.finish(passErr, removed, repaired, wanted)
-}
-
-// applyRules installs the rules for the wanted mappings if they differ from what is applied.
-func (r *Reconciler) applyRules(ctx context.Context, wanted []Mapping) error {
-	rules := make([]Rule, 0, len(wanted))
-	for _, m := range wanted {
-		rules = append(rules, Rule{Proto: m.Proto, Port: m.Port, DestIP: m.ClusterIP, DestPort: m.ServicePort})
-	}
-	r.mu.Lock()
-	same := r.haveRule && len(rules) == len(r.applied)
-	if same {
-		for i := range rules {
-			if rules[i] != r.applied[i] {
-				same = false
-				break
-			}
-		}
-	}
-	r.mu.Unlock()
-	if same || r.rul == nil {
-		return nil
-	}
-	if err := r.rul.Apply(ctx, rules); err != nil {
-		return fmt.Errorf("setting the destination NAT rules: %w", err)
-	}
-	r.mu.Lock()
-	r.applied, r.haveRule = rules, true
-	r.mu.Unlock()
-	return nil
 }
 
 func (r *Reconciler) finish(err error, removed, repaired uint64, wanted []Mapping) {

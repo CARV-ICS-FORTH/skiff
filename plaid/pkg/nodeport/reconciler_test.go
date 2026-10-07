@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"testing"
@@ -13,19 +14,27 @@ import (
 )
 
 const (
-	hostAddr  = "192.168.64.3"
-	guestAddr = "10.0.2.100"
+	hostAddr = "192.168.64.3"
+	// uplink is the bubble's own address on the slirp4netns network: where the fixed forwards
+	// of the deployment (the API and the kubelet) point. It is not an address of the Service range.
+	uplink = "10.0.2.100"
 )
+
+var serviceNet = func() *net.IPNet {
+	_, n, _ := net.ParseCIDR("10.43.0.0/16")
+	return n
+}()
 
 // fakeSlirp keeps forwards like slirp4netns, with ports held by others and errors to order.
 type fakeSlirp struct {
-	mu      sync.Mutex
-	entries []slirpapi.Entry
-	next    int
-	taken   map[string]bool
-	calls   []string
-	listErr error
-	addErr  error
+	mu        sync.Mutex
+	entries   []slirpapi.Entry
+	next      int
+	taken     map[string]bool
+	calls     []string
+	listErr   error
+	addErr    error
+	removeErr error
 }
 
 func newFakeSlirp() *fakeSlirp { return &fakeSlirp{next: 1, taken: map[string]bool{}} }
@@ -74,6 +83,9 @@ func (f *fakeSlirp) RemoveHostFwd(_ context.Context, id int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, fmt.Sprintf("remove %d", id))
+	if f.removeErr != nil {
+		return f.removeErr
+	}
 	for i, e := range f.entries {
 		if e.ID == id {
 			f.entries = append(f.entries[:i], f.entries[i+1:]...)
@@ -93,6 +105,18 @@ func (f *fakeSlirp) ports() []string {
 	return out
 }
 
+// forward returns the entry for a protocol and host port.
+func (f *fakeSlirp) forward(proto string, port int) (slirpapi.Entry, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, e := range f.entries {
+		if e.Proto == proto && e.HostPort == port {
+			return e, true
+		}
+	}
+	return slirpapi.Entry{}, false
+}
+
 func (f *fakeSlirp) callLog() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -100,35 +124,6 @@ func (f *fakeSlirp) callLog() []string {
 }
 
 func (f *fakeSlirp) resetCalls() { f.mu.Lock(); f.calls = nil; f.mu.Unlock() }
-
-type fakeRules struct {
-	mu    sync.Mutex
-	sets  [][]Rule
-	err   error
-	order *[]string
-}
-
-func (r *fakeRules) Apply(_ context.Context, rules []Rule) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.err != nil {
-		return r.err
-	}
-	r.sets = append(r.sets, append([]Rule(nil), rules...))
-	if r.order != nil {
-		*r.order = append(*r.order, "rules")
-	}
-	return nil
-}
-
-func (r *fakeRules) last() []Rule {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.sets) == 0 {
-		return nil
-	}
-	return r.sets[len(r.sets)-1]
-}
 
 type event struct {
 	ref     any
@@ -165,7 +160,6 @@ func (c *clock) Now() time.Time { return c.t }
 type rig struct {
 	r   *Reconciler
 	s   *fakeSlirp
-	rl  *fakeRules
 	rep *fakeReporter
 	ck  *clock
 }
@@ -173,13 +167,20 @@ type rig struct {
 func newRig(t *testing.T) *rig {
 	t.Helper()
 	ck := &clock{t: time.Unix(1_000_000, 0)}
-	s, rl, rep := newFakeSlirp(), &fakeRules{}, &fakeReporter{}
-	r := New(Config{HostAddr: hostAddr, GuestAddr: guestAddr, Now: ck.Now}, s, rl, rep)
-	return &rig{r: r, s: s, rl: rl, rep: rep, ck: ck}
+	s, rep := newFakeSlirp(), &fakeReporter{}
+	r := New(Config{HostAddr: hostAddr, ServiceCIDR: serviceNet, Now: ck.Now}, s, rep)
+	return &rig{r: r, s: s, rep: rep, ck: ck}
 }
 
+// mp is a mapping of a node port to a Service whose cluster IP and port follow from the node port.
 func mp(proto string, port int, svc string) Mapping {
 	return Mapping{Proto: proto, Port: port, ClusterIP: [4]byte{10, 43, 0, byte(port % 250)}, ServicePort: 80, Ref: svc}
+}
+
+// forwardOf is the forward the reconciler makes for a mapping.
+func forwardOf(m Mapping) slirpapi.Entry {
+	guest, port := m.guest()
+	return slirpapi.Entry{Proto: m.Proto, HostAddr: hostAddr, HostPort: m.Port, GuestAddr: guest, GuestPort: port}
 }
 
 func (g *rig) pass() { g.r.Reconcile(context.Background()) }
@@ -187,12 +188,12 @@ func (g *rig) pass() { g.r.Reconcile(context.Background()) }
 func TestPublishesWhatIsDesiredAndNothingElse(t *testing.T) {
 	g := newRig(t)
 	fixed := []slirpapi.Entry{
-		{Proto: "tcp", HostAddr: hostAddr, HostPort: 10250, GuestAddr: guestAddr, GuestPort: 10250},    // the kubelet
-		{Proto: "tcp", HostAddr: hostAddr, HostPort: 6443, GuestAddr: guestAddr, GuestPort: 6443},      // the API
-		{Proto: "tcp", HostAddr: "127.0.0.1", HostPort: 31000, GuestAddr: guestAddr, GuestPort: 31000}, // another host address
-		{Proto: "tcp", HostAddr: hostAddr, HostPort: 31001, GuestAddr: "10.0.2.77", GuestPort: 31001},  // another guest
-		{Proto: "tcp", HostAddr: hostAddr, HostPort: 31002, GuestAddr: guestAddr, GuestPort: 9999},     // different ports
-		{Proto: "tcp", HostAddr: hostAddr, HostPort: 12345, GuestAddr: guestAddr, GuestPort: 12345},    // outside the range
+		{Proto: "tcp", HostAddr: hostAddr, HostPort: 10250, GuestAddr: uplink, GuestPort: 10250},      // the kubelet
+		{Proto: "tcp", HostAddr: hostAddr, HostPort: 6443, GuestAddr: uplink, GuestPort: 6443},        // the API
+		{Proto: "tcp", HostAddr: "127.0.0.1", HostPort: 31000, GuestAddr: "10.43.0.9", GuestPort: 80}, // another host address
+		{Proto: "tcp", HostAddr: hostAddr, HostPort: 31001, GuestAddr: "10.0.2.77", GuestPort: 80},    // a guest outside the Service range
+		{Proto: "tcp", HostAddr: hostAddr, HostPort: 31002, GuestAddr: uplink, GuestPort: 31002},      // the bubble's own address, not a Service's
+		{Proto: "tcp", HostAddr: hostAddr, HostPort: 12345, GuestAddr: "10.43.0.9", GuestPort: 80},    // outside the port range
 	}
 	for _, e := range fixed {
 		g.s.preload(e)
@@ -208,31 +209,34 @@ func TestPublishesWhatIsDesiredAndNothingElse(t *testing.T) {
 	if len(g.s.ports()) != 9 {
 		t.Errorf("forwards: %v", g.s.ports())
 	}
+	// A forward goes from the host's node port to the Service's cluster IP and port.
+	for _, m := range []Mapping{mp("tcp", 31080, "web"), mp("udp", 31080, "web"), mp("tcp", 31443, "web")} {
+		e, ok := g.s.forward(m.Proto, m.Port)
+		want := forwardOf(m)
+		if !ok || e.HostAddr != want.HostAddr || e.GuestAddr != want.GuestAddr || e.GuestPort != want.GuestPort {
+			t.Errorf("forward of %s %d: %+v, want %+v", m.Proto, m.Port, e, want)
+		}
+	}
+	if e, _ := g.s.forward("tcp", 31080); e.GuestAddr != "10.43.0.80" || e.GuestPort != 80 {
+		t.Errorf("the forward of node port 31080 points at %s:%d", e.GuestAddr, e.GuestPort)
+	}
 	st := g.r.Status()
 	if st.Desired != 3 || st.Exposed != 3 || len(st.Failed) != 0 || st.LastError != "" {
 		t.Errorf("status %+v", st)
 	}
-	if len(g.rl.last()) != 3 {
-		t.Errorf("rules %+v", g.rl.last())
-	}
-	// Nothing changes on a second pass: one listing, no mutation, no new rules.
+	// Nothing changes on a second pass: one listing, no mutation.
 	g.s.resetCalls()
-	sets := len(g.rl.sets)
 	g.pass()
 	if calls := g.s.callLog(); len(calls) != 1 || calls[0] != "list" {
 		t.Errorf("calls %v", calls)
-	}
-	if len(g.rl.sets) != sets {
-		t.Error("the rules were applied again")
 	}
 }
 
 func TestRemovesWhatIsOursAndNoLongerWantedAndRepairsDrift(t *testing.T) {
 	g := newRig(t)
-	kubelet := g.s.preload(slirpapi.Entry{Proto: "tcp", HostAddr: hostAddr, HostPort: 10250, GuestAddr: guestAddr, GuestPort: 10250})
-	_ = kubelet
-	stale := slirpapi.Entry{Proto: "tcp", HostAddr: hostAddr, HostPort: 31500, GuestAddr: guestAddr, GuestPort: 31500}
-	g.s.preload(stale) // ours by shape, from before: no memory of it is needed
+	g.s.preload(slirpapi.Entry{Proto: "tcp", HostAddr: hostAddr, HostPort: 10250, GuestAddr: uplink, GuestPort: 10250}) // the kubelet's
+	// Ours by shape, from before: no memory of it is needed.
+	g.s.preload(slirpapi.Entry{Proto: "tcp", HostAddr: hostAddr, HostPort: 31500, GuestAddr: "10.43.0.9", GuestPort: 80})
 	g.r.SetDesired([]Mapping{mp("tcp", 31080, "web")})
 	g.pass()
 	if got := strings.Join(g.s.ports(), " "); strings.Contains(got, "31500") || !strings.Contains(got, "10250") || !strings.Contains(got, "31080") {
@@ -243,15 +247,8 @@ func TestRemovesWhatIsOursAndNoLongerWantedAndRepairsDrift(t *testing.T) {
 	}
 
 	// Someone removes our forward behind our back: the next pass makes it again.
-	g.s.mu.Lock()
-	var id int
-	for _, e := range g.s.entries {
-		if e.HostPort == 31080 {
-			id = e.ID
-		}
-	}
-	g.s.mu.Unlock()
-	if err := g.s.RemoveHostFwd(context.Background(), id); err != nil {
+	e, _ := g.s.forward("tcp", 31080)
+	if err := g.s.RemoveHostFwd(context.Background(), e.ID); err != nil {
 		t.Fatal(err)
 	}
 	g.pass()
@@ -259,14 +256,78 @@ func TestRemovesWhatIsOursAndNoLongerWantedAndRepairsDrift(t *testing.T) {
 		t.Errorf("forwards %v, status %+v", g.s.ports(), g.r.Status())
 	}
 
-	// A Service is removed: its forward and its rule go, the kubelet's stays.
+	// A Service is removed: its forward goes, the kubelet's stays.
 	g.r.SetDesired(nil)
 	g.pass()
 	if got := g.s.ports(); len(got) != 1 || got[0] != "tcp/10250" {
 		t.Errorf("forwards %v", got)
 	}
-	if len(g.rl.last()) != 0 {
-		t.Errorf("rules %+v", g.rl.last())
+}
+
+func TestAForwardThatPointsAtAnotherServiceIsMadeAgain(t *testing.T) {
+	g := newRig(t)
+	g.r.SetDesired([]Mapping{mp("tcp", 31080, "web")})
+	g.pass()
+	first, _ := g.s.forward("tcp", 31080)
+
+	// The Service is replaced (same node port, new cluster IP): the forward is made again, as
+	// a replacement and not as drift or as a removal.
+	m := mp("tcp", 31080, "web-new-uid")
+	m.ClusterIP = [4]byte{10, 43, 7, 7}
+	g.s.resetCalls()
+	g.r.SetDesired([]Mapping{m})
+	g.pass()
+	if calls := strings.Join(g.s.callLog(), ","); calls != fmt.Sprintf("list,remove %d,add tcp 31080", first.ID) {
+		t.Errorf("calls %s", calls)
+	}
+	if e, ok := g.s.forward("tcp", 31080); !ok || e.GuestAddr != "10.43.7.7" || e.GuestPort != 80 {
+		t.Errorf("forward %+v", e)
+	}
+
+	// The same for another port of the same Service.
+	m.ServicePort = 8080
+	g.r.SetDesired([]Mapping{m})
+	g.pass()
+	if e, _ := g.s.forward("tcp", 31080); e.GuestPort != 8080 {
+		t.Errorf("forward %+v", e)
+	}
+	st := g.r.Status()
+	if st.Removed != 0 || st.Repaired != 0 || st.Exposed != 1 || st.LastError != "" || len(g.s.ports()) != 1 {
+		t.Errorf("status %+v, forwards %v", st, g.s.ports())
+	}
+
+	// Nothing more to do on the next pass.
+	g.s.resetCalls()
+	g.pass()
+	if calls := g.s.callLog(); len(calls) != 1 || calls[0] != "list" {
+		t.Errorf("calls %v", calls)
+	}
+}
+
+func TestAForwardThatCannotBeRemovedIsNotMadeAgainInThatPass(t *testing.T) {
+	g := newRig(t)
+	g.s.preload(slirpapi.Entry{Proto: "tcp", HostAddr: hostAddr, HostPort: 31080, GuestAddr: "10.43.9.9", GuestPort: 80})
+	g.s.removeErr = errors.New("slirp4netns: busy")
+	g.r.SetDesired([]Mapping{mp("tcp", 31080, "web")})
+	g.s.resetCalls()
+	g.pass()
+	for _, c := range g.s.callLog() {
+		if strings.HasPrefix(c, "add") {
+			t.Errorf("a forward was made over one that could not be removed: %v", g.s.callLog())
+		}
+	}
+	if !strings.Contains(g.r.Status().LastError, "removing the forward of tcp port 31080") {
+		t.Errorf("status %+v", g.r.Status())
+	}
+	if r := g.rep.reasons(); len(r) != 0 {
+		t.Errorf("a bind failure was reported for it: %v", r)
+	}
+
+	// The next pass, when slirp4netns lets go, makes it.
+	g.s.removeErr = nil
+	g.pass()
+	if e, _ := g.s.forward("tcp", 31080); e.GuestAddr != "10.43.0.80" || g.r.Status().LastError != "" {
+		t.Errorf("forward %+v, status %+v", e, g.r.Status())
 	}
 }
 
@@ -358,7 +419,6 @@ func TestAFailingListingChangesNothing(t *testing.T) {
 	g := newRig(t)
 	g.r.SetDesired([]Mapping{mp("tcp", 31080, "web")})
 	g.pass()
-	sets := len(g.rl.sets)
 	g.s.listErr = errors.New("timed out")
 	g.r.SetDesired(nil)
 	g.s.resetCalls()
@@ -366,78 +426,13 @@ func TestAFailingListingChangesNothing(t *testing.T) {
 	if calls := g.s.callLog(); len(calls) != 1 {
 		t.Errorf("calls after a failed listing: %v", calls)
 	}
-	if !strings.Contains(g.r.Status().LastError, "timed out") || len(g.s.ports()) != 1 || len(g.rl.sets) != sets {
+	if !strings.Contains(g.r.Status().LastError, "timed out") || len(g.s.ports()) != 1 {
 		t.Errorf("status %+v, forwards %v", g.r.Status(), g.s.ports())
 	}
 	g.s.listErr = nil
 	g.pass()
 	if len(g.s.ports()) != 0 || g.r.Status().LastError != "" {
 		t.Errorf("after recovery: %v %+v", g.s.ports(), g.r.Status())
-	}
-}
-
-func TestRulesAreSetBeforeForwardsAreMadeAndAfterTheyAreRemoved(t *testing.T) {
-	g := newRig(t)
-	var order []string
-	g.rl.order = &order
-	wrap := &orderedSlirp{fakeSlirp: g.s, order: &order}
-	g.r = New(Config{HostAddr: hostAddr, GuestAddr: guestAddr, Now: g.ck.Now}, wrap, g.rl, g.rep)
-	g.r.SetDesired([]Mapping{mp("tcp", 31080, "web")})
-	g.pass()
-	want := []string{"rules", "add"}
-	if len(order) != 2 || order[0] != want[0] || order[1] != want[1] {
-		t.Errorf("adding: %v", order)
-	}
-	order = order[:0]
-	g.r.SetDesired(nil)
-	g.pass()
-	if len(order) != 2 || order[0] != "remove" || order[1] != "rules" {
-		t.Errorf("removing: %v", order)
-	}
-}
-
-type orderedSlirp struct {
-	*fakeSlirp
-	order *[]string
-}
-
-func (o *orderedSlirp) AddHostFwd(ctx context.Context, p, h string, hp int, g string, gp int) (int, error) {
-	*o.order = append(*o.order, "add")
-	return o.fakeSlirp.AddHostFwd(ctx, p, h, hp, g, gp)
-}
-
-func (o *orderedSlirp) RemoveHostFwd(ctx context.Context, id int) error {
-	*o.order = append(*o.order, "remove")
-	return o.fakeSlirp.RemoveHostFwd(ctx, id)
-}
-
-func TestRulesFollowTheServiceAndAFailureToSetThemIsVisible(t *testing.T) {
-	g := newRig(t)
-	g.r.SetDesired([]Mapping{mp("tcp", 31080, "web")})
-	g.pass()
-	first := g.rl.last()
-	if len(first) != 1 || first[0] != (Rule{Proto: "tcp", Port: 31080, DestIP: [4]byte{10, 43, 0, 80}, DestPort: 80}) {
-		t.Fatalf("rules %+v", first)
-	}
-	// The Service is replaced (same node port, new address): the forward stays, the rule follows.
-	m := mp("tcp", 31080, "web-new-uid")
-	m.ClusterIP = [4]byte{10, 43, 7, 7}
-	g.s.resetCalls()
-	g.r.SetDesired([]Mapping{m})
-	g.pass()
-	if g.rl.last()[0].DestIP != m.ClusterIP {
-		t.Errorf("rules %+v", g.rl.last())
-	}
-	for _, c := range g.s.callLog() {
-		if c != "list" {
-			t.Errorf("the forward was touched for a Service replacement: %v", g.s.callLog())
-		}
-	}
-	g.rl.err = errors.New("iptables-restore failed")
-	g.r.SetDesired([]Mapping{mp("tcp", 31080, "web"), mp("tcp", 31081, "web")})
-	g.pass()
-	if !strings.Contains(g.r.Status().LastError, "iptables-restore failed") {
-		t.Errorf("status %+v", g.r.Status())
 	}
 }
 
@@ -458,10 +453,8 @@ func TestPortsOutsideTheRangeAreNotPublished(t *testing.T) {
 }
 
 func TestRunReconcilesOnChangeAndOnRetryAndStops(t *testing.T) {
-	ck := &clock{t: time.Now()}
-	s, rl, rep := newFakeSlirp(), &fakeRules{}, &fakeReporter{}
-	r := New(Config{HostAddr: hostAddr, GuestAddr: guestAddr, Resync: 50 * time.Millisecond, RetryMin: 20 * time.Millisecond}, s, rl, rep)
-	_ = ck
+	s, rep := newFakeSlirp(), &fakeReporter{}
+	r := New(Config{HostAddr: hostAddr, ServiceCIDR: serviceNet, Resync: 50 * time.Millisecond, RetryMin: 20 * time.Millisecond}, s, rep)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { r.Run(ctx); close(done) }()

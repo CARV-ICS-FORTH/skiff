@@ -100,6 +100,7 @@ YAML
 e2e_wait_pod_ready "$NS" b-a 120
 e2e_wait_pod_ready "$NS" c-a 120
 HTTP=$(nodeport np http); ALT=$(nodeport np alt); ECHO=$(nodeport np echo)
+cluster_ip() { e2e_kubectl -n "$NS" get service np -o jsonpath='{.spec.clusterIP}'; }  # its address changes when a subcase recreates it
 e2e_log "node ports: http $HTTP, alt $ALT, echo $ECHO (UDP)"
 published_everywhere() {  # published_everywhere PORT
     local node
@@ -130,20 +131,23 @@ e2e_subcase_run T25-tcp-udp tcp_udp
 
 # ---------------------------------------------------------------------------
 # T25-slirp-state: slirp4netns holds a forward for each node port, on the node's host address
-# to the bubble's address; the fixed forwards (kubelet everywhere, API on the controller) and
-# nothing else are there; there is no forward for the overlay.
+# to the Service's cluster IP and port (the kernel of the bubble does no translation: it
+# routes the Service range to the engine); the fixed forwards (kubelet everywhere, API on the
+# controller) and nothing else are there; there is no forward for the overlay.
 # ---------------------------------------------------------------------------
 slirp_state() {
-    local node list ip
+    local node list ip cip
+    cip=$(cluster_ip)
     for node in "${NODES[@]}"; do
         ip=${IPS[$node]}
         list=$(forwards "$node")
-        e2e_assert_contains "forward of the HTTP node port on $node" "$list" "tcp ${ip}:${HTTP}->10.0."
-        e2e_assert_contains "forward of the UDP node port on $node" "$list" "udp ${ip}:${ECHO}->10.0."
+        e2e_assert_contains "forward of the HTTP node port on $node" "$list" "tcp ${ip}:${HTTP}->${cip}:80 "
+        e2e_assert_contains "forward of the second TCP node port on $node" "$list" "tcp ${ip}:${ALT}->${cip}:81 "
+        e2e_assert_contains "forward of the UDP node port on $node" "$list" "udp ${ip}:${ECHO}->${cip}:5353 "
         e2e_assert_contains "the kubelet's forward on $node is still there" "$list" ":10250->"
         if [[ "$list" == *":8472->"* ]]; then e2e_fail "slirp4netns on $node forwards the overlay port"; fi
         e2e_assert_eq "only the published ports, the kubelet and (on the controller) the API on $node" \
-            "$(printf '%s\n' "$list" | awk -v keep="10250 6443 ${HTTP} ${ALT} ${ECHO}" 'BEGIN { n = split(keep, k, " "); for (i = 1; i <= n; i++) ok[k[i]] = 1 } { split($2, a, "->"); m = split(a[2], g, ":"); if (!(g[m] in ok)) c++ } END { print c + 0 }')" 0
+            "$(printf '%s\n' "$list" | awk -v keep="10250 6443 ${HTTP} ${ALT} ${ECHO}" 'BEGIN { n = split(keep, k, " "); for (i = 1; i <= n; i++) ok[k[i]] = 1 } { split($2, a, "->"); m = split(a[1], g, ":"); if (!(g[m] in ok)) c++ } END { print c + 0 }')" 0
     done
 }
 e2e_subcase_run T25-slirp-state slirp_state
@@ -337,24 +341,33 @@ YAML
 e2e_subcase_run T25-unsupported unsupported
 
 # ---------------------------------------------------------------------------
-# T25-reconcile: a forward of Plaid's removed behind its back comes back; a forward it would
-# make for a port nobody wants is removed; a forward of another shape is left alone.
+# T25-reconcile: a forward of Plaid's removed behind its back comes back; one that points at
+# another Service than the port's is made again; a forward it would make for a port nobody
+# wants is removed; a forward of another shape is left alone.
 # ---------------------------------------------------------------------------
 forward_id() {  # forward_id NODE PORT: the ID of the forward of a host port, empty if none
     forwards "$1" | awk -v want="${IPS[$1]}:$2->" 'index($2, want) == 1 {print $3}' | sed -n 1p
 }
 reconcile() {
-    local node=$NODE_B id
+    local node=$NODE_B id cip
+    cip=$(cluster_ip)
     id=$(forward_id "$node" "$HTTP")
     e2e_assert_nonempty "the forward of port $HTTP on $node" "$id"
     slirp_api "$node" "{\"execute\":\"remove_hostfwd\",\"arguments\":{\"id\":${id}}}" >/dev/null
     e2e_assert_eq "it is gone" "$(published "$node" "$HTTP")" 0
     # Another shape (a loopback listener) and a stale forward of Plaid's shape.
     slirp_api "$node" '{"execute":"add_hostfwd","arguments":{"proto":"tcp","host_addr":"127.0.0.1","host_port":31777,"guest_addr":"10.0.3.100","guest_port":31777}}' >/dev/null
-    local guest
-    guest=$(forwards "$node" | awk -v want="${IPS[$node]}:$(nodeport np http)->" 'index($2, want) == 1 {print $2}' | sed -n 1p | sed 's/.*->\(.*\):.*/\1/')
-    slirp_api "$node" "{\"execute\":\"add_hostfwd\",\"arguments\":{\"proto\":\"tcp\",\"host_addr\":\"${IPS[$node]}\",\"host_port\":31778,\"guest_addr\":\"${guest:-10.0.3.100}\",\"guest_port\":31778}}" >/dev/null
+    slirp_api "$node" "{\"execute\":\"add_hostfwd\",\"arguments\":{\"proto\":\"tcp\",\"host_addr\":\"${IPS[$node]}\",\"host_port\":31778,\"guest_addr\":\"${cip}\",\"guest_port\":80}}" >/dev/null
     e2e_wait_condition 90 "the removed forward is made again" answers "$NODE_A" "$node" "$HTTP"
+    # A forward of Plaid's shape that points at another address of the Service range than the
+    # port's Service (one that nothing answers at): it is replaced, and the port answers again
+    # through the right one.
+    id=$(forward_id "$node" "$HTTP")
+    slirp_api "$node" "{\"execute\":\"remove_hostfwd\",\"arguments\":{\"id\":${id}}}" >/dev/null
+    e2e_assert_contains "the forward that points elsewhere was made" \
+        "$(slirp_api "$node" "{\"execute\":\"add_hostfwd\",\"arguments\":{\"proto\":\"tcp\",\"host_addr\":\"${IPS[$node]}\",\"host_port\":${HTTP},\"guest_addr\":\"10.43.255.254\",\"guest_port\":80}}")" '"id"'
+    e2e_wait_condition 90 "the port answers through the right Service again" answers "$NODE_A" "$node" "$HTTP"
+    e2e_assert_contains "the forward points at the Service again" "$(forwards "$node")" "tcp ${IPS[$node]}:${HTTP}->${cip}:80 "
     stale_gone() { [ "$(published "$node" 31778)" = 0 ]; }
     e2e_wait_condition 90 "the stale forward is removed" stale_gone
     e2e_assert_contains "the forward of another shape is left alone" "$(forwards "$node")" "tcp 127.0.0.1:31777->"
@@ -365,8 +378,8 @@ forward_id_loopback() { forwards "$1" | awk 'index($2, "127.0.0.1:31777->") == 1
 e2e_subcase_run T25-reconcile reconcile
 
 # ---------------------------------------------------------------------------
-# T25-cleanup: with the Services gone nothing of Plaid's is left in slirp4netns or in the
-# kernel, and the fixed forwards are as they were.
+# T25-cleanup: with the Services gone nothing of Plaid's is left in slirp4netns (it keeps
+# nothing in the kernel), and the fixed forwards are as they were.
 # ---------------------------------------------------------------------------
 only_fixed() {
     local node list
@@ -381,7 +394,6 @@ cleanup() {
     local node
     for node in "${NODES[@]}"; do
         e2e_assert_contains "the kubelet's forward on $node" "$(forwards "$node")" ":10250->"
-        e2e_assert_eq "no NodePort rule is left on $node" "$(runtime_bubble_exec "$node" 'iptables -t nat -S PLAID-NODEPORT | grep -c -- "-A"' || true)" 0
         e2e_assert_contains "nothing is wanted on $node" "$(status_of "$node")" "node ports: 0 wanted, 0 published"
     done
     e2e_assert_contains "the API's forward on the controller" "$(forwards "$CONTROLLER")" ":6443->"

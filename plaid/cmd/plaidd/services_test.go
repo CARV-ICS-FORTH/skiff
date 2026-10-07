@@ -178,7 +178,7 @@ func TestNodePortsNeedTheTapGatewayAValidHostAddressAndRange(t *testing.T) {
 		c.NodePortRange = "30000-32767"
 	}
 	d := tapDaemon(t, with)
-	if d.nodePorts == nil || d.nodePortRules == nil {
+	if d.nodePorts == nil {
 		t.Fatal("no NodePort reconciler with valid settings")
 	}
 	st, _ := d.HandleGetStatus()

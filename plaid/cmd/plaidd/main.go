@@ -32,21 +32,20 @@ import (
 )
 
 type PlaidDaemon struct {
-	cfg           Config
-	bridge        *bridge.Bridge
-	routes        *vxlan.RouteTable
-	overlay       *vxlan.OverlayEngine
-	slirpMgr      *slirp.SlirpManager
-	attachment    *gateway.Attachment
-	bubbleEP      *tap.TapEndpoint
-	healthErr     chan error
-	filterEngine  *filter.Engine
-	apiServer     *api.Server
-	cancelFunc    context.CancelFunc
-	k8sCtrl       *k8s.Controller
-	services      *svc.Engine // tap mode only
-	nodePorts     *nodeport.Reconciler
-	nodePortRules *nodeport.Iptables
+	cfg          Config
+	bridge       *bridge.Bridge
+	routes       *vxlan.RouteTable
+	overlay      *vxlan.OverlayEngine
+	slirpMgr     *slirp.SlirpManager
+	attachment   *gateway.Attachment
+	bubbleEP     *tap.TapEndpoint
+	healthErr    chan error
+	filterEngine *filter.Engine
+	apiServer    *api.Server
+	cancelFunc   context.CancelFunc
+	k8sCtrl      *k8s.Controller
+	services     *svc.Engine // tap mode only
+	nodePorts    *nodeport.Reconciler
 }
 
 type Config struct {
@@ -340,7 +339,6 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 	}
 
 	var nodePorts *nodeport.Reconciler
-	var nodePortRules *nodeport.Iptables
 	if cfg.NodePortSlirpSocket != "" {
 		if cfg.GatewayMode != "tap" {
 			return nil, fmt.Errorf("--nodeport-slirp-socket needs the tap gateway")
@@ -357,26 +355,24 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		if k8sCtrl != nil {
 			reporter = k8sCtrl.Reporter()
 		}
-		nodePortRules = nodeport.NewIptables(cfg.Uplink, cfg.UplinkAddress)
-		nodePorts = nodeport.New(nodeport.Config{HostAddr: host.String(), GuestAddr: cfg.UplinkAddress, RangeLow: low, RangeHigh: high},
-			slirpapi.New(cfg.NodePortSlirpSocket), nodePortRules, reporter)
+		nodePorts = nodeport.New(nodeport.Config{HostAddr: host.String(), ServiceCIDR: serviceNet, RangeLow: low, RangeHigh: high},
+			slirpapi.New(cfg.NodePortSlirpSocket), reporter)
 	}
 
 	filterEngine := filter.NewEngine(filter.ActionAccept)
 	b.SetFilterHandler(filterEngine.Filter)
 
 	d := &PlaidDaemon{
-		cfg:           cfg,
-		bridge:        b,
-		routes:        routes,
-		overlay:       overlay,
-		slirpMgr:      slirpMgr,
-		filterEngine:  filterEngine,
-		k8sCtrl:       k8sCtrl,
-		services:      services,
-		nodePorts:     nodePorts,
-		nodePortRules: nodePortRules,
-		healthErr:     make(chan error, 1),
+		cfg:          cfg,
+		bridge:       b,
+		routes:       routes,
+		overlay:      overlay,
+		slirpMgr:     slirpMgr,
+		filterEngine: filterEngine,
+		k8sCtrl:      k8sCtrl,
+		services:     services,
+		nodePorts:    nodePorts,
+		healthErr:    make(chan error, 1),
 	}
 
 	// Connect bridge handlers
@@ -543,11 +539,6 @@ func (d *PlaidDaemon) receiveOverlaySocket(ctx context.Context) error {
 func (d *PlaidDaemon) Stop() {
 	if d.cancelFunc != nil {
 		d.cancelFunc()
-	}
-	if d.nodePortRules != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		d.nodePortRules.Close(ctx)
-		cancel()
 	}
 	if d.apiServer != nil {
 		_ = d.apiServer.Close()

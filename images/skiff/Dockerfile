@@ -152,14 +152,15 @@ RUN set -e; mkdir -p "${TOOLS}/lib"; \
 FROM ${BASE_IMAGE}
 WORKDIR /
 
-# What the bubble itself runs: curl (the API check in entrypoint.sh), ip (iproute2), iptables
-# (Plaid's NodePorts), pgrep (procps: the supervisor looks for entrypoint.sh in the instance),
-# newuidmap (uidmap) and openssl (with ca-certificates: the kubelet certificates). The outer
+# What the bubble itself runs: curl (the API check in entrypoint.sh), ip (iproute2),
+# pgrep (procps: the supervisor looks for entrypoint.sh in the instance),
+# newuidmap (uidmap) and openssl (with ca-certificates: the kubelet certificates). No netfilter
+# tools: Plaid needs none (the kernel of a node may not even have the modules). The outer
 # slirp4netns runs on the HPC host (from the tools). drill (ldnsutils) answers the DNS
 # readiness check in entrypoint.sh; dig would pull in libxml2 and libicu (about 45 MB). No
 # ping and no nscd: nothing in the bubble uses them (the tests that ping run in the fixture image).
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl ldnsutils iproute2 iptables procps uidmap && \
+    apt-get install -y --no-install-recommends ca-certificates curl ldnsutils iproute2 procps uidmap && \
     rm -rf /var/lib/apt/lists/*
 
 # The tools, where the image itself uses them from, too.
