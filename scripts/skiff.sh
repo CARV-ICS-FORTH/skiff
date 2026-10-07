@@ -41,8 +41,11 @@
 # runtime state, Apptainer's image conversion and unpacking, and the socket between
 # the host and the bubble live below it. It is node-local and disposable (a shared
 # filesystem cannot hold sockets and is slow for unpacking) and is checked on every
-# node before anything starts. The bubbles see it at the same path.
-: "${SKIFF_TMP_DIR:=/tmp/.skiff}"
+# node before anything starts. The bubbles see it at the same path. The default is the
+# user's own (the uid, which is short, for the length of socket paths, and safe in a path):
+# a node's /tmp outlives the jobs, and a directory that the first user created would
+# refuse the next one.
+: "${SKIFF_TMP_DIR:=/tmp/.skiff.$(id -u)}"
 
 # The state directory is fixed, not a setting: the user's ~/.skiff on the shared home
 # holds the credentials, images, caches and volumes every node must find at the same

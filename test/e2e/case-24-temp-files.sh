@@ -84,7 +84,7 @@ EOF
     # pod directories of the node (they are below it).
     runtime_ssh_node "$IP_A" "echo node > /tmp/e2e24-node-marker"
     e2e_assert_eq "the node's own /tmp is invisible" "$(in_container e2e24-private a sh -c 'ls /tmp/e2e24-node-marker 2>/dev/null | wc -l' | tr -d ' ')" 0
-    e2e_assert_eq "so are the pod directories of the node" "$(in_container e2e24-private a sh -c 'test -e /tmp/.skiff && echo yes || echo no')" no
+    e2e_assert_eq "so are the pod directories of the node" "$(in_container e2e24-private a sh -c 'ls -d /tmp/.skiff* 2>/dev/null | wc -l' | tr -d ' ')" 0
     # Nor is the bubble's /root, where the user's ~/.skiff (the cluster's credentials) is.
     e2e_assert_eq "the cluster credentials are not in the container" "$(in_container e2e24-private a sh -c 'test -e /root/.skiff && echo yes || echo no')" no
     e2e_assert_eq "the container starts in /" "$(in_container e2e24-private a pwd)" /

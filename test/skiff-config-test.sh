@@ -99,7 +99,7 @@ expect "both follow another Service network" "$(derived SKIFF_API_SERVICE_IP SKI
 expect "an explicit DNS address is kept" "$(derived SKIFF_CLUSTER_DNS SKIFF_CLUSTER_DNS=10.43.9.9)" 10.43.9.9
 expect "pod MTU is the link's less VXLAN" "$(derived SKIFF_POD_MTU SKIFF_UPLINK_MTU=1600)" 1550
 expect "an explicit pod MTU is kept" "$(derived SKIFF_POD_MTU SKIFF_POD_MTU=1300)" 1300
-expect "the scratch directory defaults to /tmp/.skiff" "$(derived SKIFF_TMP_DIR)" /tmp/.skiff
+expect "the scratch directory defaults to one of the user's own: /tmp/.skiff.<uid>" "$(derived SKIFF_TMP_DIR)" "/tmp/.skiff.$(id -u)"
 expect "what is below it follows" "$(derived SKIFF_APPTAINER_TMP SKIFF_TMP_DIR=/scratch/s) $(derived SKIFF_OVERLAY_HANDOFF SKIFF_TMP_DIR=/scratch/s)" "/scratch/s/.apptainer/tmp /scratch/s/overlay.sock"
 expect "the state directory is the home's ~/.skiff" "$(derived SKIFF_STATE_DIR HOME=/home/u)" /home/u/.skiff
 expect "and cannot be overridden" "$(derived SKIFF_STATE_DIR HOME=/home/u SKIFF_STATE_DIR=/elsewhere)" /home/u/.skiff

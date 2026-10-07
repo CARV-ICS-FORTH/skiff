@@ -169,7 +169,7 @@ Rules that the code comments hold and the tests enforce: nothing publishes statu
 | `--apptainer` | `plaidtainer` | Path or binary name for Apptainer execution wrapper |
 | `--pause-image` | `registry.k8s.io/pause:3.10` | OCI image for the Pod pause container |
 | `--working-dir` | `$HOME` | Base working directory for Skiff runtime files (`~/.skiff`) |
-| `--tmp-dir` | `/tmp/.skiff` | The node's scratch directory (the deployment's `SKIFF_TMP_DIR`): pod runtime state is below it (`.pods`) and so is Apptainer's scratch. A volume may use it and `~/.skiff` (`/root/.skiff` in a bubble), and nothing else |
+| `--tmp-dir` | `/tmp/.skiff` | The node's scratch directory (the deployment's `SKIFF_TMP_DIR`, which `scripts/skiff.sh` always passes, by default `/tmp/.skiff.<uid>`): pod runtime state is below it (`.pods`) and so is Apptainer's scratch. A volume may use it and `~/.skiff` (`/root/.skiff` in a bubble), and nothing else |
 | `--cluster-domain` | `$SKIFF_CLUSTER_DOMAIN`, else `cluster.local` | DNS domain of the cluster, for the search path of pods that use the cluster DNS |
 | `--pod-sync-workers` | `8` | Pods Virtual Kubelet's controller works on at once. A pod is deleted inside the worker that took it, for as long as its PreStop hook and grace period take, so this is also how many pods can be terminating before one that arrives has to wait (T26) |
 | `--plaid-socket` | `$PLAID_SOCKET_PATH`, else `/run/plaid/plaidd.sock` | API socket of `plaidd` |

@@ -92,7 +92,7 @@ echo "NodeName=controller Arch=aarch64 CPUTot=2 CPULoad=0.1 RealMemory=1500 Allo
 STUB
 chmod +x "$test_dir/bin/"*
 
-# The scratch directory is a setting (its default is the node's /tmp/.skiff): here it is
+# The scratch directory is a setting (its default is the user's own, /tmp/.skiff.<uid>): here it is
 # somewhere else, to see that everything follows it.
 export PATH="$test_dir/bin:$PATH" HOME="$test_dir/home" SKIFF_DEV=1 CONTROLLER_IP=192.0.2.10 SKIFF_TMP_DIR="$test_dir/scratch"
 export SKIFF_SLIRP_API_TIMEOUT=4

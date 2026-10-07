@@ -9,7 +9,7 @@
 # job stops its pods gracefully (their PreStop hooks and grace periods) before it ends: a
 # plain scancel signals every process of the job at once and leaves 30 s (Slurm's KillWait).
 #SBATCH --signal=B:TERM@60
-# The job gets whole nodes: the fixed ports and the scratch directory (/tmp/.skiff, which
+# The job gets whole nodes: the fixed ports and the scratch directory (/tmp/.skiff.<uid>, which
 # has no user in its path) are the job's alone, and so are the node's resources, which are
 # the pods' too: Skifflet advertises what the job grants (the Slurm memory and CPU of the
 # node, or the cgroup limit if smaller) as the node's capacity, here all of it (--mem=0 is

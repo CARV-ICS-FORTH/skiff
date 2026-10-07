@@ -150,8 +150,9 @@ runtime_path() {
     uid=$(e2e_kubectl get pod e2e17-a -n "$NS" -o jsonpath='{.metadata.uid}')
     pod_dir=$(runtime_pod_dir "$NS" e2e17-a "$uid")
     e2e_assert_eq "the pod's directory is under the configured one" "$(runtime_bubble_exec "$NODE_A" "test -d '${pod_dir}/logs/app' && echo yes || echo no")" yes
-    if [ "$SKIFF_TMP_DIR" != /tmp/.skiff ]; then
-        e2e_assert_eq "nothing under the default location" "$(runtime_bubble_exec "$NODE_A" "test -e '/tmp/.skiff/.pods/${NS}' && echo yes || echo no")" no
+    default_scratch="/tmp/.skiff.$(id -u)"
+    if [ "$SKIFF_TMP_DIR" != "$default_scratch" ]; then
+        e2e_assert_eq "nothing under the default location" "$(runtime_bubble_exec "$NODE_A" "test -e '${default_scratch}/.pods/${NS}' && echo yes || echo no")" no
     fi
     e2e_kubectl logs e2e17-a -n "$NS" > /dev/null || e2e_fail "kubectl logs failed"
     e2e_assert_eq "exec through the configured path" "$(in_pod echo reachable)" reachable

@@ -102,7 +102,7 @@ sbatch --nodes=2 --export=ALL,SKIFF_POD_CIDR=10.200.0.0/16,SKIFF_SERVICE_CIDR=10
 | `SKIFF_CLUSTER_DOMAIN` | `cluster.local` | Cluster DNS domain |
 | `SKIFF_POD_MTU` | link MTU less 50 (`1450`) | MTU of pod interfaces; at most `SKIFF_UPLINK_MTU` - 50 |
 | `SKIFF_UPLINK_MTU` | `1500` | MTU of the links between the bubbles |
-| `SKIFF_TMP_DIR` | `/tmp/.skiff` | The node's scratch directory (see [Directories](#directories)) |
+| `SKIFF_TMP_DIR` | `/tmp/.skiff.<uid>` | The node's scratch directory (see [Directories](#directories)) |
 
 Each bubble's log starts with the effective configuration.
 
@@ -111,7 +111,7 @@ Each bubble's log starts with the effective configuration.
 Skiff uses two locations, and nothing else on the host:
 
 - **`~/.skiff`** on the shared home is fixed, not a setting: the credentials (`kubeconfig`), images, caches and volume data every node must find at the same place. The bubbles run as root, so inside the cluster it is **`/root/.skiff`**; use that spelling in a `hostPath` or PersistentVolume (`~/.skiff/data` on the host is `/root/.skiff/data` for a pod).
-- **`SKIFF_TMP_DIR`** (default `/tmp/.skiff`) is the node's scratch directory: pod runtime state, and where Apptainer unpacks and converts images. It must be node-local (it holds sockets and unpacked images, so a shared filesystem is refused), writable, and have room for the images you run: set it when `/tmp` is small or a RAM disk. It is checked on every node before anything starts, it is disposable, and the bubbles see it at the same path.
+- **`SKIFF_TMP_DIR`** (default `/tmp/.skiff.<uid>`, your own: the node's `/tmp` outlives jobs, and a directory made by one user would refuse the next) is the node's scratch directory: pod runtime state, and where Apptainer unpacks and converts images. It must be node-local (it holds sockets and unpacked images, so a shared filesystem is refused), writable, and have room for the images you run: set it when `/tmp` is small or a RAM disk. It is checked on every node before anything starts, it is disposable, and the bubbles see it at the same path.
 
 To keep the data on other storage (a project filesystem instead of a small home), make `~/.skiff` a symlink to a directory that every node sees at the same path: the whole suite was run that way. A symlink inside `~/.skiff` would dangle in the bubble, which sees only what is bound into it.
 
