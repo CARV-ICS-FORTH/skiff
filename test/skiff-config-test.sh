@@ -250,6 +250,24 @@ out=$(node_check "$nodedir/nouidmap:$nodedir/base" "$nodedir/scratch"); status=$
 expect "without a range newuidmap and newgidmap are not needed: only the warning" "$status:$(grep -c . <<< "$out"):$(grep -c 'newuidmap' <<< "$out")" "0:1:0"
 mv "$nodedir/sys/etc/subuid.away" "$nodedir/sys/etc/subuid"
 
+# the other namespaces: a limit of 0 on any of the ones the bubble and its pods are made of is refused, by name
+ns_limit() { echo "$2" > "$nodedir/sys/proc/sys/user/max_$1_namespaces"; }
+all_limits() { local n; for n in net mnt pid uts; do ns_limit "$n" "$1"; done; }
+all_limits 4126315
+out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+expect "limits above 0 for the other namespaces are fine" "$status:$out" "0:"
+for ns in net mnt pid uts; do
+    all_limits 4126315; ns_limit "$ns" 0
+    out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+    expect "a limit of 0 for the $ns namespaces is refused, naming it and what to ask for" "$status:$(grep -c . <<< "$out"):$(grep -c "request that user.max_${ns}_namespaces be set above 0" <<< "$out")" "1:1:1"
+done
+all_limits 4126315; ns_limit net 0; ns_limit uts 0
+out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+expect "several are named together, in one message" "$status:$(grep -c . <<< "$out"):$(grep -c 'user.max_uts_namespaces, user.max_net_namespaces' <<< "$out")" "1:1:1"
+rm -f "$nodedir/sys/proc/sys/user/"max_{net,mnt,pid,uts}_namespaces
+out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+expect "a kernel without those limits (no files) is not asked" "$status:$out" "0:"
+
 # AppArmor's restriction of user namespaces (Ubuntu 24.04 and later)
 mkdir "$nodedir/unshare-fails" "$nodedir/unshare-ok"
 printf '#!/bin/sh\nexit 1\n' > "$nodedir/unshare-fails/unshare"; printf '#!/bin/sh\nexit 0\n' > "$nodedir/unshare-ok/unshare"

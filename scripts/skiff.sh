@@ -458,6 +458,21 @@ skiff_check_node() {
         errors=$((errors + 1))
     fi
 
+    # The bubble and every pod make namespaces of their own besides the user's: a mount, a PID, a
+    # UTS (the hostname) and a network namespace (--net). A site that raised user.max_user_namespaces
+    # and left another of these at 0 (on one cluster, user.max_net_namespaces) fails when the first
+    # bubble starts; this says it on the node, before anything starts.
+    local ns zero=""
+    for ns in mnt pid uts net; do
+        if [ "$(cat "$(_skiff_sys "/proc/sys/user/max_${ns}_namespaces")" 2>/dev/null || true)" = 0 ]; then
+            zero="${zero:+$zero, }user.max_${ns}_namespaces"
+        fi
+    done
+    if [ -n "$zero" ]; then
+        echo "$host: the limit of the namespaces the bubble and its pods are made of is 0 on this node ($zero): Skiff requires them, besides the user namespace: please contact your administrator and request that $zero be set above 0 (sysctl, persisted in /etc/sysctl.d/), like user.max_user_namespaces" >&2
+        errors=$((errors + 1))
+    fi
+
     # Ubuntu 24.04 and later: AppArmor lets only programs that have a profile create user
     # namespaces (kernel.apparmor_restrict_unprivileged_userns). The Apptainer package installs a
     # profile for /usr/bin/apptainer; a copy anywhere else, such as the one skiff.sh tools puts in
