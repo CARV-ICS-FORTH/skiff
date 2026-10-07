@@ -46,6 +46,18 @@ Standalone, `plaidd` opens the VXLAN UDP port itself. In a Skiff bubble the bubb
 - `plaidctl overlay-socket --bind <host address> --handoff <socket>` is the helper the deployment runs on the host (from the same image, in an Apptainer execution that keeps the host network). It binds the socket, waits for `plaidd` to listen, passes the descriptor, and exits when `plaidd` acknowledges; it forwards no packets, and a failure is a failure of the startup. Closing `plaidd` releases the port.
 - `plaidctl status` reports the socket in use, its address and the overlay's packet and error counters.
 
+### Profiling
+
+`plaidd --pprof-socket=PATH` (or `PLAID_PPROF_SOCKET=PATH`, which Skiff's bubble passes through from the job's environment) serves Go's profiling endpoints on a UNIX socket, for finding where plaidd's CPU goes where `perf` cannot be used (no root, `perf_event_paranoid`). It is off by default; the socket is the owner's only (mode 0600), nothing listens on the network, and the mutex and blocking events are sampled lightly while it is on. In a Skiff bubble put the socket in the scratch directory (`$SKIFF_TMP_DIR`), which the host sees at the same path:
+
+```bash
+curl --unix-socket "$SKIFF_TMP_DIR/plaidd-pprof.sock" 'http://plaid/debug/pprof/profile?seconds=10' > cpu.pb.gz
+curl --unix-socket "$SKIFF_TMP_DIR/plaidd-pprof.sock" 'http://plaid/debug/pprof/allocs' > allocs.pb.gz
+go tool pprof -top bin/plaidd cpu.pb.gz     # needs the unstripped plaidd (the symbol table)
+```
+
+Also served: `heap`, `goroutine`, `mutex`, `block` and `trace` under `/debug/pprof/`.
+
 ---
 
 ## Key Features

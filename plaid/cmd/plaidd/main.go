@@ -42,6 +42,7 @@ type PlaidDaemon struct {
 	healthErr    chan error
 	filterEngine *filter.Engine
 	apiServer    *api.Server
+	pprofStop    func() // profiling server, when --pprof-socket is set
 	cancelFunc   context.CancelFunc
 	k8sCtrl      *k8s.Controller
 	services     *svc.Engine // tap mode only
@@ -73,6 +74,8 @@ type Config struct {
 	Kubeconfig        string
 	NodeName          string
 	MTU               int
+	// PprofSocket, when set, is a UNIX socket on which plaidd serves Go's profiling endpoints (see startPprof).
+	PprofSocket string
 	// DisableKubernetes keeps plaidd away from the Kubernetes API altogether: no Node,
 	// Service or EndpointSlice watches, no Node condition.
 	DisableKubernetes bool
@@ -116,6 +119,7 @@ func main() {
 	flag.StringVar(&cfg.Routes, "routes", "", "Initial overlay routes, comma-separated (e.g. '10.244.2.0/24=node.local')")
 	flag.StringVar(&cfg.Kubeconfig, "kubeconfig", "", "Path to kubeconfig file (Kubernetes mode only; defaults to in-cluster service account)")
 	flag.StringVar(&cfg.NodeName, "node-name", "", "Local node name (Kubernetes mode only; defaults to NODE_NAME env or hostname)")
+	flag.StringVar(&cfg.PprofSocket, "pprof-socket", os.Getenv(EnvPprofSocket), "Path of a UNIX socket on which to serve Go profiling endpoints (CPU, allocations, goroutines, mutex, block, trace), for finding where plaidd's CPU goes without perf (default: $"+EnvPprofSocket+"; empty: off)")
 	flag.IntVar(&cfg.MTU, "mtu", 0, "Effective MTU for container TAP interfaces and slirp (default: $PLAID_MTU, else 1450, allowing 50B VXLAN overhead on 1500B host MTU)")
 
 	flag.Parse()
@@ -409,6 +413,15 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start API server: %w", err)
 	}
 
+	if d.cfg.PprofSocket != "" {
+		stop, err := startPprof(d.cfg.PprofSocket)
+		if err != nil {
+			startErr = err
+			return err
+		}
+		d.pprofStop = stop
+	}
+
 	// Initialize runtime dir, permissions, IPAM config, and binary
 	if err := initRuntimeDir(d.cfg.SocketPath, d.cfg.NodeCIDR, d.cfg.GatewayIP); err != nil {
 		startErr = err
@@ -542,6 +555,10 @@ func (d *PlaidDaemon) Stop() {
 	}
 	if d.apiServer != nil {
 		_ = d.apiServer.Close()
+	}
+	if d.pprofStop != nil {
+		d.pprofStop()
+		d.pprofStop = nil
 	}
 	if d.overlay != nil {
 		_ = d.overlay.Close()
