@@ -90,6 +90,10 @@ cat > "$test_dir/bin/scontrol" <<'STUB'
 #!/usr/bin/env bash
 echo "NodeName=controller Arch=aarch64 CPUTot=2 CPULoad=0.1 RealMemory=1500 AllocMem=0"
 STUB
+# unshare: the node check asks it whether the Apptainer in use can make a user namespace where
+# AppArmor restricts them (Ubuntu 24.04, the CI runners), and the fake apptainer is not a
+# program that AppArmor would profile. The fake one can.
+printf '#!/bin/sh\nexit 0\n' > "$test_dir/bin/unshare"
 chmod +x "$test_dir/bin/"*
 
 # The scratch directory is a setting (its default is the user's own, /tmp/.skiff.<uid>): here it is
