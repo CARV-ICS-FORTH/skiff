@@ -29,7 +29,7 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 ## Requirements
 
 - **Slurm**, and whole nodes: `skiff.slurm` asks for exclusive nodes and all their memory (`--exclusive --mem=0`), because the fixed ports (the API server's TCP 6443 on the controller, the kubelet's TCP 10250 and the overlay's UDP 8472 on every node) and the node's scratch directory must be the job's alone. A job on shared nodes is refused when something is in the way.
-- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and `ip`** (iproute2). `ip` comes with the system. The other three do not have to be installed: `skiff.sh tools` takes them (and `kubectl`) out of the Skiff image archive into `~/.skiff/tools`, which `skiff.sh` and `skiff.slurm` then put first in `PATH` (they need glibc 2.34 or newer on the host: RHEL 9, Ubuntu 22.04 and later, Debian 12 and later). Or install them with the packages below.
+- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and `ip`** (iproute2). `ip` comes with the system. The other three do not have to be installed: `skiff.sh tools` takes them (and `kubectl`) out of the Skiff image archive into `~/.skiff/tools`, which `skiff.sh` and `skiff.slurm` then put first in `PATH` (they need glibc 2.34 or newer on the host: RHEL 9, Ubuntu 22.04 and later, Debian 12 and later; on an older host see [Hosts with an old C library](#hosts-with-an-old-c-library)). Or install them with the packages below.
 
   | | Debian / Ubuntu | RHEL family |
   |---|---|---|
@@ -47,6 +47,41 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 **What needs an administrator** is at most these, none of them a package of Skiff's (everything else comes out of the image, as a user): user namespaces allowed (`user.max_user_namespaces` and the mount, PID, UTS and network limits above 0), when a node has them off; the `tun` device above, when a node lacks it; on Ubuntu 24.04 and later, `kernel.apparmor_restrict_unprivileged_userns=0` (or Apptainer installed as a system package, which has its own AppArmor profile); and, to lift the limits of a single id, the package `uidmap` and a subordinate id range for the user on every compute node (`usermod --add-subuids 100000-165535 --add-subgids 100000-165535 <user>`). The node check names each one that is missing, with what to ask for.
 
 Skiff was qualified with Apptainer 1.5.4 and slirp4netns 1.2.1 on Ubuntu 24.04 (kernel 6.8): on two-node arm64 VMs, and on a three-node amd64 Slurm cluster (Slurm 23.11, cgroup process tracking, a shared NFS home) by an ordinary user, where everything passed except the checks that need root, which cannot run without it (see [test/README.md](test/README.md)). Older versions are reported and not refused; a failure with one is a reason to upgrade it first. On the two-node VMs it was also qualified [without a subordinate id range](#without-a-subordinate-id-range): the same suite passes, except the one check that needs a second id, which is reported as unavailable.
+
+## Hosts with an old C library
+
+The Apptainer and socat that `skiff.sh tools` takes out of the image are dynamically linked and need glibc 2.34 or newer. On an older host (RHEL 8 and its derivatives have 2.28) they do not start: `version 'GLIBC_2.34' not found (required by …/apptainer)`, and the same for `socat`. Nothing else is affected: **slirp4netns and `kubectl` are static programs** and run anywhere, and the Apptainer inside the bubble runs on the image's own C library. So on such a host Skiff still provides everything (slirp4netns, `kubectl`, the image, the cluster itself) **except these two programs: you provide your own Apptainer and socat**, installed or compiled for that host, and tell Skiff to use them instead of the provided ones.
+
+**1. Get an Apptainer and a socat that run on the host.**
+
+- **Apptainer**: the site's own installation or module if it has one (the node check accepts any version and warns about one older than the 1.5.4 Skiff was qualified with; a site's 1.4.2 ran a cluster), the distribution's package (EPEL on the RHEL family), or a build from source in your home, with the options the Skiff image uses: `./mconfig --without-suid --without-network --prefix=$HOME/.local/apptainer && make -C builddir && make -C builddir install` (Apptainer's own installation instructions list what the build needs, a recent Go and `libseccomp` among them; it needs `squashfs-tools`, `mksquashfs` and `unsquashfs`, to build and unpack images). **Build or install it dynamically linked, against the host's own C library, and not statically**: a static Apptainer cannot look up a user that the site keeps in a directory service (SSSD, LDAP, NIS), which is how most clusters provide accounts, and stops at start with `Couldn't determine user account information: user: unknown userid …`.
+- **socat**: the distribution's package, or a build from source with the options the image uses: `./configure --disable-openssl --disable-readline --disable-libwrap --disable-fips && make`; copy `socat` to a directory on your `PATH`, for example `~/bin`. A static build (add `LDFLAGS=-static` to `configure`) is fine: Skiff uses socat only with addresses and sockets, not names. Any recent socat works; the relays ran with a 1.7.3.0 build.
+
+**2. Take the tools out of the image, and move the two that cannot run out of the way.** `skiff.sh` and `skiff.slurm` put `~/.skiff/tools/bin` first in `PATH`, so as long as the provided `apptainer` and `socat` are there they are the ones found. `skiff.sh tools` reports an error for both when it prints the versions: expected on this host.
+
+```bash
+bash ~/skiff/scripts/skiff.sh tools
+mkdir -p ~/.skiff/tools/unusable
+mv ~/.skiff/tools/bin/apptainer ~/.skiff/tools/bin/socat ~/.skiff/tools/unusable/
+```
+
+Everything else stays: `slirp4netns` and `kubectl` in `~/.skiff/tools/bin` are the provided ones. When `skiff.sh tools` runs again (it replaces the whole tree when the image changes, and when `apptainer` is missing from it), repeat the `mv`.
+
+**3. Put your two programs in the `PATH` of the job.** The cluster is started by the job's steps, which inherit the environment you submit from, so it is enough that the programs are found there, on a path every node sees (the shared home, or the site's shared software tree):
+
+```bash
+export PATH=/shared/path/to/apptainer/bin:$HOME/bin:$PATH    # your Apptainer and your socat
+cd ~/skiff/scripts
+sbatch --nodes=2 skiff.slurm
+```
+
+(Or `module load` the site's Apptainer before `sbatch`: it sets the same variable.)
+
+**4. Check which program is which**, on a compute node: the check prints the path of each tool, and the line for `slirp4netns` says it is the one from `~/.skiff/tools`.
+
+```bash
+srun -N1 bash ~/skiff/scripts/skiff.sh check
+```
 
 ## Without a subordinate id range
 
