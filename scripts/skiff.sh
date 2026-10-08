@@ -870,8 +870,15 @@ skiff_bubble() {
         fi
     fi
 
+    # --ignore-fakeroot-command: without a range of subordinate ids Apptainer maps only the user's own
+    # id, and on a host that has the fakeroot command (the fakeroot package; some sites install it) it
+    # combines the two: it binds the host's fakeroot and libfakeroot.so into the bubble and sets
+    # LD_PRELOAD for everything in it. The nested Apptainer of every pod inherits that and fails
+    # ("/libs/fakeroot already exists in layout", or no /bin/sh to inspect in the pause image), so no
+    # pod's sandbox becomes ready. Skiff never wants the command: the root-mapped namespace is enough.
     apptainer instance run \
     	--fakeroot \
+    	--ignore-fakeroot-command \
     	--no-mount home \
     	--no-mount cwd \
     	--no-mount hostfs \

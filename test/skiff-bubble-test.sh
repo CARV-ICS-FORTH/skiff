@@ -171,6 +171,7 @@ grep -q -- "--mtu=$SKIFF_POD_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&
 [ "$(wc -l < "$FAKE_DIR/helper-args" | tr -d ' ')" = 1 ] || fail "the helper was not started exactly once"
 grep -q -- "$HOME/.skiff/images/skiff.sif /usr/local/bin/plaidctl overlay-socket --bind 192.0.2.10 --port 8472 --handoff $SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/helper-args" \
     || { cat "$FAKE_DIR/helper-args" >&2; fail "unexpected helper command line"; }
+grep -q -- "instance run --fakeroot --ignore-fakeroot-command " "$FAKE_DIR/instance-run" || fail "the bubble does not ignore the host's fakeroot command (it would run under its LD_PRELOAD)"
 grep -q -- "--env SKIFF_OVERLAY_HANDOFF=$SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told the handoff path"
 grep -q -- "--bind $SKIFF_TMP_DIR:$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not given the scratch directory at the same path"
 grep -q -- "--env SKIFF_TMP_DIR=$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not told the scratch directory"
