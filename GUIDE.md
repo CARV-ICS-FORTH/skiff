@@ -150,10 +150,18 @@ sbatch --nodes=2 --export=ALL,SKIFF_POD_CIDR=10.200.0.0/16,SKIFF_SERVICE_CIDR=10
 | `SKIFF_CLUSTER_DNS` | 10th Service address (`10.43.0.10`) | Address of the cluster DNS Service, inside the Service network |
 | `SKIFF_CLUSTER_DOMAIN` | `cluster.local` | Cluster DNS domain |
 | `SKIFF_POD_MTU` | link MTU less 50 (`1450`) | MTU of pod interfaces; at most `SKIFF_UPLINK_MTU` - 50 |
-| `SKIFF_UPLINK_MTU` | `1500` | MTU of the links between the bubbles |
+| `SKIFF_UPLINK_MTU` | the smallest MTU of the nodes' interfaces on the way to the controller, else `1500` | MTU of the links between the bubbles (read from the interfaces unless `SKIFF_UPLINK_MTU` or `SKIFF_POD_MTU` is set; a node that reaches the controller through a gateway keeps `1500`, since a link of the path may be smaller) |
+| `SKIFF_NETWORK` | `auto` | The network the nodes use to reach each other, chosen on the controller: `auto` (the fastest physical interface that is up and has an IPv4 address), an interface name (`enp130s0`) or an IPv4 network (`10.0.1.0/24`) the controller has an address in |
 | `SKIFF_TMP_DIR` | `/tmp/.skiff.<uid>` | The node's scratch directory (see [Directories](#directories)) |
 
-Each bubble's log starts with the effective configuration.
+Each bubble's log starts with the effective configuration. On nodes with several networks (a management network and a fabric, say) the address of the controller decides which one the cluster uses, and a fabric with a larger MTU carries pod traffic several times faster than the default 1500. The job's output says what was chosen (`Network: enp130s0 10.0.1.11 (56000 Mb/s, SKIFF_NETWORK=auto)`, `MTU: ... (from the interfaces)`); to see it before submitting, run the probe on the controller's node, and on the others with the controller's address:
+
+```bash
+srun -N1 bash ~/skiff/scripts/skiff.sh network-probe              # ip=10.0.1.11 dev=enp130s0 mtu=9000 speed=56000
+srun -N2 --ntasks-per-node=1 bash ~/skiff/scripts/skiff.sh network-probe 10.0.1.11   # dev=enp130s0 mtu=9000 onlink=yes
+```
+
+Both only read the node's interfaces and need no privileges.
 
 ## Directories
 

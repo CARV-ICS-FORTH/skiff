@@ -4,13 +4,18 @@
 # defaults the cluster job used (lib/common.sh sources scripts/skiff.sh), so
 # it checks the default deployment and an alternate one (other pod and Service
 # networks, DNS address, cluster domain, pod MTU, runtime paths) alike: run the
-# tests with the variables the cluster was submitted with.
+# tests with the variables the cluster was submitted with. The one exception is an
+# MTU the user did not choose: the job picks the link MTU from the nodes' network when
+# it starts (skiff.slurm), so the pod MTU under test is the one the job's output states.
 set -euo pipefail
 # (E2E_CONFIG_VARIANT names a run on other settings than the defaults, "-alt" for the one the
 # aggregate makes, see run_alternative_network: its results are labelled T18-alt-..., T32-alt-....)
 
 E2E_CASE="17"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Whether the job was given an MTU, decided as skiff.slurm decides it, before lib/common.sh
+# sources skiff.sh and gives both variables a value.
+if [ -n "${SKIFF_UPLINK_MTU:-}" ] || [ -n "${SKIFF_POD_MTU:-}" ]; then MTU_CHOSEN=1; else MTU_CHOSEN=0; fi
 source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
@@ -25,7 +30,23 @@ e2e_kubectl create namespace "$NS"
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found"
 e2e_cleanup_register "e2e_preserve_failure $NS"
 
-e2e_log "Configuration under test: pods ${SKIFF_POD_CIDR}, Services ${SKIFF_SERVICE_CIDR} (API ${SKIFF_API_SERVICE_IP}, DNS ${SKIFF_CLUSTER_DNS}), domain ${SKIFF_CLUSTER_DOMAIN}, pod MTU ${SKIFF_POD_MTU}, scratch directory ${SKIFF_TMP_DIR}"
+# The MTU the job chose, from its own statement of it (skiff_config_print):
+# "  MTU:              pods N, bubble link M (source), slirp4netns link S".
+TARGET_JOB="${SKIFF_JOB_ID:-}"
+[[ "$TARGET_JOB" =~ ^[0-9]+$ ]] || e2e_die "Case 17 requires the exact Slurm job ID, to read the MTU the job chose"
+JOB_OUTPUT=$(scontrol show job "$TARGET_JOB" -o | sed -n 's/.*StdOut=\([^ ]*\).*/\1/p')
+JOB_MTU=$(sed -n 's/^  MTU: *pods \([0-9]*\), bubble link \([0-9]*\) .*/\1 \2/p' "$JOB_OUTPUT" 2>/dev/null | sed -n 1p || true)
+[ -n "$JOB_MTU" ] || e2e_die "the output of job $TARGET_JOB ($JOB_OUTPUT) does not state its MTU"
+read -r POD_MTU LINK_MTU <<< "$JOB_MTU"
+if [ "$MTU_CHOSEN" -eq 1 ]; then
+    # What the user chose is what the job must have used (lib/common.sh derived the pod MTU from the link MTU as the job did).
+    e2e_assert_eq "the job's pod MTU is the chosen one" "$POD_MTU" "$SKIFF_POD_MTU"
+    e2e_assert_eq "the job's bubble link MTU is the chosen one" "$LINK_MTU" "$SKIFF_UPLINK_MTU"
+else
+    e2e_assert_eq "the job's pod MTU leaves room for VXLAN on its link" "$POD_MTU" "$((LINK_MTU - SKIFF_VXLAN_OVERHEAD))"
+fi
+
+e2e_log "Configuration under test: pods ${SKIFF_POD_CIDR}, Services ${SKIFF_SERVICE_CIDR} (API ${SKIFF_API_SERVICE_IP}, DNS ${SKIFF_CLUSTER_DNS}), domain ${SKIFF_CLUSTER_DOMAIN}, pod MTU ${POD_MTU} (bubble link ${LINK_MTU}, $([ "$MTU_CHOSEN" -eq 1 ] && echo chosen || echo "the job's choice")), scratch directory ${SKIFF_TMP_DIR}"
 
 # ---------------------------------------------------------------------------
 # T18-services: Kubernetes created the API and DNS Services where the configuration
@@ -57,7 +78,7 @@ node_networks() {
         e2e_assert_contains "Plaid on $node: node network" "$status" "Node CIDR:    $cidr"
         e2e_assert_contains "Plaid on $node: cluster network" "$status" "Cluster CIDR: $SKIFF_POD_CIDR"
         e2e_assert_contains "Plaid on $node: resolver" "$status" "Resolver:     $SKIFF_CLUSTER_DNS"
-        e2e_assert_contains "Plaid on $node: MTU" "$status" "MTU:          $SKIFF_POD_MTU"
+        e2e_assert_contains "Plaid on $node: MTU" "$status" "MTU:          $POD_MTU"
     done
 }
 e2e_subcase_run T18${E2E_CONFIG_VARIANT:-}-node-networks node_networks
@@ -73,7 +94,7 @@ startup_report() {
         e2e_assert_contains "report of $node: pod network" "$log" "Pod network:      ${SKIFF_POD_CIDR}"
         e2e_assert_contains "report of $node: Service network" "$log" "Service network:  ${SKIFF_SERVICE_CIDR} (API ${SKIFF_API_SERVICE_IP}, DNS ${SKIFF_CLUSTER_DNS})"
         e2e_assert_contains "report of $node: domain" "$log" "Cluster domain:   ${SKIFF_CLUSTER_DOMAIN}"
-        e2e_assert_contains "report of $node: MTU" "$log" "Pod MTU:          ${SKIFF_POD_MTU}"
+        e2e_assert_contains "report of $node: MTU" "$log" "Pod MTU:          ${POD_MTU}"
     done
 }
 e2e_subcase_run T18${E2E_CONFIG_VARIANT:-}-startup-report startup_report
@@ -118,7 +139,7 @@ pod_network() {
     cidr=$(e2e_kubectl get node "$NODE_A" -o jsonpath='{.spec.podCIDR}')
     skiff_ip_in_cidr "$IP_A" "$cidr" || e2e_fail "pod address $IP_A is outside the node's network $cidr"
     link=$(in_pod ip -o link show eth0)
-    e2e_assert_contains "the pod's interface MTU" "$link" "mtu ${SKIFF_POD_MTU} "
+    e2e_assert_contains "the pod's interface MTU" "$link" "mtu ${POD_MTU} "
     resolv=$(in_pod cat /etc/resolv.conf)
     e2e_assert_contains "the pod's name server" "$resolv" "nameserver ${SKIFF_CLUSTER_DNS}"
     e2e_assert_contains "the pod's search path" "$resolv" "search ${NS}.svc.${SKIFF_CLUSTER_DOMAIN} svc.${SKIFF_CLUSTER_DOMAIN} ${SKIFF_CLUSTER_DOMAIN}"

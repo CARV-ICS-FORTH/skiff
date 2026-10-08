@@ -12,6 +12,11 @@
 #                         version, the tools out of it and the images of the cluster's
 #                         system pods; with IMAGEs, those images instead (the user's own,
 #                         for compute nodes that cannot pull them)
+#   skiff.sh network-probe [CONTROLLER_IP]
+#                         what skiff.slurm asks of the nodes about their networks: without
+#                         an argument (on the controller) the address, interface, MTU and
+#                         speed of the network chosen by SKIFF_NETWORK; with the controller's
+#                         address (on every node) the interface, MTU and kind of the route to it
 #   skiff.sh tools [TAR]  take the programs Skiff needs on a host (Apptainer, slirp4netns,
 #                         socat, kubectl) out of the Skiff image archive and put them in
 #                         ~/.skiff/tools, which every command here puts first in PATH: a
@@ -38,9 +43,16 @@
 # The cluster DNS Service. Empty means the 10th address of the Service network
 # (the address Kubernetes distributions conventionally give it).
 : "${SKIFF_CLUSTER_DNS:=}"
+# The network the nodes reach each other on, for the API and the overlay: `auto` (the
+# fastest physical interface of the controller that is up and has an IPv4 address; its
+# address is the controller's for every node), the name of an interface (for example
+# enp130s0) or an IPv4 network in CIDR notation (for example 10.0.1.0/24) that the
+# controller has an address in. `skiff.sh network-probe` shows what a node would choose.
+: "${SKIFF_NETWORK:=auto}"
 # MTU of the link between the bubbles (the outer network of every bubble), and
 # of the pods' interfaces. The pod MTU defaults to what the link leaves after the
-# 50 bytes of VXLAN encapsulation the pod network adds.
+# 50 bytes of VXLAN encapsulation the pod network adds. skiff.slurm takes the uplink MTU
+# from the interfaces (the smallest on the way to the controller) when neither is set.
 : "${SKIFF_UPLINK_MTU:=1500}"
 : "${SKIFF_POD_MTU:=}"
 # The node's scratch directory, for runtimes whose scratch space is not /tmp: pod
@@ -143,6 +155,18 @@ _skiff_is_ipv4() {
         [ "$octet" -le 255 ] || return 1
         [ "${#octet}" -eq 1 ] || [ "${octet:0:1}" != 0 ] || return 1
     done
+}
+
+# _skiff_mtu_check NAME VALUE MIN [MAX]: succeeds if VALUE is a number of at least MIN
+# (and at most MAX, if given); otherwise prints a message on stderr and returns 1.
+_skiff_mtu_check() {
+    local name="$1" value="$2" min="$3" max="${4:-}" range="of at least $3"
+    [ -z "$max" ] || range="between $min and $max"
+    if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge "$min" ] && { [ -z "$max" ] || [ "$value" -le "$max" ]; }; then
+        return 0
+    fi
+    echo "$name: \"$value\" is not an MTU $range" >&2
+    return 1
 }
 
 # _skiff_cidr NAME CIDR MIN_PREFIX MAX_PREFIX: parse an IPv4 network into
@@ -288,11 +312,15 @@ skiff_config_validate() {
         errors=$((errors + 1))
     fi
 
-    if ! [[ "$SKIFF_UPLINK_MTU" =~ ^[0-9]+$ ]] || [ "$SKIFF_UPLINK_MTU" -lt 576 ] || [ "$SKIFF_UPLINK_MTU" -gt 9000 ]; then
-        echo "SKIFF_UPLINK_MTU: \"$SKIFF_UPLINK_MTU\" is not an MTU between 576 and 9000" >&2
+    if [[ "$SKIFF_NETWORK" == */* ]]; then
+        _skiff_cidr SKIFF_NETWORK "$SKIFF_NETWORK" 8 32 || errors=$((errors + 1))
+    elif [ "$SKIFF_NETWORK" != auto ] && { _skiff_is_ipv4 "$SKIFF_NETWORK" || ! [[ "$SKIFF_NETWORK" =~ ^[A-Za-z0-9_.:@-]{1,15}$ ]]; }; then
+        echo "SKIFF_NETWORK: \"$SKIFF_NETWORK\" is not auto, an interface name or an IPv4 network in CIDR notation (for example enp130s0 or 10.0.1.0/24)" >&2
         errors=$((errors + 1))
-    elif ! [[ "$SKIFF_POD_MTU" =~ ^[0-9]+$ ]] || [ "$SKIFF_POD_MTU" -lt 576 ]; then
-        echo "SKIFF_POD_MTU: \"$SKIFF_POD_MTU\" is not an MTU of at least 576" >&2
+    fi
+
+    if ! _skiff_mtu_check SKIFF_UPLINK_MTU "$SKIFF_UPLINK_MTU" 576 9000 ||
+       ! _skiff_mtu_check SKIFF_POD_MTU "$SKIFF_POD_MTU" 576; then
         errors=$((errors + 1))
     elif [ "$SKIFF_POD_MTU" -gt $((SKIFF_UPLINK_MTU - SKIFF_VXLAN_OVERHEAD)) ]; then
         echo "SKIFF_POD_MTU ($SKIFF_POD_MTU) leaves no room for VXLAN's $SKIFF_VXLAN_OVERHEAD bytes on a link of MTU $SKIFF_UPLINK_MTU (at most $((SKIFF_UPLINK_MTU - SKIFF_VXLAN_OVERHEAD)))" >&2
@@ -785,13 +813,171 @@ skiff_check() {
     return "$status"
 }
 
+# --- The network the nodes meet on ----------------------------------------------------
+# Everything here only reads (ip, /sys/class/net): it works for any user on any node.
+
+# _skiff_sysfs_value FILE: the content of a file of /sys, empty when it cannot be read (the
+# speed of a link that is down, for one, is an error to read).
+_skiff_sysfs_value() { cat "$1" 2>/dev/null || true; }
+
+# _skiff_network_candidates: the global IPv4 addresses of this host, one line each, for
+# skiff_network_select: NAME ADDRESS/PREFIX SPEED_MBPS OPERSTATE HAS_DEVICE IS_DEFAULT.
+# The speed is 0 when the interface reports none (or a negative one, as a virtual device or
+# a link without carrier does); HAS_DEVICE is 1 for a physical NIC or IPoIB (they have a
+# `device` link in /sys, bridges, veth, tunnels and the like have none); IS_DEFAULT is 1
+# for the interface of the default route.
+_skiff_network_candidates() {
+    local default_dev addrs name addr dir speed state device default
+    addrs=$(ip -4 route show default 2>/dev/null || true)
+    default_dev=$(awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); break}}' <<< "$addrs" | sed -n 1p)
+    addrs=$(ip -4 -o addr show scope global 2>/dev/null || true)
+    while read -r _ name _ addr _; do
+        [ -n "$name" ] || continue
+        name=${name%%@*}
+        dir=$(_skiff_sys "/sys/class/net/$name")
+        speed=$(_skiff_sysfs_value "$dir/speed")
+        [[ "$speed" =~ ^[0-9]+$ ]] || speed=0
+        state=$(_skiff_sysfs_value "$dir/operstate")
+        device=0 default=0
+        [ ! -e "$dir/device" ] || device=1
+        [ "$name" != "$default_dev" ] || default=1
+        echo "$name $addr $speed ${state:-unknown} $device $default"
+    done <<< "$addrs"
+}
+
+# skiff_network_select SETTING CANDIDATES: choose the address of this host that SETTING
+# (the value of SKIFF_NETWORK) asks for among CANDIDATES (the text of
+# _skiff_network_candidates) and print `NAME ADDRESS SPEED`. An interface name takes
+# its first address and a CIDR the first address inside it, whatever else the interface is.
+# `auto` takes an interface that is up (operstate `up`; `unknown` too, which drivers that do
+# not report a state have, IPoIB among them: the device link below already keeps out what is
+# virtual), is not lo, has a global address and a device, and prefers the fastest, then the
+# one of the default route, then the first name. Returns 1 with a message when an explicit
+# setting matches nothing, and 3 (silently) when `auto` has no candidate: the caller falls
+# back to the address the host's name and default route give.
+skiff_network_select() {
+    local setting="$1" candidates="$2" name addr speed state device default seen=" " ranked=""
+    while read -r name addr speed state device default; do
+        [ -n "$name" ] || continue
+        addr=${addr%/*}
+        case "$setting" in
+            auto)
+                [ "$name" != lo ] && [ "$device" = 1 ] && { [ "$state" = up ] || [ "$state" = unknown ]; } || continue
+                case "$seen" in *" $name "*) continue ;; esac   # (the first address of an interface)
+                seen="$seen$name "
+                ranked+="$speed $default $name $addr"$'\n'
+                ;;
+            */*) if skiff_ip_in_cidr "$addr" "$setting"; then echo "$name $addr $speed"; return 0; fi ;;
+            *) if [ "$name" = "$setting" ]; then echo "$name $addr $speed"; return 0; fi ;;
+        esac
+    done <<< "$candidates"
+    if [ "$setting" = auto ]; then
+        [ -n "$ranked" ] || return 3
+        printf '%s' "$ranked" | LC_ALL=C sort -k1,1nr -k2,2nr -k3,3 | awk 'NR == 1 {print $3, $4, $1}'
+        return 0
+    fi
+    case "$setting" in
+        */*) echo "SKIFF_NETWORK: $(hostname) has no address in $setting" >&2 ;;
+        *) echo "SKIFF_NETWORK: $(hostname) has no global IPv4 address on interface $setting" >&2 ;;
+    esac
+    return 1
+}
+
+# skiff_probe_field LINE KEY: the value of KEY in a `key=value key=value` line of the probe.
+skiff_probe_field() {
+    local word
+    for word in $1; do
+        [ "${word%%=*}" != "$2" ] || echo "${word#*=}"
+    done
+}
+
+# skiff_network_probe [CONTROLLER_IP]: the command `skiff.sh network-probe`, which skiff.slurm
+# runs through srun. Without an address (on the controller) it chooses this host's address
+# as SKIFF_NETWORK says and prints `ip=ADDRESS dev=INTERFACE mtu=MTU speed=MBPS`. With the
+# controller's address (on every node) it prints `dev=INTERFACE mtu=MTU onlink=yes|no` for
+# the route to it: onlink=no when the route goes through a gateway.
+skiff_network_probe() {
+    local target="${1:-}" candidates choice name addr speed dev="" mtu route i via=0 status=0
+    local -a words
+    candidates=$(_skiff_network_candidates)
+    if [ -n "$target" ]; then
+        _skiff_is_ipv4 "$target" || { echo "usage: skiff.sh network-probe [CONTROLLER_IP]" >&2; return 2; }
+        route=$(ip route get "$target" 2>/dev/null | sed -n 1p || true)
+        read -r -a words <<< "$route"
+        for ((i = 0; i < ${#words[@]}; i++)); do
+            case "${words[i]}" in dev) dev="${words[i+1]:-}" ;; via) via=1 ;; esac
+        done
+        # The route to an address of this host leads through lo: the interface is the one that has it.
+        if [ "${words[0]:-}" = local ]; then
+            dev=$(awk -v a="$target" '{sub("/.*", "", $2); if ($2 == a) print $1}' <<< "$candidates" | sed -n 1p)
+        fi
+        mtu=$(_skiff_sysfs_value "$(_skiff_sys "/sys/class/net/${dev:-none}/mtu")")
+        if [ -z "$dev" ] || [ "$dev" = lo ] || ! [[ "$mtu" =~ ^[0-9]+$ ]]; then
+            echo "network-probe: $(hostname) has no route to $target through an interface with a known MTU" >&2
+            return 1
+        fi
+        echo "dev=$dev mtu=$mtu onlink=$([ "$via" -eq 0 ] && echo yes || echo no)"
+        return 0
+    fi
+
+    skiff_config_validate || return 1
+    choice=$(skiff_network_select "$SKIFF_NETWORK" "$candidates") || status=$?
+    if [ "$status" -eq 3 ]; then
+        # No interface to choose from: the address the host's name (mDNS) gives, else the one of the default route.
+        addr=$(getent ahostsv4 "${SLURMD_NODENAME:-$(hostname -s)}.local" 2>/dev/null | awk 'NR == 1 {print $1}') || true
+        if [ -z "$addr" ]; then
+            addr=$(ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") a=$(i+1)} END {print a}') || true
+        fi
+        if [ -z "$addr" ]; then
+            echo "network-probe: $(hostname) has no IPv4 address to offer" >&2
+            return 1
+        fi
+        name=$(awk -v a="$addr" '{sub("/.*", "", $2); if ($2 == a) print $1}' <<< "$candidates" | sed -n 1p)
+        speed=$(awk -v a="$addr" '{sub("/.*", "", $2); if ($2 == a) print $3}' <<< "$candidates" | sed -n 1p)
+        choice="${name:-unknown} $addr ${speed:-0}"
+    elif [ "$status" -ne 0 ]; then
+        return "$status"
+    fi
+    read -r name addr speed <<< "$choice"
+    mtu=$(_skiff_sysfs_value "$(_skiff_sys "/sys/class/net/$name/mtu")")
+    [[ "$mtu" =~ ^[0-9]+$ ]] || mtu=0
+    echo "ip=$addr dev=$name mtu=$mtu speed=$speed"
+}
+
+# skiff_probe_mtu NODE_COUNT OUTPUT: the uplink MTU for the probes' output (the lines
+# `dev=.. mtu=.. onlink=..` of NODE_COUNT nodes, among other text): the smallest, within what
+# SKIFF_UPLINK_MTU accepts. Fails with a message, printing nothing, when a node did not
+# answer or its route to the controller goes through a gateway, where a link of the path
+# may be smaller than any interface says; the caller keeps the default then.
+skiff_probe_mtu() {
+    local nodes="$1" line mtu min="" count=0 routed=0
+    while read -r line; do
+        [[ "$line" =~ ^dev=[^\ ]+\ mtu=[0-9]+\ onlink=(yes|no)$ ]] || continue
+        count=$((count + 1))
+        mtu=$(skiff_probe_field "$line" mtu)
+        if [ -z "$min" ] || [ "$mtu" -lt "$min" ]; then min=$mtu; fi
+        [ "$(skiff_probe_field "$line" onlink)" = yes ] || routed=1
+    done <<< "$2"
+    if [ "$count" -ne "$nodes" ]; then
+        echo "WARNING: $count of $nodes nodes reported their network; keeping the uplink MTU $SKIFF_UPLINK_MTU" >&2
+        return 1
+    elif [ "$routed" -eq 1 ]; then
+        echo "WARNING: a node reaches the controller through a gateway, whose path may have a smaller MTU than its interface; keeping the uplink MTU $SKIFF_UPLINK_MTU (set SKIFF_UPLINK_MTU to choose)" >&2
+        return 1
+    fi
+    echo $(( min < 576 ? 576 : min > 9000 ? 9000 : min ))
+}
+
 # skiff_config_print: the effective configuration, for the log of a startup.
 skiff_config_print() {
     echo "Effective network configuration:"
     echo "  Pod network:      $SKIFF_POD_CIDR (a /24 per node, allocated by Kubernetes)"
     echo "  Service network:  $SKIFF_SERVICE_CIDR (API Service $SKIFF_API_SERVICE_IP, DNS Service $SKIFF_CLUSTER_DNS)"
     echo "  Cluster domain:   $SKIFF_CLUSTER_DOMAIN"
-    echo "  MTU:              pods $SKIFF_POD_MTU, bubble link $SKIFF_UPLINK_MTU"
+    if [ -n "${SKIFF_NET_DEV:-}" ]; then
+        echo "  Network:          $SKIFF_NET_DEV ${CONTROLLER_IP:-} (${SKIFF_NET_SPEED:-0} Mb/s, SKIFF_NETWORK=$SKIFF_NETWORK)"
+    fi
+    echo "  MTU:              pods $SKIFF_POD_MTU, bubble link $SKIFF_UPLINK_MTU (${SKIFF_MTU_SOURCE:-set})"
     echo "  Directories:      state $SKIFF_STATE_DIR (fixed, /root/.skiff in the cluster), scratch $SKIFF_TMP_DIR (node-local)"
     [ -z "${SKIFF_JOB_INSTANCE:-}" ] || echo "  Volume data:      $SKIFF_VOLUMES_DIR/$SKIFF_JOB_INSTANCE (claims of this job)"
 }
@@ -1523,8 +1709,9 @@ skiff_main() {
         bubble) shift; skiff_bubble "$@" ;;
         check) shift; skiff_check "$@" ;;
         download) shift; skiff_download "$@" ;;
+        network-probe) shift; skiff_network_probe "$@" ;;
         tools) shift; skiff_tools "$@" ;;
-        *) echo "usage: skiff.sh bubble ID | skiff.sh check [controller|node] | skiff.sh download [IMAGE...] | skiff.sh tools [IMAGE-TAR]" >&2; exit 2 ;;
+        *) echo "usage: skiff.sh bubble ID | skiff.sh check [controller|node] | skiff.sh download [IMAGE...] | skiff.sh network-probe [CONTROLLER_IP] | skiff.sh tools [IMAGE-TAR]" >&2; exit 2 ;;
     esac
 }
 

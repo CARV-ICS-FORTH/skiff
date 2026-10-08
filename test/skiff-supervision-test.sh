@@ -37,7 +37,17 @@ EOF
 cat > "$test_dir/bin/srun" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
-    *'getent ahostsv4'*) echo 127.0.0.1 ;;
+    *'skiff.sh network-probe '*)
+        # The node's route to the controller (other output may be mixed in, as libraries do).
+        echo "libibverbs: Warning: no userspace device-specific driver found"
+        echo "dev=enp130s0 mtu=9000 onlink=${TEST_PROBE_ONLINK:-yes}"
+        ;;
+    *'skiff.sh network-probe'*)
+        # The controller's address, as SKIFF_NETWORK chose it (TEST_PROBE=real: by the script itself).
+        [ "${TEST_PROBE:-ok}" != real ] || exec bash "${@: -2}"
+        [ "${TEST_PROBE:-ok}" = ok ] || { echo "SKIFF_NETWORK: controller has no global IPv4 address on interface ib9" >&2; exit 1; }
+        echo "ip=127.0.0.1 dev=enp130s0 mtu=9000 speed=56000"
+        ;;
     *'skiff.sh check'*)
         # What a node needs (host programs, a scratch directory) is checked on the node.
         [ "${TEST_NODE_CHECK:-ok}" = ok ] || { echo "controller: required program(s) not found in PATH: socat" >&2; exit 1; }
@@ -63,6 +73,7 @@ cat > "$test_dir/fake-bubble" <<'EOF'
 if [ "$TEST_CHILD_MODE" = early ]; then exit 9; fi
 mkdir -p "$HOME/.skiff/tls"
 echo "$SKIFF_JOB_INSTANCE" >> "$HOME/.skiff/instances"
+echo "$CONTROLLER_IP $SKIFF_UPLINK_MTU $SKIFF_POD_MTU" > "$HOME/.skiff/bubble-env"
 touch "$HOME/.skiff/kubeconfig" "$HOME/.skiff/tls/server-ca.crt"
 if [ "$TEST_CHILD_MODE" = term ]; then echo $$ > "$HOME/.skiff/bubble-pid"; exec sleep 30; fi
 sleep 0.1
@@ -168,4 +179,33 @@ for mode in 7 0 early empty term termsteps; do
             && grep -q "^Image: $HOME/.skiff/images/skiff-9.9.9-test.sif\$" "$test_dir/$mode.log" \
             || { echo "$mode: the job did not prepare the release's image: $(cat "$HOME/.skiff/conversions" 2>&1)" >&2; exit 1; }
     fi
+    # The network and the MTU come from the probes: the bubbles get the controller's address
+    # and the nodes' smallest MTU (and the pod MTU that follows from it), the log says so.
+    if [ "$mode" = 0 ]; then
+        [ "$(cat "$HOME/.skiff/bubble-env")" = "127.0.0.1 9000 8950" ] || { echo "$mode: the bubble got '$(cat "$HOME/.skiff/bubble-env")', not the probed address and MTU" >&2; exit 1; }
+        grep -q 'Network: *enp130s0 127.0.0.1 (56000 Mb/s, SKIFF_NETWORK=auto)' "$test_dir/$mode.log" && grep -q 'MTU: *pods 8950, bubble link 9000 (from the interfaces)' "$test_dir/$mode.log" || { echo "$mode: the log does not state the network and the MTU" >&2; cat "$test_dir/$mode.log" >&2; exit 1; }
+    fi
 done
+
+# Chosen MTUs stay as they are (the uplink's, or the pod's alone), a node that reaches the
+# controller through a gateway leaves the default with a warning, and a network that cannot
+# be had stops the job before anything starts.
+job=9100
+mtu_run() { # mtu_run NAME VAR=value...: run a job that ends at once, leave its log in $test_dir/NAME.log
+    local name="$1"
+    shift
+    job=$((job + 1))
+    rc=0
+    mkdir -p "$test_dir/home-$name/.skiff/images"; : > "$test_dir/home-$name/.skiff/images/skiff-9.9.9-test.tar"
+    env SLURM_JOB_ID="$job" HOME="$test_dir/home-$name" TEST_CHILD_MODE=0 "$@" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/$name.log" 2>&1 || rc=$?
+}
+mtu_run uplink-set SKIFF_UPLINK_MTU=1600
+[ "$(cat "$test_dir/home-uplink-set/.skiff/bubble-env")" = "127.0.0.1 1600 1550" ] && grep -q 'bubble link 1600 (set)' "$test_dir/uplink-set.log" || { echo "an uplink MTU the user set was not kept" >&2; cat "$test_dir/uplink-set.log" >&2; exit 1; }
+mtu_run pod-set SKIFF_POD_MTU=1400
+[ "$(cat "$test_dir/home-pod-set/.skiff/bubble-env")" = "127.0.0.1 1500 1400" ] && grep -q 'pods 1400, bubble link 1500 (set)' "$test_dir/pod-set.log" || { echo "a pod MTU the user set was not kept" >&2; cat "$test_dir/pod-set.log" >&2; exit 1; }
+mtu_run routed TEST_PROBE_ONLINK=no
+[ "$(cat "$test_dir/home-routed/.skiff/bubble-env")" = "127.0.0.1 1500 1450" ] && grep -q 'through a gateway' "$test_dir/routed.log" && grep -q 'bubble link 1500 (default)' "$test_dir/routed.log" || { echo "a routed path did not keep the default MTU" >&2; cat "$test_dir/routed.log" >&2; exit 1; }
+mtu_run no-network TEST_PROBE=none SKIFF_NETWORK=ib9
+[ "$rc" -eq 1 ] && grep -q 'no global IPv4 address on interface ib9' "$test_dir/no-network.log" && ! grep -q 'Starting Controller' "$test_dir/no-network.log" || { echo "a network that cannot be had did not stop the job: exit $rc" >&2; cat "$test_dir/no-network.log" >&2; exit 1; }
+mtu_run bad-network SKIFF_NETWORK=10.0.1.5 TEST_PROBE=real
+[ "$rc" -eq 1 ] && grep -q 'SKIFF_NETWORK.*not auto, an interface name' "$test_dir/bad-network.log" || { echo "an invalid SKIFF_NETWORK was not refused: exit $rc" >&2; cat "$test_dir/bad-network.log" >&2; exit 1; }

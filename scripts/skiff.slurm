@@ -34,6 +34,10 @@ if [ -z "$SKIFF_SCRIPT" ]; then
     exit 1
 fi
 
+# Whether the user chose the MTU: sourcing skiff.sh gives both settings a value, and a chosen
+# MTU stays as it is, while one that was not is taken from the interfaces (below).
+if [ -n "${SKIFF_UPLINK_MTU:-}" ] || [ -n "${SKIFF_POD_MTU:-}" ]; then SKIFF_MTU_SOURCE="set"; else SKIFF_MTU_SOURCE="default"; fi
+
 # The network configuration every part of the cluster must agree on. Its defaults
 # and the variables that override them are documented in skiff.sh; it is checked as a
 # whole here, before anything is started. (Sourced, skiff.sh only defines functions.)
@@ -62,9 +66,25 @@ if [ "$NUM_NODES" -eq 0 ]; then
 fi
 
 CONTROLLER_NODE=${NODES[0]}
-CONTROLLER_IP=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash -c "getent ahostsv4 ${CONTROLLER_NODE}.local 2>/dev/null | awk 'NR == 1 {print \$1}'" || true)
+# The controller's address, on the network SKIFF_NETWORK chooses (the workers find their own
+# address on the route to it, so this chooses the network for all). Only the line of the probe
+# is used: srun may add other output of its own or of the node's libraries.
+CONTROLLER_NET=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash "$SKIFF_SCRIPT" network-probe | grep -E '^ip=[0-9.]+ dev=[^ ]+ mtu=[0-9]+ speed=[0-9]+$' | sed -n 1p || true)
+CONTROLLER_IP=$(skiff_probe_field "$CONTROLLER_NET" ip)
 if [ -z "$CONTROLLER_IP" ]; then
-    CONTROLLER_IP=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash -c "ip route get 1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(\$i==\"src\") a=\$(i+1)} END {print a}'" || true)
+    echo "ERROR: could not find the address of the controller node $CONTROLLER_NODE (SKIFF_NETWORK=$SKIFF_NETWORK); nothing was started." >&2
+    exit 1
+fi
+SKIFF_NET_DEV=$(skiff_probe_field "$CONTROLLER_NET" dev)
+SKIFF_NET_SPEED=$(skiff_probe_field "$CONTROLLER_NET" speed)
+# The uplink MTU, when the user did not choose it: the smallest MTU of the nodes' routes to the
+# controller. (The pod MTU follows from it in skiff_config_resolve, which runs below.)
+if [ "$SKIFF_MTU_SOURCE" = default ]; then
+    PROBES=$(srun --nodes="$NUM_NODES" --ntasks-per-node=1 bash "$SKIFF_SCRIPT" network-probe "$CONTROLLER_IP" || true)
+    if MTU=$(skiff_probe_mtu "$NUM_NODES" "$PROBES"); then
+        SKIFF_UPLINK_MTU=$MTU
+        SKIFF_MTU_SOURCE="from the interfaces"
+    fi
 fi
 
 echo "Cluster Setup:"

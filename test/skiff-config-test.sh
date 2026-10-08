@@ -80,6 +80,16 @@ check "an empty setting means the default" 0 "" 2 -- SKIFF_CLUSTER_DOMAIN= SKIFF
 check "MTU that is not a number" 1 'SKIFF_POD_MTU.*not an MTU' 2 -- SKIFF_POD_MTU=big
 check "MTU below the minimum" 1 'SKIFF_POD_MTU.*at least 576' 2 -- SKIFF_POD_MTU=500
 check "MTU without room for VXLAN" 1 'no room for VXLAN.*at most 1450' 2 -- SKIFF_POD_MTU=1500
+check "the network: an interface name" 0 "" 2 -- SKIFF_NETWORK=enp130s0
+check "the network: an InfiniBand interface name" 0 "" 2 -- SKIFF_NETWORK=ib0.8001
+check "the network: a CIDR" 0 "" 2 -- SKIFF_NETWORK=10.0.1.0/24
+check "the network: auto" 0 "" 2 -- SKIFF_NETWORK=auto
+check "the network: an address is not a network" 1 'SKIFF_NETWORK.*not auto, an interface name or an IPv4 network' 2 -- SKIFF_NETWORK=10.0.1.5
+check "the network: a CIDR with host bits" 1 'SKIFF_NETWORK.*host bits set; the network is 10.0.1.0/24' 2 -- SKIFF_NETWORK=10.0.1.5/24
+check "the network: a CIDR with a bad octet" 1 'SKIFF_NETWORK.*invalid address' 2 -- SKIFF_NETWORK=10.0.300.0/24
+check "the network: an interface name that is too long" 1 'SKIFF_NETWORK.*not auto, an interface name' 2 -- SKIFF_NETWORK=averyveryverylongname
+check "the network: an interface name with a space" 1 'SKIFF_NETWORK.*not auto, an interface name' 2 -- 'SKIFF_NETWORK=my nic'
+check "the network: an IPv6 network" 1 'SKIFF_NETWORK' 2 -- SKIFF_NETWORK=fd00::/64
 check "uplink MTU out of range" 1 'SKIFF_UPLINK_MTU' 2 -- SKIFF_UPLINK_MTU=100000
 check "relative scratch directory" 1 'SKIFF_TMP_DIR.*absolute path' 2 -- SKIFF_TMP_DIR=scratch
 check "scratch directory with spaces" 1 'SKIFF_TMP_DIR.*absolute path' 2 -- 'SKIFF_TMP_DIR=/scratch/my dir'
@@ -119,6 +129,121 @@ expect "not an address" "$(in_cidr nope 10.200.0.0/16)" no
 
 expect "the Nth address of the pod network" "$(env -i PATH="$PATH" SKIFF_POD_CIDR=10.200.0.0/16 bash -c 'source "$1"; skiff_pod_address 712' _ "$repo_dir/scripts/skiff.sh")" 10.200.2.200
 
+# --- the network the nodes meet on ------------------------------------------------------
+# skiff_network_select: one candidate per line: NAME ADDRESS/PREFIX SPEED OPERSTATE HAS_DEVICE IS_DEFAULT
+net_select() { # net_select SETTING CANDIDATES: output and status
+    local out status
+    out=$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_network_select "$2" "$3"' _ "$repo_dir/scripts/skiff.sh" "$1" "$2" 2>&1)
+    status=$?
+    echo "$status:$out"
+}
+NICS='lo 127.0.0.1/8 0 unknown 0 0
+eno1 10.0.0.11/24 1000 up 1 1
+enp130s0 10.0.1.11/24 56000 up 1 0
+virbr0 192.168.122.1/24 10000 up 0 0
+docker0 172.17.0.1/16 0 down 0 0
+ib0 10.0.2.11/24 100000 down 1 0'
+expect "network auto: the fastest interface that is up, with a device" "$(net_select auto "$NICS")" "0:enp130s0 10.0.1.11 56000"
+expect "network auto: not a faster one without a device (bridge) or that is down" "$(net_select auto "$(sed -n 2,6p <<< "$NICS")")" "0:enp130s0 10.0.1.11 56000"
+expect "network auto: a tie goes to the default route" "$(net_select auto 'a0 10.0.1.1/24 10000 up 1 0
+b0 10.0.2.1/24 10000 up 1 1')" "0:b0 10.0.2.1 10000"
+expect "network auto: a tie without a default route goes to the first name" "$(net_select auto 'b0 10.0.2.1/24 10000 up 1 0
+a0 10.0.1.1/24 10000 up 1 0')" "0:a0 10.0.1.1 10000"
+expect "network auto: speed counts before the default route" "$(net_select auto 'a0 10.0.1.1/24 10000 up 1 1
+b0 10.0.2.1/24 25000 up 1 0')" "0:b0 10.0.2.1 25000"
+expect "network auto: the speeds are numbers, not text (9000 is less than 10000)" "$(net_select auto 'a0 10.0.1.1/24 9000 up 1 0
+b0 10.0.2.1/24 10000 up 1 0')" "0:b0 10.0.2.1 10000"
+expect "network auto: a state of unknown counts as up" "$(net_select auto 'ib0 10.0.2.11/24 0 unknown 1 0')" "0:ib0 10.0.2.11 0"
+expect "network auto: an interface without a speed still beats nothing" "$(net_select auto 'eno1 10.0.0.11/24 0 up 1 1
+docker0 172.17.0.1/16 0 up 0 0')" "0:eno1 10.0.0.11 0"
+expect "network auto: only the first address of an interface counts" "$(net_select auto 'a0 10.0.1.1/24 10000 up 1 0
+a0 10.0.9.1/24 10000 up 1 0')" "0:a0 10.0.1.1 10000"
+expect "network auto: no candidate is a status of 3 and no message" "$(net_select auto "$(sed -n '1p;4,5p;6p' <<< "$NICS")")" "3:"
+expect "network auto: no addresses at all" "$(net_select auto '')" "3:"
+expect "network: an interface name takes its address, whatever its state" "$(net_select ib0 "$NICS")" "0:ib0 10.0.2.11 100000"
+expect "network: an interface name can be a bridge" "$(net_select virbr0 "$NICS")" "0:virbr0 192.168.122.1 10000"
+expect "network: an interface name takes the first of its addresses" "$(net_select a0 'a0 10.0.1.1/24 10000 up 1 0
+a0 10.0.9.1/24 10000 up 1 0')" "0:a0 10.0.1.1 10000"
+expect "network: an interface without an address is an error" "$(net_select eno9 "$NICS" | sed 's/:SKIFF_NETWORK:.*/:SKIFF_NETWORK:/')" "1:SKIFF_NETWORK:"
+expect "network: and the message says which" "$(net_select eno9 "$NICS" | grep -c 'no global IPv4 address on interface eno9')" 1
+expect "network: a CIDR takes the address inside it" "$(net_select 10.0.1.0/24 "$NICS")" "0:enp130s0 10.0.1.11 56000"
+expect "network: a CIDR takes a second address of an interface" "$(net_select 10.0.9.0/24 'a0 10.0.1.1/24 10000 up 1 0
+a0 10.0.9.1/24 10000 up 1 0')" "0:a0 10.0.9.1 10000"
+expect "network: a wider CIDR takes the first address inside it" "$(net_select 10.0.0.0/16 "$NICS")" "0:eno1 10.0.0.11 1000"
+expect "network: a CIDR with no address in it is an error" "$(net_select 10.7.0.0/16 "$NICS" | grep -c 'has no address in 10.7.0.0/16')" 1
+expect "network: and its status is 1" "$(net_select 10.7.0.0/16 "$NICS" | cut -d: -f1)" 1
+
+# skiff_probe_mtu: the smallest, within what the uplink accepts, from the lines of all nodes
+probe_mtu() { # probe_mtu NODES OUTPUT [VAR=value...]: output and status
+    local out status
+    out=$(env -i PATH="$PATH" "${@:3}" bash -c 'source "$1"; skiff_probe_mtu "$2" "$3"' _ "$repo_dir/scripts/skiff.sh" "$1" "$2" 2>&1)
+    status=$?
+    echo "$status:$out"
+}
+expect "probe MTU: the smallest of the nodes" "$(probe_mtu 3 'dev=ib0 mtu=9000 onlink=yes
+dev=eno1 mtu=1500 onlink=yes
+dev=ib0 mtu=2044 onlink=yes')" "0:1500"
+expect "probe MTU: a jumbo fabric" "$(probe_mtu 2 'dev=enp130s0 mtu=9000 onlink=yes
+dev=enp130s0 mtu=9000 onlink=yes')" "0:9000"
+expect "probe MTU: above 9000 is clamped to 9000 (a loopback-sized answer)" "$(probe_mtu 1 'dev=lo mtu=65536 onlink=yes')" "0:9000"
+expect "probe MTU: below 576 is clamped to 576" "$(probe_mtu 1 'dev=tun0 mtu=296 onlink=yes')" "0:576"
+expect "probe MTU: the uplink MTU it feeds accepts the result" "$(env -i PATH="$PATH" SKIFF_UPLINK_MTU=1500 bash -c 'source "$1"; SKIFF_UPLINK_MTU=$(skiff_probe_mtu 1 "dev=ib0 mtu=9000 onlink=yes"); skiff_config_validate && echo "$SKIFF_POD_MTU"' _ "$repo_dir/scripts/skiff.sh" 2>&1)" "8950"
+expect "probe MTU: other lines of srun are ignored" "$(probe_mtu 2 'libibverbs: Warning: couldn'"'"'t load driver
+dev=eno1 mtu=1500 onlink=yes extra
+dev=ib0 mtu=4000 onlink=yes
+srun: error: something
+dev=ib0 mtu=2044 onlink=yes
+')" "0:2044"
+out=$(probe_mtu 2 'dev=ib0 mtu=9000 onlink=yes
+dev=eno1 mtu=1500 onlink=no')
+expect "probe MTU: a node behind a gateway keeps the default, with a warning" "$(cut -d: -f1 <<< "$out"):$(grep -c 'through a gateway.*keeping the uplink MTU 1500' <<< "$out")" "1:1"
+out=$(probe_mtu 3 'dev=ib0 mtu=9000 onlink=yes
+dev=ib0 mtu=9000 onlink=yes')
+expect "probe MTU: a node that did not answer keeps the default, with a warning" "$(cut -d: -f1 <<< "$out"):$(grep -c '2 of 3 nodes reported' <<< "$out")" "1:1"
+expect "probe fields" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_probe_field "ip=10.0.1.11 dev=enp130s0 mtu=9000 speed=56000" dev; skiff_probe_field "ip=10.0.1.11 dev=enp130s0 mtu=9000 speed=56000" speed' _ "$repo_dir/scripts/skiff.sh" | tr '\n' ' ')" "enp130s0 56000 "
+
+# skiff.sh network-probe on stand-ins for ip and /sys/class/net
+netdir=$(mktemp -d)
+mkdir -p "$netdir/bin" "$netdir/sys/sys/class/net"
+cat > "$netdir/bin/ip" <<'EOF2'
+#!/bin/sh
+# The host: eno1 (default route, 1 GbE) and enp130s0 (the fabric), a bridge, and the gateway route to 192.168.5.5.
+case "$*" in
+    "-4 route show default") echo "default via 10.0.0.1 dev eno1 proto dhcp metric 100" ;;
+    "-4 -o addr show scope global")
+        echo "2: eno1    inet 10.0.0.11/24 brd 10.0.0.255 scope global eno1\       valid_lft forever preferred_lft forever"
+        echo "3: enp130s0    inet 10.0.1.11/24 brd 10.0.1.255 scope global enp130s0\       valid_lft forever preferred_lft forever"
+        echo "4: virbr0    inet 192.168.122.1/24 brd 192.168.122.255 scope global virbr0\       valid_lft forever preferred_lft forever" ;;
+    "route get 10.0.1.11") echo "local 10.0.1.11 dev lo src 10.0.1.11 uid 1000" ;;
+    "route get 10.0.1.12") echo "10.0.1.12 dev enp130s0 src 10.0.1.11 uid 1000" ;;
+    "route get 192.168.5.5") echo "192.168.5.5 via 10.0.0.1 dev eno1 src 10.0.0.11 uid 1000" ;;
+    "route get 1") echo "1.0.0.0 via 10.0.0.1 dev eno1 src 10.0.0.11 uid 1000" ;;
+    *) exit 2 ;;
+esac
+EOF2
+chmod +x "$netdir/bin/ip"
+nic() { mkdir -p "$netdir/sys/sys/class/net/$1"; echo "$2" > "$netdir/sys/sys/class/net/$1/speed"; echo up > "$netdir/sys/sys/class/net/$1/operstate"; echo "$3" > "$netdir/sys/sys/class/net/$1/mtu"; [ "$4" != device ] || mkdir -p "$netdir/sys/sys/class/net/$1/device"; }
+nic eno1 1000 1500 device
+nic enp130s0 56000 9000 device
+nic virbr0 -1 1500 none
+probe() { env -i PATH="$netdir/bin:$PATH" SKIFF_SYS_ROOT="$netdir/sys" SLURMD_NODENAME=nonode "$@" 2>&1; }
+expect "network-probe: auto takes the fabric, not the default route's network" "$(probe bash "$repo_dir/scripts/skiff.sh" network-probe)" "ip=10.0.1.11 dev=enp130s0 mtu=9000 speed=56000"
+expect "network-probe: an interface" "$(probe SKIFF_NETWORK=eno1 bash "$repo_dir/scripts/skiff.sh" network-probe)" "ip=10.0.0.11 dev=eno1 mtu=1500 speed=1000"
+expect "network-probe: a CIDR" "$(probe SKIFF_NETWORK=10.0.1.0/24 bash "$repo_dir/scripts/skiff.sh" network-probe)" "ip=10.0.1.11 dev=enp130s0 mtu=9000 speed=56000"
+expect "network-probe: a bridge by name has no speed" "$(probe SKIFF_NETWORK=virbr0 bash "$repo_dir/scripts/skiff.sh" network-probe)" "ip=192.168.122.1 dev=virbr0 mtu=1500 speed=0"
+expect "network-probe: an invalid setting is refused by the validation" "$(probe SKIFF_NETWORK=10.0.1.5 bash "$repo_dir/scripts/skiff.sh" network-probe | grep -c 'SKIFF_NETWORK.*not auto, an interface name')" 1
+expect "network-probe: an interface that is not there fails" "$(probe SKIFF_NETWORK=ib0 bash "$repo_dir/scripts/skiff.sh" network-probe >/dev/null; echo $?)" 1
+expect "network-probe: the controller itself (the route is through lo) names the interface" "$(probe bash "$repo_dir/scripts/skiff.sh" network-probe 10.0.1.11)" "dev=enp130s0 mtu=9000 onlink=yes"
+expect "network-probe: a worker on the fabric" "$(probe bash "$repo_dir/scripts/skiff.sh" network-probe 10.0.1.12)" "dev=enp130s0 mtu=9000 onlink=yes"
+expect "network-probe: a route through a gateway" "$(probe bash "$repo_dir/scripts/skiff.sh" network-probe 192.168.5.5)" "dev=eno1 mtu=1500 onlink=no"
+expect "network-probe: no route" "$(probe bash "$repo_dir/scripts/skiff.sh" network-probe 192.168.9.9 | grep -c 'no route to 192.168.9.9')" 1
+expect "network-probe: not an address" "$(probe bash "$repo_dir/scripts/skiff.sh" network-probe node1 >/dev/null; echo $?)" 2
+# no candidate (nothing physical is up): the address of the host's name, else of the default route
+rm -rf "$netdir/sys/sys/class/net/eno1/device" "$netdir/sys/sys/class/net/enp130s0/device"
+expect "network-probe: without a candidate, the address of the default route" "$(probe bash "$repo_dir/scripts/skiff.sh" network-probe)" "ip=10.0.0.11 dev=eno1 mtu=1500 speed=1000"
+printf '#!/bin/sh\necho "10.0.1.11 STREAM nonode.local"\n' > "$netdir/bin/getent"; chmod +x "$netdir/bin/getent"
+expect "network-probe: or of the host's name when it has one" "$(probe bash "$repo_dir/scripts/skiff.sh" network-probe)" "ip=10.0.1.11 dev=enp130s0 mtu=9000 speed=56000"
+rm -rf "$netdir"
 
 # --- what a node needs (T35) -----------------------------------------------------------
 # skiff_check_node on a PATH that holds only the commands it uses itself, plus chosen
