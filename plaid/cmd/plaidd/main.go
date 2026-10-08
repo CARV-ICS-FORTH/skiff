@@ -545,7 +545,8 @@ func (d *PlaidDaemon) receiveOverlaySocket(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("[plaidd] Overlay socket attached: %s\n", d.overlay.Stats().Address)
+	st := d.overlay.Stats()
+	fmt.Printf("[plaidd] Overlay socket attached: %s (receive buffer %d bytes)\n", st.Address, st.RcvBuf)
 	return nil
 }
 
@@ -719,28 +720,31 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 
 	ov := d.overlay.Stats()
 	resp := &api.Response{
-		OverlayTransport: ov.Transport,
-		OverlayAddress:   ov.Address,
-		OverlayTxPackets: ov.TxPackets,
-		OverlayTxErrors:  ov.TxErrors,
-		OverlayRxPackets: ov.RxPackets,
-		OverlayRxInvalid: ov.RxInvalid,
-		OverlayRxDropped: ov.RxDropped,
-		EndpointsCount:   len(eps),
-		RoutesCount:      len(d.routes.Routes()),
-		Mode:             mode,
-		NodeCIDR:         d.cfg.NodeCIDR,
-		ClusterCIDR:      d.cfg.ClusterCIDR,
-		GatewayIP:        d.cfg.GatewayIP,
-		GatewayMode:      d.cfg.GatewayMode,
-		GatewayReady:     d.cfg.GatewayMode != "tap" || d.attachment != nil,
-		GatewayMAC:       d.cfg.GatewayMAC,
-		BubbleMAC:        d.cfg.BubbleMAC,
-		Uplink:           d.cfg.Uplink,
-		UplinkAddress:    d.cfg.UplinkAddress,
-		Resolver:         d.cfg.Resolver,
-		MTU:              d.cfg.MTU,
-		Endpoints:        epList,
+		OverlayTransport:    ov.Transport,
+		OverlayAddress:      ov.Address,
+		OverlayTxPackets:    ov.TxPackets,
+		OverlayTxErrors:     ov.TxErrors,
+		OverlayRxPackets:    ov.RxPackets,
+		OverlayRxInvalid:    ov.RxInvalid,
+		OverlayRxDropped:    ov.RxDropped,
+		OverlayRxQueueDrops: ov.RxQueueDrops,
+		OverlaySocketDrops:  ov.SocketDrops,
+		OverlayRcvBuf:       ov.RcvBuf,
+		EndpointsCount:      len(eps),
+		RoutesCount:         len(d.routes.Routes()),
+		Mode:                mode,
+		NodeCIDR:            d.cfg.NodeCIDR,
+		ClusterCIDR:         d.cfg.ClusterCIDR,
+		GatewayIP:           d.cfg.GatewayIP,
+		GatewayMode:         d.cfg.GatewayMode,
+		GatewayReady:        d.cfg.GatewayMode != "tap" || d.attachment != nil,
+		GatewayMAC:          d.cfg.GatewayMAC,
+		BubbleMAC:           d.cfg.BubbleMAC,
+		Uplink:              d.cfg.Uplink,
+		UplinkAddress:       d.cfg.UplinkAddress,
+		Resolver:            d.cfg.Resolver,
+		MTU:                 d.cfg.MTU,
+		Endpoints:           epList,
 	}
 	d.fillServiceStatus(resp)
 	return resp, nil

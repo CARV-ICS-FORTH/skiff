@@ -8,8 +8,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"plaid/pkg/packet"
 )
 
 var loopback = net.IPv4(127, 0, 0, 1)
@@ -133,15 +131,6 @@ func TestSocketFromFileAcceptsTheConfiguredSocketOnly(t *testing.T) {
 	}
 }
 
-func frame() *packet.EthernetFrame {
-	return &packet.EthernetFrame{
-		DstMAC:    net.HardwareAddr{2, 0, 0, 0, 0, 1},
-		SrcMAC:    net.HardwareAddr{2, 0, 0, 0, 0, 2},
-		EtherType: packet.EtherTypeIPv4,
-		Payload:   make([]byte, 28),
-	}
-}
-
 func waitFrames(t *testing.T, inj *mockInjector) {
 	t.Helper()
 	select {
@@ -187,11 +176,11 @@ func TestAdoptedSocketCarriesTheOverlay(t *testing.T) {
 
 	routesA.AddRoute(&RouteEntry{Subnet: sn, RemoteHostIP: loopback, Port: b.LocalPort()})
 	routesB.AddRoute(&RouteEntry{Subnet: sn2, RemoteHostIP: loopback, Port: a.LocalPort()})
-	if err := a.Send(frame(), net.ParseIP("10.244.2.7")); err != nil {
+	if err := a.Send(testFrame(28), net.ParseIP("10.244.2.7")); err != nil {
 		t.Fatalf("send from the adopted socket: %v", err)
 	}
 	waitFrames(t, injB)
-	if err := b.Send(frame(), net.ParseIP("10.244.1.7")); err != nil {
+	if err := b.Send(testFrame(28), net.ParseIP("10.244.1.7")); err != nil {
 		t.Fatalf("send to the adopted socket: %v", err)
 	}
 	waitFrames(t, injA)
@@ -201,7 +190,7 @@ func TestAdoptedSocketCarriesTheOverlay(t *testing.T) {
 	}
 
 	// Counters see errors and junk: no route, and a datagram that is not VXLAN.
-	if err := a.Send(frame(), net.ParseIP("10.99.0.1")); err == nil {
+	if err := a.Send(testFrame(28), net.ParseIP("10.99.0.1")); err == nil {
 		t.Error("send without a route succeeded")
 	}
 	junk, _ := net.DialUDP("udp4", nil, &net.UDPAddr{IP: loopback, Port: a.LocalPort()})

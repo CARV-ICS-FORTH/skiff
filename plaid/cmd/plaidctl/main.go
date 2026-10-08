@@ -59,9 +59,10 @@ func main() {
 		}
 		fmt.Printf("MTU:          %d\n", status.MTU)
 		if status.OverlayTransport != "" {
-			fmt.Printf("Overlay:      %s socket %s (tx=%d, tx errors=%d, rx=%d, rx invalid=%d, rx dropped=%d)\n",
+			fmt.Printf("Overlay:      %s socket %s (tx=%d, tx errors=%d, rx=%d, rx invalid=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d)\n",
 				status.OverlayTransport, status.OverlayAddress, status.OverlayTxPackets, status.OverlayTxErrors,
-				status.OverlayRxPackets, status.OverlayRxInvalid, status.OverlayRxDropped)
+				status.OverlayRxPackets, status.OverlayRxInvalid, status.OverlayRxDropped,
+				status.OverlayRxQueueDrops, status.OverlaySocketDrops, status.OverlayRcvBuf)
 		}
 		if status.ServiceEngine != nil {
 			e := status.ServiceEngine

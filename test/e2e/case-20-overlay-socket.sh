@@ -58,9 +58,10 @@ no_forward() {
 }
 e2e_subcase_run T21-no-forward no_forward
 
-# counters NODE: "tx txerrors rx rxinvalid rxdropped" from plaidctl status.
+# counters NODE: "tx txerrors rx rxinvalid rxdropped" from plaidctl status, each found by its
+# name: the line has more fields than these, and gains some.
 counters() {
-    runtime_plaidctl "$1" status | sed -n 's/^Overlay:.*(tx=\([0-9]*\), tx errors=\([0-9]*\), rx=\([0-9]*\), rx invalid=\([0-9]*\), rx dropped=\([0-9]*\))/\1 \2 \3 \4 \5/p'
+    runtime_plaidctl "$1" status | sed -n 's/^Overlay:.*[(, ]tx=\([0-9]*\).*, tx errors=\([0-9]*\), rx=\([0-9]*\).*, rx invalid=\([0-9]*\), rx dropped=\([0-9]*\).*/\1 \2 \3 \4 \5/p'
 }
 
 # Cross-node traffic moves the overlay counters of both ends, from the first node to every other

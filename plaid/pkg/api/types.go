@@ -145,14 +145,20 @@ type Response struct {
 	Endpoints      []string `json:"endpoints,omitempty"`
 
 	// The overlay transport: where its UDP socket came from, its address and counters.
-	OverlayTransport string   `json:"overlay_transport,omitempty"`
-	OverlayAddress   string   `json:"overlay_address,omitempty"`
-	OverlayTxPackets uint64   `json:"overlay_tx_packets"`
-	OverlayTxErrors  uint64   `json:"overlay_tx_errors"`
-	OverlayRxPackets uint64   `json:"overlay_rx_packets"`
-	OverlayRxInvalid uint64   `json:"overlay_rx_invalid"`
-	OverlayRxDropped uint64   `json:"overlay_rx_dropped"`
-	FilterRules      []string `json:"filter_rules,omitempty"`
+	OverlayTransport string `json:"overlay_transport,omitempty"`
+	OverlayAddress   string `json:"overlay_address,omitempty"`
+	OverlayTxPackets uint64 `json:"overlay_tx_packets"`
+	OverlayTxErrors  uint64 `json:"overlay_tx_errors"`
+	OverlayRxPackets uint64 `json:"overlay_rx_packets"`
+	OverlayRxInvalid uint64 `json:"overlay_rx_invalid"`
+	OverlayRxDropped uint64 `json:"overlay_rx_dropped"`
+	// Datagrams lost before the bridge: the in-process queue was full, or the kernel's
+	// socket buffer was; and that buffer's effective size in bytes.
+	OverlayRxQueueDrops uint64 `json:"overlay_rx_queue_drops"`
+	OverlaySocketDrops  uint64 `json:"overlay_socket_drops"`
+	OverlayRcvBuf       int    `json:"overlay_rcvbuf"`
+
+	FilterRules []string `json:"filter_rules,omitempty"`
 
 	// The Service engine (tap mode): its address, range, counters and who writes its table
 	// ("kubernetes" or "api"); and, from list_services, the table.

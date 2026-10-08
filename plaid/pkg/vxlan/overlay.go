@@ -24,7 +24,22 @@ type OverlayConfig struct {
 	BindAddress string // e.g. "0.0.0.0"
 	Port        int    // e.g. 8472
 	DefaultVNI  uint32 // e.g. 1
+	// RxQueueLen is how many received datagrams may wait for the bridge (0: defaultRxQueueLen).
+	// A queued datagram holds a pool buffer of 64 KiB, so the worst case is RxQueueLen x 64
+	// KiB (512 x 64 KiB = 32 MiB by default); it is reached only while the queue is full.
+	RxQueueLen int
+	// RcvBuf is the socket's receive buffer in bytes (0: defaultRcvBuf). The kernel caps the
+	// request at net.core.rmem_max; Stats reports what it granted.
+	RcvBuf int
 }
+
+// defaultRxQueueLen is enough to absorb a TCP window's worth of jumbo frames arriving
+// faster than the bridge takes them.
+const defaultRxQueueLen = 512
+
+// defaultRcvBuf is the socket's buffer: room for a burst from a fast sender while the
+// reader is busy.
+const defaultRcvBuf = 8 << 20
 
 // Transport says where the overlay's UDP socket came from.
 const (
@@ -41,6 +56,12 @@ type Stats struct {
 	RxPackets uint64 // valid VXLAN packets handed to the bridge
 	RxInvalid uint64 // datagrams that were not valid VXLAN
 	RxDropped uint64 // valid packets the bridge did not accept
+	// RxQueueDrops are datagrams read from the socket but dropped because the queue to the
+	// bridge was full; SocketDrops are datagrams the kernel dropped because the socket's
+	// buffer was full, as of the last datagram read (it moves only when one gets through).
+	RxQueueDrops uint64
+	SocketDrops  uint64
+	RcvBuf       int // the socket's effective receive buffer in bytes, 0 if unknown
 }
 
 // OverlayEngine manages sending and receiving VXLAN packets over UDP.
@@ -55,13 +76,20 @@ type OverlayEngine struct {
 	closeOnce  sync.Once
 	closedChan chan struct{}
 
-	txPackets, txErrors, rxPackets, rxInvalid, rxDropped atomic.Uint64
+	txPackets, txErrors, rxPackets, rxInvalid, rxDropped, rxQueueDrops, socketDrops atomic.Uint64
+	rcvBuf                                                                          atomic.Int64
 }
 
 // NewOverlayEngine creates an OverlayEngine instance.
 func NewOverlayEngine(cfg OverlayConfig, routes *RouteTable, injector FrameInjector) *OverlayEngine {
 	if cfg.DefaultVNI == 0 {
 		cfg.DefaultVNI = packet.DefaultVNI
+	}
+	if cfg.RxQueueLen <= 0 {
+		cfg.RxQueueLen = defaultRxQueueLen
+	}
+	if cfg.RcvBuf <= 0 {
+		cfg.RcvBuf = defaultRcvBuf
 	}
 
 	return &OverlayEngine{
@@ -92,9 +120,7 @@ func (oe *OverlayEngine) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to listen on VXLAN port %d: %w", oe.cfg.Port, err)
 	}
 
-	oe.transport.Store(TransportBound)
-	oe.conn.Store(conn)
-	go oe.readLoop(ctx, conn)
+	oe.attach(ctx, conn, TransportBound)
 	return nil
 }
 
@@ -144,10 +170,23 @@ func (oe *OverlayEngine) Adopt(ctx context.Context, conn *net.UDPConn) error {
 		return errors.New("overlay engine is closed")
 	default:
 	}
-	oe.transport.Store(TransportAdopted)
-	oe.conn.Store(conn)
-	go oe.readLoop(ctx, conn)
+	oe.attach(ctx, conn, TransportAdopted)
 	return nil
+}
+
+// attach tunes the socket and starts the goroutines that serve it. The caller holds attachMu.
+func (oe *OverlayEngine) attach(ctx context.Context, conn *net.UDPConn, transport string) {
+	// Neither setting is essential: without them the overlay works with the kernel's
+	// buffer and without its drop count, and Stats shows what the socket really has.
+	_ = conn.SetReadBuffer(oe.cfg.RcvBuf)
+	oe.rcvBuf.Store(int64(rcvBuf(conn)))
+	_ = enableDropCount(conn)
+
+	oe.transport.Store(transport)
+	oe.conn.Store(conn)
+	queue := make(chan *packet.Buffer, oe.cfg.RxQueueLen)
+	go oe.readLoop(ctx, conn, queue)
+	go oe.processLoop(ctx, queue)
 }
 
 // LocalPort returns the actual bound port (useful for tests using port 0).
@@ -161,11 +200,14 @@ func (oe *OverlayEngine) LocalPort() int {
 // Stats returns the counters and the transport in use.
 func (oe *OverlayEngine) Stats() Stats {
 	st := Stats{
-		TxPackets: oe.txPackets.Load(),
-		TxErrors:  oe.txErrors.Load(),
-		RxPackets: oe.rxPackets.Load(),
-		RxInvalid: oe.rxInvalid.Load(),
-		RxDropped: oe.rxDropped.Load(),
+		TxPackets:    oe.txPackets.Load(),
+		TxErrors:     oe.txErrors.Load(),
+		RxPackets:    oe.rxPackets.Load(),
+		RxInvalid:    oe.rxInvalid.Load(),
+		RxDropped:    oe.rxDropped.Load(),
+		RxQueueDrops: oe.rxQueueDrops.Load(),
+		SocketDrops:  oe.socketDrops.Load(),
+		RcvBuf:       int(oe.rcvBuf.Load()),
 	}
 	if t, ok := oe.transport.Load().(string); ok {
 		st.Transport = t
@@ -230,47 +272,76 @@ func (oe *OverlayEngine) Send(frame *packet.EthernetFrame, dstIP net.IP) (err er
 	return err
 }
 
-func (oe *OverlayEngine) readLoop(ctx context.Context, conn *net.UDPConn) {
-	buf := make([]byte, 65535)
+// stopped reports whether the engine is closed or ctx is done.
+func (oe *OverlayEngine) stopped(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	case <-oe.closedChan:
+		return true
+	default:
+		return false
+	}
+}
 
-	for {
+// readLoop does nothing but empty the socket into queue, so that a burst waits in user
+// space, where it is cheap to hold, rather than overflowing the socket's small buffer
+// while a datagram is being processed. It never blocks: when the queue is full the
+// datagram is dropped and counted. It closes queue when it returns.
+func (oe *OverlayEngine) readLoop(ctx context.Context, conn *net.UDPConn, queue chan<- *packet.Buffer) {
+	defer close(queue)
+	buf := packet.GetBuffer()
+	defer func() { buf.Release() }()
+	oob := make([]byte, dropCountOOBLen)
+
+	for !oe.stopped(ctx) {
+		n, oobn, _, _, err := conn.ReadMsgUDPAddrPort(buf.B[:cap(buf.B)], oob)
+		if err != nil {
+			continue // the loop ends if the engine closed the socket
+		}
+		if drops, ok := parseDropCount(oob[:oobn]); ok {
+			oe.socketDrops.Store(uint64(drops))
+		}
+
+		buf.B = buf.B[:n]
 		select {
-		case <-ctx.Done():
-			return
-		case <-oe.closedChan:
-			return
+		case queue <- buf:
+			buf = packet.GetBuffer()
 		default:
+			oe.rxQueueDrops.Add(1) // buf is read into again
 		}
+	}
+}
 
-		n, _, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			select {
-			case <-oe.closedChan:
-				return
-			case <-ctx.Done():
-				return
-			default:
-				continue
-			}
+// processLoop is the single consumer of queue: datagrams reach the injector one at a
+// time and in the order they were read. Once the engine stops it releases what is left.
+func (oe *OverlayEngine) processLoop(ctx context.Context, queue <-chan *packet.Buffer) {
+	for buf := range queue {
+		if !oe.stopped(ctx) {
+			oe.process(buf.B)
 		}
+		buf.Release()
+	}
+}
 
-		if n < packet.VXLANHeaderLen {
-			oe.rxInvalid.Add(1)
-			continue
-		}
+// process handles one datagram; the frame it injects is valid only during the call.
+func (oe *OverlayEngine) process(datagram []byte) {
+	if len(datagram) < packet.VXLANHeaderLen {
+		oe.rxInvalid.Add(1)
+		return
+	}
 
-		vxlanPkt, err := packet.ParseVXLAN(buf[:n])
-		if err != nil {
-			oe.rxInvalid.Add(1)
-			continue
-		}
+	vxlanPkt, err := packet.ParseVXLAN(datagram)
+	if err != nil {
+		oe.rxInvalid.Add(1)
+		return
+	}
 
-		if oe.injector != nil && vxlanPkt.InnerFrame != nil {
-			if err := oe.injector.InjectFrame(vxlanPkt.InnerFrame); err != nil {
-				oe.rxDropped.Add(1)
-			} else {
-				oe.rxPackets.Add(1)
-			}
+	if oe.injector != nil && vxlanPkt.InnerFrame != nil {
+		if err := oe.injector.InjectFrame(vxlanPkt.InnerFrame); err != nil {
+			oe.rxDropped.Add(1)
+		} else {
+			oe.rxPackets.Add(1)
 		}
 	}
 }
