@@ -34,7 +34,7 @@ profile_required_cases() {
         T25-tcp-udp T25-slirp-state T25-changes T25-no-backends T25-drain T25-bind-collision T25-unsupported T25-reconcile T25-cleanup \
         T42-concurrent-pull T43-second-id T44-image-user T45-egress \
         T46-gpu-node T47-nvidia-smi T48-no-request T49-exhaustion-and-reuse T50-too-many T51-init-and-restart T52-several-gpus T53-runtime-class \
-        T54-shm-default T55-memory-emptydir T56-memory-emptydir-unbounded
+        T54-shm-default T55-memory-emptydir T56-memory-emptydir-unbounded T57-cuda-on-every-gpu
 }
 
 profile_is_required() {

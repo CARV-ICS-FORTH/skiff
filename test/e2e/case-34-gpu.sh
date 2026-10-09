@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Case 34: NVIDIA GPUs (T46-T53). A node that has GPUs advertises them, a pod gets the GPUs it
 # asks for with its limits (nvidia.com/gpu) and no others, and a pod that asks for none sees
-# none. The GPUs are those the job has on the node (the suite's jobs have whole nodes), found
-# by the node as Slurm granted them; a pod that asks for more than the node has free stays
+# none. A pod that asks for more than the node has free stays
 # Pending, or is refused when it was sent to the node, as with the kubelet; the GPUs of a pod
 # that ends are the next pod's.
 #
 # The pods that use the driver run a glibc image (GPU_IMAGE, Ubuntu by default; E2E_GPU_IMAGE
 # changes it): the driver's libraries and programs are built for glibc, and the fixture image's
 # Alpine (musl) cannot run them. The nodes need a registry for it, as for case 32.
+#
+# Skiff assumes exclusive allocations in which the job has all the GPUs of its nodes (partial
+# allocations of a node's GPUs are not supported yet), so the GPUs of a node are the job's.
 #
 # This needs a cluster with GPUs. Where no node has any, every result is UNAVAILABLE with that
 # reason. Results that need more than one GPU on a node are UNAVAILABLE on nodes with one.
@@ -33,7 +35,7 @@ for node in $(e2e_all_nodes); do
     if [[ "$n" =~ ^[1-9][0-9]*$ ]]; then GPU_NODE=$node; GPUS=$n; break; fi
 done
 
-ALL_RESULTS="T46-gpu-node T47-nvidia-smi T48-no-request T49-exhaustion-and-reuse T50-too-many T51-init-and-restart T52-several-gpus T53-runtime-class"
+ALL_RESULTS="T46-gpu-node T47-nvidia-smi T48-no-request T49-exhaustion-and-reuse T50-too-many T51-init-and-restart T52-several-gpus T53-runtime-class T57-cuda-on-every-gpu"
 if [ -z "$GPU_NODE" ]; then
     for id in $ALL_RESULTS; do
         e2e_subcase_unavailable "$id" "no node of the cluster has GPUs (the job was given none on any node: the nodes have no GPUs, or the job did not get them)"
@@ -47,7 +49,8 @@ e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --wait
 e2e_cleanup_register "e2e_kubectl delete runtimeclass e2e34-other --ignore-not-found --wait=false"
 e2e_cleanup_register "e2e_preserve_failure $NS"
 
-# The truth about the GPUs, from the node itself: its UUIDs, and the driver's version.
+# The truth about the GPUs, from the node itself: its UUIDs, and the driver's version. The
+# suite's jobs are exclusive and have all of a node's GPUs, which is what Skiff assumes.
 NODE_UUIDS=$(runtime_ssh_node "$GPU_IP" "nvidia-smi --query-gpu=uuid --format=csv,noheader" | sort)
 NODE_DRIVER=$(runtime_ssh_node "$GPU_IP" "nvidia-smi --query-gpu=driver_version --format=csv,noheader" | sort -u | sed -n 1p)
 
@@ -84,7 +87,7 @@ smi_uuids() { sed -n 's/.*UUID: \(GPU-[0-9a-f-]*\)).*/\1/p'; }
 # charts of GPU workloads name exists.
 # ---------------------------------------------------------------------------
 gpu_node() {
-    e2e_assert_eq "the node advertises the GPUs the job has on it (capacity)" "$GPUS" "$(printf '%s\n' "$NODE_UUIDS" | grep -c .)"
+    e2e_assert_eq "the node advertises the GPUs it has (capacity)" "$GPUS" "$(printf '%s\n' "$NODE_UUIDS" | grep -c .)"
     e2e_assert_eq "and offers them to pods (allocatable)" "$(e2e_kubectl get node "$GPU_NODE" -o jsonpath='{.status.allocatable.nvidia\.com/gpu}')" "$GPUS"
     e2e_assert_eq "the node is labeled as having GPUs" "$(e2e_kubectl get node "$GPU_NODE" -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}')" true
     e2e_assert_eq "with how many" "$(e2e_kubectl get node "$GPU_NODE" -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.count}')" "$GPUS"
@@ -191,6 +194,7 @@ EOF2
     local uuids
     uuids=$(for pod in "${held[@]}"; do e2e_kubectl logs "$pod" -n "$NS" | sed -n 1p; done)
     e2e_assert_eq "the pods hold different GPUs" "$(printf '%s\n' "$uuids" | sort -u | grep -c .)" "$GPUS"
+    e2e_assert_eq "and all of them are the node's" "$(printf '%s\n%s\n' "$uuids" "$NODE_UUIDS" | sort -u | grep -c .)" "$GPUS"
 
     gpu_pod e2e34-extra 1 <<'EOF2'
 nvidia-smi --query-gpu=uuid --format=csv,noheader
@@ -314,6 +318,8 @@ EOF2
     e2e_assert_eq "a container that asks for two GPUs has two" "$(smi_uuids <<< "$out" | sort -u | grep -c .)" 2
     e2e_wait_pod_phase "$NS" e2e34-pair Succeeded 180
     e2e_assert_eq "two containers of a pod have different GPUs" "$( { e2e_kubectl logs e2e34-pair -c one -n "$NS"; e2e_kubectl logs e2e34-pair -c two -n "$NS"; } | sort -u | grep -c .)" 2
+    e2e_assert_eq "and each sees only its own (one line, not the pod's two or the node's)" "$(e2e_kubectl logs e2e34-pair -c one -n "$NS" | grep -c .):$(e2e_kubectl logs e2e34-pair -c two -n "$NS" | grep -c .)" "1:1"
+    e2e_assert_eq "the pod that asked for two sees two of the node's" "$(smi_uuids <<< "$out" | sort -u | grep -c -F -x -f <(printf '%s\n' "$NODE_UUIDS"))" 2
     e2e_kubectl delete pod e2e34-two e2e34-pair -n "$NS" --timeout=60s > /dev/null
 }
 if [ "$GPUS" -ge 2 ]; then
@@ -350,5 +356,49 @@ EOF2
     e2e_kubectl delete pod e2e34-class-gpu e2e34-other-class -n "$NS" --timeout=60s > /dev/null
 }
 e2e_subcase_run T53-runtime-class runtime_class
+
+# ---------------------------------------------------------------------------
+# T57-cuda-on-every-gpu: every GPU of the job computes at the same time, each in a pod of its own:
+# NVIDIA's vectorAdd sample passes in all of them, and each pod names a different GPU of the
+# node. (Needs an image with the sample that the nodes can pull: E2E_CUDA_IMAGE, NVIDIA's by
+# default; empty skips the result.)
+# ---------------------------------------------------------------------------
+CUDA_IMAGE="${E2E_CUDA_IMAGE-nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda12.5.0-ubuntu22.04}"
+cuda_on_every_gpu() {
+    local i pods=()
+    for ((i = 0; i < GPUS; i++)); do
+        cat <<EOF2 | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e34-cuda-${i}, namespace: ${NS}}
+spec:
+  nodeSelector: {kubernetes.io/hostname: ${GPU_NODE}}
+  restartPolicy: Never
+  terminationGracePeriodSeconds: 1
+  containers:
+  - name: app
+    image: ${CUDA_IMAGE}
+    command: ["sh", "-c", "echo gpu=\$NVIDIA_VISIBLE_DEVICES; /cuda-samples/vectorAdd || vectorAdd"]
+    resources: {limits: {nvidia.com/gpu: 1}}
+EOF2
+        pods+=("e2e34-cuda-${i}")
+    done
+    local pod passed=0 named=""
+    for pod in "${pods[@]}"; do
+        e2e_wait_pod_phase "$NS" "$pod" Succeeded 300
+        local out
+        out=$(e2e_kubectl logs "$pod" -n "$NS")
+        e2e_assert_contains "$pod ran the CUDA sample" "$out" "Test PASSED"
+        named="${named}$(sed -n 's/^gpu=//p' <<< "$out")"$'\n'
+    done
+    e2e_assert_eq "every pod computed on a different GPU" "$(printf '%s' "$named" | sort -u | grep -c .)" "$GPUS"
+    e2e_assert_eq "and all of them are the node's" "$(printf '%s\n%s' "$named" "$NODE_UUIDS" | sort -u | grep -c .)" "$GPUS"
+    e2e_kubectl delete pod "${pods[@]}" -n "$NS" --timeout=90s > /dev/null
+}
+if [ -n "$CUDA_IMAGE" ]; then
+    e2e_subcase_run T57-cuda-on-every-gpu cuda_on_every_gpu
+else
+    e2e_subcase_unavailable T57-cuda-on-every-gpu "no image with the CUDA sample was given (E2E_CUDA_IMAGE is empty)"
+fi
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }
