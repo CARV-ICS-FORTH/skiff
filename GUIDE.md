@@ -11,6 +11,7 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 - [Directories](#directories)
 - [Storage](#storage)
 - [Containers](#containers)
+- [GPUs](#gpus)
 - [Images](#images)
 - [Stopping the cluster](#stopping-the-cluster)
 - [When a job ends unexpectedly](#when-a-job-ends-unexpectedly)
@@ -199,6 +200,33 @@ What to know:
 - `kubectl top node` and `kubectl top pod` work (K3s's metrics-server is enabled and Skifflet serves the usage). The numbers come from the processes of each container, an approximation of what a cgroup would say: CPU time is exact for those processes, memory is their proportional share of the pages they hold.
 - A container runs as the **user its image says** (`USER`) unless the pod sets `runAsUser` and `runAsGroup`, and as root when neither does, as in Kubernetes. `runAsNonRoot: true` is the kubelet's: a container that would run as root is refused (`CreateContainerConfigError`, `container has runAsNonRoot and image will run as root`). A container that is not root may bind any port.
 - CPU and memory **requests** decide where pods fit, against what the job grants; **limits** are not enforced (Slurm and the node are the authority).
+
+## GPUs
+
+Skiff runs pods on the NVIDIA GPUs of the job, as a cluster with the NVIDIA device plugin does.
+
+**Getting GPUs.** Ask Slurm for them as for any job: `sbatch --nodes=2 --gpus-per-node=1 skiff.slurm` (or `--gres=gpu:1`). The partition does not decide it, and an exclusive job (which `skiff.slurm` is) may have the GPUs of its nodes without asking, depending on the site: whatever the job has on a node, Skiff uses. `skiff.slurm` gives the GPUs to the steps that run the bubbles (the job has them, its steps only get them when they ask), the node check reports them (`GPUs 0 (the step's), NVIDIA driver ...`) and refuses a node where a GPU the job has cannot be used. A job without GPUs, or on nodes without, is a cluster without GPUs, with nothing to configure.
+
+**Using them.** A node with GPUs advertises `nvidia.com/gpu` and is labeled `nvidia.com/gpu.present`, `nvidia.com/gpu.count` and `nvidia.com/gpu.product`. A pod gets GPUs by asking in the **limits** of its containers, and gets exactly those, no others:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata: {name: smi}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: app
+    image: ubuntu:24.04
+    command: ["nvidia-smi"]
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+```
+
+The container finds its GPU's device files in `/dev`, the node's driver libraries and `nvidia-smi` (Skiff puts them there; the image needs none of its own), and `NVIDIA_VISIBLE_DEVICES` with the UUIDs of its GPUs. Pods that ask for no GPU do not see any, whatever their image sets. The scheduler counts the GPUs; a pod that asks for more than a node has free stays Pending. Charts that name `runtimeClassName: nvidia` run as they are (the class grants nothing: the limits do). Pods that need shared memory, such as PyTorch data loaders, mount an `emptyDir` with `medium: Memory` at `/dev/shm`; without one a pod has 64 MiB, as in Kubernetes.
+
+**What is not there.** Whole GPUs only: no MIG, no sharing between pods. The driver on the node is the one the containers use, so an image's CUDA must be one it supports (the driver's version is on the node's label and in the node check; a Pascal GPU, for one, needs images of CUDA 12 or older). Between nodes, pods talk over the overlay network: no GPUDirect or RDMA. Nodes with the NVIDIA driver's libraries only in `LD_LIBRARY_PATH` (a module) are refused by the node check: Apptainer finds them in the library cache.
 
 ## Images
 

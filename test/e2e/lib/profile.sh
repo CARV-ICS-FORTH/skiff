@@ -8,7 +8,7 @@ profile_required_cases() {
     printf '%s\n' \
         E2E-01 E2E-02 E2E-03 E2E-04 E2E-05 E2E-06 \
         E2E-07 E2E-08 E2E-09 E2E-09-skifflet E2E-09-plaidd \
-        E2E-09-slirp E2E-09-k3s E2E-09-relay E2E-10 E2E-11 E2E-12 E2E-13 E2E-14 E2E-15 E2E-16 E2E-17 E2E-18 E2E-19 E2E-20 E2E-21 E2E-22 E2E-23 E2E-24 E2E-25 E2E-26 E2E-27 E2E-28 E2E-29 E2E-30 E2E-31 E2E-32 E2E-33 \
+        E2E-09-slirp E2E-09-k3s E2E-09-relay E2E-10 E2E-11 E2E-12 E2E-13 E2E-14 E2E-15 E2E-16 E2E-17 E2E-18 E2E-19 E2E-20 E2E-21 E2E-22 E2E-23 E2E-24 E2E-25 E2E-26 E2E-27 E2E-28 E2E-29 E2E-30 E2E-31 E2E-32 E2E-33 E2E-34 E2E-35 \
         NET-1-plaid-integration NET-2-plaid-standalone NET-3-tap-acceptance NET-4-tap-webhook CANDIDATE E2E-01-teardown \
         T04-logs T04-exec T04-portforward T04-pods-assigned T04-runningpods \
         T04-attach-501 T04-stats T04-metrics \
@@ -32,7 +32,9 @@ profile_required_cases() {
         T23-translation T23-named-ports T23-dns T23-bubble T23-large T23-selectorless T23-untranslated T23-no-local-backend \
         T24-pinned T24-refusal T24-unsupported T24-no-kube-proxy T24-counters \
         T25-tcp-udp T25-slirp-state T25-changes T25-no-backends T25-drain T25-bind-collision T25-unsupported T25-reconcile T25-cleanup \
-        T42-concurrent-pull T43-second-id T44-image-user T45-egress
+        T42-concurrent-pull T43-second-id T44-image-user T45-egress \
+        T46-gpu-node T47-nvidia-smi T48-no-request T49-exhaustion-and-reuse T50-too-many T51-init-and-restart T52-several-gpus T53-runtime-class \
+        T54-shm-default T55-memory-emptydir T56-memory-emptydir-unbounded
 }
 
 profile_is_required() {
@@ -124,7 +126,8 @@ profile_merge_subresults() {
 #   29 31   securityContext, the forms of volumes charts use
 #   32      every node pulls the same image at once (needs a registry; UNAVAILABLE without one)
 #   33      a container holds a second id (needs a subordinate id range; UNAVAILABLE without one)
+#   34 35   NVIDIA GPUs (UNAVAILABLE on a cluster without them), memory volumes and /dev/shm
 # (NET-3, the TAP acceptance checks, is run after them by the runner.)
 profile_smoke_cases() {
-    echo 02 03 04 05 06 20 23 24 27 28 29 30 31 32 33
+    echo 02 03 04 05 06 20 23 24 27 28 29 30 31 32 33 34 35
 }

@@ -22,6 +22,7 @@ import (
 
 	"al.essio.dev/pkg/shellescape"
 	"skifflet/internal/compute/endpoint"
+	"skifflet/internal/compute/gpu"
 )
 
 func EscapeSingleQuote(str ...interface{}) string {
@@ -61,6 +62,8 @@ type Container struct {
 	ImageFilePath string
 	EnvFilePath   string
 	Binds         []string
+	// GPUs are the minor numbers of the GPUs the container asks for and the pod gave it.
+	GPUs          []int
 	Command       []string
 	Args          []string
 	ExecutionMode string
@@ -84,6 +87,10 @@ const NoMounts = "home,bind-paths,tmp,cwd"
 // it, as in Kubernetes. (Writing to the unpacked copy itself, --writable, would also be on
 // disk but leaves Apptainer unable to create the mount points of the pod's volumes.)
 //
+// The container's /dev is a minimal one (--contain), with the device files of its GPUs, if it
+// asked for any (--device, see gpu.CDISpec), and nothing else of the node's: a container
+// does not see devices it was not given, GPUs included. Its /dev/shm is the pod's.
+//
 // The node's /tmp and /var/tmp are not mounted
 // (Apptainer would do it by default, giving every container, and the pod directories
 // below it, the whole node's /tmp): the container's own directories for the attempt
@@ -95,12 +102,17 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 		c.ExecutionMode,
 		"--pid",
 		"--no-init",
-		"--nv",
+		"--contain",
+		"--pwd", "/", // (--contain would start it in its home)
 		"--cleanenv",
 		"--no-eval",
 		"--no-mount", NoMounts,
 		"--unsquash",
 		"--overlay", podDir.Container(c.Name).AttemptOverlayDir(attempt),
+	}
+
+	for _, minor := range c.GPUs {
+		args = append(args, "--device", fmt.Sprintf("%s=%d", gpu.CDIKind, minor))
 	}
 
 	if c.Hostname != "" {
@@ -124,6 +136,9 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 	}
 	if _, err := os.Stat(hostsPath); err == nil {
 		binds = append(binds, hostsPath+":/etc/hosts")
+	}
+	if !c.mounts("/dev/shm") {
+		binds = append(binds, podDir.ShmDir()+":/dev/shm:rw")
 	}
 	own := podDir.Container(c.Name)
 	for _, tmp := range []struct{ host, mountPath string }{

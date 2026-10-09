@@ -25,6 +25,7 @@ import (
 
 	"skifflet/cmd/skifflet/commands"
 	"skifflet/internal/compute"
+	"skifflet/internal/compute/gpu"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/sirupsen/logrus"
@@ -176,6 +177,20 @@ func runRootCommand(ctx context.Context, c Opts) error {
 			"Address", restConfig.Host,
 			"ContainerRegistry", compute.Environment.ContainerRegistry,
 		)
+	}
+
+	/*---------------------------------------------------
+	 * Find the GPUs of the node
+	 *---------------------------------------------------*/
+	{
+		// Slurm's grant to the step the bubble runs in, as the bubble sees it. GPUs that were
+		// granted and cannot be used stop the node: the job asked for them.
+		if err := gpu.Init(gpu.DefaultSources(), gpu.CDIDir); err != nil {
+			return fmt.Errorf("GPUs: %w", err)
+		}
+		if inv := gpu.Node(); len(inv.Devices) > 0 {
+			DefaultLogger.Info("GPUs are ready", "count", len(inv.Devices), "model", inv.Devices[0].Model, "driver", inv.Driver)
+		}
 	}
 
 	/*---------------------------------------------------

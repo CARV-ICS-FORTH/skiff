@@ -540,6 +540,50 @@ skiff_check_node() {
         errors=$((errors + 1))
     fi
 
+    # The GPUs. Slurm gives a step its GPUs by index in SLURM_STEP_GPUS (the numbers of their
+    # device files, /dev/nvidia<N>); a step that was not given any has none, whatever the job
+    # has (skiff.slurm passes the job's GPUs to the steps it starts). The GPUs a step was
+    # given must be usable: the cluster's pods run on them, and a cluster that advertises
+    # GPUs it cannot use is worse than one without. A node without GPUs has nothing to check.
+    if [ -n "${SLURM_STEP_GPUS:-}" ]; then
+        local gpu_part gpu_lo gpu_hi gpu_n gpu_file gpu_missing=""
+        for gpu_part in ${SLURM_STEP_GPUS//,/ }; do
+            gpu_lo=${gpu_part%%-*}; gpu_hi=${gpu_part##*-}
+            if ! [[ "$gpu_lo" =~ ^[0-9]+$ && "$gpu_hi" =~ ^[0-9]+$ ]] || [ "$gpu_lo" -gt "$gpu_hi" ]; then
+                echo "$host: SLURM_STEP_GPUS=$SLURM_STEP_GPUS is not a list of GPU indices" >&2
+                errors=$((errors + 1)); gpu_missing=-; break
+            fi
+            for ((gpu_n = gpu_lo; gpu_n <= gpu_hi; gpu_n++)); do
+                gpu_file=$(_skiff_sys "/dev/nvidia$gpu_n")
+                if ! { : < "$gpu_file"; } 2>/dev/null; then
+                    echo "$host: Slurm gave this step GPU $gpu_n and ${gpu_file#"${SKIFF_SYS_ROOT:-}"} cannot be opened by $(id -un) (it does not exist, or a device cgroup of the job denies it); the NVIDIA driver is not usable here" >&2
+                    errors=$((errors + 1)); gpu_missing=$gpu_missing$gpu_n
+                fi
+            done
+        done
+        for gpu_file in nvidiactl nvidia-uvm; do
+            if [ -z "$gpu_missing" ] && ! { : < "$(_skiff_sys "/dev/$gpu_file")"; } 2>/dev/null; then
+                echo "$host: /dev/$gpu_file, which every GPU container needs, cannot be opened by $(id -un) (is the NVIDIA driver, with its unified memory module nvidia-uvm, loaded?)" >&2
+                errors=$((errors + 1))
+            fi
+        done
+        # Apptainer's --nv finds the driver's libraries in the library cache (ldconfig) and binds
+        # them into the bubble and, from there, into the containers of the GPU pods. Libraries
+        # that are only in LD_LIBRARY_PATH (a module) are not found by it.
+        if [ -z "$gpu_missing" ]; then
+            local ldcache
+            ldcache=$({ ldconfig -p || /sbin/ldconfig -p; } 2>/dev/null) || ldcache=""
+            if [ -n "$ldcache" ]; then
+                for gpu_file in libcuda.so.1 libnvidia-ml.so.1; do
+                    if ! grep -q "$gpu_file" <<< "$ldcache"; then
+                        echo "$host: $gpu_file is not in the library cache (ldconfig -p), where Apptainer's --nv looks for the NVIDIA driver's libraries: pods would have no driver. Ask your administrator to put the driver's directory in /etc/ld.so.conf.d and run ldconfig on the nodes" >&2
+                        errors=$((errors + 1))
+                    fi
+                done
+            fi
+        fi
+    fi
+
     # The bubble runs as root in a user namespace of the user's (--fakeroot). With a range of
     # subordinate ids for the user (in the files or in the site's directory service) the namespace
     # has 65536 more ids besides the user's own, mapped to root; without one it has only that one.
@@ -608,6 +652,11 @@ skiff_node_report() {
     done
     fstype=$(stat -f -c %T "$SKIFF_TMP_DIR" 2>/dev/null || true)
     echo "$(hostname): scratch $SKIFF_TMP_DIR${fstype:+ ($fstype)}"
+    if [ -n "${SLURM_STEP_GPUS:-}" ]; then
+        local driver
+        driver=$(sed -n 's/.*Kernel Module  *\([^ ]*\).*/\1/p' "$(_skiff_sys /proc/driver/nvidia/version)" 2>/dev/null | sed -n 1p) || true
+        echo "$(hostname): GPUs $SLURM_STEP_GPUS (the step's)${driver:+, NVIDIA driver $driver}"
+    fi
 }
 
 # skiff_check [controller|node]: the command `skiff.sh check`: the configuration as a whole
@@ -876,9 +925,16 @@ skiff_bubble() {
     # LD_PRELOAD for everything in it. The nested Apptainer of every pod inherits that and fails
     # ("/libs/fakeroot already exists in layout", or no /bin/sh to inspect in the pause image), so no
     # pod's sandbox becomes ready. Skiff never wants the command: the root-mapped namespace is enough.
+    #
+    # --nv: a step that was given GPUs (SLURM_STEP_GPUS; see skiff.slurm) has the NVIDIA driver's
+    # libraries and programs put in the bubble, which Skifflet gives to the containers of the
+    # pods that ask for GPUs (and only to them).
+    local nv=()
+    if [ -n "${SLURM_STEP_GPUS:-}" ]; then nv=(--nv); fi
     apptainer instance run \
     	--fakeroot \
     	--ignore-fakeroot-command \
+    	${nv[@]+"${nv[@]}"} \
     	--no-mount home \
     	--no-mount cwd \
     	--no-mount hostfs \

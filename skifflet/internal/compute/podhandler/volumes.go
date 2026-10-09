@@ -55,6 +55,12 @@ func (h *PodHandler) mountVolumeSource(ctx context.Context, vol corev1.Volume) e
 			return fmt.Errorf("cannot create dir '%s': %w", emptyDir, err)
 		}
 
+		if vol.EmptyDir.Medium == corev1.StorageMediumMemory {
+			if err := h.mountMemoryVolume(emptyDir, vol.EmptyDir); err != nil {
+				return fmt.Errorf("cannot mount the memory emptyDir volume %q: %w", vol.Name, err)
+			}
+		}
+
 		mounter := emptydir.VolumeMounter{
 			Volume: vol,
 			Pod:    *h.Pod,

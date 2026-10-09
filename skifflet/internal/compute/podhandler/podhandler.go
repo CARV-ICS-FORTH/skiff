@@ -34,6 +34,7 @@ import (
 	goruntime "runtime"
 	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
+	"skifflet/internal/compute/gpu"
 	"skifflet/internal/compute/image"
 	"skifflet/internal/compute/runtime"
 
@@ -440,6 +441,9 @@ type PodHandler struct {
 	podDirectory    endpoint.PodPath
 	expectedSubnet  *net.IPNet
 
+	// gpus are the GPUs of each container that asks for some, by name (see reserveGPUs).
+	gpus map[string][]gpu.Device
+
 	logger logr.Logger
 	pids   podPIDsRecord
 }
@@ -715,6 +719,19 @@ func PreparePod(pl *PodLifecycle) {
 		return
 	}
 
+	if err := CheckRuntimeClass(ctx, pod); err != nil {
+		pl.Fail(compute.ReasonUnsupportedFeatures, "capability validation failed: %v", err)
+		return
+	}
+
+	// The GPUs the pod asks for, taken from the node's before anything of the pod exists and
+	// given back with the rest of its live resources.
+	gpus, err := reserveGPUs(pl, pod)
+	if err != nil {
+		pl.Fail("UnexpectedAdmissionError", "%v", err)
+		return
+	}
+
 	if unapplied := UnappliedSecurityContext(pod); unapplied != "" {
 		pl.PodEvent(corev1.EventTypeWarning, "SecurityContextNotApplied",
 			"securityContext fields accepted and not applied (containers run without privileges, with a writable root filesystem of their own, and their volumes are writable by any user; only runAsUser, runAsGroup and runAsNonRoot are applied): %s", unapplied)
@@ -746,6 +763,7 @@ func PreparePod(pl *PodLifecycle) {
 		podDirectory:    podDir,
 		logger:          logger,
 		podEnvVariables: podEnvVars,
+		gpus:            gpus,
 	}
 
 	// Create directories
@@ -759,6 +777,12 @@ func PreparePod(pl *PodLifecycle) {
 			pl.Fail(dir.reason, "Cant create %s '%s': %v", dir.what, dir.path, err)
 			return
 		}
+	}
+
+	// The pod's /dev/shm, shared by its containers as in Kubernetes
+	if err := h.mountShm(); err != nil {
+		pl.Fail("ShmError", "failed to create the pod's /dev/shm: %v", err)
+		return
 	}
 
 	// Initialize statuses early so the pod is properly recognized as Pending with Waiting containers
@@ -803,7 +827,6 @@ func PreparePod(pl *PodLifecycle) {
 	pauseArgs = append(pauseArgs,
 		"--dns", compute.Environment.KubeDNS,
 		"--bind", h.podDirectory.ResolvConf()+":/etc/resolv.conf",
-		"--nv",
 		"--cleanenv",
 		"--writable-tmpfs",
 		"--no-mount", NoMounts,

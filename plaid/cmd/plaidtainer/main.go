@@ -760,6 +760,7 @@ func takesArg(flag string) bool {
 		"--pem-path":           true,
 		"--shell":              true,
 		"--readiness-file":     true,
+		"--device":             true, // a CDI device name (--device nvidia.com/gpu=0)
 	}
 	return knownValFlags[flag]
 }

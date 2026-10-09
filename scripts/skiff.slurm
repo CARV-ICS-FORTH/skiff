@@ -77,8 +77,17 @@ skiff_config_validate "$NUM_NODES" "$CONTROLLER_IP" || exit 1
 skiff_config_export
 skiff_config_print
 
+# step_gpus: the srun option that gives a step the GPUs the job has on each node (nothing when
+# it has none). The job has them by what was asked for (--gpus-per-node, --gres) or because it
+# is exclusive on a node with GPUs; its steps do not, unless they ask: the GPUs are in
+# SLURM_GPUS_ON_NODE of the job and not in the step's, and the node's device cgroup keeps
+# the step out of them. Whatever the job has is used.
+step_gpus() {
+    if [[ "${SLURM_GPUS_ON_NODE:-0}" =~ ^[1-9][0-9]*$ ]]; then echo "--gpus-per-node=$SLURM_GPUS_ON_NODE"; fi
+}
+
 # What every allocated node needs (the host programs and their versions, user namespaces,
-# a subordinate id range (a warning when there is none), the fixed ports, a usable scratch directory of its own) is
+# a subordinate id range (a warning when there is none), the GPUs the job has there, the fixed ports, a usable scratch directory of its own) is
 # checked on the nodes themselves, all of them and all problems at once, before anything
 # starts. `skiff.sh check` is the same check, which a user can run before submitting.
 echo "Checking the allocated nodes..."
@@ -86,7 +95,8 @@ NODE_PROBLEMS=0
 for ((i=0; i<NUM_NODES; i++)); do
     role=node
     [ "$i" -eq 0 ] && role=controller
-    if ! srun --nodes=1 -w "${NODES[$i]}" bash "$SKIFF_SCRIPT" check "$role"; then
+    # shellcheck disable=SC2046 # (step_gpus is one option or nothing)
+    if ! srun --nodes=1 -w "${NODES[$i]}" $(step_gpus) bash "$SKIFF_SCRIPT" check "$role"; then
         NODE_PROBLEMS=$((NODE_PROBLEMS + 1))
     fi
 done
@@ -252,8 +262,8 @@ echo "Starting Controller on $CONTROLLER_NODE..."
     export SKIFF_ROLE="controller"
     export SKIFF_DEV=${SKIFF_DEV:-0}
     export CONTROLLER_IP="$CONTROLLER_IP"
-    # shellcheck disable=SC2046 # (step_cpus is one option or nothing)
-    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive $(step_cpus "$CONTROLLER_NODE") bash "$SKIFF_SCRIPT" bubble 1
+    # shellcheck disable=SC2046 # (step_cpus and step_gpus are one option or nothing)
+    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive $(step_cpus "$CONTROLLER_NODE") $(step_gpus) bash "$SKIFF_SCRIPT" bubble 1
 ) &
 BG_PIDS+=($!)
 BG_NODES+=("$CONTROLLER_NODE")
@@ -285,8 +295,8 @@ for ((i=1; i<NUM_NODES; i++)); do
         export SKIFF_ROLE="node"
         export SKIFF_DEV=${SKIFF_DEV:-0}
         export CONTROLLER_IP="$CONTROLLER_IP"
-        # shellcheck disable=SC2046 # (step_cpus is one option or nothing)
-        exec srun --nodes=1 -w "$NODE" --exclusive $(step_cpus "$NODE") bash "$SKIFF_SCRIPT" bubble "$BUBBLE_ID"
+        # shellcheck disable=SC2046 # (step_cpus and step_gpus are one option or nothing)
+        exec srun --nodes=1 -w "$NODE" --exclusive $(step_cpus "$NODE") $(step_gpus) bash "$SKIFF_SCRIPT" bubble "$BUBBLE_ID"
     ) &
     BG_PIDS+=($!)
     BG_NODES+=("$NODE")

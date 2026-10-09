@@ -412,6 +412,8 @@ run_workload_cases() {
     run_case "31" "volume-forms"
     run_case "32" "concurrent-pull"
     run_case "33" "second-id"
+    run_case "34" "gpu"
+    run_case "35" "memory-volumes"
     run_overlay_startup_failures
     run_fresh_job_storage
     run_daemon_failure_matrix
@@ -522,6 +524,8 @@ if [ -n "$ONLY_CASE" ]; then
             31) run_case "31" "volume-forms" ;;
             32) run_case "32" "concurrent-pull" ;;
             33) run_case "33" "second-id" ;;
+            34) run_case "34" "gpu" ;;
+            35) run_case "35" "memory-volumes" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

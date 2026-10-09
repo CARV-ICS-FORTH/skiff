@@ -217,9 +217,11 @@ func TestResolveNetworkParams(t *testing.T) {
 
 func TestSplitFlagsWithNoMountAndNetnsPath(t *testing.T) {
 	args := []string{
-		"--nv",
+		"--contain",
 		"--cleanenv",
 		"--writable-tmpfs",
+		"--device", "nvidia.com/gpu=0",
+		"--device", "nvidia.com/gpu=1",
 		"--no-mount", "home,bind-paths",
 		"--unsquash",
 		"--netns-path", "/proc/12345/ns/net",
@@ -235,6 +237,10 @@ func TestSplitFlagsWithNoMountAndNetnsPath(t *testing.T) {
 		t.Errorf("expected cmdArgs ['/pause'], got %v", cmdArgs)
 	}
 	joinedFlags := strings.Join(flags, " ")
+	// (a CDI device name after --device is its value, not the image)
+	if !strings.Contains(joinedFlags, "--device nvidia.com/gpu=0 --device nvidia.com/gpu=1") {
+		t.Errorf("expected both --device flags with their values in flags, got %s", joinedFlags)
+	}
 	if !strings.Contains(joinedFlags, "--no-mount home,bind-paths") {
 		t.Errorf("expected --no-mount home,bind-paths in flags, got %s", joinedFlags)
 	}

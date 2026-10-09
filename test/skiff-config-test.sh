@@ -209,6 +209,35 @@ fi
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
 expect "and a node with it is fine" "$status:$out" "0:"
 
+# GPUs: a step that Slurm gave GPUs (SLURM_STEP_GPUS) must be able to use them
+mkdir -p "$nodedir/gpu"
+printf '#!/bin/sh\n[ -z "${FAKE_NO_LDCONFIG:-}" ] || exit 1\necho "     libcuda.so.1 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libcuda.so.1"\n[ -n "${FAKE_NO_NVML:-}" ] || echo "     libnvidia-ml.so.1 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1"\n' > "$nodedir/gpu/ldconfig"
+chmod +x "$nodedir/gpu/ldconfig"
+GPUPATH="$GOOD:$nodedir/gpu"
+for f in nvidia0 nvidia1 nvidia2 nvidia3 nvidiactl nvidia-uvm; do : > "$nodedir/sys/dev/$f"; done
+out=$(node_check "$GPUPATH" "$nodedir/scratch"); status=$?
+expect "a step without GPUs has nothing to check, whatever the node has" "$status:$out" "0:"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0 SLURM_JOB_GPUS=0); status=$?
+expect "a step that was given a GPU it can use is fine" "$status:$out" "0:"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,2-3); status=$?
+expect "and so is a list, with a range" "$status:$out" "0:"
+rm "$nodedir/sys/dev/nvidia2"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,2-3); status=$?
+expect "a GPU of the list that cannot be opened is refused, by its number" "$status:$(grep -c 'Slurm gave this step GPU 2 and /dev/nvidia2 cannot be opened' <<< "$out"):$(grep -c 'GPU 3' <<< "$out")" "1:1:0"
+: > "$nodedir/sys/dev/nvidia2"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=x); status=$?
+expect "a list that is not one is refused" "$status:$(grep -c 'is not a list of GPU indices' <<< "$out")" "1:1"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=3-1); status=$?
+expect "and so is a range that runs backwards" "$status:$(grep -c 'is not a list of GPU indices' <<< "$out")" "1:1"
+mv "$nodedir/sys/dev/nvidia-uvm" "$nodedir/sys/dev/nvidia-uvm.away"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0); status=$?
+expect "a node without nvidia-uvm is refused, with what it is" "$status:$(grep -c '/dev/nvidia-uvm, which every GPU container needs' <<< "$out")" "1:1"
+mv "$nodedir/sys/dev/nvidia-uvm.away" "$nodedir/sys/dev/nvidia-uvm"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0 FAKE_NO_NVML=1); status=$?
+expect "a driver whose libraries are not in the library cache is refused, with what to ask for" "$status:$(grep -c 'libnvidia-ml.so.1 is not in the library cache' <<< "$out"):$(grep -c 'libcuda.so.1 is not in' <<< "$out")" "1:1:0"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0 FAKE_NO_LDCONFIG=1); status=$?
+expect "a node where the cache cannot be read is not refused for it" "$status:$out" "0:"
+
 # subordinate ids: without a range the bubble has a single id, which works and is warned about
 mv "$nodedir/sys/etc/subuid" "$nodedir/sys/etc/subuid.away"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?

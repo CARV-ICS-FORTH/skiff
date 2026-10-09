@@ -2,7 +2,7 @@
 
 Skiff allows HPC users to run their own private Kubernetes "mini Cloud" on a typical HPC cluster and issue commands using Kubernetes-native tools without requiring root privileges.
 
-A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, each node inside a rootless [Apptainer](https://apptainer.org/) container (a "bubble"). Pods run as unprivileged processes on those nodes, with the cluster network, Services, DNS and volumes Kubernetes users expect. When the job ends, the cluster is gone.
+A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, each node inside a rootless [Apptainer](https://apptainer.org/) container (a "bubble"). Pods run as unprivileged processes on those nodes, with the cluster network, Services, DNS, volumes and the job's NVIDIA GPUs (`nvidia.com/gpu`, see the [guide](GUIDE.md#gpus)) Kubernetes users expect. When the job ends, the cluster is gone.
 
 ## Get started
 

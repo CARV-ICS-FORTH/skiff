@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"skifflet/internal/compute"
+	"skifflet/internal/compute/gpu"
 )
 
 // TotalResources derives truthful capacity bounded by Slurm allocations, cgroups, and CPU affinity.
@@ -62,9 +63,9 @@ func TotalResources() corev1.ResourceList {
 		corev1.ResourcePods:             podsQuantity,
 	}
 
-	gpus := getEffectiveGPUCount()
-	if gpus > 0 {
-		res[corev1.ResourceName("nvidia.com/gpu")] = *resource.NewQuantity(int64(gpus), resource.DecimalSI)
+	// The GPUs Slurm granted to this node and Skifflet found usable (see gpu.Init).
+	if gpus := gpu.Count(); gpus > 0 {
+		res[corev1.ResourceName(gpu.ResourceName)] = *resource.NewQuantity(int64(gpus), resource.DecimalSI)
 	}
 
 	return res
@@ -98,11 +99,6 @@ func AllocatableResources(ctx context.Context) corev1.ResourceList {
 	}
 
 	return allocatable
-}
-
-// HasGPUAllocation reports whether GPUs are allocated to the node/task.
-func HasGPUAllocation() bool {
-	return getEffectiveGPUCount() > 0
 }
 
 func resolveCgroupPath(controller, filename string) string {
@@ -323,22 +319,4 @@ func getEffectiveStorageBytes(path string) uint64 {
 	}
 
 	return stat.Blocks * uint64(stat.Bsize)
-}
-
-func getEffectiveGPUCount() int {
-	for _, env := range []string{"CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES", "SLURM_STEP_GPUS"} {
-		if val := strings.TrimSpace(os.Getenv(env)); val != "" && val != "none" && val != "void" && val != "NoDevFiles" {
-			parts := strings.Split(val, ",")
-			count := 0
-			for _, p := range parts {
-				if strings.TrimSpace(p) != "" {
-					count++
-				}
-			}
-			if count > 0 {
-				return count
-			}
-		}
-	}
-	return 0
 }

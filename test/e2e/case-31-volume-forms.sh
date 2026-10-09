@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Case 31: the forms of volumes and ports that charts use (T41): a projected volume of a
 # ConfigMap, a Secret and a service-account token (the token reaches the API), a mount with a
-# subPath, an emptyDir in memory (accepted; it is a directory on the node's disk, and says
-# so in the documentation) and a hostPort (accepted, not published on the host).
+# subPath, an emptyDir in memory (a tmpfs: case 35 has its size and its limit) and a hostPort
+# (accepted, not published on the host).
 set -euo pipefail
 
 E2E_CASE="31"

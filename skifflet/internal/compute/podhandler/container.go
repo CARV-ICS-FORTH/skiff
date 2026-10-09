@@ -24,6 +24,7 @@ import (
 
 	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
+	"skifflet/internal/compute/gpu"
 	"skifflet/internal/compute/image"
 	"skifflet/internal/compute/runtime"
 	kubecontainer "skifflet/pkg/container"
@@ -66,6 +67,14 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 			return Container{}, err // said as it is: what is missing, as the kubelet says it
 		}
 		return Container{}, fmt.Errorf("failed to resolve container environment: %w", err)
+	}
+
+	// A container with GPUs has them named as the device plugin names them. The variable
+	// is set after the pod's own, so that an image's "all" (the NVIDIA images set it) or a
+	// pod's does not name GPUs the container does not have.
+	devices := h.gpus[container.Name]
+	if len(devices) > 0 {
+		resolvedEnvs = append(resolvedEnvs, corev1.EnvVar{Name: "NVIDIA_VISIBLE_DEVICES", Value: visibleDevices(devices)})
 	}
 
 	/*---------------------------------------------------
@@ -209,6 +218,7 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		ImageFilePath: img.Filepath,
 		EnvFilePath:   containerPath.EnvFilePath(),
 		Binds:         binds,
+		GPUs:          minors(devices),
 		Command:       kubecontainer.ExpandContainerCommandOnlyStatic(container.Command, resolvedEnvs),
 		Args:          kubecontainer.ExpandContainerCommandOnlyStatic(container.Args, resolvedEnvs),
 		ExecutionMode: executionMode,
@@ -311,4 +321,13 @@ func SyncContainerStatuses(pod *corev1.Pod) {
 func claimReadOnly(pod *corev1.Pod, volume string) bool {
 	vol := findVolume(pod, volume)
 	return vol != nil && vol.PersistentVolumeClaim != nil && vol.PersistentVolumeClaim.ReadOnly
+}
+
+// minors lists the minor numbers of GPUs.
+func minors(devices []gpu.Device) []int {
+	out := make([]int, len(devices))
+	for i, d := range devices {
+		out[i] = d.Minor
+	}
+	return out
 }

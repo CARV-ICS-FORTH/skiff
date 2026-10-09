@@ -19,6 +19,7 @@ import (
 	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
 	PodHandler "skifflet/internal/compute/podhandler"
+	"skifflet/pkg/tmpfs"
 )
 
 // The List barrier models descheduling after a successful API response. The
@@ -80,6 +81,10 @@ func awaitPreparation(t *testing.T, done <-chan struct{}, what string) {
 func newInitialPreparationFixture(t *testing.T) *initialPreparationFixture {
 	t.Helper()
 	oldClient, oldSkiff, oldRegistry := compute.K8SClient, compute.Skiff, PodHandler.GlobalRegistry
+	oldMount, oldUnmount := PodHandler.MountTmpfs, PodHandler.UnmountTmpfs
+	// (the tests run without the authority to mount a tmpfs)
+	PodHandler.MountTmpfs = func(string, tmpfs.Options) error { return nil }
+	PodHandler.UnmountTmpfs = func(string) error { return nil }
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -125,6 +130,7 @@ func newInitialPreparationFixture(t *testing.T) *initialPreparationFixture {
 			PodHandler.GlobalRegistry.Delete(owner.UID())
 		}
 		compute.K8SClient, compute.Skiff, PodHandler.GlobalRegistry = oldClient, oldSkiff, oldRegistry
+		PodHandler.MountTmpfs, PodHandler.UnmountTmpfs = oldMount, oldUnmount
 	})
 	return f
 }

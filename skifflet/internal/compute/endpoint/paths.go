@@ -217,6 +217,9 @@ func (p PodPath) ResolvConf() string { return filepath.Join(p.JobDir(), "resolv.
 // HostsFile is the pod's /etc/hosts.
 func (p PodPath) HostsFile() string { return filepath.Join(p.JobDir(), "hosts") }
 
+// ShmDir is where the pod's /dev/shm is mounted: a tmpfs of its own, shared by its containers.
+func (p PodPath) ShmDir() string { return filepath.Join(string(p), "shm") }
+
 func (p PodPath) VolumeDir() string {
 	return filepath.Join(string(p), "volumes")
 }

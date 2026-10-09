@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 
+	"skifflet/internal/compute/gpu"
 	computeruntime "skifflet/internal/compute/runtime"
 	"skifflet/pkg/version"
 
@@ -36,15 +37,21 @@ func (v *VirtualK8S) NewVirtualNode(ctx context.Context, nodename string, taint 
 		taints = append(taints, *taint)
 	}
 
+	labels := map[string]string{
+		"kubernetes.io/hostname": nodename,
+		"kubernetes.io/role":     "agent",
+		"kubernetes.io/os":       runtime.GOOS,
+		"kubernetes.io/arch":     runtime.GOARCH,
+	}
+	// The labels a node with GPUs has (gpu.present, gpu.count, gpu.product ...), for pods that select it.
+	for k, v := range gpu.Node().Labels() {
+		labels[k] = v
+	}
+
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: nodename,
-			Labels: map[string]string{
-				"kubernetes.io/hostname": nodename,
-				"kubernetes.io/role":     "agent",
-				"kubernetes.io/os":       runtime.GOOS,
-				"kubernetes.io/arch":     runtime.GOARCH,
-			},
+			Name:   nodename,
+			Labels: labels,
 		},
 		Spec: corev1.NodeSpec{
 			Taints: taints,

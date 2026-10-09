@@ -5,40 +5,46 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+
+	"skifflet/internal/compute/gpu"
 )
 
-func TestStats_EffectiveGPUCount(t *testing.T) {
-	origCUDA := os.Getenv("CUDA_VISIBLE_DEVICES")
-	origNVIDIA := os.Getenv("NVIDIA_VISIBLE_DEVICES")
-	origSLURM := os.Getenv("SLURM_STEP_GPUS")
-	defer func() {
-		os.Setenv("CUDA_VISIBLE_DEVICES", origCUDA)
-		os.Setenv("NVIDIA_VISIBLE_DEVICES", origNVIDIA)
-		os.Setenv("SLURM_STEP_GPUS", origSLURM)
-	}()
+// The node advertises the GPUs its inventory has, as nvidia.com/gpu, in capacity and in
+// allocatable, and nothing when it has none.
+func TestStats_AdvertisesTheGPUsOfTheInventory(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"dev/nvidia0", "dev/nvidia1", "dev/nvidiactl", "dev/nvidia-uvm", "libs/libcuda.so.1", "libs/libnvidia-ml.so.1"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, f)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	none := gpu.Sources{Env: func(string) string { return "" }}
+	t.Cleanup(func() { _ = gpu.Init(none, "") })
 
-	tests := []struct {
-		envName  string
-		envVal   string
-		expected int
-	}{
-		{"CUDA_VISIBLE_DEVICES", "0,1", 2},
-		{"CUDA_VISIBLE_DEVICES", "none", 0},
-		{"CUDA_VISIBLE_DEVICES", "void", 0},
-		{"CUDA_VISIBLE_DEVICES", "NoDevFiles", 0},
-		{"NVIDIA_VISIBLE_DEVICES", "GPU-12345,GPU-67890,GPU-abcde", 3},
-		{"SLURM_STEP_GPUS", "0", 1},
+	if err := gpu.Init(none, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := TotalResources()[gpu.ResourceName]; has {
+		t.Error("a node without GPUs advertises nvidia.com/gpu")
 	}
 
-	for _, tt := range tests {
-		os.Unsetenv("CUDA_VISIBLE_DEVICES")
-		os.Unsetenv("NVIDIA_VISIBLE_DEVICES")
-		os.Unsetenv("SLURM_STEP_GPUS")
-		os.Setenv(tt.envName, tt.envVal)
-
-		got := getEffectiveGPUCount()
-		if got != tt.expected {
-			t.Errorf("getEffectiveGPUCount() with %s=%q = %d; want %d", tt.envName, tt.envVal, got, tt.expected)
+	granted := gpu.Sources{
+		Env:  func(name string) string { return map[string]string{gpu.StepGPUsVariable: "0,1"}[name] },
+		Proc: filepath.Join(dir, "proc"), Dev: filepath.Join(dir, "dev"), Libs: filepath.Join(dir, "libs"), Bin: filepath.Join(dir, "bin"),
+		Open: func(string) error { return nil },
+	}
+	if err := gpu.Init(granted, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	for name, list := range map[string]corev1.ResourceList{"capacity": TotalResources(), "allocatable": AllocatableResources(context.Background())} {
+		q := list[gpu.ResourceName]
+		if q.Value() != 2 {
+			t.Errorf("%s of %s = %s; want 2", name, gpu.ResourceName, q.String())
 		}
 	}
 }

@@ -7,6 +7,8 @@ import (
 
 	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
+	"skifflet/internal/compute/podhandler"
+	"skifflet/pkg/tmpfs"
 )
 
 func TestMain(m *testing.M) {
@@ -22,6 +24,10 @@ func TestMain(m *testing.M) {
 }
 
 func setup(tmpDir string) {
+	// (the tests run without the authority to mount a tmpfs; the e2e suite does it for real)
+	podhandler.MountTmpfs = func(string, tmpfs.Options) error { return nil }
+	podhandler.UnmountTmpfs = func(string) error { return nil }
+
 	compute.Environment = compute.HostEnvironment{
 		KubeMasterHost:    "",
 		ContainerRegistry: "",
