@@ -242,6 +242,24 @@ expect "a driver whose libraries are not in the library cache is refused, with w
 out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0-3 FAKE_NO_LDCONFIG=1); status=$?
 expect "a node where the cache cannot be read is not refused for it" "$status:$out" "0:"
 
+# skiff.slurm: the srun option that gives a step the GPUs the job has on a node (step_gpus). Slurm prints
+# GresUsed only for `scontrol -d show node`, so the stand-in prints it only for that.
+sed -n '/^step_gpus() {/,/^}/p' "$repo_dir/scripts/skiff.slurm" > "$nodedir/step_gpus.sh"
+mkdir -p "$nodedir/slurm"
+ln -s "$(command -v tr)" "$nodedir/base/tr"
+cat > "$nodedir/slurm/scontrol" <<'EOF2'
+#!/bin/bash
+[ "$1" = -d ] || { echo "NodeName=$3 Gres=gpu:2 State=ALLOCATED"; exit 0; }
+echo "NodeName=$4 Gres=gpu:2 GresUsed=${FAKE_GRESUSED-gpu:2(IDX:0-1)} State=ALLOCATED"
+EOF2
+chmod +x "$nodedir/slurm/scontrol"
+step_gpus_of() { env -i PATH="$nodedir/slurm:$nodedir/base" "$@" "$BASH" -c 'source "$1"; step_gpus n1' _ "$nodedir/step_gpus.sh" 2>&1; }
+expect "a step is given the GPUs the job has on its node" "$(step_gpus_of)" "--gpus-per-node=2"
+expect "a typed GPU resource is read too" "$(step_gpus_of FAKE_GRESUSED='gpu:a100:4(IDX:0-3)')" "--gpus-per-node=4"
+expect "the form without the indices is too" "$(step_gpus_of FAKE_GRESUSED=gpu:1)" "--gpus-per-node=1"
+expect "a job with no GPU on the node gives its step none" "$(step_gpus_of FAKE_GRESUSED=gpu:0)" ""
+expect "and so does a node that reports no GPUs at all" "$(step_gpus_of FAKE_GRESUSED=)" ""
+
 # subordinate ids: without a range the bubble has a single id, which works and is warned about
 mv "$nodedir/sys/etc/subuid" "$nodedir/sys/etc/subuid.away"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?

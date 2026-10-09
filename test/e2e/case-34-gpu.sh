@@ -28,11 +28,12 @@ e2e_require_nodes 2
 
 gpu_capacity() { e2e_kubectl get node "$1" -o jsonpath='{.status.capacity.nvidia\.com/gpu}' 2>/dev/null || true; }
 
+# The node with the most GPUs (the nodes of a cluster may have different numbers).
 GPU_NODE=""
 GPUS=0
 for node in $(e2e_all_nodes); do
     n=$(gpu_capacity "$node")
-    if [[ "$n" =~ ^[1-9][0-9]*$ ]]; then GPU_NODE=$node; GPUS=$n; break; fi
+    if [[ "$n" =~ ^[1-9][0-9]*$ ]] && [ "$n" -gt "$GPUS" ]; then GPU_NODE=$node; GPUS=$n; fi
 done
 
 ALL_RESULTS="T46-gpu-node T47-nvidia-smi T48-no-request T49-exhaustion-and-reuse T50-too-many T51-init-and-restart T52-several-gpus T53-runtime-class T57-cuda-on-every-gpu"
