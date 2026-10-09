@@ -4,19 +4,33 @@ package tap
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 	"unsafe"
+
+	"plaid/pkg/packet"
 )
 
 const (
 	tunDevice = "/dev/net/tun"
 
-	IFF_TAP   = 0x0002
-	IFF_NO_PI = 0x1000
+	IFF_TAP      = 0x0002
+	IFF_NO_PI    = 0x1000
+	IFF_VNET_HDR = 0x4000
 
-	TUNSETIFF = 0x400454ca
+	TUNSETIFF       = 0x400454ca
+	TUNGETIFF       = 0x800454d2
+	TUNSETOFFLOAD   = 0x400454d0
+	TUNSETVNETHDRSZ = 0x400454d8
+
+	// TUNSETOFFLOAD flags: the frames the pod sends may leave their checksums to us, and
+	// be TCP segments of up to 64 KiB (the pod's TSO) which we cut.
+	TUN_F_CSUM = 0x01
+	TUN_F_TSO4 = 0x02
+	TUN_F_TSO6 = 0x04
 
 	SIOCSIFFLAGS   = 0x8914
 	SIOCSIFADDR    = 0x8916
@@ -92,6 +106,9 @@ func nameTo16(name string) [16]byte {
 }
 
 // CreateAndConfigureTap opens /dev/net/tun, allocates a TAP interface, and configures IP/routes inside netns.
+// The TAP has a virtio_net_hdr before every frame (IFF_VNET_HDR) so that offloads can be
+// switched on for it (see NewTapEndpoint); it has none switched on here, so the header
+// is zeros until then. A kernel that refuses the header gives a TAP without it.
 func CreateAndConfigureTap(cfg TapConfig) (*os.File, error) {
 	fd, err := syscall.Open(tunDevice, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
 	if err != nil {
@@ -99,15 +116,28 @@ func CreateAndConfigureTap(cfg TapConfig) (*os.File, error) {
 	}
 
 	var req ifreq
-	req.flags = IFF_TAP | IFF_NO_PI
+	req.flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR
 	if cfg.Name != "" {
 		req.name = nameTo16(cfg.Name)
 	}
 
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(TUNSETIFF), uintptr(unsafe.Pointer(&req)))
+	if errno == syscall.EINVAL {
+		req.flags = IFF_TAP | IFF_NO_PI
+		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(TUNSETIFF), uintptr(unsafe.Pointer(&req)))
+	}
 	if errno != 0 {
 		_ = syscall.Close(fd)
 		return nil, fmt.Errorf("ioctl TUNSETIFF failed: %w", errno)
+	}
+
+	if req.flags&IFF_VNET_HDR != 0 {
+		hdrLen := int32(packet.VnetHeaderLen)
+		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(TUNSETVNETHDRSZ), uintptr(unsafe.Pointer(&hdrLen)))
+		if errno != 0 {
+			_ = syscall.Close(fd)
+			return nil, fmt.Errorf("ioctl TUNSETVNETHDRSZ failed: %w", errno)
+		}
 	}
 
 	actualName := string(req.name[:])
@@ -215,4 +245,94 @@ func CreateAndConfigureTap(cfg TapConfig) (*os.File, error) {
 	}
 
 	return os.NewFile(uintptr(fd), actualName), nil
+}
+
+// hasVnetHdr reports whether the TAP behind f has a virtio header before its frames.
+func hasVnetHdr(f *os.File) bool {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return false
+	}
+	has := false
+	_ = rc.Control(func(fd uintptr) {
+		var req ifreq
+		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(TUNGETIFF), uintptr(unsafe.Pointer(&req)))
+		has = errno == 0 && req.flags&IFF_VNET_HDR != 0
+	})
+	return has
+}
+
+// enableOffloads tells the TAP behind f that it may be given frames with checksums to
+// complete and TCP segments to cut, and may hand over its own. Unprivileged users may.
+func enableOffloads(f *os.File) error {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var errno syscall.Errno
+	if err := rc.Control(func(fd uintptr) {
+		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(TUNSETOFFLOAD), TUN_F_CSUM|TUN_F_TSO4|TUN_F_TSO6)
+	}); err != nil {
+		return err
+	}
+	if errno != 0 {
+		return fmt.Errorf("ioctl TUNSETOFFLOAD: %w", errno)
+	}
+	return nil
+}
+
+// zeroVnetHdr is the header of a frame that asks nothing of the TAP.
+var zeroVnetHdr [packet.VnetHeaderLen]byte
+
+// vnetWriter writes frames to a TAP that has a virtio header, with the header of zeros
+// in front, in one writev, so that the frame is not copied to make room for it.
+type vnetWriter struct {
+	mu    sync.Mutex
+	rc    syscall.RawConn
+	iov   [2]syscall.Iovec
+	n     int
+	errno syscall.Errno
+	do    func(fd uintptr) bool // writev, made once because a closure made per call is an allocation
+}
+
+func newVnetWriter(f *os.File) *vnetWriter {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return nil
+	}
+	w := &vnetWriter{rc: rc}
+	w.iov[0].Base = &zeroVnetHdr[0]
+	w.iov[0].SetLen(len(zeroVnetHdr))
+	w.do = w.writev
+	return w
+}
+
+func (w *vnetWriter) writev(fd uintptr) bool {
+	n, _, errno := syscall.Syscall(syscall.SYS_WRITEV, fd, uintptr(unsafe.Pointer(&w.iov[0])), 2)
+	if errno == syscall.EAGAIN {
+		return false // wait until the TAP can take the frame
+	}
+	w.n, w.errno = int(n), errno
+	return true
+}
+
+func (w *vnetWriter) write(frame []byte) error {
+	if len(frame) == 0 {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.iov[1].Base = &frame[0]
+	w.iov[1].SetLen(len(frame))
+	err := w.rc.Write(w.do)
+	w.iov[1].Base = nil
+	switch {
+	case err != nil:
+		return err
+	case w.errno != 0:
+		return w.errno
+	case w.n != len(zeroVnetHdr)+len(frame):
+		return io.ErrShortWrite
+	}
+	return nil
 }

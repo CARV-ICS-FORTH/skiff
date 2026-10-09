@@ -41,7 +41,7 @@ e2e_assert_nonempty "primary plaidd responsive after collision attempt" "$STATUS
 plaid_identity() {
     printf '%s\n' "$1" | sed -nE 's/ *\(tx=.*//; /^(Node CIDR|Cluster CIDR|Gateway IP|Gateway|Uplink|Resolver|MTU|Overlay):/p'
 }
-overlay_tx() { printf '%s\n' "$1" | sed -n 's/^Overlay:.*(tx=\([0-9]*\),.*/\1/p'; }
+overlay_tx() { printf '%s\n' "$1" | sed -n 's/^Overlay:.*(tx=\([0-9]*\)[ ,].*/\1/p'; }
 e2e_assert_nonempty "the primary plaidd's settings are read" "$(plaid_identity "$STATUS_BEFORE")"
 e2e_assert_eq "primary plaidd settings preserved" "$(plaid_identity "$STATUS_AFTER")" "$(plaid_identity "$STATUS_BEFORE")"
 TX_BEFORE=$(overlay_tx "$STATUS_BEFORE"); TX_AFTER=$(overlay_tx "$STATUS_AFTER")

@@ -48,7 +48,7 @@ func testIPFrame(src, dst net.IP, srcMAC, dstMAC net.HardwareAddr, proto byte) *
 func TestTapGatewayClassifiesBeforeFDB(t *testing.T) {
 	b, pod, peer, bubble := tapTestBridge(t)
 	overlayCalls := 0
-	b.SetOverlayHandler(func(_ *packet.EthernetFrame, ip net.IP) error {
+	setOverlayFunc(b, func(_ *packet.EthernetFrame, ip net.IP) error {
 		overlayCalls++
 		if !ip.Equal(net.ParseIP("10.244.2.4")) {
 			t.Errorf("unexpected overlay IP %s", ip)

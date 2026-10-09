@@ -31,6 +31,11 @@ import (
 	"plaid/pkg/vxlan"
 )
 
+// bridgeInjector lets the overlay inject received frames into the bridge in batches.
+type bridgeInjector struct{ *bridge.Bridge }
+
+func (i bridgeInjector) NewBatch() vxlan.InjectBatch { return i.Bridge.NewBatch() }
+
 type PlaidDaemon struct {
 	cfg          Config
 	bridge       *bridge.Bridge
@@ -65,6 +70,7 @@ type Config struct {
 	VXLANVNI          int
 	VXLANBind         string
 	OverlayHandoff    string
+	Offload           bool
 	SlirpBin          string
 	SlirpSocket       string
 	SlirpDisableDNS   bool
@@ -111,6 +117,7 @@ func main() {
 	flag.IntVar(&cfg.VXLANVNI, "vxlan-vni", packet.DefaultVNI, "VXLAN VNI")
 	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address (with --overlay-handoff: the address the handed-over socket must be bound to)")
 	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP socket, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
+	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay socket. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call")
 	flag.StringVar(&cfg.SlirpBin, "slirp-bin", "slirp4netns", "Path to slirp4netns binary")
 	flag.StringVar(&cfg.SlirpSocket, "slirp-socket", "/run/plaid/slirp.sock", "UNIX socket path for slirp BESS mode")
 	flag.BoolVar(&cfg.SlirpDisableDNS, "slirp-disable-dns", false, "Disable slirp built-in DNS (default: false, enabling DNS forwarder at node-cidr base+3)")
@@ -314,7 +321,8 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		BindAddress: cfg.VXLANBind,
 		Port:        cfg.VXLANPort,
 		DefaultVNI:  uint32(cfg.VXLANVNI),
-	}, routes, b)
+		Offload:     cfg.Offload,
+	}, routes, bridgeInjector{b})
 
 	var slirpMgr *slirp.SlirpManager
 	if cfg.GatewayMode == "slirp" {
@@ -380,7 +388,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 	}
 
 	// Connect bridge handlers
-	b.SetOverlayHandler(overlay.Send)
+	b.SetOverlayBatcher(func() bridge.OverlayBatch { return overlay.NewBatch() })
 	if slirpMgr != nil {
 		b.SetOutboundHandler(slirpMgr.WriteFrame)
 	}
@@ -439,10 +447,10 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 			startErr = err
 			return fmt.Errorf("gateway setup: %w", err)
 		}
-		d.bubbleEP = tap.NewTapEndpoint("bubble", "plaid0", net.ParseIP(d.cfg.GatewayIP), mac, d.attachment.File)
+		d.bubbleEP = tap.NewTapEndpoint("bubble", "plaid0", net.ParseIP(d.cfg.GatewayIP), mac, d.attachment.File, d.cfg.Offload)
 		d.bridge.SetBubbleEndpoint(d.bubbleEP)
 		go d.readBubble(ctx)
-		fmt.Printf("[plaidd] TAP gateway ready: %s/%s, MAC=%s, uplink=%s, guest=%s, cluster route=%s\n", d.cfg.GatewayIP, d.cfg.NodeCIDR, mac, d.cfg.Uplink, d.cfg.UplinkAddress, d.cfg.ClusterCIDR)
+		fmt.Printf("[plaidd] TAP gateway ready: %s/%s, MAC=%s, uplink=%s, guest=%s, cluster route=%s, TAP offloads=%v\n", d.cfg.GatewayIP, d.cfg.NodeCIDR, mac, d.cfg.Uplink, d.cfg.UplinkAddress, d.cfg.ClusterCIDR, d.bubbleEP.Offload())
 	}
 
 	if d.services != nil {
@@ -574,10 +582,8 @@ func (d *PlaidDaemon) Stop() {
 }
 
 func (d *PlaidDaemon) readBubble(ctx context.Context) {
-	buf := make([]byte, 65535)
-	file := d.bubbleEP.File()
 	for {
-		n, err := file.Read(buf)
+		frames, err := d.bubbleEP.ReadFrames()
 		if err != nil {
 			if ctx.Err() == nil {
 				select {
@@ -587,8 +593,8 @@ func (d *PlaidDaemon) readBubble(ctx context.Context) {
 			}
 			return
 		}
-		if n > 0 {
-			_ = d.bridge.ProcessFrame(d.bubbleEP, buf[:n])
+		if len(frames) > 0 {
+			_ = d.bridge.ProcessFrames(d.bubbleEP, frames)
 		}
 	}
 }
@@ -620,14 +626,14 @@ func (d *PlaidDaemon) HandleAddEndpoint(req *api.Request, tapFD int) error {
 		epID = req.ContainerID
 	}
 
-	ep := tap.NewTapEndpoint(epID, req.PodName, epIP, epMAC, epFile)
+	ep := tap.NewTapEndpoint(epID, req.PodName, epIP, epMAC, epFile, d.cfg.Offload)
 	if err := d.bridge.AddEndpoint(ep); err != nil {
 		_ = epFile.Close()
 		return err
 	}
 
 	ep.StartReadLoop(context.Background(), d.bridge)
-	fmt.Printf("[plaidd] Added endpoint %s (IP=%s, MAC=%s)\n", epID, epIP, epMAC)
+	fmt.Printf("[plaidd] Added endpoint %s (IP=%s, MAC=%s, TAP offloads=%v)\n", epID, epIP, epMAC, ep.Offload())
 	return nil
 }
 
@@ -723,13 +729,17 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		OverlayTransport:    ov.Transport,
 		OverlayAddress:      ov.Address,
 		OverlayTxPackets:    ov.TxPackets,
+		OverlayTxSends:      ov.TxSends,
 		OverlayTxErrors:     ov.TxErrors,
+		OverlayRxReads:      ov.RxReads,
 		OverlayRxPackets:    ov.RxPackets,
 		OverlayRxInvalid:    ov.RxInvalid,
 		OverlayRxDropped:    ov.RxDropped,
 		OverlayRxQueueDrops: ov.RxQueueDrops,
 		OverlaySocketDrops:  ov.SocketDrops,
 		OverlayRcvBuf:       ov.RcvBuf,
+		OverlayOffload:      overlayOffload(ov),
+		TapOffload:          d.tapOffload(),
 		EndpointsCount:      len(eps),
 		RoutesCount:         len(d.routes.Routes()),
 		Mode:                mode,
@@ -824,4 +834,35 @@ func initRuntimeDir(socketPath, nodeCIDR, gwIP string) error {
 	}
 	_ = os.Chmod(ipamFile, 0666)
 	return nil
+}
+
+// overlayOffload names the overlay's offloads that are on.
+func overlayOffload(st vxlan.Stats) string {
+	var on []string
+	if st.SegmentOffload {
+		on = append(on, "UDP_SEGMENT")
+	}
+	if st.ReceiveOffload {
+		on = append(on, "UDP_GRO")
+	}
+	return strings.Join(on, ",")
+}
+
+// tapOffload reports the TAP offloads: how many endpoints have them on and the work
+// they have done.
+func (d *PlaidDaemon) tapOffload() *api.TapOffloadStatus {
+	st := &api.TapOffloadStatus{Enabled: d.cfg.Offload}
+	eps := d.bridge.Endpoints()
+	if d.bubbleEP != nil {
+		eps = append(eps, d.bubbleEP)
+	}
+	for _, ep := range eps {
+		if t, ok := ep.(*tap.TapEndpoint); ok && t.Offload() {
+			st.Endpoints++
+		}
+	}
+	c := tap.Offloads()
+	st.ReadSuperFrames, st.ReadSegments, st.ReadDropped = c.ReadSuperFrames, c.ReadSegments, c.ReadDropped
+	st.WriteSuperFrames, st.WriteSegments = c.WriteSuperFrames, c.WriteSegments
+	return st
 }

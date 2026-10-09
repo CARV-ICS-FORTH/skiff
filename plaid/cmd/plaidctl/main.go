@@ -59,10 +59,14 @@ func main() {
 		}
 		fmt.Printf("MTU:          %d\n", status.MTU)
 		if status.OverlayTransport != "" {
-			fmt.Printf("Overlay:      %s socket %s (tx=%d, tx errors=%d, rx=%d, rx invalid=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d)\n",
-				status.OverlayTransport, status.OverlayAddress, status.OverlayTxPackets, status.OverlayTxErrors,
-				status.OverlayRxPackets, status.OverlayRxInvalid, status.OverlayRxDropped,
-				status.OverlayRxQueueDrops, status.OverlaySocketDrops, status.OverlayRcvBuf)
+			fmt.Printf("Overlay:      %s socket %s (tx=%d in %d sends, tx errors=%d, rx=%d in %d reads, rx invalid=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d, offload=%s)\n",
+				status.OverlayTransport, status.OverlayAddress, status.OverlayTxPackets, status.OverlayTxSends, status.OverlayTxErrors,
+				status.OverlayRxPackets, status.OverlayRxReads, status.OverlayRxInvalid, status.OverlayRxDropped,
+				status.OverlayRxQueueDrops, status.OverlaySocketDrops, status.OverlayRcvBuf, orNone(status.OverlayOffload))
+		}
+		if o := status.TapOffload; o != nil {
+			fmt.Printf("TAP offload:  enabled=%t, on %d TAPs (read %d super-frames as %d segments, %d dropped; wrote %d super-frames of %d segments)\n",
+				o.Enabled, o.Endpoints, o.ReadSuperFrames, o.ReadSegments, o.ReadDropped, o.WriteSuperFrames, o.WriteSegments)
 		}
 		if status.ServiceEngine != nil {
 			e := status.ServiceEngine
@@ -307,4 +311,11 @@ Commands:
   filter list                                     List active packet filter rules
   filter del <rule-id>                            Remove a packet filter rule
 `)
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }

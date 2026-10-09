@@ -166,21 +166,6 @@ func csumReplace(sum uint16, old, new []byte) uint16 {
 	return ^uint16(acc)
 }
 
-// Checksum16 is the Internet checksum (RFC 1071) of data.
-func Checksum16(data []byte) uint16 {
-	var sum uint32
-	for i := 0; i+1 < len(data); i += 2 {
-		sum += uint32(binary.BigEndian.Uint16(data[i:]))
-	}
-	if len(data)%2 == 1 {
-		sum += uint32(data[len(data)-1]) << 8
-	}
-	for sum > 0xffff {
-		sum = (sum & 0xffff) + (sum >> 16)
-	}
-	return ^uint16(sum)
-}
-
 // ICMP destination unreachable codes.
 const (
 	ICMPPortUnreachable = 3

@@ -46,6 +46,17 @@ func (m *mockInjector) LastFrame() *packet.EthernetFrame {
 	return m.frames[len(m.frames)-1]
 }
 
+// Send encapsulates one frame into a VXLAN packet and sends it to the remote node, through
+// a batch of its own: what the tests that send one frame at a time use.
+func (oe *OverlayEngine) Send(frame *packet.EthernetFrame, dstIP net.IP) error {
+	tb := oe.NewBatch()
+	defer tb.Release()
+	if err := tb.Send(frame, dstIP); err != nil {
+		return err
+	}
+	return tb.Flush()
+}
+
 func TestRouteTable(t *testing.T) {
 	rt := NewRouteTable()
 
@@ -200,6 +211,22 @@ func newFixture(tb testing.TB, cfg OverlayConfig, sinks int) *fixture {
 
 // dst is an address behind sinks[sink].
 func (f *fixture) dst(sink int) net.IP { return net.IPv4(10, 244, byte(sink+2), 10) }
+
+// receive reads n datagrams from sinks[sink].
+func (f *fixture) receive(t *testing.T, sink, n int) [][]byte {
+	t.Helper()
+	var out [][]byte
+	buf := make([]byte, 70000)
+	for len(out) < n {
+		_ = f.sinks[sink].SetReadDeadline(time.Now().Add(3 * time.Second))
+		m, _, err := f.sinks[sink].ReadFromUDP(buf)
+		if err != nil {
+			t.Fatalf("sink %d: got %d of %d datagrams: %v", sink, len(out), n, err)
+		}
+		out = append(out, append([]byte(nil), buf[:m]...))
+	}
+	return out
+}
 
 func BenchmarkSend(b *testing.B) {
 	for _, size := range []int{1400, 8900} {

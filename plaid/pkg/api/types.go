@@ -148,7 +148,9 @@ type Response struct {
 	OverlayTransport string `json:"overlay_transport,omitempty"`
 	OverlayAddress   string `json:"overlay_address,omitempty"`
 	OverlayTxPackets uint64 `json:"overlay_tx_packets"`
+	OverlayTxSends   uint64 `json:"overlay_tx_sends"`
 	OverlayTxErrors  uint64 `json:"overlay_tx_errors"`
+	OverlayRxReads   uint64 `json:"overlay_rx_reads"`
 	OverlayRxPackets uint64 `json:"overlay_rx_packets"`
 	OverlayRxInvalid uint64 `json:"overlay_rx_invalid"`
 	OverlayRxDropped uint64 `json:"overlay_rx_dropped"`
@@ -157,6 +159,10 @@ type Response struct {
 	OverlayRxQueueDrops uint64 `json:"overlay_rx_queue_drops"`
 	OverlaySocketDrops  uint64 `json:"overlay_socket_drops"`
 	OverlayRcvBuf       int    `json:"overlay_rcvbuf"`
+	// The offloads of the socket that are on ("UDP_SEGMENT,UDP_GRO", or empty), and those
+	// of the TAPs.
+	OverlayOffload string            `json:"overlay_offload,omitempty"`
+	TapOffload     *TapOffloadStatus `json:"tap_offload,omitempty"`
 
 	FilterRules []string `json:"filter_rules,omitempty"`
 
@@ -169,4 +175,18 @@ type Response struct {
 	ServiceWatch   *ServiceWatchStatus `json:"service_watch,omitempty"`
 	NodePorts      *NodePortStatus     `json:"node_ports,omitempty"`
 	Services       []ServiceEntry      `json:"services,omitempty"`
+}
+
+// TapOffloadStatus reports the checksum and TCP segmentation offloads of the TAPs: how
+// many of them have them on, the TSO segments that pods handed over and the frames they
+// were cut into, those dropped because their virtio header did not describe them, and the
+// writes that joined several segments for a pod and the segments in them.
+type TapOffloadStatus struct {
+	Enabled          bool   `json:"enabled"`
+	Endpoints        int    `json:"endpoints"`
+	ReadSuperFrames  uint64 `json:"read_super_frames"`
+	ReadSegments     uint64 `json:"read_segments"`
+	ReadDropped      uint64 `json:"read_dropped"`
+	WriteSuperFrames uint64 `json:"write_super_frames"`
+	WriteSegments    uint64 `json:"write_segments"`
 }

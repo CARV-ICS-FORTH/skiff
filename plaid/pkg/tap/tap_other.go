@@ -8,6 +8,8 @@ import (
 	"os"
 )
 
+var errNoTap = errors.New("TAP device configuration is only supported on Linux")
+
 // TapConfig holds network configuration parameters for the TAP interface.
 type TapConfig struct {
 	Name    string
@@ -20,5 +22,16 @@ type TapConfig struct {
 
 // CreateAndConfigureTap is a stub on non-Linux platforms.
 func CreateAndConfigureTap(cfg TapConfig) (*os.File, error) {
-	return nil, errors.New("TAP device configuration is only supported on Linux")
+	return nil, errNoTap
 }
+
+// There are no TAPs with virtio headers here.
+func hasVnetHdr(*os.File) bool { return false }
+
+func enableOffloads(*os.File) error { return errNoTap }
+
+type vnetWriter struct{}
+
+func newVnetWriter(*os.File) *vnetWriter { return nil }
+
+func (*vnetWriter) write([]byte) error { return errNoTap }

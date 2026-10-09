@@ -194,11 +194,3 @@ func TestICMPDestUnreachable(t *testing.T) {
 		t.Error("the original packet is not quoted")
 	}
 }
-
-func TestChecksum16(t *testing.T) {
-	// The worked example of RFC 1071 section 3.
-	data := []byte{0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7}
-	if got := packet.Checksum16(data); got != ^uint16(0xddf2) {
-		t.Errorf("checksum = %#x", got)
-	}
-}

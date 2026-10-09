@@ -235,7 +235,7 @@ func TestBridgeOverlayRouting(t *testing.T) {
 	var overlayCalled bool
 	var overlayDst net.IP
 
-	b.SetOverlayHandler(func(frame *packet.EthernetFrame, dstIP net.IP) error {
+	setOverlayFunc(b, func(frame *packet.EthernetFrame, dstIP net.IP) error {
 		overlayCalled = true
 		overlayDst = dstIP
 		return nil
@@ -266,7 +266,7 @@ func TestBridgeOverlayRouting(t *testing.T) {
 	}
 
 	if !overlayCalled {
-		t.Fatalf("Expected overlayHandler to be called")
+		t.Fatalf("Expected the overlay to be sent to")
 	}
 	if !overlayDst.Equal(net.ParseIP("10.244.2.5")) {
 		t.Errorf("Expected overlay destination 10.244.2.5, got %s", overlayDst)

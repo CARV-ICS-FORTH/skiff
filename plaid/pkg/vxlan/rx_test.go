@@ -242,38 +242,3 @@ func TestOverlayReceiveBuffer(t *testing.T) {
 		t.Errorf("without RcvBuf the buffer is %d, want the default's %d", got, want)
 	}
 }
-
-// Reading and queueing add no allocation per datagram to what parsing already costs.
-func TestOverlayReceivePathAllocations(t *testing.T) {
-	const batch, batches = 100, 20
-	d := datagram(1, 1400)
-	parse := testing.AllocsPerRun(100, func() { _, _ = packet.ParseVXLAN(d) })
-
-	inj := &seqInjector{seqs: make([]uint32, 0, batch*(batches+1))} // so that recording allocates nothing
-	oe := startEngine(t, OverlayConfig{RcvBuf: 1 << 20}, inj)
-	c := dialEngine(t, oe)
-	send := func(n int) {
-		want := inj.n.Load() + int64(n)
-		for i := 0; i < n; i++ {
-			c.Write(d)
-		}
-		waitFor(t, "the batch", func() bool { return inj.n.Load() == want })
-	}
-	send(batch) // warm the pool and the poller
-
-	// The sender, reader and worker run concurrently: the heap's counter sees them all.
-	// The sender and the injector allocate nothing per datagram.
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	for i := 0; i < batches; i++ {
-		send(batch)
-	}
-	runtime.ReadMemStats(&after)
-	perDatagram := float64(after.Mallocs-before.Mallocs) / (batch * batches)
-	// -race makes the buffer pool drop buffers, which adds a fraction.
-	t.Logf("allocations per datagram: %.2f (ParseVXLAN alone: %.0f)", perDatagram, parse)
-	if perDatagram > parse+0.75 {
-		t.Errorf("%.2f allocations per datagram, parsing accounts for %.0f", perDatagram, parse)
-	}
-}

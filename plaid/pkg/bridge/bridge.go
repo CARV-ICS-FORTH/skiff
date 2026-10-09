@@ -71,8 +71,9 @@ func (b *Bridge) floodFrame(frame *packet.EthernetFrame) error {
 	return b.flood(nil, buf.B)
 }
 
-// OverlayHandler is invoked when a packet needs cross-host overlay encapsulation (e.g. VXLAN).
-type OverlayHandler func(frame *packet.EthernetFrame, dstIP net.IP) error
+// OverlayBatcher returns an OverlayBatch for the cross-host overlay (e.g. VXLAN), which
+// every packet that needs to go to another node is sent through.
+type OverlayBatcher func() OverlayBatch
 
 // OutboundHandler is invoked when a packet needs outbound NAT (e.g. slirp4netns).
 type OutboundHandler func(frame *packet.EthernetFrame) error
@@ -105,7 +106,7 @@ type Bridge struct {
 	nodeCIDR    *net.IPNet
 	clusterCIDR *net.IPNet
 
-	overlayHandler  OverlayHandler
+	overlayBatcher  OverlayBatcher
 	outboundHandler OutboundHandler
 	filterHandler   FilterHandler
 
@@ -167,7 +168,7 @@ func (b *Bridge) knownRemote(ip net.IP) bool {
 	return check == nil || check(ip)
 }
 
-func (b *Bridge) writeBubble(frame *packet.EthernetFrame) error {
+func (b *Bridge) writeBubble(x *Batch, frame *packet.EthernetFrame) error {
 	b.mu.RLock()
 	ep := b.bubble
 	b.mu.RUnlock()
@@ -178,7 +179,7 @@ func (b *Bridge) writeBubble(frame *packet.EthernetFrame) error {
 	if len(frame.SrcMAC) != 6 || bytes.Equal(frame.SrcMAC, ep.MAC()) {
 		frame.SrcMAC = b.gatewayMAC
 	}
-	return writeFrame(ep, frame)
+	return x.deliver(ep, frame, nil)
 }
 
 // SetServiceEngine attaches the Service engine (tap mode).
@@ -194,11 +195,12 @@ func (b *Bridge) serviceEngine() *svc.Engine {
 	return b.services
 }
 
-// SetOverlayHandler sets the handler for cross-host overlay packets.
-func (b *Bridge) SetOverlayHandler(h OverlayHandler) {
+// SetOverlayBatcher sets the overlay for cross-host packets: the bridge holds the frames
+// for it until the end of a Batch and sends them through the OverlayBatch that n makes.
+func (b *Bridge) SetOverlayBatcher(n OverlayBatcher) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.overlayHandler = h
+	b.overlayBatcher = n
 }
 
 // SetOutboundHandler sets the handler for external/internet egress packets.
@@ -295,6 +297,19 @@ func (b *Bridge) Endpoints() []Endpoint {
 
 // ProcessFrame receives a raw Ethernet frame from an endpoint and forwards it.
 func (b *Bridge) ProcessFrame(srcEP Endpoint, raw []byte) error {
+	x := b.NewBatch()
+	defer x.Release()
+	err := x.ProcessFrame(srcEP, raw)
+	if ferr := x.Flush(); err == nil {
+		err = ferr
+	}
+	return err
+}
+
+// ProcessFrame is Bridge.ProcessFrame within the batch: what the frame sends out is held
+// until the batch is flushed.
+func (x *Batch) ProcessFrame(srcEP Endpoint, raw []byte) error {
+	b := x.b
 	frame, err := packet.ParseEthernet(raw)
 	if err != nil {
 		return fmt.Errorf("failed to parse ethernet frame: %w", err)
@@ -320,7 +335,7 @@ func (b *Bridge) ProcessFrame(srcEP Endpoint, raw []byte) error {
 	}
 
 	// Handle Unicast
-	return b.handleUnicast(srcEP, frame, raw)
+	return b.handleUnicast(x, srcEP, frame, raw)
 }
 
 func (b *Bridge) handleBroadcast(srcEP Endpoint, frame *packet.EthernetFrame, raw []byte) error {
@@ -416,13 +431,13 @@ func (b *Bridge) handleBroadcast(srcEP Endpoint, frame *packet.EthernetFrame, ra
 	return b.flood(srcEP, raw)
 }
 
-func (b *Bridge) handleUnicast(srcEP Endpoint, frame *packet.EthernetFrame, raw []byte) error {
+func (b *Bridge) handleUnicast(x *Batch, srcEP Endpoint, frame *packet.EthernetFrame, raw []byte) error {
 	if b.gatewayMode == "tap" && frame.EtherType == packet.EtherTypeIPv4 {
 		ipPkt, err := packet.ParseIPv4(frame.Payload)
 		if err != nil {
 			return err
 		}
-		return b.routeTapTraffic(srcEP, frame, ipPkt.Header.DstIP)
+		return b.routeTapTraffic(x, srcEP, frame, ipPkt.Header.DstIP)
 	}
 	// 1. Direct local delivery: Lookup destination MAC in FDB
 	targetEP := b.fdb.Lookup(frame.DstMAC)
@@ -431,7 +446,7 @@ func (b *Bridge) handleUnicast(srcEP Endpoint, frame *packet.EthernetFrame, raw 
 			// Hairpin or self-destination
 			return nil
 		}
-		return targetEP.Write(raw)
+		return x.deliver(targetEP, frame, raw)
 	}
 
 	// 2. If destination is a slirp emulated MAC (52:55:xx:xx:xx:xx), forward to outbound handler
@@ -446,7 +461,7 @@ func (b *Bridge) handleUnicast(srcEP Endpoint, frame *packet.EthernetFrame, raw 
 
 	// 3. If destination is the Gateway MAC, inspect IP header
 	if b.gatewayMAC != nil && bytes.Equal(frame.DstMAC, b.gatewayMAC) {
-		return b.routeGatewayTraffic(srcEP, frame, raw)
+		return b.routeGatewayTraffic(x, srcEP, frame)
 	}
 
 	// 3. If destination MAC is unknown and it's IPv4:
@@ -459,17 +474,17 @@ func (b *Bridge) handleUnicast(srcEP Endpoint, frame *packet.EthernetFrame, raw 
 			localTarget, ok := b.ipToEp[dstIP.String()]
 			b.mu.RUnlock()
 			if ok && localTarget != nil {
-				return localTarget.Write(raw)
+				return x.deliver(localTarget, frame, raw)
 			}
 
 			// Is it an overlay remote node destination?
 			if b.clusterCIDR != nil && b.clusterCIDR.Contains(dstIP) &&
 				(b.nodeCIDR == nil || !b.nodeCIDR.Contains(dstIP)) {
 				b.mu.RLock()
-				overlay := b.overlayHandler
+				overlay := b.overlayBatcher != nil
 				b.mu.RUnlock()
-				if overlay != nil {
-					return overlay(frame, dstIP)
+				if overlay {
+					return x.sendOverlay(frame, dstIP)
 				}
 			}
 
@@ -487,17 +502,17 @@ func (b *Bridge) handleUnicast(srcEP Endpoint, frame *packet.EthernetFrame, raw 
 	return b.flood(srcEP, raw)
 }
 
-func (b *Bridge) routeTapTraffic(srcEP Endpoint, frame *packet.EthernetFrame, dstIP net.IP) error {
+func (b *Bridge) routeTapTraffic(x *Batch, srcEP Endpoint, frame *packet.EthernetFrame, dstIP net.IP) error {
 	if eng := b.serviceEngine(); eng != nil {
 		var dst [4]byte
 		copy(dst[:], dstIP.To4())
 		if eng.Owns(dst) {
-			return b.serviceTraffic(eng, frame.Payload)
+			return b.serviceTraffic(x, eng, frame.Payload)
 		}
 	}
 	b.mu.RLock()
 	local := b.ipToEp[dstIP.String()]
-	overlay := b.overlayHandler
+	overlay := b.overlayBatcher != nil
 	b.mu.RUnlock()
 	if local != nil {
 		if srcEP != nil && srcEP.ID() == local.ID() {
@@ -507,16 +522,16 @@ func (b *Bridge) routeTapTraffic(srcEP Endpoint, frame *packet.EthernetFrame, ds
 		if srcEP == nil {
 			frame.SrcMAC = b.gatewayMAC
 		}
-		return writeFrame(local, frame)
+		return x.deliver(local, frame, nil)
 	}
 	if b.gatewayIP != nil && dstIP.Equal(b.gatewayIP) {
-		return b.writeBubble(frame)
+		return b.writeBubble(x, frame)
 	}
 	if b.knownRemote(dstIP) {
-		if overlay == nil {
+		if !overlay {
 			return fmt.Errorf("overlay unavailable for %s", dstIP)
 		}
-		return overlay(frame, dstIP)
+		return x.sendOverlay(frame, dstIP)
 	}
 	if b.clusterCIDR != nil && b.clusterCIDR.Contains(dstIP) {
 		return nil
@@ -524,7 +539,7 @@ func (b *Bridge) routeTapTraffic(srcEP Endpoint, frame *packet.EthernetFrame, ds
 	if srcEP == b.BubbleEndpoint() {
 		return fmt.Errorf("bubble emitted non-overlay destination %s", dstIP)
 	}
-	return b.writeBubble(frame)
+	return b.writeBubble(x, frame)
 }
 
 // serviceTraffic hands a packet to the Service engine and sends what comes out: the
@@ -532,42 +547,42 @@ func (b *Bridge) routeTapTraffic(srcEP Endpoint, frame *packet.EthernetFrame, ds
 // the client. Everything the engine emits is routed here by where its destination is,
 // never through the checks for packets that come from the bubble or from pods, which it
 // is not.
-func (b *Bridge) serviceTraffic(eng *svc.Engine, ipPacket []byte) error {
+func (b *Bridge) serviceTraffic(x *Batch, eng *svc.Engine, ipPacket []byte) error {
 	res := eng.Process(ipPacket)
 	if res.Verdict == svc.Drop {
 		return nil
 	}
-	return b.routeEngineOutput(res.Packet, net.IP(res.Dst[:]))
+	return b.routeEngineOutput(x, res.Packet, net.IP(res.Dst[:]))
 }
 
-func (b *Bridge) routeEngineOutput(ipPacket []byte, dstIP net.IP) error {
+func (b *Bridge) routeEngineOutput(x *Batch, ipPacket []byte, dstIP net.IP) error {
 	frame := &packet.EthernetFrame{SrcMAC: b.gatewayMAC, EtherType: packet.EtherTypeIPv4, Payload: ipPacket}
 	b.mu.RLock()
 	local := b.ipToEp[dstIP.String()]
-	overlay := b.overlayHandler
+	overlay := b.overlayBatcher != nil
 	b.mu.RUnlock()
 	switch {
 	case local != nil:
 		frame.DstMAC = local.MAC()
-		return writeFrame(local, frame)
+		return x.deliver(local, frame, nil)
 	case b.gatewayIP != nil && dstIP.Equal(b.gatewayIP):
 		// The client is the bubble itself.
-		return b.writeBubble(frame)
+		return b.writeBubble(x, frame)
 	case b.knownRemote(dstIP):
-		if overlay == nil {
+		if !overlay {
 			return fmt.Errorf("overlay unavailable for %s", dstIP)
 		}
-		return overlay(frame, dstIP)
+		return x.sendOverlay(frame, dstIP)
 	case b.clusterCIDR != nil && b.clusterCIDR.Contains(dstIP):
 		// A pod address that is not here and not routed: nowhere to go.
 		return nil
 	}
 	// Not a pod: a Service backend outside the pod network (the API server, say), for
 	// the bubble's kernel to route.
-	return b.writeBubble(frame)
+	return b.writeBubble(x, frame)
 }
 
-func (b *Bridge) routeGatewayTraffic(srcEP Endpoint, frame *packet.EthernetFrame, raw []byte) error {
+func (b *Bridge) routeGatewayTraffic(x *Batch, srcEP Endpoint, frame *packet.EthernetFrame) error {
 	if frame.EtherType != packet.EtherTypeIPv4 {
 		return nil
 	}
@@ -589,7 +604,7 @@ func (b *Bridge) routeGatewayTraffic(srcEP Endpoint, frame *packet.EthernetFrame
 				EtherType: packet.EtherTypeIPv4,
 				Payload:   replyData,
 			}
-			return writeFrame(srcEP, replyEther)
+			return x.deliver(srcEP, replyEther, nil)
 		}
 		return nil
 	}
@@ -601,17 +616,17 @@ func (b *Bridge) routeGatewayTraffic(srcEP Endpoint, frame *packet.EthernetFrame
 	if ok && localTarget != nil {
 		// Rewrite destination MAC to the pod's MAC
 		frame.DstMAC = localTarget.MAC()
-		return writeFrame(localTarget, frame)
+		return x.deliver(localTarget, frame, nil)
 	}
 
 	// 2. If destination is in the cluster overlay (remote node)
 	if b.clusterCIDR != nil && b.clusterCIDR.Contains(dstIP) &&
 		(b.nodeCIDR == nil || !b.nodeCIDR.Contains(dstIP)) {
 		b.mu.RLock()
-		overlay := b.overlayHandler
+		overlay := b.overlayBatcher != nil
 		b.mu.RUnlock()
-		if overlay != nil {
-			return overlay(frame, dstIP)
+		if overlay {
+			return x.sendOverlay(frame, dstIP)
 		}
 	}
 
@@ -628,6 +643,19 @@ func (b *Bridge) routeGatewayTraffic(srcEP Endpoint, frame *packet.EthernetFrame
 
 // InjectFrame injects a frame into the bridge (e.g. from VXLAN or slirp4netns return traffic).
 func (b *Bridge) InjectFrame(frame *packet.EthernetFrame) error {
+	x := b.NewBatch()
+	defer x.Release()
+	err := x.InjectFrame(frame)
+	if ferr := x.Flush(); err == nil {
+		err = ferr
+	}
+	return err
+}
+
+// InjectFrame is Bridge.InjectFrame within the batch: what the frame sends out is held
+// until the batch is flushed.
+func (x *Batch) InjectFrame(frame *packet.EthernetFrame) error {
+	b := x.b
 	if b.gatewayMode == "tap" {
 		if frame.EtherType != packet.EtherTypeIPv4 {
 			return nil
@@ -638,11 +666,11 @@ func (b *Bridge) InjectFrame(frame *packet.EthernetFrame) error {
 		}
 		if b.gatewayIP != nil && ipPkt.Header.DstIP.Equal(b.gatewayIP) {
 			frame.SrcMAC = b.gatewayMAC
-			return b.writeBubble(frame)
+			return b.writeBubble(x, frame)
 		}
 		// A backend on another node answering the Service engine's address.
 		if eng := b.serviceEngine(); eng != nil && eng.SNATAddr().Equal(ipPkt.Header.DstIP) {
-			return b.serviceTraffic(eng, frame.Payload)
+			return b.serviceTraffic(x, eng, frame.Payload)
 		}
 		if b.nodeCIDR == nil || !b.nodeCIDR.Contains(ipPkt.Header.DstIP) {
 			return nil
@@ -655,7 +683,7 @@ func (b *Bridge) InjectFrame(frame *packet.EthernetFrame) error {
 		}
 		frame.DstMAC = target.MAC()
 		frame.SrcMAC = b.gatewayMAC
-		return writeFrame(target, frame)
+		return x.deliver(target, frame, nil)
 	}
 	if frame.IsBroadcast() || frame.IsMulticast() {
 		return b.floodFrame(frame)
@@ -695,7 +723,7 @@ func (b *Bridge) InjectFrame(frame *packet.EthernetFrame) error {
 			frame.SrcMAC = b.gatewayMAC
 		}
 
-		return writeFrame(targetEP, frame)
+		return x.deliver(targetEP, frame, nil)
 	}
 
 	// Flood if still unknown

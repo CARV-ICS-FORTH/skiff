@@ -42,7 +42,7 @@ func newServiceFixture(t *testing.T, table ...svc.Service) *serviceFixture {
 	eng.SetServices(table)
 	b.SetServiceEngine(eng)
 	f := &serviceFixture{b: b, eng: eng, pod: pod, peer: peer, bubble: bubble}
-	b.SetOverlayHandler(func(frame *packet.EthernetFrame, _ net.IP) error {
+	setOverlayFunc(b, func(frame *packet.EthernetFrame, _ net.IP) error {
 		f.overlay = append(f.overlay, frame)
 		return nil
 	})
