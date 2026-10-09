@@ -217,10 +217,14 @@ GPUPATH="$GOOD:$nodedir/gpu"
 for f in nvidia0 nvidia1 nvidia2 nvidia3 nvidiactl nvidia-uvm; do : > "$nodedir/sys/dev/$f"; done
 out=$(node_check "$GPUPATH" "$nodedir/scratch"); status=$?
 expect "a step without GPUs has nothing to check, whatever the node has" "$status:$out" "0:"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0 SLURM_JOB_GPUS=0); status=$?
-expect "a step that was given a GPU it can use is fine" "$status:$out" "0:"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,2-3); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0-3 SLURM_JOB_GPUS=0-3); status=$?
+expect "a step that was given all the GPUs of the node, and can use them, is fine" "$status:$out" "0:"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,1-3); status=$?
 expect "and so is a list, with a range" "$status:$out" "0:"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,2-3); status=$?
+expect "a step with some of the node's GPUs is not refused, and is warned, with how many and what to ask for" "$status:$(grep -c 'WARNING: Slurm gave this step 3 of the 4 GPUs of the node' <<< "$out"):$(grep -c 'Ask for all of them (--gpus-per-node=4)' <<< "$out")" "0:1:1"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=1); status=$?
+expect "so is a step with one of four" "$status:$(grep -c 'gave this step 1 of the 4 GPUs' <<< "$out")" "0:1"
 rm "$nodedir/sys/dev/nvidia2"
 out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,2-3); status=$?
 expect "a GPU of the list that cannot be opened is refused, by its number" "$status:$(grep -c 'Slurm gave this step GPU 2 and /dev/nvidia2 cannot be opened' <<< "$out"):$(grep -c 'GPU 3' <<< "$out")" "1:1:0"
@@ -235,7 +239,7 @@ expect "a node without nvidia-uvm is refused, with what it is" "$status:$(grep -
 mv "$nodedir/sys/dev/nvidia-uvm.away" "$nodedir/sys/dev/nvidia-uvm"
 out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0 FAKE_NO_NVML=1); status=$?
 expect "a driver whose libraries are not in the library cache is refused, with what to ask for" "$status:$(grep -c 'libnvidia-ml.so.1 is not in the library cache' <<< "$out"):$(grep -c 'libcuda.so.1 is not in' <<< "$out")" "1:1:0"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0 FAKE_NO_LDCONFIG=1); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0-3 FAKE_NO_LDCONFIG=1); status=$?
 expect "a node where the cache cannot be read is not refused for it" "$status:$out" "0:"
 
 # subordinate ids: without a range the bubble has a single id, which works and is warned about

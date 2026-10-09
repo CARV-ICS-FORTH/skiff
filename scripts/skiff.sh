@@ -546,7 +546,7 @@ skiff_check_node() {
     # given must be usable: the cluster's pods run on them, and a cluster that advertises
     # GPUs it cannot use is worse than one without. A node without GPUs has nothing to check.
     if [ -n "${SLURM_STEP_GPUS:-}" ]; then
-        local gpu_part gpu_lo gpu_hi gpu_n gpu_file gpu_missing=""
+        local gpu_part gpu_lo gpu_hi gpu_n gpu_file gpu_missing="" gpu_given=0 gpu_node_total=0
         for gpu_part in ${SLURM_STEP_GPUS//,/ }; do
             gpu_lo=${gpu_part%%-*}; gpu_hi=${gpu_part##*-}
             if ! [[ "$gpu_lo" =~ ^[0-9]+$ && "$gpu_hi" =~ ^[0-9]+$ ]] || [ "$gpu_lo" -gt "$gpu_hi" ]; then
@@ -554,6 +554,7 @@ skiff_check_node() {
                 errors=$((errors + 1)); gpu_missing=-; break
             fi
             for ((gpu_n = gpu_lo; gpu_n <= gpu_hi; gpu_n++)); do
+                gpu_given=$((gpu_given + 1))
                 gpu_file=$(_skiff_sys "/dev/nvidia$gpu_n")
                 if ! { : < "$gpu_file"; } 2>/dev/null; then
                     echo "$host: Slurm gave this step GPU $gpu_n and ${gpu_file#"${SKIFF_SYS_ROOT:-}"} cannot be opened by $(id -un) (it does not exist, or a device cgroup of the job denies it); the NVIDIA driver is not usable here" >&2
@@ -567,6 +568,18 @@ skiff_check_node() {
                 errors=$((errors + 1))
             fi
         done
+        # Skiff assumes an exclusive job that has all the GPUs of its nodes. A step with fewer than
+        # the node has works as far as it goes (the pods get the step's GPUs and no others) but has
+        # not been tried, so it is said here and not left to be found out.
+        if [ -z "$gpu_missing" ]; then
+            for gpu_file in "$(_skiff_sys /dev)"/nvidia[0-9]*; do
+                [ -e "$gpu_file" ] && gpu_node_total=$((gpu_node_total + 1))
+            done
+            if [ "$gpu_given" -lt "$gpu_node_total" ]; then
+                echo "$host: WARNING: Slurm gave this step $gpu_given of the $gpu_node_total GPUs of the node: Skiff assumes an exclusive job that has all the GPUs of its nodes, and a partial allocation has not been tried (the pods get the $gpu_given GPUs of the step and no others). Ask for all of them (--gpus-per-node=$gpu_node_total)" >&2
+                SKIFF_CHECK_WARNINGS=$((SKIFF_CHECK_WARNINGS + 1))
+            fi
+        fi
         # Apptainer's --nv finds the driver's libraries in the library cache (ldconfig) and binds
         # them into the bubble and, from there, into the containers of the GPU pods. Libraries
         # that are only in LD_LIBRARY_PATH (a module) are not found by it.
