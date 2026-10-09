@@ -17,6 +17,7 @@ type batchEndpoint struct {
 	events   []string // "add:<first payload byte>", "flush"
 	flushed  [][]byte // what flushes wrote
 	adds     [][]byte
+	trusted  []bool // the Trusted mark of each frame added
 	released int
 }
 
@@ -36,6 +37,7 @@ func (w *recordingWriter) Add(f *packet.EthernetFrame) error {
 	b, _ := f.Marshal()
 	w.held = append(w.held, b)
 	w.e.adds = append(w.e.adds, b)
+	w.e.trusted = append(w.e.trusted, f.Trusted)
 	w.e.events = append(w.e.events, fmt.Sprintf("add:%d", f.Payload[0]))
 	return nil
 }
@@ -105,6 +107,19 @@ func TestProcessFramesHoldsDeliveriesUntilTheEnd(t *testing.T) {
 		if !bytes.Equal(f, frames[i]) {
 			t.Errorf("frame %d differs from what was sent", i)
 		}
+	}
+}
+
+// Frames from ProcessTrustedFrames reach the destination's writer marked Trusted, those
+// from ProcessFrames and ProcessFrame do not.
+func TestTrustedFramesStayTrusted(t *testing.T) {
+	b, pod1, pod3 := batchFixture()
+	frames := [][]byte{unicast(pod1.MAC(), pod3.MAC(), 1), unicast(pod1.MAC(), pod3.MAC(), 2)}
+	_ = b.ProcessTrustedFrames(pod1, frames)
+	_ = b.ProcessFrames(pod1, frames)
+	_ = b.ProcessFrame(pod1, frames[0])
+	if got, want := fmt.Sprint(pod3.trusted), "[true true false false false]"; got != want {
+		t.Errorf("trusted marks %s, want %s", got, want)
 	}
 }
 

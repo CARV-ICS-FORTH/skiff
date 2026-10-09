@@ -9,7 +9,8 @@ import (
 
 // tapWriter is the bridge.FrameWriter of a TAP with offloads: it holds the frames a
 // batch delivers in a Coalescer, which joins consecutive TCP segments of a flow, and
-// writes each result with one write.
+// writes each result with one write: by the goroutine that delivers, or, if the endpoint
+// has a writer goroutine, by that (see TapEndpoint.enqueue).
 type tapWriter struct {
 	t *TapEndpoint
 	c packet.Coalescer
@@ -33,7 +34,7 @@ func (w *tapWriter) Add(frame *packet.EthernetFrame) error {
 	if w.c.Merge(frame) {
 		return nil
 	}
-	err := w.Flush()
+	err := w.flush(true)
 	if serr := w.c.Start(frame); err == nil {
 		err = serr
 	}
@@ -41,7 +42,12 @@ func (w *tapWriter) Add(frame *packet.EthernetFrame) error {
 }
 
 // Flush writes the frame held.
-func (w *tapWriter) Flush() error {
+func (w *tapWriter) Flush() error { return w.flush(false) }
+
+// flush writes the frame held; more says that the caller has more frames to deliver
+// at once (the frame that comes next is already in hand), which a writer goroutine can
+// write the held one in the meantime.
+func (w *tapWriter) flush(more bool) error {
 	if !w.c.Pending() {
 		return nil
 	}
@@ -53,6 +59,12 @@ func (w *tapWriter) Flush() error {
 	if segments > 1 {
 		stats.writeSuper.Add(1)
 		stats.writeSegments.Add(uint64(segments))
+	}
+	if w.t.wq != nil {
+		if more || w.t.wpending.Load() != 0 {
+			return w.t.enqueue(w.c.Detach())
+		}
+		stats.writeInline.Add(1)
 	}
 	_, err := w.t.file.Write(b)
 	return err

@@ -309,11 +309,18 @@ func (b *Bridge) ProcessFrame(srcEP Endpoint, raw []byte) error {
 // ProcessFrame is Bridge.ProcessFrame within the batch: what the frame sends out is held
 // until the batch is flushed.
 func (x *Batch) ProcessFrame(srcEP Endpoint, raw []byte) error {
+	return x.processFrame(srcEP, raw, false)
+}
+
+// processFrame is ProcessFrame for a frame whose transport checksum is known to be right
+// if trusted (see packet.EthernetFrame).
+func (x *Batch) processFrame(srcEP Endpoint, raw []byte, trusted bool) error {
 	b := x.b
 	frame, err := packet.ParseEthernet(raw)
 	if err != nil {
 		return fmt.Errorf("failed to parse ethernet frame: %w", err)
 	}
+	frame.Trusted = trusted
 
 	// Filter hook (user-space br_netfilter)
 	b.mu.RLock()

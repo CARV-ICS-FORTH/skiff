@@ -2,18 +2,22 @@ package packet
 
 import "sync"
 
-// bufferCap fits a VXLAN header and the largest frame a TAP read returns.
-const bufferCap = VXLANHeaderLen + 65535
+// bufferCap fits the largest thing in a Buffer: a TAP read (a virtio header and a
+// frame of up to 64 KiB), a VXLAN header and such a frame, or a Coalescer's frame.
+const bufferCap = VnetHeaderLen + EthernetHeaderLen + 65535
 
 // Buffer is a reusable scratch slice for encoding one frame. It is for writes that
 // finish before they return, so that a frame is not copied into a new allocation.
 type Buffer struct {
 	B    []byte
 	held bool
+	mem  [bufferCap]byte // B's array, so that a new Buffer is one allocation
 }
 
 var bufferPool = sync.Pool{New: func() any {
-	return &Buffer{B: make([]byte, 0, bufferCap)}
+	b := new(Buffer)
+	b.B = b.mem[:0]
+	return b
 }}
 
 // GetBuffer returns an empty Buffer that nobody else holds until it is released.

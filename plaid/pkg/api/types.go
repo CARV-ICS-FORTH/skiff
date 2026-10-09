@@ -161,8 +161,9 @@ type Response struct {
 	OverlayRcvBuf       int    `json:"overlay_rcvbuf"`
 	// The offloads of the socket that are on ("UDP_SEGMENT,UDP_GRO", or empty), and those
 	// of the TAPs.
-	OverlayOffload string            `json:"overlay_offload,omitempty"`
-	TapOffload     *TapOffloadStatus `json:"tap_offload,omitempty"`
+	OverlayOffload string             `json:"overlay_offload,omitempty"`
+	TapOffload     *TapOffloadStatus  `json:"tap_offload,omitempty"`
+	TapPipeline    *TapPipelineStatus `json:"tap_pipeline,omitempty"`
 
 	FilterRules []string `json:"filter_rules,omitempty"`
 
@@ -175,6 +176,21 @@ type Response struct {
 	ServiceWatch   *ServiceWatchStatus `json:"service_watch,omitempty"`
 	NodePorts      *NodePortStatus     `json:"node_ports,omitempty"`
 	Services       []ServiceEntry      `json:"services,omitempty"`
+}
+
+// TapPipelineStatus reports the pipelines of the TAPs, which split the work of a TAP
+// between goroutines: how many TAPs have one, and for each direction how many batches or
+// writes were done in place by the goroutine that had them, how many were handed to the
+// next stage, and of those how many found the queue to it full (a time that a stage waited
+// for the next).
+type TapPipelineStatus struct {
+	Endpoints      int    `json:"endpoints"`
+	ReadInline     uint64 `json:"read_inline"`
+	ReadQueued     uint64 `json:"read_queued"`
+	ReadQueueFull  uint64 `json:"read_queue_full"`
+	WriteInline    uint64 `json:"write_inline"`
+	WriteQueued    uint64 `json:"write_queued"`
+	WriteQueueFull uint64 `json:"write_queue_full"`
 }
 
 // TapOffloadStatus reports the checksum and TCP segmentation offloads of the TAPs: how

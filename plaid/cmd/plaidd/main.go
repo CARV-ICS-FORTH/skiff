@@ -448,8 +448,16 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 			return fmt.Errorf("gateway setup: %w", err)
 		}
 		d.bubbleEP = tap.NewTapEndpoint("bubble", "plaid0", net.ParseIP(d.cfg.GatewayIP), mac, d.attachment.File, d.cfg.Offload)
+		// The bubble's TAP is not pipelined: its traffic is the pods' traffic to and from
+		// slirp4netns, a ping-pong with a user-space TCP stack that the hand-offs only slow
+		// down.
 		d.bridge.SetBubbleEndpoint(d.bubbleEP)
-		go d.readBubble(ctx)
+		d.bubbleEP.StartReadLoopFunc(ctx, d.bridge, func(err error) {
+			select {
+			case d.healthErr <- err:
+			default:
+			}
+		})
 		fmt.Printf("[plaidd] TAP gateway ready: %s/%s, MAC=%s, uplink=%s, guest=%s, cluster route=%s, TAP offloads=%v\n", d.cfg.GatewayIP, d.cfg.NodeCIDR, mac, d.cfg.Uplink, d.cfg.UplinkAddress, d.cfg.ClusterCIDR, d.bubbleEP.Offload())
 	}
 
@@ -572,30 +580,17 @@ func (d *PlaidDaemon) Stop() {
 	if d.overlay != nil {
 		_ = d.overlay.Close()
 	}
+	// With the overlay stopped, nothing more is delivered to the TAPs: close them, which
+	// ends their pipelines' goroutines.
+	for _, ep := range d.tapEndpoints() {
+		_ = ep.Close()
+	}
 	if d.slirpMgr != nil {
 		_ = d.slirpMgr.Close()
 	}
 	if d.attachment != nil {
 		_ = d.attachment.Close()
 		d.attachment = nil
-	}
-}
-
-func (d *PlaidDaemon) readBubble(ctx context.Context) {
-	for {
-		frames, err := d.bubbleEP.ReadFrames()
-		if err != nil {
-			if ctx.Err() == nil {
-				select {
-				case d.healthErr <- err:
-				default:
-				}
-			}
-			return
-		}
-		if len(frames) > 0 {
-			_ = d.bridge.ProcessFrames(d.bubbleEP, frames)
-		}
 	}
 }
 
@@ -627,8 +622,9 @@ func (d *PlaidDaemon) HandleAddEndpoint(req *api.Request, tapFD int) error {
 	}
 
 	ep := tap.NewTapEndpoint(epID, req.PodName, epIP, epMAC, epFile, d.cfg.Offload)
+	ep.SetPipeline()
 	if err := d.bridge.AddEndpoint(ep); err != nil {
-		_ = epFile.Close()
+		_ = ep.Close() // closes epFile and stops the goroutines SetPipeline started
 		return err
 	}
 
@@ -740,6 +736,7 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		OverlayRcvBuf:       ov.RcvBuf,
 		OverlayOffload:      overlayOffload(ov),
 		TapOffload:          d.tapOffload(),
+		TapPipeline:         d.tapPipeline(),
 		EndpointsCount:      len(eps),
 		RoutesCount:         len(d.routes.Routes()),
 		Mode:                mode,
@@ -848,21 +845,46 @@ func overlayOffload(st vxlan.Stats) string {
 	return strings.Join(on, ",")
 }
 
+// tapEndpoints returns the TAP endpoints of the pods and of the bubble.
+func (d *PlaidDaemon) tapEndpoints() []*tap.TapEndpoint {
+	var taps []*tap.TapEndpoint
+	for _, ep := range d.bridge.Endpoints() {
+		if t, ok := ep.(*tap.TapEndpoint); ok {
+			taps = append(taps, t)
+		}
+	}
+	if d.bubbleEP != nil {
+		taps = append(taps, d.bubbleEP)
+	}
+	return taps
+}
+
 // tapOffload reports the TAP offloads: how many endpoints have them on and the work
 // they have done.
 func (d *PlaidDaemon) tapOffload() *api.TapOffloadStatus {
 	st := &api.TapOffloadStatus{Enabled: d.cfg.Offload}
-	eps := d.bridge.Endpoints()
-	if d.bubbleEP != nil {
-		eps = append(eps, d.bubbleEP)
-	}
-	for _, ep := range eps {
-		if t, ok := ep.(*tap.TapEndpoint); ok && t.Offload() {
+	for _, t := range d.tapEndpoints() {
+		if t.Offload() {
 			st.Endpoints++
 		}
 	}
 	c := tap.Offloads()
 	st.ReadSuperFrames, st.ReadSegments, st.ReadDropped = c.ReadSuperFrames, c.ReadSegments, c.ReadDropped
 	st.WriteSuperFrames, st.WriteSegments = c.WriteSuperFrames, c.WriteSegments
+	return st
+}
+
+// tapPipeline reports the TAP pipelines: how many endpoints have one and how often a
+// stage had to wait for the next.
+func (d *PlaidDaemon) tapPipeline() *api.TapPipelineStatus {
+	st := &api.TapPipelineStatus{}
+	for _, t := range d.tapEndpoints() {
+		if t.Pipeline() {
+			st.Endpoints++
+		}
+	}
+	c := tap.Pipeline()
+	st.ReadInline, st.ReadQueued, st.ReadQueueFull = c.ReadInline, c.ReadQueued, c.ReadQueueFull
+	st.WriteInline, st.WriteQueued, st.WriteQueueFull = c.WriteInline, c.WriteQueued, c.WriteQueueFull
 	return st
 }

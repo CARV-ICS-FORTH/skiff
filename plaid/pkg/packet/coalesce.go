@@ -13,12 +13,13 @@ import (
 //
 // A frame joins only if the receiver would see no difference between it and the
 // segments of the super-frame: the same flow and headers, the next bytes of the stream,
-// a valid TCP checksum, and nothing but ACK (and PSH on the last). That is the rule of
+// a valid TCP checksum (unless the frame is Trusted, which says that it was checked),
+// and nothing but ACK (and PSH on the last). That is the rule of
 // the kernel's own receive offload, and with those frames the super-frame is the one the
 // kernel's own TSO would have produced from them.
 type Coalescer struct {
-	buf []byte // VnetHeaderLen bytes for the virtio header, then the frame
-	n   int    // the length of the frame, 0 if there is none
+	pb *Buffer // VnetHeaderLen bytes for the virtio header, then the frame
+	n  int     // the length of the frame, 0 if there is none
 
 	tf      tcpFrame
 	size    int    // payload of the first segment: no later segment is longer
@@ -32,27 +33,28 @@ type Coalescer struct {
 // Pending reports whether there is a frame to take.
 func (c *Coalescer) Pending() bool { return c.n > 0 }
 
-func (c *Coalescer) frame() []byte { return c.buf[VnetHeaderLen : VnetHeaderLen+c.n] }
+func (c *Coalescer) frame() []byte { return c.pb.B[VnetHeaderLen : VnetHeaderLen+c.n] }
 
 // Start makes f the pending frame. There must be none.
 func (c *Coalescer) Start(f *EthernetFrame) error {
 	c.n, c.nseg, c.open = 0, 1, false
-	if c.buf == nil {
-		c.buf = make([]byte, 0, VnetHeaderLen+EthernetHeaderLen+65535)
+	if c.pb == nil {
+		c.pb = GetBuffer()
 	}
-	buf := c.buf[:VnetHeaderLen]
+	buf := c.pb.B[:VnetHeaderLen]
 	clear(buf)
 	buf, err := f.MarshalTo(buf)
 	if err != nil {
 		return err
 	}
-	c.buf, c.n = buf, len(buf)-VnetHeaderLen
-	c.classify()
+	c.pb.B, c.n = buf, len(buf)-VnetHeaderLen
+	c.classify(f.Trusted)
 	return nil
 }
 
-// classify decides whether the pending frame can take more segments.
-func (c *Coalescer) classify() {
+// classify decides whether the pending frame can take more segments; trusted says that
+// its checksum is known to be right.
+func (c *Coalescer) classify(trusted bool) {
 	frame := c.frame()
 	if len(frame) < EthernetHeaderLen {
 		return
@@ -79,7 +81,7 @@ func (c *Coalescer) classify() {
 	c.tf, c.size = tf, len(frame)-tf.payload
 	c.next = binary.BigEndian.Uint32(tcp[4:]) + uint32(c.size)
 	c.psh = tcp[13]&tcpPsh != 0
-	c.open, c.checked = !c.psh, false
+	c.open, c.checked = !c.psh, trusted
 }
 
 // Merge appends f to the pending frame if it continues it, and reports whether it did.
@@ -116,7 +118,8 @@ func (c *Coalescer) Merge(f *EthernetFrame) bool {
 		return false
 	}
 	// Nobody checks the checksum once the super-frame is written as one whose sum is
-	// still to be done, so it is checked here, for the first segment when a second joins.
+	// still to be done, so it is checked here, for the first segment when a second joins,
+	// unless it is known to be right.
 	hsrc, hdst := tf.addrs(frame)
 	if !c.checked {
 		if !tcpValid(hsrc, hdst, htcp) {
@@ -125,11 +128,11 @@ func (c *Coalescer) Merge(f *EthernetFrame) bool {
 		}
 		c.checked = true
 	}
-	if !tcpValid(hsrc, hdst, tcp) {
+	if !f.Trusted && !tcpValid(hsrc, hdst, tcp) {
 		return false
 	}
 
-	c.buf = append(c.buf[:VnetHeaderLen+c.n], tcp[hdrLen:]...)
+	c.pb.B = append(c.pb.B[:VnetHeaderLen+c.n], tcp[hdrLen:]...)
 	c.n += n
 	c.nseg++
 	c.next += uint32(n)
@@ -145,14 +148,23 @@ func (c *Coalescer) Merge(f *EthernetFrame) bool {
 
 // Take returns the pending frame, with the virtio header in front of it, ready to be
 // written to the TAP, and the number of segments that were joined in it. It is valid
-// until the next Start.
+// until the next Start, or until Detach.
 func (c *Coalescer) Take() (b []byte, segments int) {
-	b, segments = c.buf[:VnetHeaderLen+c.n], c.nseg
+	b, segments = c.pb.B[:VnetHeaderLen+c.n], c.nseg
 	if segments > 1 {
 		c.finish(b)
 	}
 	c.n, c.open = 0, false
 	return b, segments
+}
+
+// Detach hands the buffer that holds the frame last taken to the caller, with the frame
+// as Take returned it in B, so that it can be written later and elsewhere; the caller
+// releases it. The next Start takes another from the pool.
+func (c *Coalescer) Detach() *Buffer {
+	pb := c.pb
+	c.pb = nil
+	return pb
 }
 
 // Discard drops the pending frame, if there is one, so that the Coalescer starts clean.

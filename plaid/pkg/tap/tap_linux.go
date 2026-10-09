@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"unsafe"
 
+	"golang.org/x/sys/unix"
+
 	"plaid/pkg/packet"
 )
 
@@ -335,4 +337,37 @@ func (w *vnetWriter) write(frame []byte) error {
 		return io.ErrShortWrite
 	}
 	return nil
+}
+
+// pollProbe tells whether the TAP has a frame waiting, without reading it. One goroutine
+// uses it.
+type pollProbe struct {
+	rc    syscall.RawConn
+	fds   [1]unix.PollFd
+	ready bool
+	do    func(fd uintptr) // poll, made once because a closure made per call is an allocation
+}
+
+func newPollProbe(f *os.File) *pollProbe {
+	rc, err := f.SyscallConn()
+	if err != nil {
+		return nil
+	}
+	p := &pollProbe{rc: rc}
+	p.do = p.poll1
+	return p
+}
+
+func (p *pollProbe) poll1(fd uintptr) {
+	p.fds[0] = unix.PollFd{Fd: int32(fd), Events: unix.POLLIN}
+	n, err := unix.Poll(p.fds[:], 0)
+	p.ready = err == nil && n > 0 && p.fds[0].Revents&unix.POLLIN != 0
+}
+
+// poll reports whether a frame is waiting; where that cannot be told, that none is.
+func (p *pollProbe) poll() bool {
+	if p == nil || p.rc.Control(p.do) != nil {
+		return false
+	}
+	return p.ready
 }

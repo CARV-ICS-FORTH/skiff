@@ -21,6 +21,10 @@ type EthernetFrame struct {
 	SrcMAC    net.HardwareAddr
 	EtherType uint16
 	Payload   []byte
+	// Trusted says that the transport checksum of the payload is known to be right
+	// already, because the kernel checked the datagram that carried the frame or this
+	// process computed the checksum, so that a Coalescer need not check it again.
+	Trusted bool
 }
 
 var (

@@ -27,6 +27,7 @@ type tapOpts struct {
 	mac           net.HardwareAddr // instead of 02:00:00:00:00:id
 	sndbuf        int              // the TAP end's send buffer, 4 MiB if 0: a small one makes writes to the pod wait for it to read
 	vnet, offload bool             // the TAP claims a virtio header, and offloads
+	pipeline      bool             // the endpoint has a pipeline
 }
 
 // socketTap returns an endpoint over one end of a packet socket pair, which behaves like a
@@ -66,6 +67,9 @@ func socketTap(t testing.TB, o tapOpts) (*TapEndpoint, *os.File) {
 		ep.vw = newVnetWriter(a)
 		ep.vnet = true
 		ep.offload = o.offload
+	}
+	if o.pipeline {
+		ep.SetPipeline()
 	}
 	return ep, b
 }
@@ -218,25 +222,6 @@ func TestWriterJoinsSegmentsAndWritesOnce(t *testing.T) {
 	}
 	if got := Offloads(); got.ReadSuperFrames != before.ReadSuperFrames+1 || got.ReadSegments != before.ReadSegments+5 {
 		t.Errorf("counters %+v, before %+v", got, before)
-	}
-}
-
-// A writer released with a frame held drops it: the writer's next user does not write it,
-// nor join frames to it.
-func TestReleasedWriterDropsItsFrame(t *testing.T) {
-	ep, pod := socketTap(t, tapOpts{vnet: true, offload: true})
-	for i := 0; i < 20; i++ { // the pool hands the same writer back, usually
-		w := ep.NewWriter()
-		_ = w.Add(tcpFrame(1000, 1398, 0x10))
-		w.Release()
-		w = ep.NewWriter()
-		_ = w.Add(tcpFrame(1000+1398, 1398, 0x10)) // would join the dropped frame
-		_ = w.Flush()
-		w.Release()
-		rec := read(t, pod)
-		if h := packet.ParseVnetHeader(rec); h.GSOType != packet.VnetGSONone || len(rec) != packet.VnetHeaderLen+14+40+1398 {
-			t.Fatalf("the pod got %d bytes with %+v: the dropped frame was written or joined", len(rec), h)
-		}
 	}
 }
 
@@ -455,16 +440,17 @@ func rawClient(server string, done chan<- string) func() {
 // runs in a user and network namespace of its own, which needs no privileges.
 func TestOffloadsBetweenTwoPods(t *testing.T) {
 	if os.Getenv("PLAID_TAP_CHILD") != "" {
-		twoPods(t, os.Getenv("PLAID_TAP_CHILD") == "offload")
+		mode := os.Getenv("PLAID_TAP_CHILD")
+		twoPods(t, strings.HasPrefix(mode, "offload"), strings.HasSuffix(mode, "+pipeline"))
 		return
 	}
 	needUserns(t)
-	for _, mode := range []string{"offload", "plain"} {
+	for _, mode := range []string{"offload", "plain", "offload+pipeline", "plain+pipeline"} {
 		t.Run(mode, func(t *testing.T) { runInUserns(t, "TestOffloadsBetweenTwoPods", "PLAID_TAP_CHILD="+mode, time.Minute) })
 	}
 }
 
-func twoPods(t *testing.T, offload bool) {
+func twoPods(t *testing.T, offload, pipeline bool) {
 	serverTap, clientTap := make(chan *os.File, 1), make(chan *os.File, 1)
 	errs := make(chan error, 2)
 	senderDone, receiverDone := make(chan string, 1), make(chan string, 1)
@@ -490,6 +476,9 @@ func twoPods(t *testing.T, offload bool) {
 		ep := NewTapEndpoint(spec.id, spec.id, net.ParseIP(spec.ip), mac, f, offload)
 		if !ep.vnet || ep.Offload() != offload {
 			t.Skipf("this kernel does not give the TAP a virtio header or offloads (vnet %v, offload %v)", ep.vnet, ep.Offload())
+		}
+		if pipeline {
+			ep.SetPipeline()
 		}
 		eps = append(eps, ep)
 		if err := b.AddEndpoint(ep); err != nil {

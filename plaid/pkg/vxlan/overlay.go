@@ -384,6 +384,10 @@ func (oe *OverlayEngine) process(sink FrameInjector, datagram []byte) {
 	}
 
 	if sink != nil && vxlanPkt.InnerFrame != nil {
+		// The kernel verified the datagram's UDP checksum, which covers the whole frame,
+		// and the engine never turns checksums off on its socket: the frame is as the
+		// sending node sent it, and its TCP checksum need not be verified again.
+		vxlanPkt.InnerFrame.Trusted = true
 		if err := sink.InjectFrame(vxlanPkt.InnerFrame); err != nil {
 			oe.rxDropped.Add(1)
 		} else {

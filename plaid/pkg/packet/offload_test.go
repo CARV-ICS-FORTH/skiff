@@ -569,6 +569,58 @@ func TestCoalesceRules(t *testing.T) {
 	})
 }
 
+// A frame marked Trusted is merged without its TCP checksum being checked; one that is
+// not is refused if the checksum is wrong. For frames with right checksums, the result is
+// the same either way.
+func TestCoalesceTrusted(t *testing.T) {
+	const mss = 1000
+	base := spec{flags: 0x10, seq: 1000, ack: 5, win: 200, sport: 4000, id: 10, payload: randomBytes(4 * mss)}
+	mark := func(fs []*packet.EthernetFrame, trusted bool) []*packet.EthernetFrame {
+		for _, f := range fs {
+			f.Trusted = trusted
+		}
+		return fs
+	}
+	// corrupt flips a payload byte of segment i, which leaves its checksum wrong.
+	corrupt := func(fs []*packet.EthernetFrame, i int) []*packet.EthernetFrame {
+		fs[i].Payload[len(fs[i].Payload)-1] ^= 0xff
+		return fs
+	}
+
+	t.Run("right checksums: the same output", func(t *testing.T) {
+		verified, vsegs := run(mark(frames(base, mss, 4), false)...)
+		trusted, tsegs := run(mark(frames(base, mss, 4), true)...)
+		if fmt.Sprint(vsegs) != "[4]" || fmt.Sprint(tsegs) != "[4]" || !bytes.Equal(verified[0], trusted[0]) {
+			t.Errorf("verified %v, trusted %v segments, equal=%v", vsegs, tsegs, bytes.Equal(verified[0], trusted[0]))
+		}
+	})
+	for _, bad := range []int{0, 2} { // the first segment is checked when a second joins, the others as they join
+		t.Run(fmt.Sprintf("segment %d wrong", bad), func(t *testing.T) {
+			_, segs := run(mark(corrupt(frames(base, mss, 4), bad), false)...)
+			if len(segs) < 2 {
+				t.Errorf("a segment with a wrong checksum was merged: writes of %v segments", segs)
+			}
+			out, segs := run(mark(corrupt(frames(base, mss, 4), bad), true)...)
+			if fmt.Sprint(segs) != "[4]" {
+				t.Errorf("trusted segments were not merged: writes of %v segments", segs)
+			}
+			want, _ := run(mark(frames(base, mss, 4), true)...)
+			want[0][packet.VnetHeaderLen+14+20+20+(bad+1)*mss-1] ^= 0xff // the flipped byte, in the merged payload
+			if !bytes.Equal(out[0], want[0]) {
+				t.Error("the merged output is not the segments' bytes")
+			}
+		})
+	}
+	t.Run("trust is per frame", func(t *testing.T) {
+		// The first segment is verified (and fine), and so is the third, which is not.
+		fs := corrupt(frames(base, mss, 4), 2)
+		fs[0].Trusted, fs[1].Trusted, fs[3].Trusted = false, true, true
+		if _, segs := run(fs...); len(segs) < 2 {
+			t.Errorf("an untrusted segment with a wrong checksum was merged: %v", segs)
+		}
+	})
+}
+
 func fs0() *packet.EthernetFrame {
 	return frames(spec{flags: 0x10, seq: 1, payload: randomBytes(100), sport: 1}, 100, 1)[0]
 }
@@ -598,29 +650,32 @@ func BenchmarkSegment(b *testing.B) {
 
 func BenchmarkCoalesce(b *testing.B) {
 	for _, mss := range []int{8898, 1398} {
-		b.Run(strconv.Itoa(mss), func(b *testing.B) {
-			n := 65000 / mss
-			fs := frames(benchSpec(mss, n), mss, n)
-			var c packet.Coalescer
-			total := 0
-			for _, f := range fs {
-				total += len(f.Payload) + 14
-			}
-			b.ReportAllocs()
-			b.SetBytes(int64(total))
-			for i := 0; i < b.N; i++ {
+		for _, trusted := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%d/trusted=%v", mss, trusted), func(b *testing.B) {
+				n := 65000 / mss
+				fs := frames(benchSpec(mss, n), mss, n)
+				var c packet.Coalescer
+				total := 0
 				for _, f := range fs {
-					if !c.Merge(f) {
-						if c.Pending() {
-							c.Take()
-						}
-						if err := c.Start(f); err != nil {
-							b.Fatal(err)
+					f.Trusted = trusted
+					total += len(f.Payload) + 14
+				}
+				b.ReportAllocs()
+				b.SetBytes(int64(total))
+				for i := 0; i < b.N; i++ {
+					for _, f := range fs {
+						if !c.Merge(f) {
+							if c.Pending() {
+								c.Take()
+							}
+							if err := c.Start(f); err != nil {
+								b.Fatal(err)
+							}
 						}
 					}
+					c.Take()
 				}
-				c.Take()
-			}
-		})
+			})
+		}
 	}
 }

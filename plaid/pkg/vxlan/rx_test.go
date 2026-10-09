@@ -21,11 +21,16 @@ type seqInjector struct {
 	mu   sync.Mutex
 	seqs []uint32
 	n    atomic.Int64
+	// untrusted counts the frames that were not marked as having a verified checksum.
+	untrusted atomic.Int64
 }
 
 func (s *seqInjector) InjectFrame(frame *packet.EthernetFrame) error {
 	if s.gate != nil {
 		<-s.gate
+	}
+	if !frame.Trusted {
+		s.untrusted.Add(1)
 	}
 	seq := binary.BigEndian.Uint32(frame.Payload) // the payload is valid only during the call
 	s.mu.Lock()
@@ -85,6 +90,23 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 			t.Fatalf("timed out waiting for %s", what)
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// The frames of datagrams that came through the socket are handed on as Trusted: the
+// kernel verified the UDP checksum that covers them.
+func TestReceivedFramesAreTrusted(t *testing.T) {
+	inj := &seqInjector{}
+	oe := startEngine(t, OverlayConfig{}, inj)
+	c := dialEngine(t, oe)
+	for i := uint32(0); i < 10; i++ {
+		if _, err := c.Write(datagram(i, 200)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, "all frames", func() bool { return inj.n.Load() == 10 })
+	if n := inj.untrusted.Load(); n != 0 {
+		t.Errorf("%d frames were not marked Trusted", n)
 	}
 }
 

@@ -144,11 +144,22 @@ func (x *Batch) sendOverlay(frame *packet.EthernetFrame, dstIP net.IP) error {
 // ProcessFrames is ProcessFrame for several frames from one source, which stay in
 // order, with what they send out flushed once at the end. It returns the first error.
 func (b *Bridge) ProcessFrames(srcEP Endpoint, frames [][]byte) error {
+	return b.processFrames(srcEP, frames, false)
+}
+
+// ProcessTrustedFrames is ProcessFrames for frames whose transport checksums the caller
+// knows to be right, such as frames it has just completed itself, so that a TAP that joins
+// segments need not check them again.
+func (b *Bridge) ProcessTrustedFrames(srcEP Endpoint, frames [][]byte) error {
+	return b.processFrames(srcEP, frames, true)
+}
+
+func (b *Bridge) processFrames(srcEP Endpoint, frames [][]byte, trusted bool) error {
 	x := b.NewBatch()
 	defer x.Release()
 	var first error
 	for _, raw := range frames {
-		if err := x.ProcessFrame(srcEP, raw); err != nil && first == nil {
+		if err := x.processFrame(srcEP, raw, trusted); err != nil && first == nil {
 			first = err
 		}
 	}

@@ -68,6 +68,10 @@ func main() {
 			fmt.Printf("TAP offload:  enabled=%t, on %d TAPs (read %d super-frames as %d segments, %d dropped; wrote %d super-frames of %d segments)\n",
 				o.Enabled, o.Endpoints, o.ReadSuperFrames, o.ReadSegments, o.ReadDropped, o.WriteSuperFrames, o.WriteSegments)
 		}
+		if p := status.TapPipeline; p != nil {
+			fmt.Printf("TAP pipeline: on %d TAPs (read: %d inline, %d queued, queue full %d times; write: %d inline, %d queued, queue full %d times)\n",
+				p.Endpoints, p.ReadInline, p.ReadQueued, p.ReadQueueFull, p.WriteInline, p.WriteQueued, p.WriteQueueFull)
+		}
 		if status.ServiceEngine != nil {
 			e := status.ServiceEngine
 			fmt.Printf("Services:     %s via %s, table from %s (synced=%t): %d entries, %d backends, %d flows\n",

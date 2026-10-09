@@ -35,3 +35,10 @@ type vnetWriter struct{}
 func newVnetWriter(*os.File) *vnetWriter { return nil }
 
 func (*vnetWriter) write([]byte) error { return errNoTap }
+
+// pollProbe cannot tell whether a frame is waiting.
+type pollProbe struct{}
+
+func newPollProbe(*os.File) *pollProbe { return nil }
+
+func (*pollProbe) poll() bool { return false }
