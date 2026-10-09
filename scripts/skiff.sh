@@ -570,13 +570,13 @@ skiff_check_node() {
         done
         # Skiff assumes an exclusive job that has all the GPUs of its nodes. A step with fewer than
         # the node has works as far as it goes (the pods get the step's GPUs and no others) but has
-        # not been tried, so it is said here and not left to be found out.
+        # not been verified, so it is said here and not left to be found out.
         if [ -z "$gpu_missing" ]; then
             for gpu_file in "$(_skiff_sys /dev)"/nvidia[0-9]*; do
                 [ -e "$gpu_file" ] && gpu_node_total=$((gpu_node_total + 1))
             done
             if [ "$gpu_given" -lt "$gpu_node_total" ]; then
-                echo "$host: WARNING: Slurm gave this step $gpu_given of the $gpu_node_total GPUs of the node: Skiff assumes an exclusive job that has all the GPUs of its nodes, and a partial allocation has not been tried (the pods get the $gpu_given GPUs of the step and no others). Ask for all of them (--gpus-per-node=$gpu_node_total)" >&2
+                echo "$host: WARNING: Slurm gave this step $gpu_given of the $gpu_node_total GPUs of the node: Skiff assumes an exclusive job that has all the GPUs of its nodes, and a partial allocation has not been verified (the pods get the $gpu_given GPUs of the step and no others). Ask for all of them (--gpus-per-node=$gpu_node_total)" >&2
                 SKIFF_CHECK_WARNINGS=$((SKIFF_CHECK_WARNINGS + 1))
             fi
         fi
