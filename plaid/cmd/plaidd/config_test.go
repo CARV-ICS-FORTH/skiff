@@ -31,6 +31,25 @@ func tapConfig(change func(*Config)) Config {
 	return cfg
 }
 
+// slirpConfig is a standalone (slirp) configuration; tests change what they test.
+func slirpConfig(change func(*Config)) Config {
+	cfg := Config{
+		SocketPath:        "/tmp/test-plaidd.sock",
+		NodeCIDR:          "10.244.1.0/24",
+		DisableKubernetes: true,
+		ClusterCIDR:       netcfg.DefaultClusterCIDR,
+		GatewayIP:         "10.244.1.1",
+		GatewayMAC:        "02:00:00:00:00:01",
+		GatewayMode:       "slirp",
+		VXLANPort:         8472,
+		VXLANVNI:          1,
+	}
+	if change != nil {
+		change(&cfg)
+	}
+	return cfg
+}
+
 func TestNewPlaidDaemon_IntegratedConfiguration(t *testing.T) {
 	t.Setenv(netcfg.EnvMTU, "")
 
@@ -71,6 +90,8 @@ func TestNewPlaidDaemon_IntegratedConfiguration(t *testing.T) {
 		{"IPv6 resolver", func(c *Config) { c.Resolver = "fd00::10" }, "invalid resolver"},
 		{"MTU below the minimum", func(c *Config) { c.MTU = 500 }, "invalid MTU"},
 		{"MTU above the maximum", func(c *Config) { c.MTU = 70000 }, "invalid MTU"},
+		{"uplink MTU below the pod MTU", func(c *Config) { c.MTU, c.UplinkMTU = 1450, 1400 }, "invalid uplink MTU"},
+		{"uplink MTU above what slirp4netns takes", func(c *Config) { c.UplinkMTU = 65521 }, "invalid uplink MTU"},
 		{"malformed cluster CIDR", func(c *Config) { c.ClusterCIDR = "10.244.0.0" }, "invalid cluster-cidr"},
 		{"malformed Service CIDR", func(c *Config) { c.ServiceCIDR = "services" }, "invalid IPv4 service-cidr"},
 		{"overlapping cluster and Service CIDRs", func(c *Config) { c.ServiceCIDR = "10.244.128.0/17" }, "overlap"},
@@ -83,6 +104,26 @@ func TestNewPlaidDaemon_IntegratedConfiguration(t *testing.T) {
 				t.Fatalf("error %v, want one containing %q", err, c.want)
 			}
 		})
+	}
+}
+
+// The uplink MTU is the pod MTU unless set, and is for the tap gateway only.
+func TestNewPlaidDaemon_UplinkMTU(t *testing.T) {
+	t.Setenv(netcfg.EnvMTU, "")
+	d, err := NewPlaidDaemon(tapConfig(nil))
+	if err != nil || d.cfg.UplinkMTU != netcfg.DefaultMTU {
+		t.Errorf("unset: uplink MTU %d, %v; want the pod MTU %d", d.cfg.UplinkMTU, err, netcfg.DefaultMTU)
+	}
+	d, err = NewPlaidDaemon(tapConfig(func(c *Config) { c.MTU, c.UplinkMTU = 1400, 65520 }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := d.HandleGetStatus(); status.MTU != 1400 || status.UplinkMTU != 65520 {
+		t.Errorf("published MTU %d, uplink MTU %d", status.MTU, status.UplinkMTU)
+	}
+	_, err = NewPlaidDaemon(slirpConfig(func(c *Config) { c.UplinkMTU = 9000 }))
+	if err == nil || !strings.Contains(err.Error(), "uplink-mtu") {
+		t.Errorf("an uplink MTU without the tap gateway: %v", err)
 	}
 }
 
@@ -107,31 +148,14 @@ func TestNewPlaidDaemon_MTUFromTheEnvironment(t *testing.T) {
 // Service network for it to be in.
 func TestNewPlaidDaemon_StandaloneSlirpDefaultsAndOverrides(t *testing.T) {
 	t.Setenv(netcfg.EnvMTU, "")
-	standalone := func(change func(*Config)) Config {
-		cfg := Config{
-			SocketPath:        "/tmp/test-plaidd.sock",
-			NodeCIDR:          "10.244.1.0/24",
-			DisableKubernetes: true,
-			ClusterCIDR:       netcfg.DefaultClusterCIDR,
-			GatewayIP:         "10.244.1.1",
-			GatewayMAC:        "02:00:00:00:00:01",
-			GatewayMode:       "slirp",
-			VXLANPort:         8472,
-			VXLANVNI:          1,
-		}
-		if change != nil {
-			change(&cfg)
-		}
-		return cfg
-	}
-	d, err := NewPlaidDaemon(standalone(nil))
+	d, err := NewPlaidDaemon(slirpConfig(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d.cfg.MTU != netcfg.DefaultMTU || d.cfg.ServiceCIDR != netcfg.DefaultServiceCIDR || d.cfg.Resolver != "" {
 		t.Errorf("standalone defaults: MTU %d, Service CIDR %q, resolver %q", d.cfg.MTU, d.cfg.ServiceCIDR, d.cfg.Resolver)
 	}
-	d, err = NewPlaidDaemon(standalone(func(c *Config) { c.Resolver, c.MTU = "1.1.1.1", 1280 }))
+	d, err = NewPlaidDaemon(slirpConfig(func(c *Config) { c.Resolver, c.MTU = "1.1.1.1", 1280 }))
 	if err != nil {
 		t.Fatalf("an explicit standalone resolver outside any Service network: %v", err)
 	}

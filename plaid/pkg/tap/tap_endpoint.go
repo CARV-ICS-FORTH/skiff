@@ -2,6 +2,7 @@ package tap
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -19,7 +20,8 @@ import (
 // together (NewWriter) into one segment for the pod. A TAP without a virtio header is read and
 // written as plain frames. With SetPipeline the reading and processing, and the writing, are
 // split between goroutines; with SetPassthrough a TSO segment that the bridge would deliver as
-// it is to another TAP with offloads is not cut. The README (Offloads) describes the whole.
+// it is to another TAP with offloads is not cut. The bubble's TAP can have an MTU above the
+// pods' (SetUplinkMTU). The README (Offloads) describes the whole.
 type TapEndpoint struct {
 	epID       string
 	epName     string
@@ -32,6 +34,8 @@ type TapEndpoint struct {
 	vnet        bool        // frames have a virtio header
 	offload     bool        // and the pod may use offloads
 	passthrough bool        // and its TSO segments go whole where the bridge can
+	podMTU      int         // the MTU of the pods; with uplinkMTU, the largest IP packet the bridge takes
+	uplinkMTU   int         // the MTU of this TAP if it is above the pods', otherwise 0
 	vw          *vnetWriter // writes frames with an empty header; nil without vnet
 	rb          readBatch   // what ReadFrames reads into
 
@@ -92,6 +96,11 @@ type OffloadStats struct {
 	WriteSegments     uint64 // the segments in them
 	PassedSuperFrames uint64 // TSO segments written whole to another TAP, not cut
 	PassedBytes       uint64 // the bytes of their frames
+	JoinedForUplink   uint64 // pods' TSO segments written to the bubble as one packet
+	UplinkSuperFrames uint64 // large TCP frames from the bubble made TSO segments
+	Fragmented        uint64 // packets from the bubble fragmented to the pod MTU
+	Fragments         uint64 // the fragments they were cut into
+	OversizeDropped   uint64 // packets from the bubble above the pod MTU that were dropped
 }
 
 // PipelineStats counts how often a stage of a pipeline had to wait for the next one.
@@ -106,6 +115,7 @@ type PipelineStats struct {
 
 var stats struct {
 	readSuper, readSegments, readDropped, writeSuper, writeSegments, passSuper, passBytes atomic.Uint64
+	joinUplink, uplinkSuper, fragmented, fragments, oversizeDropped                       atomic.Uint64
 	readInline, readQueued, readQueueFull, writeInline, writeQueued, writeQueueFull       atomic.Uint64
 }
 
@@ -127,6 +137,11 @@ func Offloads() OffloadStats {
 		WriteSegments:     stats.writeSegments.Load(),
 		PassedSuperFrames: stats.passSuper.Load(),
 		PassedBytes:       stats.passBytes.Load(),
+		JoinedForUplink:   stats.joinUplink.Load(),
+		UplinkSuperFrames: stats.uplinkSuper.Load(),
+		Fragmented:        stats.fragmented.Load(),
+		Fragments:         stats.fragments.Load(),
+		OversizeDropped:   stats.oversizeDropped.Load(),
 	}
 }
 
@@ -186,6 +201,14 @@ func (t *TapEndpoint) SetPipeline() {
 // effect only if the endpoint has offloads. It is called before the read loop is started.
 func (t *TapEndpoint) SetPassthrough() { t.passthrough = t.offload }
 
+// SetUplinkMTU tells the endpoint that its TAP has the MTU uplink, above the pod MTU pod
+// (it does nothing if it is not). It is called before the read loop is started.
+func (t *TapEndpoint) SetUplinkMTU(pod, uplink int) {
+	if uplink > pod {
+		t.podMTU, t.uplinkMTU = pod, uplink
+	}
+}
+
 // Pipeline reports whether the endpoint was given a pipeline.
 func (t *TapEndpoint) Pipeline() bool { return t.pipeline }
 
@@ -224,6 +247,8 @@ func (t *TapEndpoint) ReadFrames() ([][]byte, error) { return t.readFrames(&t.rb
 // deliver whole is not cut: the result is the segment, and rb says so (see forward).
 func (t *TapEndpoint) readFrames(rb *readBatch, b *bridge.Bridge) ([][]byte, error) {
 	if rb.rd == nil {
+		// A frame of up to 65535 bytes, which holds the largest TSO segment and the
+		// bubble's largest packet (an uplink MTU of 65520) with its Ethernet header.
 		rb.rd = make([]byte, packet.VnetHeaderLen+65535)
 	}
 	rb.trusted, rb.super = false, false
@@ -231,20 +256,59 @@ func (t *TapEndpoint) readFrames(rb *readBatch, b *bridge.Bridge) ([][]byte, err
 	if err != nil || n == 0 {
 		return nil, err
 	}
-	if !t.vnet {
-		rb.one[0] = rb.rd[:n]
+	h, frame := packet.VnetHeader{}, rb.rd[:n]
+	if t.vnet {
+		if n < packet.VnetHeaderLen {
+			stats.readDropped.Add(1)
+			return nil, nil
+		}
+		h, frame = packet.ParseVnetHeader(rb.rd), rb.rd[packet.VnetHeaderLen:n]
+	}
+	if t.podMTU > 0 && len(frame) > packet.EthernetHeaderLen+t.podMTU {
+		var frames [][]byte
+		var done bool
+		if h, frames, done = t.fitPodMTU(rb, h, frame); done {
+			return frames, nil
+		}
+	}
+	if !t.vnet && h.GSOType == packet.VnetGSONone {
+		rb.one[0] = frame
 		return rb.one[:], nil
 	}
-	if n < packet.VnetHeaderLen {
-		stats.readDropped.Add(1)
-		return nil, nil
-	}
-	h, frame := packet.ParseVnetHeader(rb.rd), rb.rd[packet.VnetHeaderLen:n]
 	if b != nil && t.passthrough && h.IsTSO() && packet.CheckTSO(h, frame) == nil && b.PassesWhole(t, frame) {
 		rb.one[0], rb.h, rb.super = frame, h, true
 		return rb.one[:], nil
 	}
 	return t.cut(rb, h, frame), nil
+}
+
+// fitPodMTU deals with a frame that is larger than the pod MTU, which only the bubble's
+// TAP can return: a TCP frame is made a TSO segment of pod-sized segments (h is the header
+// to cut it with), and the others are fragmented, which is then done: frames are the
+// fragments, none if the packet was dropped.
+func (t *TapEndpoint) fitPodMTU(rb *readBatch, h packet.VnetHeader, frame []byte) (_ packet.VnetHeader, frames [][]byte, done bool) {
+	th, err := packet.TSOFor(h, frame, t.podMTU)
+	switch {
+	case err == nil:
+		if h.GSOType == packet.VnetGSONone {
+			stats.uplinkSuper.Add(1)
+		}
+		return th, nil, false
+	case !errors.Is(err, packet.ErrNotTCP):
+		stats.readDropped.Add(1)
+		return h, nil, true
+	}
+	frames, err = rb.seg.Fragment(h, frame, t.podMTU)
+	switch {
+	case err == nil:
+		stats.fragmented.Add(1)
+		stats.fragments.Add(uint64(len(frames)))
+	case errors.Is(err, packet.ErrTooLarge):
+		stats.oversizeDropped.Add(1)
+	default:
+		stats.readDropped.Add(1)
+	}
+	return h, frames, true
 }
 
 // cut is the Segmenter's cut of a read, with the counters.

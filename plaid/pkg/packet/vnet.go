@@ -10,6 +10,7 @@ const VnetHeaderLen = 10
 // VnetHeader flags and GSO types (VIRTIO_NET_HDR_F_* and VIRTIO_NET_HDR_GSO_*).
 const (
 	VnetNeedsCsum = 1 // the checksum of the transport header is not complete
+	VnetDataValid = 2 // the kernel has checked the checksum of a frame it hands over
 
 	VnetGSONone  = 0
 	VnetGSOTCPv4 = 1

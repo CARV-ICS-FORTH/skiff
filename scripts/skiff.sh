@@ -55,6 +55,11 @@
 # from the interfaces (the smallest on the way to the controller) when neither is set.
 : "${SKIFF_UPLINK_MTU:=1500}"
 : "${SKIFF_POD_MTU:=}"
+# MTU of the bubble's link to slirp4netns (its tap0 and Plaid's plaid0). slirp4netns pays
+# for every packet it moves, so a large MTU makes it several times faster; Plaid joins what
+# pods send into packets of this size and cuts what comes back for the pods, whose MTU
+# stays as it is. 65520 is the most slirp4netns takes.
+: "${SKIFF_SLIRP_MTU:=65520}"
 # The node's scratch directory, for runtimes whose scratch space is not /tmp: pod
 # runtime state, Apptainer's image conversion and unpacking, and the socket between
 # the host and the bubble live below it. It is node-local and disposable (a shared
@@ -327,6 +332,13 @@ skiff_config_validate() {
         errors=$((errors + 1))
     fi
 
+    if ! _skiff_mtu_check SKIFF_SLIRP_MTU "$SKIFF_SLIRP_MTU" 576 65520; then
+        errors=$((errors + 1))
+    elif [[ "$SKIFF_POD_MTU" =~ ^[0-9]+$ ]] && [ "$SKIFF_SLIRP_MTU" -lt "$SKIFF_POD_MTU" ]; then
+        echo "SKIFF_SLIRP_MTU ($SKIFF_SLIRP_MTU) is below the pod MTU ($SKIFF_POD_MTU): what pods send would be fragmented" >&2
+        errors=$((errors + 1))
+    fi
+
     if [[ "$SKIFF_TMP_DIR" != /* ]] || [[ "$SKIFF_TMP_DIR" =~ [[:space:]] ]]; then
         echo "SKIFF_TMP_DIR: \"$SKIFF_TMP_DIR\" is not an absolute path without spaces" >&2
         errors=$((errors + 1))
@@ -414,7 +426,7 @@ skiff_record_cause() {
 # skiff_config_export: make the resolved values available to what is started.
 skiff_config_export() {
     export SKIFF_POD_CIDR SKIFF_SERVICE_CIDR SKIFF_CLUSTER_DOMAIN SKIFF_CLUSTER_DNS \
-        SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_TMP_DIR
+        SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_SLIRP_MTU SKIFF_TMP_DIR
     [ -z "${SKIFF_JOB_INSTANCE:-}" ] || export SKIFF_JOB_INSTANCE
 }
 
@@ -977,7 +989,7 @@ skiff_config_print() {
     if [ -n "${SKIFF_NET_DEV:-}" ]; then
         echo "  Network:          $SKIFF_NET_DEV ${CONTROLLER_IP:-} (${SKIFF_NET_SPEED:-0} Mb/s, SKIFF_NETWORK=$SKIFF_NETWORK)"
     fi
-    echo "  MTU:              pods $SKIFF_POD_MTU, bubble link $SKIFF_UPLINK_MTU (${SKIFF_MTU_SOURCE:-set})"
+    echo "  MTU:              pods $SKIFF_POD_MTU, bubble link $SKIFF_UPLINK_MTU (${SKIFF_MTU_SOURCE:-set}), slirp4netns link $SKIFF_SLIRP_MTU"
     echo "  Directories:      state $SKIFF_STATE_DIR (fixed, /root/.skiff in the cluster), scratch $SKIFF_TMP_DIR (node-local)"
     [ -z "${SKIFF_JOB_INSTANCE:-}" ] || echo "  Volume data:      $SKIFF_VOLUMES_DIR/$SKIFF_JOB_INSTANCE (claims of this job)"
 }
@@ -1249,6 +1261,7 @@ skiff_bubble() {
     	--env SKIFF_CLUSTER_DNS="$SKIFF_CLUSTER_DNS" \
     	--env SKIFF_API_SERVICE_IP="$SKIFF_API_SERVICE_IP" \
     	--env SKIFF_POD_MTU="$SKIFF_POD_MTU" \
+    	--env SKIFF_SLIRP_MTU="$SKIFF_SLIRP_MTU" \
     	--env SKIFF_TMP_DIR="$SKIFF_TMP_DIR" \
     	--env SKIFF_JOB_INSTANCE="$SKIFF_JOB_INSTANCE" \
     	"$BUBBLE_IMAGE" \
@@ -1270,12 +1283,13 @@ skiff_bubble() {
         exit 1
     fi
 
-    # Userlevel networking. slirp4netns sends full-size packets to the bubble's kernel whatever
-    # segment size a pod offered, and the kernel forwards them to pods through plaid0, whose MTU
-    # is the pod MTU: a larger packet would be split into fragments, which Plaid's Service
-    # engine does not reassemble. So slirp4netns runs at the pod MTU. (The overlay does not
-    # pass through it: its socket is the host's.)
-    slirp4netns --configure --cidr="$CIDR/24" --mtu="$SKIFF_POD_MTU" --api-socket "$SLIRP_SOCK" "$PID" tap0 &
+    # Userlevel networking. slirp4netns costs time per packet, so its link to the bubble has the
+    # largest MTU it takes (SKIFF_SLIRP_MTU), and Plaid's plaid0 the same. slirp4netns sends
+    # packets of its full MTU whatever segment size a pod offered, and the pods' MTU is smaller:
+    # Plaid cuts those packets for the pods (TCP into segments, other packets into fragments)
+    # before its Service engine, which does not reassemble fragments, or any pod sees them. (The
+    # overlay does not pass through slirp4netns: its socket is the host's.)
+    slirp4netns --configure --cidr="$CIDR/24" --mtu="$SKIFF_SLIRP_MTU" --api-socket "$SLIRP_SOCK" "$PID" tap0 &
     SLIRP_PID=$!
 
     # Forward ports based on Role

@@ -162,8 +162,10 @@ expected="tcp 127.0.0.1 10250 $guest 10250
 tcp 127.0.0.1 6443 $guest 6443"
 [ "$(requests)" = "$expected" ] || { requests >&2; fail "slirp4netns listeners differ from the expected ones (no UDP overlay forward)"; }
 
-# slirp4netns runs at the pod MTU, so that nothing it sends has to be fragmented on its way to pods.
-grep -q -- "--mtu=$SKIFF_POD_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&2; fail "slirp4netns was not started at the pod MTU"; }
+# slirp4netns runs at its own, larger MTU (Plaid cuts what it sends for the pods), and the bubble is told it.
+grep -q -- "--mtu=$SKIFF_SLIRP_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&2; fail "slirp4netns was not started at the MTU of its link"; }
+[ "$SKIFF_SLIRP_MTU" -gt "$SKIFF_POD_MTU" ] || fail "the test does not tell the slirp4netns link from the pod MTU"
+grep -q -- "--env SKIFF_SLIRP_MTU=$SKIFF_SLIRP_MTU " "$FAKE_DIR/instance-run" || fail "the bubble was not told the MTU of the slirp4netns link"
 
 # The helper was started once, from the image, with the host address, the port and the
 # handoff socket in the scratch directory; the bubble was told where it is, got the

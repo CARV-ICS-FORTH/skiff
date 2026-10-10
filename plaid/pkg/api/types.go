@@ -142,6 +142,7 @@ type Response struct {
 	UplinkAddress  string   `json:"uplink_address,omitempty"`
 	Resolver       string   `json:"resolver,omitempty"`
 	MTU            int      `json:"mtu,omitempty"`
+	UplinkMTU      int      `json:"uplink_mtu,omitempty"` // of plaid0 (tap mode)
 	Endpoints      []string `json:"endpoints,omitempty"`
 
 	// The overlay transport: where its UDP socket came from, its address and counters.
@@ -198,6 +199,9 @@ type TapPipelineStatus struct {
 // were cut into, those dropped because their virtio header did not describe them, and the
 // writes that joined several segments for a pod and the segments in them, and the TSO
 // segments that were written whole to another TAP instead of being cut, with their bytes.
+// With an uplink MTU above the pods': the pods' segments written to the bubble as one
+// packet, the large TCP frames from the bubble made segments, the packets from it
+// fragmented and the fragments, and those above the pod MTU that were dropped.
 type TapOffloadStatus struct {
 	Enabled           bool   `json:"enabled"`
 	Endpoints         int    `json:"endpoints"`
@@ -208,4 +212,9 @@ type TapOffloadStatus struct {
 	WriteSegments     uint64 `json:"write_segments"`
 	PassedSuperFrames uint64 `json:"passed_super_frames"`
 	PassedBytes       uint64 `json:"passed_bytes"`
+	JoinedForUplink   uint64 `json:"uplink_joined"`
+	UplinkSuperFrames uint64 `json:"uplink_super_frames"`
+	Fragmented        uint64 `json:"fragmented"`
+	Fragments         uint64 `json:"fragments"`
+	OversizeDropped   uint64 `json:"oversize_dropped"`
 }

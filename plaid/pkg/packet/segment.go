@@ -53,6 +53,14 @@ func (s *Segmenter) Segment(h VnetHeader, frame []byte) ([][]byte, error) {
 	return nil, fmt.Errorf("%w: GSO type %#x", ErrOffload, h.GSOType)
 }
 
+// space returns n bytes of the segmenter's buffer, which grows to the size of the traffic.
+func (s *Segmenter) space(n int) []byte {
+	if cap(s.buf) < n {
+		s.buf = make([]byte, n)
+	}
+	return s.buf[:n]
+}
+
 // completeChecksum writes the checksum the sender left to the kernel: the field holds
 // the sum of the pseudo-header, and the checksum of everything from the transport header
 // on, field included, is what completes it.
@@ -156,10 +164,7 @@ func (s *Segmenter) cut(h VnetHeader, frame []byte) ([][]byte, error) {
 	hdr, data := f.payload, len(frame)-f.payload
 	n := (data + size - 1) / size
 	total := len(frame) + (n-1)*hdr
-	if cap(s.buf) < total {
-		s.buf = make([]byte, total)
-	}
-	out := s.buf[:total]
+	out := s.space(total)
 	tcpLen := f.payload - f.l4
 	src, dst := f.addrs(frame)
 	seq := binary.BigEndian.Uint32(frame[f.l4+4:])

@@ -27,7 +27,7 @@ type SuperWriter interface {
 	FrameWriter
 	// AddSuper writes frame, which is described by the virtio header h, after what the
 	// writer holds. It has finished with frame when it returns: its payload is the
-	// caller's read buffer.
+	// caller's read buffer, which the writer may change.
 	AddSuper(h packet.VnetHeader, frame *packet.EthernetFrame) error
 }
 

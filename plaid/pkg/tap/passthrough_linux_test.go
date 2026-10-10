@@ -103,10 +103,12 @@ func readQuiet(pod *os.File) [][]byte {
 
 func delta(after, before OffloadStats) OffloadStats {
 	return OffloadStats{
-		after.ReadSuperFrames - before.ReadSuperFrames, after.ReadSegments - before.ReadSegments,
-		after.ReadDropped - before.ReadDropped, after.WriteSuperFrames - before.WriteSuperFrames,
-		after.WriteSegments - before.WriteSegments, after.PassedSuperFrames - before.PassedSuperFrames,
-		after.PassedBytes - before.PassedBytes,
+		ReadSuperFrames: after.ReadSuperFrames - before.ReadSuperFrames, ReadSegments: after.ReadSegments - before.ReadSegments,
+		ReadDropped: after.ReadDropped - before.ReadDropped, WriteSuperFrames: after.WriteSuperFrames - before.WriteSuperFrames,
+		WriteSegments: after.WriteSegments - before.WriteSegments, PassedSuperFrames: after.PassedSuperFrames - before.PassedSuperFrames,
+		PassedBytes: after.PassedBytes - before.PassedBytes, JoinedForUplink: after.JoinedForUplink - before.JoinedForUplink,
+		UplinkSuperFrames: after.UplinkSuperFrames - before.UplinkSuperFrames, Fragmented: after.Fragmented - before.Fragmented,
+		Fragments: after.Fragments - before.Fragments, OversizeDropped: after.OversizeDropped - before.OversizeDropped,
 	}
 }
 

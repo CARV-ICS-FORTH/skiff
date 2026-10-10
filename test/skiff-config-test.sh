@@ -48,6 +48,9 @@ check "alternate networks, DNS, MTU, domain and path" 0 "" 2 -- \
     SKIFF_POD_MTU=1400 SKIFF_CLUSTER_DOMAIN=lab.test SKIFF_TMP_DIR=/scratch/skiff
 check "a larger uplink allows a larger pod MTU" 0 "" 2 -- SKIFF_UPLINK_MTU=9000 SKIFF_POD_MTU=8950
 check "the smallest pod MTU" 0 "" 2 -- SKIFF_POD_MTU=576
+check "the slirp4netns link at the pod MTU, and at the most it takes" 0 "" 2 -- SKIFF_SLIRP_MTU=1450
+check "the largest slirp4netns MTU" 0 "" 2 -- SKIFF_SLIRP_MTU=65520
+check "a slirp4netns MTU that is a larger pod MTU" 0 "" 2 -- SKIFF_UPLINK_MTU=9000 SKIFF_POD_MTU=8950 SKIFF_SLIRP_MTU=8950
 
 # --- refused, with the reason -----------------------------------------------------
 check "malformed pod CIDR" 1 'SKIFF_POD_CIDR.*not an IPv4 network' 2 -- SKIFF_POD_CIDR=10.244.0.0
@@ -79,6 +82,10 @@ check "a job instance that is a path" 1 'SKIFF_JOB_INSTANCE.*not a job instance 
 check "an empty setting means the default" 0 "" 2 -- SKIFF_CLUSTER_DOMAIN= SKIFF_POD_CIDR=
 check "MTU that is not a number" 1 'SKIFF_POD_MTU.*not an MTU' 2 -- SKIFF_POD_MTU=big
 check "MTU below the minimum" 1 'SKIFF_POD_MTU.*at least 576' 2 -- SKIFF_POD_MTU=500
+check "slirp4netns MTU that is not a number" 1 'SKIFF_SLIRP_MTU.*not an MTU' 2 -- SKIFF_SLIRP_MTU=big
+check "slirp4netns MTU below the minimum" 1 'SKIFF_SLIRP_MTU.*between 576 and 65520' 2 -- SKIFF_SLIRP_MTU=500
+check "slirp4netns MTU above what it takes" 1 'SKIFF_SLIRP_MTU.*between 576 and 65520' 2 -- SKIFF_SLIRP_MTU=65521
+check "slirp4netns MTU below the pod MTU" 1 'SKIFF_SLIRP_MTU \(1400\) is below the pod MTU \(1450\)' 2 -- SKIFF_SLIRP_MTU=1400
 check "MTU without room for VXLAN" 1 'no room for VXLAN.*at most 1450' 2 -- SKIFF_POD_MTU=1500
 check "the network: an interface name" 0 "" 2 -- SKIFF_NETWORK=enp130s0
 check "the network: an InfiniBand interface name" 0 "" 2 -- SKIFF_NETWORK=ib0.8001
@@ -108,6 +115,7 @@ expect "DNS Service is the tenth Service address" "$(derived SKIFF_CLUSTER_DNS)"
 expect "both follow another Service network" "$(derived SKIFF_API_SERVICE_IP SKIFF_SERVICE_CIDR=10.201.0.0/16) $(derived SKIFF_CLUSTER_DNS SKIFF_SERVICE_CIDR=10.201.0.0/16)" "10.201.0.1 10.201.0.10"
 expect "an explicit DNS address is kept" "$(derived SKIFF_CLUSTER_DNS SKIFF_CLUSTER_DNS=10.43.9.9)" 10.43.9.9
 expect "pod MTU is the link's less VXLAN" "$(derived SKIFF_POD_MTU SKIFF_UPLINK_MTU=1600)" 1550
+expect "the slirp4netns MTU is the most it takes" "$(derived SKIFF_SLIRP_MTU)" 65520
 expect "an explicit pod MTU is kept" "$(derived SKIFF_POD_MTU SKIFF_POD_MTU=1300)" 1300
 expect "the scratch directory defaults to one of the user's own: /tmp/.skiff.<uid>" "$(derived SKIFF_TMP_DIR)" "/tmp/.skiff.$(id -u)"
 expect "what is below it follows" "$(derived SKIFF_APPTAINER_TMP SKIFF_TMP_DIR=/scratch/s) $(derived SKIFF_OVERLAY_HANDOFF SKIFF_TMP_DIR=/scratch/s)" "/scratch/s/.apptainer/tmp /scratch/s/overlay.sock"

@@ -55,6 +55,23 @@ func TCP(src string, sport uint16, dst string, dport uint16, flags byte, payload
 	return append(ipHeader(packet.IPProtocolTCP, src, dst, 20+len(seg)), seg...)
 }
 
+// Partial leaves the TCP or UDP checksum of pkt as a sender that offloads it does: the folded
+// sum of the pseudo-header alone, not complemented, for the stack to complete.
+func Partial(pkt []byte) {
+	l, _ := packet.ParseL3(pkt)
+	t := l.Transport()
+	ph := make([]byte, 12)
+	copy(ph[0:4], l.Src[:])
+	copy(ph[4:8], l.Dst[:])
+	ph[9] = l.Proto
+	binary.BigEndian.PutUint16(ph[10:12], uint16(len(t)))
+	off := 16 // the checksum field of TCP, of UDP at 6
+	if l.Proto == packet.IPProtocolUDP {
+		off = 6
+	}
+	binary.BigEndian.PutUint16(t[off:off+2], ^packet.Checksum16(ph))
+}
+
 // UDP builds a UDP datagram with a valid checksum, or with none (zero) when noChecksum is set.
 func UDP(src string, sport uint16, dst string, dport uint16, payload string, noChecksum bool) []byte {
 	seg := make([]byte, 8+len(payload))

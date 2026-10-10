@@ -57,7 +57,11 @@ func main() {
 		if status.Resolver != "" {
 			fmt.Printf("Resolver:     %s\n", status.Resolver)
 		}
-		fmt.Printf("MTU:          %d\n", status.MTU)
+		fmt.Printf("MTU:          %d", status.MTU)
+		if status.UplinkMTU != 0 {
+			fmt.Printf(" (uplink %d)", status.UplinkMTU)
+		}
+		fmt.Println()
 		if status.OverlayTransport != "" {
 			fmt.Printf("Overlay:      %s socket %s (tx=%d in %d sends, tx errors=%d, rx=%d in %d reads, rx invalid=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d, offload=%s)\n",
 				status.OverlayTransport, status.OverlayAddress, status.OverlayTxPackets, status.OverlayTxSends, status.OverlayTxErrors,
@@ -68,6 +72,10 @@ func main() {
 			fmt.Printf("TAP offload:  enabled=%t, on %d TAPs (read %d super-frames as %d segments, %d dropped; wrote %d super-frames of %d segments; passed %d super-frames whole, %d bytes)\n",
 				o.Enabled, o.Endpoints, o.ReadSuperFrames, o.ReadSegments, o.ReadDropped, o.WriteSuperFrames, o.WriteSegments,
 				o.PassedSuperFrames, o.PassedBytes)
+			if status.UplinkMTU > status.MTU {
+				fmt.Printf("TAP uplink:   joined %d pod super-frames into packets for the bubble; made %d large TCP frames from it super-frames; fragmented %d packets into %d fragments; dropped %d above the pod MTU\n",
+					o.JoinedForUplink, o.UplinkSuperFrames, o.Fragmented, o.Fragments, o.OversizeDropped)
+			}
 		}
 		if p := status.TapPipeline; p != nil {
 			fmt.Printf("TAP pipeline: on %d TAPs (read: %d inline, %d queued, queue full %d times; write: %d inline, %d queued, queue full %d times)\n",

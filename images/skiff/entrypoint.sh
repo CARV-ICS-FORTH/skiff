@@ -34,6 +34,7 @@ PLAID_UPLINK=${PLAID_UPLINK:-tap0}
 : "${SKIFF_CLUSTER_DNS:?the cluster DNS address is required (SKIFF_CLUSTER_DNS)}"
 : "${SKIFF_API_SERVICE_IP:?the API Service address is required (SKIFF_API_SERVICE_IP)}"
 : "${SKIFF_POD_MTU:?the pod MTU is required (SKIFF_POD_MTU)}"
+: "${SKIFF_SLIRP_MTU:?the MTU of the link to slirp4netns is required (SKIFF_SLIRP_MTU)}"
 : "${SKIFF_OVERLAY_HANDOFF:?the overlay socket handoff path is required (SKIFF_OVERLAY_HANDOFF)}"
 : "${SKIFF_SLIRP_API:?the slirp4netns API socket is required (SKIFF_SLIRP_API)}"
 # The job's volume directory (the claims' data), named by skiff.slurm; the controller
@@ -54,7 +55,7 @@ echo "Effective network configuration:"
 echo "  Pod network:      ${SKIFF_POD_CIDR}"
 echo "  Service network:  ${SKIFF_SERVICE_CIDR} (API ${SKIFF_API_SERVICE_IP}, DNS ${SKIFF_CLUSTER_DNS})"
 echo "  Cluster domain:   ${SKIFF_CLUSTER_DOMAIN}"
-echo "  Pod MTU:          ${SKIFF_POD_MTU}"
+echo "  Pod MTU:          ${SKIFF_POD_MTU}, slirp4netns link ${SKIFF_SLIRP_MTU}"
 echo "  Directories:      state /root/.skiff (the user's ~/.skiff), scratch ${SKIFF_TMP_DIR}"
 echo "  Volume data:      ${SKIFF_VOLUMES_BASE} (claims of this job)"
 
@@ -370,6 +371,7 @@ start_plaidd() {
       --nodeport-host-address="$HOST_IP" \
       --resolver="$SKIFF_CLUSTER_DNS" \
       --mtu="$SKIFF_POD_MTU" \
+      --uplink-mtu="$SKIFF_SLIRP_MTU" \
       >> /var/log/plaidd.log 2>&1 &
     PLAIDD_PID=$!
 }

@@ -78,3 +78,23 @@ func TestStandaloneResolver(t *testing.T) {
 		}
 	}
 }
+
+func TestUplinkMTU(t *testing.T) {
+	for _, tc := range []struct {
+		explicit, pod, want int
+		ok                  bool
+	}{
+		{0, 1450, 1450, true}, // none: the pod MTU
+		{65520, 1450, 65520, true},
+		{1450, 1450, 1450, true},
+		{9000, 8950, 9000, true},
+		{1449, 1450, 0, false},  // below the pod MTU
+		{65521, 1450, 0, false}, // above what slirp4netns takes
+		{70000, 1450, 0, false},
+	} {
+		got, err := UplinkMTU(tc.explicit, tc.pod)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("UplinkMTU(%d, %d) = %d, %v", tc.explicit, tc.pod, got, err)
+		}
+	}
+}

@@ -71,6 +71,7 @@ type Config struct {
 	VXLANBind         string
 	OverlayHandoff    string
 	Offload           bool
+	UplinkMTU         int
 	SlirpBin          string
 	SlirpSocket       string
 	SlirpDisableDNS   bool
@@ -118,6 +119,7 @@ func main() {
 	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address (with --overlay-handoff: the address the handed-over socket must be bound to)")
 	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP socket, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
 	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay socket. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call, and a pod's TCP super-frames are cut instead of being written whole to the other pods and the bubble of this node")
+	flag.IntVar(&cfg.UplinkMTU, "uplink-mtu", 0, "MTU of the bubble's TAP (plaid0) and of its link to slirp4netns in tap mode, which may be much larger than the pods' (at most 65520), so that slirp4netns, which pays for every packet, moves fewer: what a pod sends is joined into packets of up to this size, and larger packets from the bubble are cut for the pods. 0: the pod MTU")
 	flag.StringVar(&cfg.SlirpBin, "slirp-bin", "slirp4netns", "Path to slirp4netns binary")
 	flag.StringVar(&cfg.SlirpSocket, "slirp-socket", "/run/plaid/slirp.sock", "UNIX socket path for slirp BESS mode")
 	flag.BoolVar(&cfg.SlirpDisableDNS, "slirp-disable-dns", false, "Disable slirp built-in DNS (default: false, enabling DNS forwarder at node-cidr base+3)")
@@ -255,6 +257,13 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 	cfg.MTU = netcfg.EffectiveMTU(cfg.MTU)
 	if err := netcfg.ValidateMTU(cfg.MTU); err != nil {
 		return nil, err
+	}
+	if cfg.GatewayMode == "tap" {
+		if cfg.UplinkMTU, err = netcfg.UplinkMTU(cfg.UplinkMTU, cfg.MTU); err != nil {
+			return nil, err
+		}
+	} else if cfg.UplinkMTU != 0 {
+		return nil, fmt.Errorf("uplink-mtu is for the tap gateway mode")
 	}
 
 	gwIP := net.ParseIP(cfg.GatewayIP)
@@ -442,12 +451,16 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 		_, serviceNet, _ := net.ParseCIDR(d.cfg.ServiceCIDR)
 		mac, _ := net.ParseMAC(d.cfg.BubbleMAC)
 		var err error
-		d.attachment, err = gateway.Start(gateway.Config{Name: "plaid0", Uplink: d.cfg.Uplink, GuestAddress: net.ParseIP(d.cfg.UplinkAddress), ServiceNextHop: net.ParseIP(d.cfg.SNATAddress), GatewayIP: net.ParseIP(d.cfg.GatewayIP), GatewayMAC: mac, NodeCIDR: nodeNet, ClusterCIDR: clusterNet, ServiceCIDR: serviceNet, MTU: d.cfg.MTU})
+		d.attachment, err = gateway.Start(gateway.Config{Name: "plaid0", Uplink: d.cfg.Uplink, GuestAddress: net.ParseIP(d.cfg.UplinkAddress), ServiceNextHop: net.ParseIP(d.cfg.SNATAddress), GatewayIP: net.ParseIP(d.cfg.GatewayIP), GatewayMAC: mac, NodeCIDR: nodeNet, ClusterCIDR: clusterNet, ServiceCIDR: serviceNet, MTU: d.cfg.UplinkMTU})
 		if err != nil {
 			startErr = err
 			return fmt.Errorf("gateway setup: %w", err)
 		}
 		d.bubbleEP = tap.NewTapEndpoint("bubble", "plaid0", net.ParseIP(d.cfg.GatewayIP), mac, d.attachment.File, d.cfg.Offload)
+		d.bubbleEP.SetUplinkMTU(d.cfg.MTU, d.cfg.UplinkMTU)
+		if d.cfg.UplinkMTU > d.cfg.MTU {
+			d.bubbleEP.SetPassthrough() // its large TCP frames, made TSO segments, go whole to the pods that take them
+		}
 		// The bubble's TAP is not pipelined: its traffic is the pods' traffic to and from
 		// slirp4netns, a ping-pong with a user-space TCP stack that the hand-offs only slow
 		// down.
@@ -733,8 +746,8 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		OverlayRxInvalid:    ov.RxInvalid,
 		OverlayRxDropped:    ov.RxDropped,
 		OverlayRxQueueDrops: ov.RxQueueDrops,
-		OverlaySocketDrops:  ov.SocketDrops,
 		OverlayRcvBuf:       ov.RcvBuf,
+		OverlaySocketDrops:  ov.SocketDrops,
 		OverlayOffload:      overlayOffload(ov),
 		TapOffload:          d.tapOffload(),
 		TapPipeline:         d.tapPipeline(),
@@ -752,6 +765,7 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		UplinkAddress:       d.cfg.UplinkAddress,
 		Resolver:            d.cfg.Resolver,
 		MTU:                 d.cfg.MTU,
+		UplinkMTU:           d.cfg.UplinkMTU,
 		Endpoints:           epList,
 	}
 	d.fillServiceStatus(resp)
@@ -873,6 +887,8 @@ func (d *PlaidDaemon) tapOffload() *api.TapOffloadStatus {
 	st.ReadSuperFrames, st.ReadSegments, st.ReadDropped = c.ReadSuperFrames, c.ReadSegments, c.ReadDropped
 	st.WriteSuperFrames, st.WriteSegments = c.WriteSuperFrames, c.WriteSegments
 	st.PassedSuperFrames, st.PassedBytes = c.PassedSuperFrames, c.PassedBytes
+	st.JoinedForUplink, st.UplinkSuperFrames = c.JoinedForUplink, c.UplinkSuperFrames
+	st.Fragmented, st.Fragments, st.OversizeDropped = c.Fragmented, c.Fragments, c.OversizeDropped
 	return st
 }
 

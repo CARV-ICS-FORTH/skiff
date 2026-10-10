@@ -194,7 +194,8 @@ large() {
         done
     done
     for node in "${NODES[@]}"; do
-        e2e_assert_contains "the uplink of $node is at the pod MTU" "$(runtime_bubble_exec "$node" 'ip -o link show tap0')" "mtu ${SKIFF_POD_MTU} "
+        e2e_assert_contains "the uplink of $node is at the slirp4netns MTU" "$(runtime_bubble_exec "$node" 'ip -o link show tap0')" "mtu ${SKIFF_SLIRP_MTU:-65520} "
+        e2e_assert_contains "plaid0 of $node is at the same MTU" "$(runtime_bubble_exec "$node" 'ip -o link show plaid0')" "mtu ${SKIFF_SLIRP_MTU:-65520} "
     done
 }
 e2e_subcase_run T23-large large

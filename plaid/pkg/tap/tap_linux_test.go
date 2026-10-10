@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -338,38 +337,7 @@ func TestEndpointAllocations(t *testing.T) {
 	}
 }
 
-// -- two namespaces
-
-// podNetns runs a "pod" in a network namespace of its own: it creates the pod's TAP
-// there and runs fn, on a thread that stays in the namespace. fn uses raw system calls,
-// which a thread that Go's scheduler does not move needs: a netpoller-based client is too
-// slow to fill the pipe.
-func podNetns(ip, mac string, ecn bool, fn func(), file chan<- *os.File, errc chan<- error) {
-	go func() {
-		runtime.LockOSThread()
-		if err := syscall.Unshare(syscall.CLONE_NEWNET); err != nil {
-			file <- nil
-			errc <- fmt.Errorf("unshare: %w", err)
-			return
-		}
-		if ecn {
-			// A per-namespace sysctl, which the root of the user namespace may write.
-			if err := os.WriteFile("/proc/sys/net/ipv4/tcp_ecn", []byte("1"), 0); err != nil {
-				file <- nil
-				errc <- fmt.Errorf("tcp_ecn: %w", err)
-				return
-			}
-		}
-		hw, _ := net.ParseMAC(mac)
-		f, err := CreateAndConfigureTap(TapConfig{Name: "pod0", IP: net.ParseIP(ip), Mask: net.CIDRMask(24, 32), MAC: hw, MTU: 1450})
-		file <- f
-		if err != nil {
-			errc <- err
-			return
-		}
-		fn()
-	}()
-}
+// -- two namespaces (see newPod and runStream)
 
 const (
 	podPort  = 5001
@@ -377,78 +345,6 @@ const (
 )
 
 func pattern(off int) byte { return byte(off % 251) }
-
-func rawServer(done chan<- string) func() {
-	return func() {
-		fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
-		if err == nil {
-			err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: podPort})
-		}
-		if err == nil {
-			err = syscall.Listen(fd, 1)
-		}
-		if err != nil {
-			done <- fmt.Sprintf("server setup: %v", err)
-			return
-		}
-		conn, _, err := syscall.Accept(fd)
-		if err != nil {
-			done <- fmt.Sprintf("accept: %v", err)
-			return
-		}
-		buf := make([]byte, 1<<18)
-		total, bad := 0, 0
-		for {
-			n, err := syscall.Read(conn, buf)
-			if err != nil || n == 0 {
-				break
-			}
-			for i := 0; i < n; i++ {
-				if buf[i] != pattern(total+i) {
-					bad++
-				}
-			}
-			total += n
-		}
-		_, _ = syscall.Write(conn, []byte("done"))
-		syscall.Close(conn)
-		done <- fmt.Sprintf("%d bytes, %d wrong", total, bad)
-	}
-}
-
-func rawClient(server string, done chan<- string) func() {
-	return func() {
-		fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
-		if err != nil {
-			done <- fmt.Sprintf("socket: %v", err)
-			return
-		}
-		ip := net.ParseIP(server).To4()
-		if err := syscall.Connect(fd, &syscall.SockaddrInet4{Port: podPort, Addr: [4]byte(ip)}); err != nil {
-			done <- fmt.Sprintf("connect: %v", err)
-			return
-		}
-		buf := make([]byte, 1<<16)
-		for sent := 0; sent < podBytes; {
-			for i := range buf {
-				buf[i] = pattern(sent + i)
-			}
-			for off := 0; off < len(buf); {
-				n, err := syscall.Write(fd, buf[off:])
-				if err != nil {
-					done <- fmt.Sprintf("write: %v", err)
-					return
-				}
-				off += n
-			}
-			sent += len(buf)
-		}
-		_ = syscall.Shutdown(fd, syscall.SHUT_WR)
-		reply := make([]byte, 4)
-		n, _ := syscall.Read(fd, reply)
-		done <- fmt.Sprintf("sent %d bytes, reply %q", podBytes, reply[:n])
-	}
-}
 
 // TestOffloadsBetweenTwoPods is the whole path with a real kernel's TCP on both ends. Two
 // "pods" live in network namespaces of their own, each with a TAP that Plaid serves, and
@@ -476,29 +372,23 @@ func TestOffloadsBetweenTwoPods(t *testing.T) {
 }
 
 func twoPods(t *testing.T, offload, pipeline, passthrough, ecn bool) {
-	serverTap, clientTap := make(chan *os.File, 1), make(chan *os.File, 1)
-	errs := make(chan error, 2)
-	senderDone, receiverDone := make(chan string, 1), make(chan string, 1)
-	podNetns("10.99.0.3", "02:00:00:00:00:03", ecn, rawServer(receiverDone), serverTap, errs)
-	podNetns("10.99.0.2", "02:00:00:00:00:02", ecn, rawClient("10.99.0.3", senderDone), clientTap, errs)
-	// The pods start at once; the frames they send wait in their TAPs until the bridge serves them.
+	podCfg := func(n byte) TapConfig {
+		return TapConfig{Name: "pod0", IP: net.IPv4(10, 99, 0, n), Mask: net.CIDRMask(24, 32), MAC: net.HardwareAddr{2, 0, 0, 0, 0, n}, MTU: 1450}
+	}
+	server, client := newPod(t, podCfg(3), ecn), newPod(t, podCfg(2), ecn)
 
 	_, nodeCIDR, _ := net.ParseCIDR("10.99.0.0/24")
 	_, clusterCIDR, _ := net.ParseCIDR("10.99.0.0/16")
 	gwMAC, _ := net.ParseMAC("02:00:00:00:00:01")
 	b := bridge.NewBridge(bridge.BridgeConfig{GatewayIP: net.ParseIP("10.99.0.1"), GatewayMAC: gwMAC, NodeCIDR: nodeCIDR, ClusterCIDR: clusterCIDR})
 
-	var eps []*TapEndpoint
 	for _, spec := range []struct {
-		id, ip, mac string
-		tap         <-chan *os.File
-	}{{"server", "10.99.0.3", "02:00:00:00:00:03", serverTap}, {"client", "10.99.0.2", "02:00:00:00:00:02", clientTap}} {
-		f := <-spec.tap
-		if f == nil {
-			t.Skipf("cannot create a pod namespace: %v", <-errs)
-		}
-		mac, _ := net.ParseMAC(spec.mac)
-		ep := NewTapEndpoint(spec.id, spec.id, net.ParseIP(spec.ip), mac, f, offload)
+		id  string
+		n   byte
+		pod *nsPod
+	}{{"server", 3, server}, {"client", 2, client}} {
+		cfg := podCfg(spec.n)
+		ep := NewTapEndpoint(spec.id, spec.id, cfg.IP, cfg.MAC, spec.pod.tap, offload)
 		if !ep.vnet || ep.Offload() != offload {
 			t.Skipf("this kernel does not give the TAP a virtio header or offloads (vnet %v, offload %v)", ep.vnet, ep.Offload())
 		}
@@ -508,34 +398,18 @@ func twoPods(t *testing.T, offload, pipeline, passthrough, ecn bool) {
 		if passthrough {
 			ep.SetPassthrough()
 		}
-		eps = append(eps, ep)
 		if err := b.AddEndpoint(ep); err != nil {
 			t.Fatal(err)
 		}
 		ep.StartReadLoop(context.Background(), b)
 	}
 
-	var sender, receiver string
-	timeout := time.After(40 * time.Second)
-	for sender == "" || receiver == "" {
-		select {
-		case sender = <-senderDone:
-		case receiver = <-receiverDone:
-		case err := <-errs:
-			t.Fatalf("a pod failed: %v", err)
-		case <-timeout:
-			t.Fatalf("timed out: sender %q, receiver %q, counters %+v", sender, receiver, Offloads())
-		}
-	}
+	runStream(t, "stream between the pods",
+		func() streamResult { return serve(server.lfd) },
+		func() streamResult { return send(client.cfd, "10.99.0.3", podPort) },
+		func() string { return fmt.Sprintf("counters %+v", Offloads()) })
 	st := Offloads()
-	t.Logf("sender: %s; receiver: %s", sender, receiver)
 	t.Logf("TAP offloads: %+v", st)
-	if want := fmt.Sprintf("%d bytes, 0 wrong", podBytes); receiver != want {
-		t.Errorf("receiver: %q, want %q", receiver, want)
-	}
-	if !strings.HasPrefix(sender, fmt.Sprintf("sent %d bytes, reply \"done\"", podBytes)) {
-		t.Errorf("sender: %q", sender)
-	}
 	switch {
 	case !offload && (st.ReadSuperFrames != 0 || st.WriteSuperFrames != 0 || st.PassedSuperFrames != 0):
 		t.Errorf("offloads were used though they are off: %+v", st)

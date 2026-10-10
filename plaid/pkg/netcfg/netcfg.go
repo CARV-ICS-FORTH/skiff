@@ -26,6 +26,10 @@ const (
 	MinMTU     = 576
 	MaxMTU     = 65535
 
+	// MaxUplinkMTU is the largest MTU slirp4netns accepts, and so the largest of the
+	// bubble's link to it.
+	MaxUplinkMTU = 65520
+
 	// Standalone defaults of the cluster and Service networks.
 	DefaultClusterCIDR = "10.244.0.0/16"
 	DefaultServiceCIDR = "10.43.0.0/16"
@@ -105,4 +109,17 @@ func StandaloneResolver(gateway string) string {
 	copy(dns, ip)
 	dns[3] = 3
 	return dns.String()
+}
+
+// UplinkMTU is the MTU of the bubble's link to slirp4netns for a setting made explicitly
+// (0: the pod MTU, as the link had before it could differ), and refuses one that is below
+// the pod MTU, which would fragment what pods send, or above what slirp4netns takes.
+func UplinkMTU(explicit, pod int) (int, error) {
+	if explicit == 0 {
+		return pod, nil
+	}
+	if explicit < pod || explicit > MaxUplinkMTU {
+		return 0, fmt.Errorf("invalid uplink MTU %d: must be between the pod MTU %d and %d", explicit, pod, MaxUplinkMTU)
+	}
+	return explicit, nil
 }

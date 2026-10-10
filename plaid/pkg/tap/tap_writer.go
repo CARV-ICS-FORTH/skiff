@@ -45,13 +45,23 @@ func (w *tapWriter) Add(frame *packet.EthernetFrame) error {
 // bridge.SuperWriter), after the frame held. It is written in place, from the caller's
 // buffer, unless writes are still with the writer goroutine: then it is copied and queued
 // behind them, which keeps the order.
+//
+// A TAP with an MTU above the pods' (the bubble's) that the segment fits takes it as one
+// ordinary packet: the buffer's headers and checksum are completed and it is written
+// with an empty virtio header, so that its kernel forwards one packet and not the
+// segments it would cut it into.
 func (w *tapWriter) AddSuper(h packet.VnetHeader, frame *packet.EthernetFrame) error {
 	err := w.flush(true)
 	if cerr := w.t.errClosed(); cerr != nil {
 		return cerr
 	}
-	stats.passSuper.Add(1)
-	stats.passBytes.Add(uint64(packet.EthernetHeaderLen + len(frame.Payload)))
+	if len(frame.Payload) <= w.t.uplinkMTU && packet.CompleteSuper(h, frame.Payload) == nil {
+		h = packet.VnetHeader{}
+		stats.joinUplink.Add(1)
+	} else {
+		stats.passSuper.Add(1)
+		stats.passBytes.Add(uint64(packet.EthernetHeaderLen + len(frame.Payload)))
+	}
 	if w.t.wq != nil {
 		if w.t.wpending.Load() != 0 {
 			pb := packet.GetBuffer()
