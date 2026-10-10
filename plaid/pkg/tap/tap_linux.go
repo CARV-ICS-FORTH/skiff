@@ -3,6 +3,7 @@
 package tap
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -286,12 +287,15 @@ func enableOffloads(f *os.File) error {
 // zeroVnetHdr is the header of a frame that asks nothing of the TAP.
 var zeroVnetHdr [packet.VnetHeaderLen]byte
 
-// vnetWriter writes frames to a TAP that has a virtio header, with the header of zeros
-// in front, in one writev, so that the frame is not copied to make room for it.
+// vnetWriter writes frames to a TAP that has a virtio header, with the headers in front
+// in one writev, so that the frame is not copied to make room for them.
 type vnetWriter struct {
 	mu    sync.Mutex
 	rc    syscall.RawConn
-	iov   [2]syscall.Iovec
+	iov   [3]syscall.Iovec
+	cnt   uintptr // the iovecs in use
+	hdr   [packet.VnetHeaderLen]byte
+	eth   [packet.EthernetHeaderLen]byte
 	n     int
 	errno syscall.Errno
 	do    func(fd uintptr) bool // writev, made once because a closure made per call is an allocation
@@ -303,19 +307,41 @@ func newVnetWriter(f *os.File) *vnetWriter {
 		return nil
 	}
 	w := &vnetWriter{rc: rc}
-	w.iov[0].Base = &zeroVnetHdr[0]
-	w.iov[0].SetLen(len(zeroVnetHdr))
 	w.do = w.writev
 	return w
 }
 
 func (w *vnetWriter) writev(fd uintptr) bool {
-	n, _, errno := syscall.Syscall(syscall.SYS_WRITEV, fd, uintptr(unsafe.Pointer(&w.iov[0])), 2)
+	n, _, errno := syscall.Syscall(syscall.SYS_WRITEV, fd, uintptr(unsafe.Pointer(&w.iov[0])), w.cnt)
 	if errno == syscall.EAGAIN {
 		return false // wait until the TAP can take the frame
 	}
 	w.n, w.errno = int(n), errno
 	return true
+}
+
+// set makes b the i'th part of the next write.
+func (w *vnetWriter) set(i int, b []byte) {
+	w.iov[i].Base = &b[0]
+	w.iov[i].SetLen(len(b))
+	w.cnt = uintptr(i + 1)
+}
+
+// send writes the parts that are set; the caller holds the lock.
+func (w *vnetWriter) send(want int) error {
+	err := w.rc.Write(w.do)
+	for i := range w.iov {
+		w.iov[i].Base = nil
+	}
+	switch {
+	case err != nil:
+		return err
+	case w.errno != 0:
+		return w.errno
+	case w.n != want:
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func (w *vnetWriter) write(frame []byte) error {
@@ -324,19 +350,30 @@ func (w *vnetWriter) write(frame []byte) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.iov[1].Base = &frame[0]
-	w.iov[1].SetLen(len(frame))
-	err := w.rc.Write(w.do)
-	w.iov[1].Base = nil
-	switch {
-	case err != nil:
-		return err
-	case w.errno != 0:
-		return w.errno
-	case w.n != len(zeroVnetHdr)+len(frame):
-		return io.ErrShortWrite
+	w.set(0, zeroVnetHdr[:])
+	w.set(1, frame)
+	return w.send(len(zeroVnetHdr) + len(frame))
+}
+
+// writeSuper writes frame with the virtio header h, which says how the TAP is to treat
+// it, from three parts: the header, the Ethernet header, and the payload where it is.
+func (w *vnetWriter) writeSuper(h packet.VnetHeader, frame *packet.EthernetFrame) error {
+	if len(frame.DstMAC) != 6 || len(frame.SrcMAC) != 6 {
+		return packet.ErrInvalidMAC
 	}
-	return nil
+	if len(frame.Payload) == 0 {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	h.Put(w.hdr[:])
+	copy(w.eth[0:], frame.DstMAC)
+	copy(w.eth[6:], frame.SrcMAC)
+	binary.BigEndian.PutUint16(w.eth[12:], frame.EtherType)
+	w.set(0, w.hdr[:])
+	w.set(1, w.eth[:])
+	w.set(2, frame.Payload)
+	return w.send(len(w.hdr) + len(w.eth) + len(frame.Payload))
 }
 
 // pollProbe tells whether the TAP has a frame waiting, without reading it. One goroutine

@@ -117,7 +117,7 @@ func main() {
 	flag.IntVar(&cfg.VXLANVNI, "vxlan-vni", packet.DefaultVNI, "VXLAN VNI")
 	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address (with --overlay-handoff: the address the handed-over socket must be bound to)")
 	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP socket, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
-	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay socket. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call")
+	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay socket. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call, and a pod's TCP super-frames are cut instead of being written whole to the other pods and the bubble of this node")
 	flag.StringVar(&cfg.SlirpBin, "slirp-bin", "slirp4netns", "Path to slirp4netns binary")
 	flag.StringVar(&cfg.SlirpSocket, "slirp-socket", "/run/plaid/slirp.sock", "UNIX socket path for slirp BESS mode")
 	flag.BoolVar(&cfg.SlirpDisableDNS, "slirp-disable-dns", false, "Disable slirp built-in DNS (default: false, enabling DNS forwarder at node-cidr base+3)")
@@ -623,6 +623,7 @@ func (d *PlaidDaemon) HandleAddEndpoint(req *api.Request, tapFD int) error {
 
 	ep := tap.NewTapEndpoint(epID, req.PodName, epIP, epMAC, epFile, d.cfg.Offload)
 	ep.SetPipeline()
+	ep.SetPassthrough()
 	if err := d.bridge.AddEndpoint(ep); err != nil {
 		_ = ep.Close() // closes epFile and stops the goroutines SetPipeline started
 		return err
@@ -871,6 +872,7 @@ func (d *PlaidDaemon) tapOffload() *api.TapOffloadStatus {
 	c := tap.Offloads()
 	st.ReadSuperFrames, st.ReadSegments, st.ReadDropped = c.ReadSuperFrames, c.ReadSegments, c.ReadDropped
 	st.WriteSuperFrames, st.WriteSegments = c.WriteSuperFrames, c.WriteSegments
+	st.PassedSuperFrames, st.PassedBytes = c.PassedSuperFrames, c.PassedBytes
 	return st
 }
 

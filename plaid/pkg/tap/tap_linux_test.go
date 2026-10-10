@@ -273,8 +273,8 @@ func TestReadFrames(t *testing.T) {
 	}
 }
 
-// Reading with the header, writing a frame with it and writing through a writer allocate
-// nothing per frame.
+// Reading with the header, writing a frame with it, writing through a writer and writing
+// a TSO segment whole allocate nothing per frame.
 func TestEndpointAllocations(t *testing.T) {
 	ep, pod := socketTap(t, tapOpts{vnet: true, offload: true})
 	frame := mustMarshal(tcpFrame(1, 1398, 0x10))
@@ -307,6 +307,19 @@ func TestEndpointAllocations(t *testing.T) {
 		t.Errorf("a writer allocates %.0f for 40 segments", got)
 	}
 
+	rec := podRecord(1000, 40)
+	tso, _ := packet.ParseEthernet(rec[packet.VnetHeaderLen:])
+	h := packet.ParseVnetHeader(rec)
+	if got := testing.AllocsPerRun(50, func() {
+		w := ep.NewWriter()
+		_ = w.(bridge.SuperWriter).AddSuper(h, tso)
+		_ = w.Flush()
+		w.Release()
+		drain(1)
+	}); got != 0 {
+		t.Errorf("a writer allocates %.0f for a TSO segment of 40 segments", got)
+	}
+
 	// A super-frame to read: write 40 segments, take the record.
 	w := ep.NewWriter()
 	for _, f := range frames {
@@ -331,13 +344,21 @@ func TestEndpointAllocations(t *testing.T) {
 // there and runs fn, on a thread that stays in the namespace. fn uses raw system calls,
 // which a thread that Go's scheduler does not move needs: a netpoller-based client is too
 // slow to fill the pipe.
-func podNetns(ip, mac string, fn func(), file chan<- *os.File, errc chan<- error) {
+func podNetns(ip, mac string, ecn bool, fn func(), file chan<- *os.File, errc chan<- error) {
 	go func() {
 		runtime.LockOSThread()
 		if err := syscall.Unshare(syscall.CLONE_NEWNET); err != nil {
 			file <- nil
 			errc <- fmt.Errorf("unshare: %w", err)
 			return
+		}
+		if ecn {
+			// A per-namespace sysctl, which the root of the user namespace may write.
+			if err := os.WriteFile("/proc/sys/net/ipv4/tcp_ecn", []byte("1"), 0); err != nil {
+				file <- nil
+				errc <- fmt.Errorf("tcp_ecn: %w", err)
+				return
+			}
 		}
 		hw, _ := net.ParseMAC(mac)
 		f, err := CreateAndConfigureTap(TapConfig{Name: "pod0", IP: net.ParseIP(ip), Mask: net.CIDRMask(24, 32), MAC: hw, MTU: 1450})
@@ -434,28 +455,32 @@ func rawClient(server string, done chan<- string) func() {
 // a TCP stream runs from one to the other through the bridge: with offloads the sender's
 // stack hands over TSO segments of up to 64 KiB, Plaid cuts them into MTU-sized frames
 // for the bridge, and joins the frames that reach the receiver again into segments for its
-// stack; without, every frame is an MTU-sized one with the virtio header of a TAP that
-// has offloads off. The stacks verify every checksum they are given, so a stream that
+// stack, or, with passthrough, hands them to the receiver's TAP as they are; without
+// offloads, every frame is an MTU-sized one with the virtio header of a TAP that has
+// offloads off. The stacks verify every checksum they are given, so a stream that
 // arrives whole and in order shows that frames were cut and joined correctly. The test
-// runs in a user and network namespace of its own, which needs no privileges.
+// runs in a user and network namespace of its own, which needs no privileges. The "ecn"
+// modes negotiate ECN in both pods; as nothing marks packets on this path the sender never
+// sets CWR, so the stream carries no segment of the ECN type: that case is covered by the
+// unit tests, and these modes show that a stream with ECN negotiated is unharmed.
 func TestOffloadsBetweenTwoPods(t *testing.T) {
 	if os.Getenv("PLAID_TAP_CHILD") != "" {
 		mode := os.Getenv("PLAID_TAP_CHILD")
-		twoPods(t, strings.HasPrefix(mode, "offload"), strings.HasSuffix(mode, "+pipeline"))
+		twoPods(t, strings.HasPrefix(mode, "offload"), strings.Contains(mode, "+pipeline"), strings.Contains(mode, "+passthrough"), strings.Contains(mode, "+ecn"))
 		return
 	}
 	needUserns(t)
-	for _, mode := range []string{"offload", "plain", "offload+pipeline", "plain+pipeline"} {
+	for _, mode := range []string{"offload", "plain", "offload+pipeline", "plain+pipeline", "offload+passthrough", "offload+pipeline+passthrough", "plain+passthrough", "offload+ecn", "offload+pipeline+passthrough+ecn"} {
 		t.Run(mode, func(t *testing.T) { runInUserns(t, "TestOffloadsBetweenTwoPods", "PLAID_TAP_CHILD="+mode, time.Minute) })
 	}
 }
 
-func twoPods(t *testing.T, offload, pipeline bool) {
+func twoPods(t *testing.T, offload, pipeline, passthrough, ecn bool) {
 	serverTap, clientTap := make(chan *os.File, 1), make(chan *os.File, 1)
 	errs := make(chan error, 2)
 	senderDone, receiverDone := make(chan string, 1), make(chan string, 1)
-	podNetns("10.99.0.3", "02:00:00:00:00:03", rawServer(receiverDone), serverTap, errs)
-	podNetns("10.99.0.2", "02:00:00:00:00:02", rawClient("10.99.0.3", senderDone), clientTap, errs)
+	podNetns("10.99.0.3", "02:00:00:00:00:03", ecn, rawServer(receiverDone), serverTap, errs)
+	podNetns("10.99.0.2", "02:00:00:00:00:02", ecn, rawClient("10.99.0.3", senderDone), clientTap, errs)
 	// The pods start at once; the frames they send wait in their TAPs until the bridge serves them.
 
 	_, nodeCIDR, _ := net.ParseCIDR("10.99.0.0/24")
@@ -479,6 +504,9 @@ func twoPods(t *testing.T, offload, pipeline bool) {
 		}
 		if pipeline {
 			ep.SetPipeline()
+		}
+		if passthrough {
+			ep.SetPassthrough()
 		}
 		eps = append(eps, ep)
 		if err := b.AddEndpoint(ep); err != nil {
@@ -509,14 +537,22 @@ func twoPods(t *testing.T, offload, pipeline bool) {
 		t.Errorf("sender: %q", sender)
 	}
 	switch {
-	case !offload && (st.ReadSuperFrames != 0 || st.WriteSuperFrames != 0):
+	case !offload && (st.ReadSuperFrames != 0 || st.WriteSuperFrames != 0 || st.PassedSuperFrames != 0):
 		t.Errorf("offloads were used though they are off: %+v", st)
+	case offload && passthrough:
+		// The sender's TSO segments go to the receiver as they are; the few that are cut
+		// are those the stacks make before the stream has found its size.
+		if st.PassedSuperFrames == 0 || st.PassedBytes < podBytes/2 || st.ReadSuperFrames > st.PassedSuperFrames/10 {
+			t.Errorf("the sender's TSO segments were not passed through: %+v", st)
+		}
 	case offload && (st.ReadSuperFrames == 0 || st.ReadSegments <= 2*st.ReadSuperFrames):
 		t.Errorf("the sender's stack handed over no TSO segments: %+v", st)
 	case offload && (st.WriteSuperFrames == 0 || st.WriteSegments <= 2*st.WriteSuperFrames):
 		t.Errorf("no frames were joined for the receiver: %+v", st)
+	case offload && st.PassedSuperFrames != 0:
+		t.Errorf("TSO segments were passed through though passthrough is off: %+v", st)
 	}
-	if st.ReadDropped != 0 {
+	if st.ReadDropped != 0 { // with ecn too: a TSO segment with CWR has the ECN type, which is cut like the others
 		t.Errorf("%d frames were dropped", st.ReadDropped)
 	}
 }

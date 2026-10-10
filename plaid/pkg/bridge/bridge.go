@@ -322,22 +322,29 @@ func (x *Batch) processFrame(srcEP Endpoint, raw []byte, trusted bool) error {
 	}
 	frame.Trusted = trusted
 
-	// Filter hook (user-space br_netfilter)
-	b.mu.RLock()
-	filter := b.filterHandler
-	b.mu.RUnlock()
-	if filter != nil && !filter(frame, srcEP) {
-		// Dropped by policy
-		return nil
-	}
+	// A super-frame that would only be looked at is not filtered or learnt from.
+	if !x.sup.dry {
+		// Filter hook (user-space br_netfilter)
+		b.mu.RLock()
+		filter := b.filterHandler
+		b.mu.RUnlock()
+		if filter != nil && !filter(frame, srcEP) {
+			// Dropped by policy
+			x.sup.whole = x.sup.on
+			return nil
+		}
 
-	// Dynamic MAC learning
-	if srcEP != nil && srcEP != b.BubbleEndpoint() && frame.SrcMAC != nil && !bytes.Equal(frame.SrcMAC, b.gatewayMAC) {
-		b.fdb.Learn(frame.SrcMAC, srcEP)
+		// Dynamic MAC learning
+		if srcEP != nil && srcEP != b.BubbleEndpoint() && frame.SrcMAC != nil && !bytes.Equal(frame.SrcMAC, b.gatewayMAC) {
+			b.fdb.Learn(frame.SrcMAC, srcEP)
+		}
 	}
 
 	// Handle Broadcast / Multicast
 	if frame.IsBroadcast() || frame.IsMulticast() {
+		if x.sup.on {
+			return nil // goes to everyone, or answers the sender
+		}
 		return b.handleBroadcast(srcEP, frame, raw)
 	}
 
@@ -462,6 +469,9 @@ func (b *Bridge) handleUnicast(x *Batch, srcEP Endpoint, frame *packet.EthernetF
 		outbound := b.outboundHandler
 		b.mu.RUnlock()
 		if outbound != nil {
+			if x.sup.on {
+				return nil
+			}
 			return outbound(frame)
 		}
 	}
@@ -500,12 +510,18 @@ func (b *Bridge) handleUnicast(x *Batch, srcEP Endpoint, frame *packet.EthernetF
 			outbound := b.outboundHandler
 			b.mu.RUnlock()
 			if outbound != nil {
+				if x.sup.on {
+					return nil
+				}
 				return outbound(frame)
 			}
 		}
 	}
 
 	// Unknown unicast: flood to all other endpoints
+	if x.sup.on {
+		return nil
+	}
 	return b.flood(srcEP, raw)
 }
 
@@ -514,6 +530,9 @@ func (b *Bridge) routeTapTraffic(x *Batch, srcEP Endpoint, frame *packet.Etherne
 		var dst [4]byte
 		copy(dst[:], dstIP.To4())
 		if eng.Owns(dst) {
+			if x.sup.on {
+				return nil
+			}
 			return b.serviceTraffic(x, eng, frame.Payload)
 		}
 	}
@@ -642,6 +661,9 @@ func (b *Bridge) routeGatewayTraffic(x *Batch, srcEP Endpoint, frame *packet.Eth
 	outbound := b.outboundHandler
 	b.mu.RUnlock()
 	if outbound != nil {
+		if x.sup.on {
+			return nil
+		}
 		return outbound(frame)
 	}
 

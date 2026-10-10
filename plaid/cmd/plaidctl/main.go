@@ -65,8 +65,9 @@ func main() {
 				status.OverlayRxQueueDrops, status.OverlaySocketDrops, status.OverlayRcvBuf, orNone(status.OverlayOffload))
 		}
 		if o := status.TapOffload; o != nil {
-			fmt.Printf("TAP offload:  enabled=%t, on %d TAPs (read %d super-frames as %d segments, %d dropped; wrote %d super-frames of %d segments)\n",
-				o.Enabled, o.Endpoints, o.ReadSuperFrames, o.ReadSegments, o.ReadDropped, o.WriteSuperFrames, o.WriteSegments)
+			fmt.Printf("TAP offload:  enabled=%t, on %d TAPs (read %d super-frames as %d segments, %d dropped; wrote %d super-frames of %d segments; passed %d super-frames whole, %d bytes)\n",
+				o.Enabled, o.Endpoints, o.ReadSuperFrames, o.ReadSegments, o.ReadDropped, o.WriteSuperFrames, o.WriteSegments,
+				o.PassedSuperFrames, o.PassedBytes)
 		}
 		if p := status.TapPipeline; p != nil {
 			fmt.Printf("TAP pipeline: on %d TAPs (read: %d inline, %d queued, queue full %d times; write: %d inline, %d queued, queue full %d times)\n",

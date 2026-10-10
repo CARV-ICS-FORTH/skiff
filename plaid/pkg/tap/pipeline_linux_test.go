@@ -27,34 +27,13 @@ func pipeTap(t testing.TB, name string, id byte, pipeline bool, sndbuf int) (*Ta
 	return socketTap(t, tapOpts{name: name, id: id, sndbuf: sndbuf, vnet: true, offload: true, pipeline: pipeline})
 }
 
-// twoTaps is a bridge with the pods 10.244.1.5 (the receiver, MAC ...:05, "b") and
-// 10.244.1.4 (the sender, "a"), whose read loops run; tcpFrame addresses a frame from
-// the sender to the receiver.
+// twoTaps is passTaps with the read loops running, and no passthrough: a bridge with the pods
+// 10.244.1.5 (the receiver, MAC ...:05, "b") and 10.244.1.4 (the sender, "a"); tcpFrame
+// addresses a frame from the sender to the receiver.
 func twoTaps(t testing.TB, pipeline bool, sndbuf int) (a, b *TapEndpoint, aPod, bPod *os.File, br *bridge.Bridge) {
 	t.Helper()
-	a, b, aPod, bPod, br, start := idleTaps(t, pipeline, sndbuf)
+	a, b, aPod, bPod, br, start := passTaps(t, passOpts{pipeline: pipeline, sndbuf: sndbuf})
 	start()
-	return
-}
-
-// idleTaps is twoTaps with the read loops not started: the pods can send before they are,
-// so that frames are waiting when the first read comes.
-func idleTaps(t testing.TB, pipeline bool, sndbuf int) (a, b *TapEndpoint, aPod, bPod *os.File, br *bridge.Bridge, start func()) {
-	t.Helper()
-	br = bridge.NewBridge(bridge.BridgeConfig{})
-	a, aPod = pipeTap(t, "a", 4, pipeline, 0)
-	b, bPod = pipeTap(t, "b", 5, pipeline, sndbuf)
-	for _, ep := range []*TapEndpoint{a, b} {
-		if err := br.AddEndpoint(ep); err != nil {
-			t.Fatal(err)
-		}
-	}
-	t.Cleanup(func() { _ = a.Close(); _ = b.Close() })
-	start = func() {
-		for _, ep := range []*TapEndpoint{a, b} {
-			ep.StartReadLoop(context.Background(), br)
-		}
-	}
 	return
 }
 
@@ -298,7 +277,7 @@ func TestInlineReaderWaitsForTheBridge(t *testing.T) {
 // queue is full and then stops, with the rest still in the pod's TAP: nothing is dropped,
 // and it all arrives in order once the bridge goes on.
 func TestReadStageWaitsForTheBridge(t *testing.T) {
-	_, _, aPod, bPod, br, start := idleTaps(t, true, 0)
+	_, _, aPod, bPod, br, start := passTaps(t, passOpts{pipeline: true})
 	gate := make(chan struct{})
 	br.SetFilterHandler(func(*packet.EthernetFrame, bridge.Endpoint) bool { <-gate; return true })
 	const frames = 100
@@ -424,69 +403,75 @@ func TestPipelineGoroutines(t *testing.T) {
 }
 
 // Endpoints that are created, loaded, and removed leave no goroutine and no pooled buffer
-// behind, and nothing is written to a pod after its endpoint was removed.
+// behind, and nothing is written to a pod after its endpoint was removed; with passthrough too,
+// where the TSO segments of the sender are written whole and queue behind the overlay's frames.
 func TestPipelinesStopWhileBusy(t *testing.T) {
-	before, held := goroutines(), inFlight.Load()
-	for cycle := 0; cycle < 25; cycle++ {
-		a, b, aPod, bPod, br := twoTaps(t, true, 16<<10)
-		var wg sync.WaitGroup
-		stop := make(chan struct{})
-		wg.Add(3)
-		go func() { // the pod sends as fast as it can
-			defer wg.Done()
-			rec := podRecord(1000, 11)
-			for {
-				if _, err := aPod.Write(rec); err != nil {
-					return
-				}
-			}
-		}()
-		go func() { // the overlay delivers to the other pod, which reads now and then
-			defer wg.Done()
-			x := br.NewBatch()
-			defer x.Release()
-			for i := uint32(0); ; i++ {
-				select {
-				case <-stop:
-					return
-				default:
-				}
-				// Once the receiver is removed its frames are flooded, to nobody: no error.
-				if err := x.InjectFrame(flowFrame(1000+i*segSize, false)); err != nil {
-					return
-				}
-				if err := x.Flush(); err != nil {
-					return
-				}
-			}
-		}()
-		go func() {
-			defer wg.Done()
-			buf := make([]byte, 70000)
-			for {
-				if _, err := bPod.Read(buf); err != nil {
-					return
-				}
-				time.Sleep(time.Duration(cycle%3) * 100 * time.Microsecond)
-			}
-		}()
-		time.Sleep(time.Duration(5+cycle%7) * time.Millisecond)
+	for _, passthrough := range []bool{false, true} {
+		t.Run(fmt.Sprintf("passthrough=%v", passthrough), func(t *testing.T) {
+			before, held := goroutines(), inFlight.Load()
+			for cycle := 0; cycle < 25; cycle++ {
+				a, b, aPod, bPod, br, start := passTaps(t, passOpts{pipeline: true, passthrough: passthrough, sndbuf: 16 << 10})
+				start()
+				var wg sync.WaitGroup
+				stop := make(chan struct{})
+				wg.Add(3)
+				go func() { // the pod sends as fast as it can
+					defer wg.Done()
+					rec := podRecord(1000, 11)
+					for {
+						if _, err := aPod.Write(rec); err != nil {
+							return
+						}
+					}
+				}()
+				go func() { // the overlay delivers to the other pod, which reads now and then
+					defer wg.Done()
+					x := br.NewBatch()
+					defer x.Release()
+					for i := uint32(0); ; i++ {
+						select {
+						case <-stop:
+							return
+						default:
+						}
+						// Once the receiver is removed its frames are flooded, to nobody: no error.
+						if err := x.InjectFrame(flowFrame(1000+i*segSize, false)); err != nil {
+							return
+						}
+						if err := x.Flush(); err != nil {
+							return
+						}
+					}
+				}()
+				go func() {
+					defer wg.Done()
+					buf := make([]byte, 70000)
+					for {
+						if _, err := bPod.Read(buf); err != nil {
+							return
+						}
+						time.Sleep(time.Duration(cycle%3) * 100 * time.Microsecond)
+					}
+				}()
+				time.Sleep(time.Duration(5+cycle%7) * time.Millisecond)
 
-		_ = br.RemoveEndpoint(b.ID()) // closes the receiver while the writer queue is full
-		if err := b.Write([]byte("x")); err == nil {
-			t.Fatal("write to a closed endpoint succeeded")
-		}
-		_ = br.RemoveEndpoint(a.ID())
-		close(stop)
-		wg.Wait()
-		_ = a.Close()
-		_ = b.Close()
-		_ = aPod.Close()
-		_ = bPod.Close()
-	}
-	settle(t, before)
-	if got := inFlight.Load(); got != held {
-		t.Errorf("%d pooled buffers were not returned", got-held)
+				_ = br.RemoveEndpoint(b.ID()) // closes the receiver while the writer queue is full
+				if err := b.Write([]byte("x")); err == nil {
+					t.Fatal("write to a closed endpoint succeeded")
+				}
+				_ = br.RemoveEndpoint(a.ID())
+				close(stop)
+				wg.Wait()
+				_ = a.Close()
+				_ = b.Close()
+				_ = aPod.Close()
+				_ = bPod.Close()
+			}
+			settle(t, before)
+			if got := inFlight.Load(); got != held {
+				t.Errorf("%d pooled buffers were not returned", got-held)
+			}
+		})
 	}
 }
 

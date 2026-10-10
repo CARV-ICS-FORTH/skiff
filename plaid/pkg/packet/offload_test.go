@@ -317,7 +317,17 @@ func TestSegmentRejectsWhatItCannotDescribe(t *testing.T) {
 			if !errors.Is(err, packet.ErrOffload) || len(out) != 0 {
 				t.Errorf("got %d frames and error %v, want ErrOffload", len(out), err)
 			}
+			// What a TAP may take whole is what Segment cuts.
+			h, f = good()
+			tc.change(&h, &f)
+			if h.IsTSO() && packet.CheckTSO(h, f) == nil {
+				t.Error("IsTSO and CheckTSO accept it")
+			}
 		})
+	}
+	h, f := good()
+	if !h.IsTSO() || packet.CheckTSO(h, f) != nil {
+		t.Error("a TSO segment from the kernel is not accepted")
 	}
 	var sg packet.Segmenter
 	if _, err := sg.Segment(packet.VnetHeader{Flags: packet.VnetNeedsCsum, CsumStart: 34, CsumOffset: 16}, make([]byte, 40)); !errors.Is(err, packet.ErrOffload) {

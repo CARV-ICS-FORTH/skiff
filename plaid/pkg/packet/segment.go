@@ -116,19 +116,42 @@ func parseTCPFrame(frame []byte, v6 bool) (f tcpFrame, ok bool) {
 	return f, f.payload >= f.l4+tcpHeaderMinLen && f.payload <= len(frame)
 }
 
+// checkTSO finds the headers of frame, a TCP segment of up to 64 KiB for which h says how
+// to cut it and complete its checksum, and checks that h describes it.
+func checkTSO(h VnetHeader, frame []byte) (tcpFrame, error) {
+	f, ok := parseTCPFrame(frame, h.GSOType&^VnetGSOECN == VnetGSOTCPv6)
+	if !ok {
+		return f, fmt.Errorf("%w: GSO type %d frame is not TCP over IP without options or fragments", ErrOffload, h.GSOType)
+	}
+	if h.Flags&VnetNeedsCsum == 0 || int(h.CsumStart) != f.l4 || int(h.CsumOffset) != tcpCsumOffset ||
+		h.GSOSize == 0 || f.payload == len(frame) {
+		return f, fmt.Errorf("%w: GSO frame with flags %#x, checksum at %d+%d, segment size %d",
+			ErrOffload, h.Flags, h.CsumStart, h.CsumOffset, h.GSOSize)
+	}
+	return f, nil
+}
+
+// IsTSO reports whether h describes a TCP segment of up to 64 KiB (with the ECN bit or
+// without) whose checksum is still to be done: what Segment cuts, and what a TAP with
+// offloads takes whole.
+func (h VnetHeader) IsTSO() bool {
+	t := h.GSOType &^ VnetGSOECN
+	return (t == VnetGSOTCPv4 || t == VnetGSOTCPv6) && h.Flags&VnetNeedsCsum != 0
+}
+
+// CheckTSO checks that h describes frame as Segment does before it cuts a TSO segment.
+func CheckTSO(h VnetHeader, frame []byte) error {
+	_, err := checkTSO(h, frame)
+	return err
+}
+
 // cut is Segment for the TCP segments the kernel sends as one.
 func (s *Segmenter) cut(h VnetHeader, frame []byte) ([][]byte, error) {
-	v6 := h.GSOType&^VnetGSOECN == VnetGSOTCPv6
-	f, ok := parseTCPFrame(frame, v6)
-	if !ok {
-		return nil, fmt.Errorf("%w: GSO type %d frame is not TCP over IP without options or fragments", ErrOffload, h.GSOType)
+	f, err := checkTSO(h, frame)
+	if err != nil {
+		return nil, err
 	}
-	size := int(h.GSOSize)
-	if h.Flags&VnetNeedsCsum == 0 || int(h.CsumStart) != f.l4 || int(h.CsumOffset) != tcpCsumOffset ||
-		size == 0 || f.payload == len(frame) {
-		return nil, fmt.Errorf("%w: GSO frame with flags %#x, checksum at %d+%d, segment size %d",
-			ErrOffload, h.Flags, h.CsumStart, h.CsumOffset, size)
-	}
+	v6, size := h.GSOType&^VnetGSOECN == VnetGSOTCPv6, int(h.GSOSize)
 
 	hdr, data := f.payload, len(frame)-f.payload
 	n := (data + size - 1) / size

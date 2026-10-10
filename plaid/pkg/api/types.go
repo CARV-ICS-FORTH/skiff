@@ -196,13 +196,16 @@ type TapPipelineStatus struct {
 // TapOffloadStatus reports the checksum and TCP segmentation offloads of the TAPs: how
 // many of them have them on, the TSO segments that pods handed over and the frames they
 // were cut into, those dropped because their virtio header did not describe them, and the
-// writes that joined several segments for a pod and the segments in them.
+// writes that joined several segments for a pod and the segments in them, and the TSO
+// segments that were written whole to another TAP instead of being cut, with their bytes.
 type TapOffloadStatus struct {
-	Enabled          bool   `json:"enabled"`
-	Endpoints        int    `json:"endpoints"`
-	ReadSuperFrames  uint64 `json:"read_super_frames"`
-	ReadSegments     uint64 `json:"read_segments"`
-	ReadDropped      uint64 `json:"read_dropped"`
-	WriteSuperFrames uint64 `json:"write_super_frames"`
-	WriteSegments    uint64 `json:"write_segments"`
+	Enabled           bool   `json:"enabled"`
+	Endpoints         int    `json:"endpoints"`
+	ReadSuperFrames   uint64 `json:"read_super_frames"`
+	ReadSegments      uint64 `json:"read_segments"`
+	ReadDropped       uint64 `json:"read_dropped"`
+	WriteSuperFrames  uint64 `json:"write_super_frames"`
+	WriteSegments     uint64 `json:"write_segments"`
+	PassedSuperFrames uint64 `json:"passed_super_frames"`
+	PassedBytes       uint64 `json:"passed_bytes"`
 }

@@ -41,6 +41,40 @@ func (w *tapWriter) Add(frame *packet.EthernetFrame) error {
 	return err
 }
 
+// AddSuper writes a TSO segment from a pod, as the pod's stack made it (see
+// bridge.SuperWriter), after the frame held. It is written in place, from the caller's
+// buffer, unless writes are still with the writer goroutine: then it is copied and queued
+// behind them, which keeps the order.
+func (w *tapWriter) AddSuper(h packet.VnetHeader, frame *packet.EthernetFrame) error {
+	err := w.flush(true)
+	if cerr := w.t.errClosed(); cerr != nil {
+		return cerr
+	}
+	stats.passSuper.Add(1)
+	stats.passBytes.Add(uint64(packet.EthernetHeaderLen + len(frame.Payload)))
+	if w.t.wq != nil {
+		if w.t.wpending.Load() != 0 {
+			pb := packet.GetBuffer()
+			pb.B = pb.B[:packet.VnetHeaderLen]
+			h.Put(pb.B)
+			var merr error
+			if pb.B, merr = frame.MarshalTo(pb.B); merr != nil {
+				pb.Release()
+				return merr
+			}
+			if qerr := w.t.enqueue(pb); err == nil {
+				err = qerr
+			}
+			return err
+		}
+		stats.writeInline.Add(1)
+	}
+	if werr := w.t.vw.writeSuper(h, frame); err == nil {
+		err = werr
+	}
+	return err
+}
+
 // Flush writes the frame held.
 func (w *tapWriter) Flush() error { return w.flush(false) }
 

@@ -18,7 +18,8 @@ import (
 // the bridge sees only those, and joins consecutive segments of a flow that the bridge delivers
 // together (NewWriter) into one segment for the pod. A TAP without a virtio header is read and
 // written as plain frames. With SetPipeline the reading and processing, and the writing, are
-// split between goroutines. The README (Offloads) describes the whole.
+// split between goroutines; with SetPassthrough a TSO segment that the bridge would deliver as
+// it is to another TAP with offloads is not cut. The README (Offloads) describes the whole.
 type TapEndpoint struct {
 	epID       string
 	epName     string
@@ -28,10 +29,11 @@ type TapEndpoint struct {
 	closeOnce  sync.Once
 	closedChan chan struct{}
 
-	vnet    bool        // frames have a virtio header
-	offload bool        // and the pod may use offloads
-	vw      *vnetWriter // writes frames with an empty header; nil without vnet
-	rb      readBatch   // what ReadFrames reads into
+	vnet        bool        // frames have a virtio header
+	offload     bool        // and the pod may use offloads
+	passthrough bool        // and its TSO segments go whole where the bridge can
+	vw          *vnetWriter // writes frames with an empty header; nil without vnet
+	rb          readBatch   // what ReadFrames reads into
 
 	pipeline bool                // the read loop is two stages
 	probe    *pollProbe          // tells whether another frame is waiting in the TAP
@@ -61,6 +63,8 @@ type readBatch struct {
 	one     [1][]byte
 	frames  [][]byte
 	trusted bool // plaidd has completed the frames' checksums
+	super   bool // frames is the one TSO segment that the virtio header h describes, not cut
+	h       packet.VnetHeader
 }
 
 var readBatchPool = sync.Pool{New: func() any { return new(readBatch) }}
@@ -81,11 +85,13 @@ func putReadBatch(rb *readBatch) {
 
 // OffloadStats counts the work of the offloads of all TAP endpoints.
 type OffloadStats struct {
-	ReadSuperFrames  uint64 // TSO segments the pods handed over
-	ReadSegments     uint64 // the frames they were cut into
-	ReadDropped      uint64 // frames whose virtio header did not describe them, dropped
-	WriteSuperFrames uint64 // writes that joined several segments
-	WriteSegments    uint64 // the segments in them
+	ReadSuperFrames   uint64 // TSO segments the pods handed over
+	ReadSegments      uint64 // the frames they were cut into
+	ReadDropped       uint64 // frames whose virtio header did not describe them, dropped
+	WriteSuperFrames  uint64 // writes that joined several segments
+	WriteSegments     uint64 // the segments in them
+	PassedSuperFrames uint64 // TSO segments written whole to another TAP, not cut
+	PassedBytes       uint64 // the bytes of their frames
 }
 
 // PipelineStats counts how often a stage of a pipeline had to wait for the next one.
@@ -99,8 +105,8 @@ type PipelineStats struct {
 }
 
 var stats struct {
-	readSuper, readSegments, readDropped, writeSuper, writeSegments                 atomic.Uint64
-	readInline, readQueued, readQueueFull, writeInline, writeQueued, writeQueueFull atomic.Uint64
+	readSuper, readSegments, readDropped, writeSuper, writeSegments, passSuper, passBytes atomic.Uint64
+	readInline, readQueued, readQueueFull, writeInline, writeQueued, writeQueueFull       atomic.Uint64
 }
 
 // Pipeline returns the counters of the TAP pipelines.
@@ -114,11 +120,13 @@ func Pipeline() PipelineStats {
 // Offloads returns the counters of the TAP offloads.
 func Offloads() OffloadStats {
 	return OffloadStats{
-		ReadSuperFrames:  stats.readSuper.Load(),
-		ReadSegments:     stats.readSegments.Load(),
-		ReadDropped:      stats.readDropped.Load(),
-		WriteSuperFrames: stats.writeSuper.Load(),
-		WriteSegments:    stats.writeSegments.Load(),
+		ReadSuperFrames:   stats.readSuper.Load(),
+		ReadSegments:      stats.readSegments.Load(),
+		ReadDropped:       stats.readDropped.Load(),
+		WriteSuperFrames:  stats.writeSuper.Load(),
+		WriteSegments:     stats.writeSegments.Load(),
+		PassedSuperFrames: stats.passSuper.Load(),
+		PassedBytes:       stats.passBytes.Load(),
 	}
 }
 
@@ -173,6 +181,11 @@ func (t *TapEndpoint) SetPipeline() {
 	}
 }
 
+// SetPassthrough makes the endpoint pass the TSO segments of its pod whole to the TAPs
+// with offloads that the bridge delivers them to, instead of cutting them. It has an
+// effect only if the endpoint has offloads. It is called before the read loop is started.
+func (t *TapEndpoint) SetPassthrough() { t.passthrough = t.offload }
+
 // Pipeline reports whether the endpoint was given a pipeline.
 func (t *TapEndpoint) Pipeline() bool { return t.pipeline }
 
@@ -203,15 +216,17 @@ func (t *TapEndpoint) Write(frame []byte) error {
 // one, or the segments of a TSO segment. They are complete, with their checksums done,
 // and valid until the next call. A packet that the TAP's virtio header does not describe
 // is dropped and counted: the result is empty and not an error.
-func (t *TapEndpoint) ReadFrames() ([][]byte, error) { return t.readFrames(&t.rb) }
+func (t *TapEndpoint) ReadFrames() ([][]byte, error) { return t.readFrames(&t.rb, nil) }
 
 // readFrames is ReadFrames into the buffers of rb, which also records whether the frames'
 // checksums are known to be right: they are if the pod left them to us and we did them.
-func (t *TapEndpoint) readFrames(rb *readBatch) ([][]byte, error) {
+// If b is not nil and the endpoint passes TSO segments through, a segment that b would
+// deliver whole is not cut: the result is the segment, and rb says so (see forward).
+func (t *TapEndpoint) readFrames(rb *readBatch, b *bridge.Bridge) ([][]byte, error) {
 	if rb.rd == nil {
 		rb.rd = make([]byte, packet.VnetHeaderLen+65535)
 	}
-	rb.trusted = false
+	rb.trusted, rb.super = false, false
 	n, err := t.file.Read(rb.rd)
 	if err != nil || n == 0 {
 		return nil, err
@@ -224,8 +239,17 @@ func (t *TapEndpoint) readFrames(rb *readBatch) ([][]byte, error) {
 		stats.readDropped.Add(1)
 		return nil, nil
 	}
-	h := packet.ParseVnetHeader(rb.rd)
-	frames, err := rb.seg.Segment(h, rb.rd[packet.VnetHeaderLen:n])
+	h, frame := packet.ParseVnetHeader(rb.rd), rb.rd[packet.VnetHeaderLen:n]
+	if b != nil && t.passthrough && h.IsTSO() && packet.CheckTSO(h, frame) == nil && b.PassesWhole(t, frame) {
+		rb.one[0], rb.h, rb.super = frame, h, true
+		return rb.one[:], nil
+	}
+	return t.cut(rb, h, frame), nil
+}
+
+// cut is the Segmenter's cut of a read, with the counters.
+func (t *TapEndpoint) cut(rb *readBatch, h packet.VnetHeader, frame []byte) [][]byte {
+	frames, err := rb.seg.Segment(h, frame)
 	switch {
 	case err != nil:
 		stats.readDropped.Add(1)
@@ -234,7 +258,7 @@ func (t *TapEndpoint) readFrames(rb *readBatch) ([][]byte, error) {
 		stats.readSegments.Add(uint64(len(frames)))
 	}
 	rb.trusted = err == nil && (h.GSOType != packet.VnetGSONone || h.Flags&packet.VnetNeedsCsum != 0)
-	return frames, nil
+	return frames
 }
 
 // StartReadLoop starts a goroutine reading Ethernet frames from the TAP device and processing them through the Bridge.
@@ -292,7 +316,7 @@ func (t *TapEndpoint) readLoop(ctx context.Context, b *bridge.Bridge, fail func(
 		} else if rb == nil {
 			rb = getReadBatch()
 		}
-		frames, err := t.readFrames(rb)
+		frames, err := t.readFrames(rb, b)
 		rb.frames = frames
 		switch {
 		case err != nil:
@@ -342,8 +366,16 @@ func (t *TapEndpoint) processLoop(ctx context.Context, b *bridge.Bridge, q <-cha
 	}
 }
 
-// forward processes the frames of a read through the bridge.
+// forward processes the frames of a read through the bridge. A TSO segment that was not
+// cut is delivered whole; if the bridge will not now (readFrames asked a moment ago, and
+// something changed), it is cut here and its segments go through the bridge.
 func (t *TapEndpoint) forward(b *bridge.Bridge, rb *readBatch) {
+	if rb.super {
+		if whole, _ := b.ProcessSuperFrame(t, rb.h, rb.frames[0]); whole {
+			return
+		}
+		rb.frames = t.cut(rb, rb.h, rb.frames[0])
+	}
 	if rb.trusted {
 		_ = b.ProcessTrustedFrames(t, rb.frames)
 	} else {

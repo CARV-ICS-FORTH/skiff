@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net"
 	"os"
+
+	"plaid/pkg/packet"
 )
 
 var errNoTap = errors.New("TAP device configuration is only supported on Linux")
@@ -35,6 +37,8 @@ type vnetWriter struct{}
 func newVnetWriter(*os.File) *vnetWriter { return nil }
 
 func (*vnetWriter) write([]byte) error { return errNoTap }
+
+func (*vnetWriter) writeSuper(packet.VnetHeader, *packet.EthernetFrame) error { return errNoTap }
 
 // pollProbe cannot tell whether a frame is waiting.
 type pollProbe struct{}
