@@ -91,6 +91,7 @@ type superFixture struct {
 	nowrite *mockEndpoint  // takes no batches
 	bubble  *superEndpoint
 	overlay int
+	sent    [][]byte // the frames sent over the overlay
 }
 
 func newSuperFixture(t *testing.T) *superFixture {
@@ -114,7 +115,14 @@ func newSuperFixture(t *testing.T) *superFixture {
 	}
 	f.b.SetBubbleEndpoint(f.bubble)
 	f.b.SetRouteChecker(func(ip net.IP) bool { return net.ParseIP("10.244.2.4").Equal(ip) })
-	setOverlayFunc(f.b, func(*packet.EthernetFrame, net.IP) error { f.overlay++; return nil })
+	setOverlayFunc(f.b, func(fr *packet.EthernetFrame, _ net.IP) error {
+		f.overlay++
+		c := *fr
+		c.DstMAC = make(net.HardwareAddr, 6) // the overlay sets it
+		b, _ := c.Marshal()
+		f.sent = append(f.sent, b)
+		return nil
+	})
 	_, svcCIDR, _ := net.ParseCIDR("10.43.0.0/16")
 	eng, err := svc.New(svc.Config{ServiceCIDR: svcCIDR, SNATAddr: net.ParseIP(snatIP)})
 	if err != nil {
@@ -197,7 +205,7 @@ func TestSuperFrameGoesWholeInFDBMode(t *testing.T) {
 }
 
 // Whatever the routing does with a super-frame other than hand it to one endpoint that
-// takes it whole is left to the segments: nothing is done with the frame, and the segments
+// takes it whole, or to the Service engine (see service_super_test.go), is left to the segments: nothing is done with the frame, and the segments
 // then take the path they always took.
 func TestSuperFrameIsLeftToTheSegmentsWhenItCannotGoWhole(t *testing.T) {
 	cases := []struct {
@@ -209,12 +217,6 @@ func TestSuperFrameIsLeftToTheSegmentsWhenItCannotGoWhole(t *testing.T) {
 		{"a remote pod", "10.244.2.4", nil, func(t *testing.T, f *superFixture) {
 			if f.overlay != 3 {
 				t.Errorf("%d segments went over the overlay, want 3", f.overlay)
-			}
-		}},
-		{"a Service", vipA, nil, func(t *testing.T, f *superFixture) {
-			// Segments that are not a new connection to a Service are dropped by the engine.
-			if got := f.eng.Stats().DropsNoFlow; got != 3 {
-				t.Errorf("the engine saw %d segments, want 3", got)
 			}
 		}},
 		{"a pod whose writer takes no super-frames", "10.244.1.6", nil, func(t *testing.T, f *superFixture) {

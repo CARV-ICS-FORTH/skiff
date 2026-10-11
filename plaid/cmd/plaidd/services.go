@@ -122,7 +122,7 @@ func (d *PlaidDaemon) fillServiceStatus(resp *api.Response) {
 	resp.ServiceEngine = &api.ServiceStats{
 		Synced: st.Synced, Services: st.Services, Backends: st.Backends, Flows: st.Flows,
 		FlowsCreated: st.FlowsCreated, FlowsExpired: st.FlowsExpired, FlowsPurged: st.FlowsPurged,
-		Forwarded: st.Forwarded, Returned: st.Returned, Rejected: st.Rejected,
+		Forwarded: st.Forwarded, Returned: st.Returned, SuperFrames: st.SuperFrames, Rejected: st.Rejected,
 		DropsNoService: st.DropsNoService, DropsNoFlow: st.DropsNoFlow, DropsFlowLimit: st.DropsFlowLimit,
 		DropsPorts: st.DropsPorts, DropsUnsupported: st.DropsUnsupported, RecentDrops: st.RecentDrops,
 	}

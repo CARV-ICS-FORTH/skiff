@@ -72,6 +72,15 @@ func Partial(pkt []byte) {
 	binary.BigEndian.PutUint16(t[off:off+2], ^packet.Checksum16(ph))
 }
 
+// Complete does what the stack does with a partial checksum: the checksum field becomes
+// the complement of the sum of the TCP header and data, field included. The pseudo-header
+// is not added: the field already holds its sum.
+func Complete(pkt []byte) {
+	l, _ := packet.ParseL3(pkt)
+	t := l.Transport()
+	binary.BigEndian.PutUint16(t[16:18], packet.Checksum16(t))
+}
+
 // UDP builds a UDP datagram with a valid checksum, or with none (zero) when noChecksum is set.
 func UDP(src string, sport uint16, dst string, dport uint16, payload string, noChecksum bool) []byte {
 	seg := make([]byte, 8+len(payload))

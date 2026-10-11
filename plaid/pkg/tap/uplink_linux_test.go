@@ -289,8 +289,8 @@ func TestBubbleFrameKeepsItsFlags(t *testing.T) {
 	}
 }
 
-// To a pod without offloads, to a pod on another node and to the Service engine, the frame
-// is cut: what they get is segments of the pod MTU, in order, with right checksums.
+// To a pod without offloads and to a pod on another node the frame is cut: what they get is
+// segments of the pod MTU, in order, with right checksums.
 func TestBubbleFrameIsCutWhereItCannotGoWhole(t *testing.T) {
 	const total = 64000
 	n := (total + testSegment - 1) / testSegment
@@ -328,47 +328,63 @@ func TestBubbleFrameIsCutWhereItCannotGoWhole(t *testing.T) {
 		}
 		checkStream(t, segs, testRemote, 80, total)
 	})
-	t.Run("a Service", func(t *testing.T) {
-		r := newUplinkRig(t, testUplinkMTU)
-		syn := packettest.TCP(testOutside, 5555, testVIP, 80, packet.TCPSyn, "")
-		if _, err := r.bubblePod.Write(r.bubbleRecord(syn)); err != nil {
-			t.Fatal(err)
-		}
-		ip := packettest.TCP(testOutside, 5555, testVIP, 80, packet.TCPAck, string(payloadOf(total)))
-		if _, err := r.bubblePod.Write(r.bubbleRecord(ip)); err != nil {
-			t.Fatal(err)
-		}
-		var segs [][]byte
-		for _, rec := range readQuiet(r.bPod) {
-			if _, s := recordFrames(t, rec); len(s) > 0 {
-				segs = append(segs, s...)
+}
+
+// To the Service engine a big frame from the bubble goes whole, to be translated as one
+// packet: to a backend with offloads it stays one TSO segment, and to one without it is
+// cut after the translation.
+func TestBubbleFrameToAServiceIsTranslatedWhole(t *testing.T) {
+	const total = 64000
+	n := (total + testSegment - 1) / testSegment
+	for _, tc := range []struct {
+		name, backend string
+		pod           func(r *uplinkRig) *os.File
+		records       func(n int) int // the records the backend reads: the SYN, and the data
+	}{
+		{"a Service with a backend with offloads", "10.244.1.5", func(r *uplinkRig) *os.File { return r.bPod }, func(int) int { return 2 }},
+		{"a Service with a backend without offloads", "10.244.1.6", func(r *uplinkRig) *os.File { return r.cPd }, func(n int) int { return 1 + n }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newUplinkRig(t, testUplinkMTU)
+			var vip, backend [4]byte
+			copy(vip[:], net.ParseIP(testVIP).To4())
+			copy(backend[:], net.ParseIP(tc.backend).To4())
+			r.eng.SetServices([]svc.Service{{ID: "web", VIP: vip, Port: 80, Proto: svc.TCP, Backends: []svc.Backend{{IP: backend, Port: 8080, Eligible: true}}}})
+			syn := packettest.TCP(testOutside, 5555, testVIP, 80, packet.TCPSyn, "")
+			if _, err := r.bubblePod.Write(r.bubbleRecord(syn)); err != nil {
+				t.Fatal(err)
 			}
-		}
-		st := r.eng.Stats()
-		if st.Forwarded != uint64(1+n) || st.DropsNoFlow != 0 || st.DropsUnsupported != 0 {
-			t.Errorf("the engine translated %d packets (want %d), dropped %d without a flow and %d as unsupported", st.Forwarded, 1+n, st.DropsNoFlow, st.DropsUnsupported)
-		}
-		r.mu.Lock()
-		seen := r.maxFiltr
-		r.mu.Unlock()
-		if seen > testPodMTU {
-			t.Errorf("the bridge handled a packet of %d bytes from the bubble", seen)
-		}
-		if len(segs) != 1+n {
-			t.Fatalf("the backend got %d segments, want the SYN and %d", len(segs), n)
-		}
-		// Every segment was translated: to the backend, from the engine's address.
-		for i, f := range segs[1:] {
-			fr, _ := packet.ParseEthernet(f)
-			tu, _ := packettest.Parse(fr.Payload)
-			if tu.Src != testSNAT || tu.Dst != "10.244.1.5" || tu.Dport != 8080 || len(fr.Payload) > testPodMTU || packettest.Verify(fr.Payload) != nil {
-				t.Fatalf("segment %d: %+v, %d bytes", i, tu, len(fr.Payload))
+			ip := packettest.TCP(testOutside, 5555, testVIP, 80, packet.TCPAck, string(payloadOf(total)))
+			if _, err := r.bubblePod.Write(r.bubbleRecord(ip)); err != nil {
+				t.Fatal(err)
 			}
-			if !bytes.Equal(fr.Payload[40:], payloadOf(total)[i*testSegment:min((i+1)*testSegment, total)]) {
-				t.Fatalf("segment %d carries other bytes", i)
+			recs := readQuiet(tc.pod(r))
+			var segs [][]byte
+			for _, rec := range recs {
+				if _, s := recordFrames(t, rec); len(s) > 0 {
+					segs = append(segs, s...)
+				}
 			}
-		}
-	})
+			st := r.eng.Stats()
+			if st.Forwarded != 2 || st.SuperFrames != 1 || st.DropsNoFlow != 0 || st.DropsUnsupported != 0 {
+				t.Errorf("the engine translated %d packets (want the SYN and the frame), %d of them whole, dropped %d without a flow and %d as unsupported", st.Forwarded, st.SuperFrames, st.DropsNoFlow, st.DropsUnsupported)
+			}
+			if len(recs) != tc.records(n) || len(segs) != 1+n {
+				t.Fatalf("the backend got %d records and %d segments, want %d and the SYN and %d", len(recs), len(segs), tc.records(n), n)
+			}
+			// Every segment was translated: to the backend, from the engine's address.
+			for i, f := range segs[1:] {
+				fr, _ := packet.ParseEthernet(f)
+				tu, _ := packettest.Parse(fr.Payload)
+				if tu.Src != testSNAT || tu.Dst != tc.backend || tu.Dport != 8080 || len(fr.Payload) > testPodMTU || packettest.Verify(fr.Payload) != nil {
+					t.Fatalf("segment %d: %+v, %d bytes", i, tu, len(fr.Payload))
+				}
+				if !bytes.Equal(fr.Payload[40:], payloadOf(total)[i*testSegment:min((i+1)*testSegment, total)]) {
+					t.Fatalf("segment %d carries other bytes", i)
+				}
+			}
+		})
+	}
 }
 
 // A UDP datagram of 20 KB from the bubble, with the Don't Fragment flag clear, reaches the

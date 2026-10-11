@@ -20,8 +20,8 @@ import (
 // together (NewWriter) into one segment for the pod. A TAP without a virtio header is read and
 // written as plain frames. With SetPipeline the reading and processing, and the writing, are
 // split between goroutines; with SetPassthrough a TSO segment that the bridge would deliver as
-// it is to another TAP with offloads is not cut. The bubble's TAP can have an MTU above the
-// pods' (SetUplinkMTU). The README (Offloads) describes the whole.
+// it is to another TAP with offloads, or to the Service engine, is not cut. The bubble's TAP can
+// have an MTU above the pods' (SetUplinkMTU). The README (Offloads) describes the whole.
 type TapEndpoint struct {
 	epID       string
 	epName     string

@@ -194,3 +194,50 @@ func TestICMPDestUnreachable(t *testing.T) {
 		t.Error("the original packet is not quoted")
 	}
 }
+
+// A TCP packet whose checksum is partial (a TSO segment: the field holds the sum of the
+// pseudo-header, and the stack completes the rest) follows a change of address in that
+// field and a change of port not at all, as Linux's NAT does for CHECKSUM_PARTIAL: once
+// the stack completes the checksum, it is right in every case, which the independent
+// check of packettest confirms.
+func TestRewriteOfAPartialChecksum(t *testing.T) {
+	newIP, newPort := [4]byte{10, 99, 8, 7}, uint16(31337)
+	for _, tc := range []struct {
+		name      string
+		src, dst  *[4]byte
+		sport, dp *uint16
+		fieldSame bool // the checksum field is not touched
+	}{
+		{"source address", &newIP, nil, nil, nil, false},
+		{"destination address", nil, &newIP, nil, nil, false},
+		{"both addresses", &newIP, &newIP, nil, nil, false},
+		{"ports only", nil, nil, &newPort, &newPort, true},
+		{"all four", &newIP, &newIP, &newPort, &newPort, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pkt := packettest.TCP("10.244.1.5", 40000, "10.43.0.50", 80, packet.TCPAck, string(make([]byte, 4001))) // an odd length
+			for i := 20 + 20; i < len(pkt); i++ {
+				pkt[i] = byte(i * 7)
+			}
+			packettest.Partial(pkt)
+			field := binary.BigEndian.Uint16(pkt[20+16:])
+			l, err := packet.ParseL3(pkt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			l.PartialSum = true
+			l.Rewrite(tc.src, tc.dst, tc.sport, tc.dp)
+			if same := binary.BigEndian.Uint16(pkt[20+16:]) == field; same != tc.fieldSame {
+				t.Errorf("the checksum field is the same: %v, want %v", same, tc.fieldSame)
+			}
+			// The IPv4 header checksum is complete and right whatever the transport's.
+			if packet.Checksum16(pkt[:20]) != 0 {
+				t.Error("the IPv4 header checksum is wrong")
+			}
+			packettest.Complete(pkt)
+			if err := packettest.Verify(pkt); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}

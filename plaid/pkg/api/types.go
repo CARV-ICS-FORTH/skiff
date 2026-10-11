@@ -78,6 +78,7 @@ type ServiceStats struct {
 	FlowsPurged      uint64 `json:"flows_purged"`
 	Forwarded        uint64 `json:"forwarded"`
 	Returned         uint64 `json:"returned"`
+	SuperFrames      uint64 `json:"super_frames"`
 	Rejected         uint64 `json:"rejected"`
 	DropsNoService   uint64 `json:"drops_no_service"`
 	DropsNoFlow      uint64 `json:"drops_no_flow"`

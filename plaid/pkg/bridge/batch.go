@@ -58,19 +58,23 @@ type Batch struct {
 	overlay OverlayBatch
 	writers []batchWriter
 	sup     superFrame
+	seg     packet.Segmenter // cuts a super-frame after the engine; its frames live until Flush
 }
 
 // superFrame is the state of a Batch that routes a TCP super-frame from src. Only a
 // delivery to the one endpoint that can take it whole is allowed to take it; the places
 // where the routing would do anything else with the frame (send it over the overlay, to
-// the Service engine, to the outbound handler, to everyone) leave it alone, so that the
-// caller can cut it and route the segments.
+// the outbound handler, to everyone) leave it alone, so that the caller can cut it and
+// route the segments. The Service engine is the exception: it translates the frame, and
+// what comes out is routed the same way, except that the bridge cuts it itself if it
+// cannot go whole (see serviceSuper).
 type superFrame struct {
 	on    bool
 	dry   bool // only find out whether a delivery would take it, without delivering
-	whole bool // a delivery took it (would have), or the filter dropped it
+	whole bool // a delivery took it (would have), the filter dropped it, or the engine has it
 	src   Endpoint
 	h     packet.VnetHeader
+	raw   []byte // the Ethernet frame, to cut after the engine
 }
 
 type batchWriter struct {
@@ -157,7 +161,9 @@ func (x *Batch) writer(ep Endpoint) FrameWriter {
 }
 
 // deliverSuper is deliver for the super-frame being routed, which only an endpoint that
-// takes super-frames whole can have, and not the one it came from.
+// takes super-frames whole can have, and not the one it came from. (A super-frame the
+// engine translated may go back to the pod it came from, but not whole: it is cut, and
+// the segments take the path of every packet the engine emits.)
 func (x *Batch) deliverSuper(ep Endpoint, frame *packet.EthernetFrame) error {
 	s := &x.sup
 	if ep == s.src {
@@ -207,16 +213,20 @@ func (b *Bridge) ProcessTrustedFrames(srcEP Endpoint, frames [][]byte) error {
 // ProcessSuperFrame is ProcessFrame for raw, a TCP super-frame that the virtio header h
 // describes, which the bridge delivers whole if its routing would deliver the frame, with
 // no change but to its MAC addresses, to one endpoint that takes super-frames (see
-// SuperWriter), or which the filter drops. Then whole is true and err is the error of the
-// delivery. If not, nothing has been done with the frame, and it is for the caller to cut
-// it and process the segments, which does what is to be done with them.
+// SuperWriter), or which the filter drops, or which is for the Service engine: the engine
+// translates it as one packet, in place, and the bridge delivers it whole to one endpoint
+// that takes super-frames or cuts it and routes the segments. Then whole is true and err
+// is the error of the delivery. If not, nothing has been done with the frame, and it is
+// for the caller to cut it and process the segments, which does what is to be done with
+// them.
 func (b *Bridge) ProcessSuperFrame(srcEP Endpoint, h packet.VnetHeader, raw []byte) (whole bool, err error) {
 	return b.routeSuper(srcEP, h, raw, false)
 }
 
-// PassesWhole reports whether ProcessSuperFrame would deliver the frame whole now, without
-// the filter and without doing anything with it. The decision is the routing's, so that
-// the caller can cut a frame that will not go whole where it is cheapest to.
+// PassesWhole reports whether ProcessSuperFrame would take the frame whole now (deliver it,
+// or give it to the Service engine), without the filter and without doing anything with
+// it: the engine's state is not touched. The decision is the routing's, so that the
+// caller can cut a frame that will not go whole where it is cheapest to.
 func (b *Bridge) PassesWhole(srcEP Endpoint, raw []byte) bool {
 	whole, _ := b.routeSuper(srcEP, packet.VnetHeader{}, raw, true)
 	return whole
@@ -225,7 +235,7 @@ func (b *Bridge) PassesWhole(srcEP Endpoint, raw []byte) bool {
 func (b *Bridge) routeSuper(srcEP Endpoint, h packet.VnetHeader, raw []byte, dry bool) (bool, error) {
 	x := b.NewBatch()
 	defer x.Release()
-	x.sup = superFrame{on: true, dry: dry, src: srcEP, h: h}
+	x.sup = superFrame{on: true, dry: dry, src: srcEP, h: h, raw: raw}
 	err := x.processFrame(srcEP, raw, false)
 	if !x.sup.whole {
 		return false, nil // the routing's errors come again with the segments

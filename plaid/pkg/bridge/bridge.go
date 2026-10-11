@@ -531,7 +531,7 @@ func (b *Bridge) routeTapTraffic(x *Batch, srcEP Endpoint, frame *packet.Etherne
 		copy(dst[:], dstIP.To4())
 		if eng.Owns(dst) {
 			if x.sup.on {
-				return nil
+				return b.serviceSuper(x, eng, frame)
 			}
 			return b.serviceTraffic(x, eng, frame.Payload)
 		}
@@ -579,6 +579,50 @@ func (b *Bridge) serviceTraffic(x *Batch, eng *svc.Engine, ipPacket []byte) erro
 		return nil
 	}
 	return b.routeEngineOutput(x, res.Packet, net.IP(res.Dst[:]))
+}
+
+// serviceSuper is serviceTraffic for the TCP super-frame being routed (x.sup): the engine
+// translates it as one packet and the result is routed like any packet the engine emits,
+// except that it goes whole to one endpoint that takes super-frames. Where it cannot (the
+// overlay, a pod without offloads, the pod that sent it) the bridge cuts it now, after the
+// translation, and routes the segments one by one, not through the engine again. An ICMP
+// refusal is an ordinary packet. Once the engine has the frame it is not for the caller to
+// cut. Before that, a frame whose IP header does not state the length of all of it is left
+// to the segments, as the engine's packet is what the header says.
+func (b *Bridge) serviceSuper(x *Batch, eng *svc.Engine, frame *packet.EthernetFrame) error {
+	s := &x.sup
+	if ip := frame.Payload; len(ip) < packet.IPv4HeaderMinLen || int(binary.BigEndian.Uint16(ip[2:])) != len(ip) {
+		return nil
+	}
+	if s.dry {
+		s.whole = true
+		return nil
+	}
+	res := eng.ProcessSuper(frame.Payload)
+	switch res.Verdict {
+	case svc.Drop:
+		s.whole = true
+		return nil
+	case svc.Reply:
+		s.on, s.whole = false, true
+		return b.routeEngineOutput(x, res.Packet, net.IP(res.Dst[:]))
+	}
+	dstIP := net.IP(res.Dst[:])
+	err := b.routeEngineOutput(x, res.Packet, dstIP) // while s.on, only a delivery that takes it whole does anything
+	if s.whole {
+		return err
+	}
+	s.on, s.whole = false, true
+	segments, serr := x.seg.Segment(s.h, s.raw)
+	if serr != nil {
+		return serr
+	}
+	for _, seg := range segments {
+		if serr := b.routeEngineOutput(x, seg[packet.EthernetHeaderLen:], dstIP); serr != nil && err == nil {
+			err = serr
+		}
+	}
+	return err
 }
 
 func (b *Bridge) routeEngineOutput(x *Batch, ipPacket []byte, dstIP net.IP) error {

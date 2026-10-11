@@ -27,6 +27,14 @@
 //   - State is bounded: the flow table has a limit, and exhaustion drops new flows and
 //     is counted. Nothing else about the engine's state grows with traffic.
 //
+// Packets are translated in place: the engine rewrites the caller's buffer and returns it,
+// so that a packet costs no allocation or copy (only an ICMP refusal is a new packet). A
+// TCP super-frame, the one packet that a sender's stack makes of a run of segments and
+// leaves with the checksum of its pseudo-header only, is translated as one packet: one
+// flow lookup and state update, and the addresses changed in the pseudo-header sum
+// (ProcessSuper). Its flags are those of the whole run, which is what the flow's state
+// follows for a run of segments too.
+//
 // Not handled, and counted as drops: IP fragments, ICMP, and other transport protocols.
 package svc
 
@@ -128,7 +136,9 @@ const (
 	Reply           // send Result.Packet (an ICMP error) back to the sender, Result.Dst
 )
 
-// Result is the outcome of Process.
+// Result is the outcome of Process. For Forward, Packet is the packet that was given,
+// translated in place and trimmed to the length its header states; for Reply it is a new
+// packet.
 type Result struct {
 	Verdict Verdict
 	Packet  []byte
@@ -144,8 +154,9 @@ type Stats struct {
 	FlowsCreated     uint64 // flows created, ever
 	FlowsExpired     uint64 // flows removed by timeout
 	FlowsPurged      uint64 // flows removed because their backend or Service went away
-	Forwarded        uint64 // packets translated towards a backend
-	Returned         uint64 // packets translated back to a client
+	Forwarded        uint64 // packets translated towards a backend (a super-frame counts once)
+	Returned         uint64 // packets translated back to a client (likewise)
+	SuperFrames      uint64 // TCP super-frames among them, translated whole
 	Rejected         uint64 // ICMP unreachables sent: no eligible backend
 	DropsNoService   uint64 // to an address in the Service range that is not in the table
 	DropsNoFlow      uint64 // TCP without a flow, or a reply without one
@@ -391,10 +402,21 @@ func compareIP(a, b net.IP) int {
 	return 0
 }
 
-// Process translates one IPv4 packet whose destination the engine owns. The packet is not
-// modified; a Forward or Reply result carries a new one.
-func (e *Engine) Process(pkt []byte) Result {
+// Process translates one IPv4 packet whose destination the engine owns, in place: the
+// caller's buffer is changed, and a Forward result carries it. A Reply result carries a
+// new packet, and the buffer is as it was. A packet that is dropped is as it was too.
+func (e *Engine) Process(pkt []byte) Result { return e.process(pkt, false) }
+
+// ProcessSuper is Process for a TCP super-frame: an IPv4 packet that stands for several
+// segments and whose TCP checksum is partial (the field holds the folded sum of the
+// pseudo-header, which the stack completes over the TCP header and data later). The flow
+// is looked up and its state updated once, with the flags of the packet as they are, and
+// the checksum field follows a change of address but not of port.
+func (e *Engine) ProcessSuper(pkt []byte) Result { return e.process(pkt, true) }
+
+func (e *Engine) process(pkt []byte, partial bool) Result {
 	l, err := packet.ParseL3(pkt)
+	l.PartialSum = partial && l.Proto == packet.IPProtocolTCP
 	if err != nil || l.HasPorts() != nil || (l.Proto != packet.IPProtocolTCP && l.Proto != packet.IPProtocolUDP) {
 		e.mu.Lock()
 		e.stats.DropsUnsupported++
@@ -503,14 +525,13 @@ func (e *Engine) forwardLocked(l packet.L3) Result {
 	}
 	e.touchLocked(f, now)
 
-	out := append([]byte(nil), l.Pkt...)
-	nl, _ := packet.ParseL3(out)
-	bIP := f.rev.bIP
-	bPort := f.rev.bPort
-	sPort := f.rev.sPort
-	nl.Rewrite(&e.snat, &bIP, &sPort, &bPort)
+	bIP, bPort, sPort := f.rev.bIP, f.rev.bPort, f.rev.sPort
+	l.Rewrite(&e.snat, &bIP, &sPort, &bPort)
 	e.stats.Forwarded++
-	return Result{Verdict: Forward, Packet: out, Dst: bIP}
+	if l.PartialSum {
+		e.stats.SuperFrames++
+	}
+	return Result{Verdict: Forward, Packet: l.Pkt, Dst: bIP}
 }
 
 // newFlowLocked creates the flow for a first packet, or returns the result that disposes of it.
@@ -609,10 +630,11 @@ func (e *Engine) reverseLocked(l packet.L3) Result {
 	}
 	e.touchLocked(f, now)
 
-	out := append([]byte(nil), l.Pkt...)
-	nl, _ := packet.ParseL3(out)
 	vIP, cIP := f.fwd.vIP, f.fwd.cIP
-	nl.Rewrite(&vIP, &cIP, &f.fwd.vPort, &f.fwd.cPort)
+	l.Rewrite(&vIP, &cIP, &f.fwd.vPort, &f.fwd.cPort)
 	e.stats.Returned++
-	return Result{Verdict: Forward, Packet: out, Dst: cIP}
+	if l.PartialSum {
+		e.stats.SuperFrames++
+	}
+	return Result{Verdict: Forward, Packet: l.Pkt, Dst: cIP}
 }

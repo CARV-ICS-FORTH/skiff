@@ -85,8 +85,8 @@ func main() {
 			e := status.ServiceEngine
 			fmt.Printf("Services:     %s via %s, table from %s (synced=%t): %d entries, %d backends, %d flows\n",
 				status.ServiceCIDR, status.ServiceAddress, status.ServiceManager, e.Synced, e.Services, e.Backends, e.Flows)
-			fmt.Printf("              flows created=%d expired=%d purged=%d; packets out=%d back=%d refused=%d\n",
-				e.FlowsCreated, e.FlowsExpired, e.FlowsPurged, e.Forwarded, e.Returned, e.Rejected)
+			fmt.Printf("              flows created=%d expired=%d purged=%d; packets out=%d back=%d refused=%d; %d of the packets were TCP super-frames translated whole\n",
+				e.FlowsCreated, e.FlowsExpired, e.FlowsPurged, e.Forwarded, e.Returned, e.Rejected, e.SuperFrames)
 			if np := status.NodePorts; np != nil {
 				fmt.Printf("              node ports: %d wanted, %d published (removed=%d repaired=%d passes=%d) %s\n", np.Desired, np.Exposed, np.Removed, np.Repaired, np.Passes, np.LastError)
 				for _, f := range np.Failed {

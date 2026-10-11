@@ -36,6 +36,10 @@ type L3 struct {
 	// first carries the transport header, so a translator that keys on ports cannot
 	// handle it.
 	Fragment bool
+	// PartialSum says that the TCP checksum field holds only the folded sum of the
+	// pseudo-header, not its complement: the sender left the rest to the stack, as for a
+	// TSO segment (NEEDS_CSUM). Set by the caller that knows; ParseL3 cannot tell.
+	PartialSum bool
 }
 
 // ParseL3 validates the IPv4 header of pkt (version, header and total length) and returns
@@ -97,7 +101,10 @@ func (l L3) TCPFlags() uint8 { return l.Transport()[13] }
 // Rewrite changes the addresses and ports of the packet in place, updating the IPv4
 // header checksum and the TCP or UDP checksum incrementally (RFC 1624). A nil argument
 // leaves that field alone. A UDP datagram without a checksum (zero) stays without one.
-// The packet must satisfy HasPorts. The view's Src and Dst copies are not refreshed:
+// With PartialSum a change of address changes the field as a change of the pseudo-header
+// sum, and a change of port leaves it alone: the ports are in the data the stack will
+// still sum (the same as Linux's inet_proto_csum_replace4 for CHECKSUM_PARTIAL). The
+// packet must satisfy HasPorts. The view's Src and Dst copies are not refreshed:
 // parse the packet again to read the new addresses.
 func (l L3) Rewrite(src, dst *[4]byte, sport, dport *uint16) {
 	p := l.Pkt
@@ -112,6 +119,10 @@ func (l L3) Rewrite(src, dst *[4]byte, sport, dport *uint16) {
 	transportSum := binary.BigEndian.Uint16(t[csumOff : csumOff+2])
 	ipSum := binary.BigEndian.Uint16(p[10:12])
 	hasTransportSum := l.Proto == IPProtocolTCP || transportSum != 0
+	partial := l.PartialSum && l.Proto == IPProtocolTCP
+	if partial {
+		transportSum = ^transportSum // as the checksum of the pseudo-header alone
+	}
 
 	replace32 := func(off int, new *[4]byte) {
 		var old [4]byte
@@ -127,7 +138,7 @@ func (l L3) Rewrite(src, dst *[4]byte, sport, dport *uint16) {
 		copy(old[:], t[off:off+2])
 		binary.BigEndian.PutUint16(nw[:], new)
 		copy(t[off:off+2], nw[:])
-		if hasTransportSum {
+		if hasTransportSum && !partial {
 			transportSum = csumReplace(transportSum, old[:], nw[:])
 		}
 	}
@@ -144,6 +155,9 @@ func (l L3) Rewrite(src, dst *[4]byte, sport, dport *uint16) {
 		replace16(2, *dport)
 	}
 	binary.BigEndian.PutUint16(p[10:12], ipSum)
+	if partial {
+		transportSum = ^transportSum
+	}
 	if hasTransportSum {
 		if l.Proto == IPProtocolUDP && transportSum == 0 {
 			transportSum = 0xffff // zero means "no checksum" on the wire
