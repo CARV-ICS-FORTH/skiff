@@ -1,7 +1,7 @@
-// Package handoff passes an open file descriptor from one local process to another
-// over a pathname Unix socket (SCM_RIGHTS), for the one case Plaid has: the overlay's
-// UDP socket is opened in the physical host's network namespace by a short-lived
-// helper and adopted by plaidd, which runs in the bubble's namespace.
+// Package handoff passes open file descriptors from one local process to another over a
+// pathname Unix socket (SCM_RIGHTS), in one message, for the one case Plaid has: the
+// overlay's UDP sockets are opened in the physical host's network namespace by a
+// short-lived helper and adopted by plaidd, which runs in the bubble's namespace.
 //
 // The receiving side (Await) owns the socket file and accepts exactly one successful
 // handoff, then removes the file: a second attachment finds nothing listening. The
@@ -33,9 +33,10 @@ import (
 const (
 	// MaxMessage bounds a request: it is a few dozen bytes of JSON.
 	MaxMessage = 4096
-	// maxFiles bounds the descriptors read from one message; more than one is an
-	// error, but all of them must be closed.
-	maxFiles = 16
+	// maxFiles bounds the descriptors read from one message: the overlay's largest
+	// set, 16 receive sockets and 4 send sockets for each. More is an error, but all of
+	// them must be closed.
+	maxFiles = 80
 	// connTimeout bounds one connection from accept to reply.
 	connTimeout = 5 * time.Second
 	// AckTimeout bounds the sender's wait for the acknowledgement.
@@ -43,12 +44,16 @@ const (
 	retryEvery = 250 * time.Millisecond
 )
 
-// Request describes what is being handed over. The receiver checks the descriptor
+// Request describes what is being handed over. The receiver checks the descriptors
 // against its own configuration; the fields let it detect a sender that disagrees.
+// RxSockets receive sockets come first among the descriptors, then TxSockets send
+// sockets.
 type Request struct {
-	Type string `json:"type"`
-	Bind string `json:"bind,omitempty"`
-	Port int    `json:"port,omitempty"`
+	Type      string `json:"type"`
+	Bind      string `json:"bind,omitempty"`
+	Port      int    `json:"port,omitempty"`
+	RxSockets int    `json:"rx_sockets,omitempty"`
+	TxSockets int    `json:"tx_sockets,omitempty"`
 }
 
 // TypeOverlaySocket is the only request type in use.
@@ -229,8 +234,8 @@ func adoptRights(oob []byte) []*os.File {
 }
 
 // Send connects to the receiver's socket, retrying until the timeout while it is not
-// there yet, passes f with the request and waits for the acknowledgement.
-func Send(ctx context.Context, path string, req Request, f *os.File, timeout time.Duration) error {
+// there yet, passes files with the request and waits for the acknowledgement.
+func Send(ctx context.Context, path string, req Request, files []*os.File, timeout time.Duration) error {
 	data, err := json.Marshal(req)
 	if err != nil {
 		return err
@@ -265,8 +270,12 @@ func Send(ctx context.Context, path string, req Request, f *os.File, timeout tim
 	binary.BigEndian.PutUint32(frame, uint32(len(data)))
 	copy(frame[4:], data)
 	var rights []byte
-	if f != nil {
-		rights = syscall.UnixRights(int(f.Fd()))
+	if len(files) > 0 {
+		fds := make([]int, len(files))
+		for i, f := range files {
+			fds[i] = int(f.Fd())
+		}
+		rights = syscall.UnixRights(fds...)
 	}
 	if _, _, err := conn.WriteMsgUnix(frame, rights, nil); err != nil {
 		return fmt.Errorf("send request: %w", err)

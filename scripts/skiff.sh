@@ -1158,7 +1158,7 @@ skiff_bubble() {
     SOCAT_PID_10250=""
     SLIRP_PID=""
     SLIRP_SOCK="$SKIFF_STATE_DIR/slirp-${NAME}.sock"
-    # The overlay's UDP socket is opened here, on the physical host, and handed to plaidd
+    # The overlay's UDP sockets are opened here, on the physical host, and handed to plaidd
     # inside the bubble through this socket. It is node-local (in the scratch directory; the
     # home directory is shared between nodes, where a socket would not work), and only its
     # owner can connect to it.
@@ -1196,7 +1196,7 @@ skiff_bubble() {
     BUBBLE_IMAGE="$SKIFF_IMAGE_SIF"
     echo "  Image: $BUBBLE_IMAGE"
 
-    # Open the overlay's UDP socket in the host's network namespace and pass it to plaidd
+    # Open the overlay's UDP sockets in the host's network namespace and pass them to plaidd
     # when plaidd asks (its startup waits for it). The helper runs from the same image, in
     # an ordinary Apptainer execution that keeps the host network, and exits once plaidd
     # has acknowledged: it forwards nothing. It starts before the bubble so that a port

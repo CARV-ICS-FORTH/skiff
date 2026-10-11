@@ -124,7 +124,7 @@ func TestHandoffDeliversTheDescriptor(t *testing.T) {
 		_, err := files[0].Write([]byte("through"))
 		return err
 	})
-	if err := Send(context.Background(), path, request, w, 5*time.Second); err != nil {
+	if err := Send(context.Background(), path, request, []*os.File{w}, 5*time.Second); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if err := wait(t, done); err != nil {
@@ -142,7 +142,7 @@ func TestHandoffDeliversTheDescriptor(t *testing.T) {
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the socket file remains: %v", err)
 	}
-	if err := Send(context.Background(), path, request, w, 300*time.Millisecond); err == nil {
+	if err := Send(context.Background(), path, request, []*os.File{w}, 300*time.Millisecond); err == nil {
 		t.Error("a second handoff was accepted after the first")
 	}
 }
@@ -197,7 +197,7 @@ func TestRefusedRequestEndsTheWait(t *testing.T) {
 	path := socketPath(t)
 	_, w := pipe(t)
 	done := await(t, path, 5*time.Second, func(Request, []*os.File) error { return errors.New("wrong socket") })
-	err := Send(context.Background(), path, request, w, 5*time.Second)
+	err := Send(context.Background(), path, request, []*os.File{w}, 5*time.Second)
 	if err == nil || !strings.Contains(err.Error(), "wrong socket") {
 		t.Errorf("the sender was not told why: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestMalformedClientsDoNotEndTheWait(t *testing.T) {
 		t.Fatalf("Await ended after malformed clients: %v", err)
 	case <-time.After(300 * time.Millisecond):
 	}
-	if err := Send(context.Background(), path, request, w, 5*time.Second); err != nil {
+	if err := Send(context.Background(), path, request, []*os.File{w}, 5*time.Second); err != nil {
 		t.Fatalf("a valid handoff after them failed: %v", err)
 	}
 	if err := wait(t, done); err != nil {
@@ -293,7 +293,7 @@ func TestSenderKilledBeforeSendingLeavesTheWaitOpen(t *testing.T) {
 		t.Fatalf("Await ended when a sender left: %v", err)
 	case <-time.After(200 * time.Millisecond):
 	}
-	if err := Send(context.Background(), path, request, w, 5*time.Second); err != nil {
+	if err := Send(context.Background(), path, request, []*os.File{w}, 5*time.Second); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if err := wait(t, done); err != nil {
@@ -326,7 +326,7 @@ func TestStaleSocketIsReplacedAndOtherFilesAreNot(t *testing.T) {
 	old.Close() // leaves the file behind, as a killed process does
 	_, w := pipe(t)
 	done := await(t, path, 5*time.Second, func(Request, []*os.File) error { return nil })
-	if err := Send(context.Background(), path, request, w, 5*time.Second); err != nil {
+	if err := Send(context.Background(), path, request, []*os.File{w}, 5*time.Second); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	if err := wait(t, done); err != nil {
@@ -349,7 +349,7 @@ func TestSendWaitsForTheReceiverAndGivesUp(t *testing.T) {
 	path := socketPath(t)
 	_, w := pipe(t)
 	start := time.Now()
-	if err := Send(context.Background(), path, request, w, 400*time.Millisecond); err == nil {
+	if err := Send(context.Background(), path, request, []*os.File{w}, 400*time.Millisecond); err == nil {
 		t.Fatal("Send succeeded with nobody listening")
 	}
 	if time.Since(start) > 3*time.Second {
@@ -357,7 +357,7 @@ func TestSendWaitsForTheReceiverAndGivesUp(t *testing.T) {
 	}
 
 	sent := make(chan error, 1)
-	go func() { sent <- Send(context.Background(), path, request, w, 5*time.Second) }()
+	go func() { sent <- Send(context.Background(), path, request, []*os.File{w}, 5*time.Second) }()
 	time.Sleep(600 * time.Millisecond)
 	done := await(t, path, 5*time.Second, func(Request, []*os.File) error { return nil })
 	if err := <-sent; err != nil {
@@ -378,8 +378,78 @@ func TestNoDescriptorsLeakAcrossManyHandoffs(t *testing.T) {
 			accept = func(Request, []*os.File) error { return errors.New("no") }
 		}
 		done := await(t, path, 5*time.Second, accept)
-		_ = Send(context.Background(), path, request, w, 5*time.Second)
+		_ = Send(context.Background(), path, request, []*os.File{w}, 5*time.Second)
 		_ = wait(t, done)
+	}
+	if after := openFDs(t); after != before {
+		t.Errorf("%d descriptors before, %d after", before, after)
+	}
+}
+
+// An overlay's whole set of sockets, the most there is, arrives in one message in the
+// order it was sent, with the counts of the request, and every descriptor is closed.
+func TestHandoffDeliversManyDescriptorsInOrder(t *testing.T) {
+	path := socketPath(t)
+	var files []*os.File
+	var readers []*os.File
+	for i := 0; i < maxFiles; i++ {
+		r, w := pipe(t)
+		files, readers = append(files, w), append(readers, r)
+	}
+	req := Request{Type: TypeOverlaySocket, Bind: "192.0.2.1", Port: 8472, RxSockets: 16, TxSockets: 64}
+	before := openFDs(t)
+	var got Request
+	done := await(t, path, 5*time.Second, func(r Request, fs []*os.File) error {
+		got = r
+		if len(fs) != maxFiles {
+			return errors.New("wrong count")
+		}
+		for i, f := range fs {
+			if _, err := f.Write([]byte{byte(i)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err := Send(context.Background(), path, req, files, 5*time.Second); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if err := wait(t, done); err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+	if got != req {
+		t.Errorf("request = %+v, want %+v", got, req)
+	}
+	for i, r := range readers {
+		b := make([]byte, 1)
+		if n, _ := r.Read(b); n != 1 || b[0] != byte(i) {
+			t.Fatalf("descriptor %d is not the %dth that was sent", i, i)
+		}
+	}
+	if after := openFDs(t); after != before {
+		t.Errorf("%d descriptors before, %d after: the received ones were not closed", before, after)
+	}
+}
+
+// One more than the most is refused, and the descriptors that did arrive are closed.
+func TestHandoffRefusesMoreThanTheMostDescriptors(t *testing.T) {
+	path := socketPath(t)
+	var files []*os.File
+	for i := 0; i < maxFiles+1; i++ {
+		_, w := pipe(t)
+		files = append(files, w)
+	}
+	before := openFDs(t)
+	accepted := false
+	done := await(t, path, 500*time.Millisecond, func(Request, []*os.File) error { accepted = true; return nil })
+	if err := Send(context.Background(), path, request, files, 2*time.Second); err == nil {
+		t.Error("the sender was not refused")
+	}
+	if err := wait(t, done); !errors.Is(err, ErrTimeout) { // a request that fails to read does not end the wait
+		t.Errorf("Await = %v", err)
+	}
+	if accepted {
+		t.Error("a message with too many descriptors was accepted")
 	}
 	if after := openFDs(t); after != before {
 		t.Errorf("%d descriptors before, %d after", before, after)

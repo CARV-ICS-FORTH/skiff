@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Case 20: the overlay's UDP socket belongs to plaidd and lives in the physical host's
-# network namespace (T21). It was opened there by a helper that has since exited, slirp4netns
-# has no UDP forward for it, the handoff socket is gone, and cross-node pod traffic
+# Case 20: the overlay's UDP sockets belong to plaidd and live in the physical host's
+# network namespace (T21). They were opened there by a helper that has since exited, slirp4netns
+# has no UDP forward for them, the handoff socket is gone, and cross-node pod traffic
 # moves the overlay's own counters.
 set -euo pipefail
 
@@ -21,22 +21,27 @@ e2e_kubectl create namespace "$NS"
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --timeout=30s"
 e2e_cleanup_register "e2e_preserve_failure $NS"
 
-# The socket table of the physical host: the UDP overlay port and the inode behind it.
+# The socket table of the physical host: the UDP overlay port and the inodes behind it.
 host_udp_listener() { runtime_ssh_node "${IPS[$1]}" "ss -H -lune 'sport = :8472'"; }
 
-# A socket of the host's namespace held by plaidd inside the bubble: the inode the host
-# sees is one of plaidd's open descriptors.
+# Sockets of the host's namespace held by plaidd inside the bubble: the overlay port has one
+# listener for each of plaidd's receive sockets (a SO_REUSEPORT group; the send sockets have
+# ports of their own), and the inode the host sees of each is one of plaidd's descriptors.
 owner() {
-    local node ip line inode held
+    local node ip lines line want inode held
     for node in "${NODES[@]}"; do
         ip="${IPS[$node]}"
-        line=$(host_udp_listener "$node")
-        e2e_assert_eq "one UDP listener on port 8472 of $node's host" "$(printf '%s\n' "$line" | sed '/^$/d' | wc -l | tr -d ' ')" 1
-        e2e_assert_contains "the listener is bound to the node address" "$line" " ${ip}:8472 "
-        inode=$(printf '%s' "$line" | sed -n 's/.*ino:\([0-9]*\).*/\1/p')
-        e2e_assert_nonempty "socket inode of $node's overlay listener" "$inode"
-        held=$(runtime_bubble_exec "$node" "for f in /proc/\$(pgrep -o -x plaidd)/fd/*; do readlink \"\$f\"; done | grep -Fx 'socket:[${inode}]' || true")
-        e2e_assert_eq "plaidd on $node holds the host's overlay socket" "$held" "socket:[${inode}]"
+        mapfile -t lines < <(host_udp_listener "$node" | sed '/^$/d')
+        want=$(runtime_plaidctl "$node" status | sed -n 's/^Overlay:.*(sockets=\([0-9]*\) rx.*/\1/p')
+        e2e_assert_nonempty "receive sockets of $node's overlay" "$want"
+        e2e_assert_eq "UDP listeners on port 8472 of $node's host, one per receive socket" "${#lines[@]}" "$want"
+        for line in "${lines[@]}"; do
+            e2e_assert_contains "the listener is bound to the node address" "$line" " ${ip}:8472 "
+            inode=$(printf '%s' "$line" | sed -n 's/.*ino:\([0-9]*\).*/\1/p')
+            e2e_assert_nonempty "socket inode of $node's overlay listener" "$inode"
+            held=$(runtime_bubble_exec "$node" "for f in /proc/\$(pgrep -o -x plaidd)/fd/*; do readlink \"\$f\"; done | grep -Fx 'socket:[${inode}]' || true")
+            e2e_assert_eq "plaidd on $node holds the host's overlay socket" "$held" "socket:[${inode}]"
+        done
     done
 }
 e2e_subcase_run T21-owner owner

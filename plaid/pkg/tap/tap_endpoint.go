@@ -449,16 +449,18 @@ func (t *TapEndpoint) forward(b *bridge.Bridge, rb *readBatch) {
 
 // enqueue hands a buffer holding a frame with its virtio header to the writer goroutine
 // and takes over its release. If the queue is full it waits, which holds up the caller
-// until the TAP has taken some of what is queued: for frames from the overlay that is its
-// worker, and the overlay's receive queue absorbs the burst meanwhile and counts what it
-// has no room for, as for any slow bridge. Nothing is dropped here.
+// until the TAP has taken some of what is queued: for frames from the overlay that is one of
+// its workers, and that worker's receive queue absorbs the burst meanwhile and counts what
+// it has no room for, as for any slow bridge. Nothing is dropped here.
 //
 // wpending counts the writes handed over and not yet finished: raised here before the
 // buffer goes into the queue, lowered by the writer after the write (or when the buffer is
 // released unwritten). A caller that writes itself does so only when it is zero, and then
 // every write this caller handed over earlier is finished: a caller's writes stay in the
 // order it made them. The writes of different callers have no order, which they never
-// had: a flow's frames all come from one caller at a time.
+// had: a flow's frames all come from one caller at a time (the overlay's workers are
+// callers too, and the sockets the kernel spreads a node's overlay traffic over keep each
+// flow on one of them).
 func (t *TapEndpoint) enqueue(pb *packet.Buffer) error {
 	inFlight.Add(1)
 	t.wpending.Add(1)

@@ -202,7 +202,7 @@ func TestOverlayReportsSocketDrops(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	oe := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1"}, NewRouteTable(), inj)
-	if err := oe.Adopt(ctx, conn); err != nil {
+	if err := oe.Adopt(ctx, []*net.UDPConn{conn}, []*net.UDPConn{plainSocket(t)}); err != nil {
 		t.Fatal(err)
 	}
 	defer oe.Close()

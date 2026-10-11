@@ -308,7 +308,7 @@ func TestParseControlMessages(t *testing.T) {
 
 // A read that holds several datagrams back to back is processed as the datagrams it holds.
 func TestProcessReadSplitsAtTheSegmentSize(t *testing.T) {
-	oe := NewOverlayEngine(OverlayConfig{}, NewRouteTable(), nil)
+	l := &rxLane{oe: NewOverlayEngine(OverlayConfig{}, NewRouteTable(), nil)}
 	for _, tc := range []struct {
 		name  string
 		sizes []int
@@ -329,7 +329,7 @@ func TestProcessReadSplitsAtTheSegmentSize(t *testing.T) {
 			}
 			// datagram() puts the sequence number in the first four payload bytes.
 			inj := &seqInjector{}
-			oe.processRead(context.Background(), inj, rxRead{buf: buf, seg: tc.seg})
+			l.processRead(context.Background(), inj, rxRead{buf: buf, seg: tc.seg})
 			if got := fmt.Sprint(inj.delivered()); got != tc.want {
 				t.Errorf("frames %s, want %s", got, tc.want)
 			}
@@ -457,7 +457,11 @@ func (r *batchRecorder) Flush() error {
 	r.mu.Unlock()
 	return nil
 }
-func (r *batchRecorder) Release() { r.freed = true }
+func (r *batchRecorder) Release() {
+	r.mu.Lock()
+	r.freed = true
+	r.mu.Unlock()
+}
 
 func (r *batchRecorder) total() (n int) {
 	r.mu.Lock()
@@ -472,7 +476,7 @@ func (r *batchRecorder) total() (n int) {
 // has not; frames stay in order across flushes, and the batch is released at the end.
 func TestWorkerFlushesWhenTheQueueRunsDry(t *testing.T) {
 	inj := &batchRecorder{}
-	oe := NewOverlayEngine(OverlayConfig{}, NewRouteTable(), inj)
+	l := &rxLane{oe: NewOverlayEngine(OverlayConfig{}, NewRouteTable(), inj)}
 	queue := make(chan rxRead, 100)
 	for i := 0; i < 70; i++ {
 		buf := packet.GetBuffer()
@@ -480,7 +484,7 @@ func TestWorkerFlushesWhenTheQueueRunsDry(t *testing.T) {
 		queue <- rxRead{buf: buf}
 	}
 	close(queue)
-	oe.processLoop(context.Background(), queue)
+	l.processLoop(context.Background(), queue)
 
 	if !inj.freed {
 		t.Error("the batch was not released")

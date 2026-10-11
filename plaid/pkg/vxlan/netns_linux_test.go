@@ -77,7 +77,7 @@ func netnsChild(t *testing.T) {
 		local.Close()
 	}
 
-	conn, err := SocketFromFile(os.NewFile(3, "handed over"), loopback, helperPort)
+	conn, err := SocketFromFile(os.NewFile(3, "handed over"), loopback, helperPort, Receive)
 	if err != nil {
 		t.Fatalf("adopting the descriptor: %v", err)
 	}

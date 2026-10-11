@@ -70,6 +70,7 @@ type Config struct {
 	VXLANVNI          int
 	VXLANBind         string
 	OverlayHandoff    string
+	OverlaySockets    int
 	Offload           bool
 	UplinkMTU         int
 	SlirpBin          string
@@ -117,8 +118,9 @@ func main() {
 	flag.IntVar(&cfg.VXLANPort, "vxlan-port", packet.DefaultVXLANPort, "VXLAN UDP port")
 	flag.IntVar(&cfg.VXLANVNI, "vxlan-vni", packet.DefaultVNI, "VXLAN VNI")
 	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address (with --overlay-handoff: the address the handed-over socket must be bound to)")
-	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP socket, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
-	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay socket. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call, and a pod's TCP super-frames are cut instead of being written whole to the other pods and the bubble of this node")
+	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP sockets, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
+	flag.IntVar(&cfg.OverlaySockets, "overlay-sockets", vxlan.DefaultSockets, "Receive sockets of the overlay (1 to 16), in one SO_REUSEPORT group, each read and processed by its own goroutines so that what a node receives is not limited to one core, and four times as many send sockets, so that the kernel of the receiving node spreads the flows over its sockets. Only when plaidd opens the VXLAN port itself: with --overlay-handoff the helper's --sockets decides. The wire format is the same for any number, and nodes with different numbers interoperate")
+	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay sockets. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call, and a pod's TCP super-frames are cut instead of being written whole to the other pods and the bubble of this node")
 	flag.IntVar(&cfg.UplinkMTU, "uplink-mtu", 0, "MTU of the bubble's TAP (plaid0) and of its link to slirp4netns in tap mode, which may be much larger than the pods' (at most 65520), so that slirp4netns, which pays for every packet, moves fewer: what a pod sends is joined into packets of up to this size, and larger packets from the bubble are cut for the pods. 0: the pod MTU")
 	flag.StringVar(&cfg.SlirpBin, "slirp-bin", "slirp4netns", "Path to slirp4netns binary")
 	flag.StringVar(&cfg.SlirpSocket, "slirp-socket", "/run/plaid/slirp.sock", "UNIX socket path for slirp BESS mode")
@@ -132,6 +134,11 @@ func main() {
 	flag.IntVar(&cfg.MTU, "mtu", 0, "Effective MTU for container TAP interfaces and slirp (default: $PLAID_MTU, else 1450, allowing 50B VXLAN overhead on 1500B host MTU)")
 
 	flag.Parse()
+
+	if cfg.OverlaySockets < 1 || cfg.OverlaySockets > vxlan.MaxSockets {
+		fmt.Fprintf(os.Stderr, "Error: --overlay-sockets %d: want 1 to %d\n", cfg.OverlaySockets, vxlan.MaxSockets)
+		os.Exit(2)
+	}
 
 	daemon, err := NewPlaidDaemon(cfg)
 	if err != nil {
@@ -330,6 +337,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		BindAddress: cfg.VXLANBind,
 		Port:        cfg.VXLANPort,
 		DefaultVNI:  uint32(cfg.VXLANVNI),
+		Sockets:     cfg.OverlaySockets,
 		Offload:     cfg.Offload,
 	}, routes, bridgeInjector{b})
 
@@ -484,7 +492,7 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 	if d.cfg.OverlayHandoff != "" {
 		if err := d.receiveOverlaySocket(ctx); err != nil {
 			startErr = err
-			return fmt.Errorf("failed to attach the overlay socket: %w", err)
+			return fmt.Errorf("failed to attach the overlay sockets: %w", err)
 		}
 	} else if err := d.overlay.Start(ctx); err != nil {
 		startErr = err
@@ -539,8 +547,8 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 // The helper is already polling for the socket, so it arrives within a moment.
 var overlayHandoffTimeout = 2 * time.Minute
 
-// receiveOverlaySocket waits for the UDP socket opened on the physical host and adopts
-// it. It runs before the daemon reports Ready and does not depend on anything that
+// receiveOverlaySocket waits for the UDP sockets opened on the physical host and adopts
+// them. It runs before the daemon reports Ready and does not depend on anything that
 // waits for Ready: the handoff has a socket of its own, apart from the API.
 func (d *PlaidDaemon) receiveOverlaySocket(ctx context.Context) error {
 	bind := net.ParseIP(d.cfg.VXLANBind)
@@ -550,23 +558,36 @@ func (d *PlaidDaemon) receiveOverlaySocket(ctx context.Context) error {
 	if err := os.MkdirAll(filepath.Dir(d.cfg.OverlayHandoff), 0700); err != nil {
 		return err
 	}
-	fmt.Printf("[plaidd] Waiting for the overlay socket (%s:%d) on %s\n", bind, d.cfg.VXLANPort, d.cfg.OverlayHandoff)
+	fmt.Printf("[plaidd] Waiting for the overlay sockets (%s:%d) on %s\n", bind, d.cfg.VXLANPort, d.cfg.OverlayHandoff)
 	err := handoff.Await(ctx, d.cfg.OverlayHandoff, overlayHandoffTimeout, func(req handoff.Request, files []*os.File) error {
 		if req.Type != handoff.TypeOverlaySocket {
 			return fmt.Errorf("unexpected request %q", req.Type)
 		}
-		if len(files) != 1 {
-			return fmt.Errorf("expected one descriptor, got %d", len(files))
+		rxN, txN := req.RxSockets, req.TxSockets
+		if rxN < 1 || rxN > vxlan.MaxSockets || txN < 1 || txN > vxlan.MaxSockets*vxlan.SendPerReceive {
+			return fmt.Errorf("the sender hands over %d receive and %d send sockets", req.RxSockets, req.TxSockets)
+		}
+		if len(files) != rxN+txN {
+			return fmt.Errorf("expected %d descriptors, got %d", rxN+txN, len(files))
 		}
 		if req.Port != d.cfg.VXLANPort || !net.ParseIP(req.Bind).Equal(bind) {
 			return fmt.Errorf("the sender bound %s:%d, plaidd is configured for %s:%d", req.Bind, req.Port, bind, d.cfg.VXLANPort)
 		}
-		conn, err := vxlan.SocketFromFile(files[0], bind, d.cfg.VXLANPort)
-		if err != nil {
-			return err
+		conns := make([]*net.UDPConn, 0, len(files))
+		for i, f := range files {
+			r := vxlan.Receive
+			if i >= rxN {
+				r = vxlan.Send
+			}
+			conn, err := vxlan.SocketFromFile(f, bind, d.cfg.VXLANPort, r)
+			if err != nil {
+				closeAll(conns)
+				return fmt.Errorf("descriptor %d: %w", i, err)
+			}
+			conns = append(conns, conn)
 		}
-		if err := d.overlay.Adopt(ctx, conn); err != nil {
-			_ = conn.Close()
+		if err := d.overlay.Adopt(ctx, conns[:rxN], conns[rxN:]); err != nil {
+			closeAll(conns)
 			return err
 		}
 		return nil
@@ -575,8 +596,14 @@ func (d *PlaidDaemon) receiveOverlaySocket(ctx context.Context) error {
 		return err
 	}
 	st := d.overlay.Stats()
-	fmt.Printf("[plaidd] Overlay socket attached: %s (receive buffer %d bytes)\n", st.Address, st.RcvBuf)
+	fmt.Printf("[plaidd] Overlay sockets attached: %s (%d receive, %d send; receive buffer %d bytes)\n", st.Address, st.RxSockets, st.TxSockets, st.RcvBuf)
 	return nil
+}
+
+func closeAll(conns []*net.UDPConn) {
+	for _, c := range conns {
+		_ = c.Close()
+	}
 }
 
 func (d *PlaidDaemon) Stop() {
@@ -746,8 +773,11 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		OverlayRxInvalid:    ov.RxInvalid,
 		OverlayRxDropped:    ov.RxDropped,
 		OverlayRxQueueDrops: ov.RxQueueDrops,
-		OverlayRcvBuf:       ov.RcvBuf,
 		OverlaySocketDrops:  ov.SocketDrops,
+		OverlayRcvBuf:       ov.RcvBuf,
+		OverlayRxSockets:    ov.RxSockets,
+		OverlayTxSockets:    ov.TxSockets,
+		OverlayRxPerSocket:  ov.RxPerSocket,
 		OverlayOffload:      overlayOffload(ov),
 		TapOffload:          d.tapOffload(),
 		TapPipeline:         d.tapPipeline(),

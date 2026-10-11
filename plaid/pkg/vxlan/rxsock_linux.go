@@ -13,6 +13,33 @@ import (
 // an int each.
 var rxOOBLen = 2 * syscall.CmsgSpace(4)
 
+// reusePort is a net.ListenConfig control function that puts the socket in the
+// SO_REUSEPORT group of its address and port, before it is bound. The kernel then picks
+// the socket that receives a datagram by a hash of the datagram's addresses and ports, so
+// all datagrams from one source port reach the same socket, in the order they came.
+func reusePort(_, _ string, c syscall.RawConn) error {
+	var serr error
+	if err := c.Control(func(fd uintptr) {
+		serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT, 1)
+	}); err != nil {
+		return err
+	}
+	return serr
+}
+
+// hasReusePort reports whether conn is in a SO_REUSEPORT group.
+func hasReusePort(conn *net.UDPConn) bool {
+	rc, err := conn.SyscallConn()
+	if err != nil {
+		return false
+	}
+	on := 0
+	_ = rc.Control(func(fd uintptr) {
+		on, _ = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_REUSEPORT)
+	})
+	return on != 0
+}
+
 // enableDropCount makes the kernel attach the socket's drop count to each datagram it
 // delivers.
 func enableDropCount(conn *net.UDPConn) error {

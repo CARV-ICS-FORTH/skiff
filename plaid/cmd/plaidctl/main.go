@@ -15,6 +15,7 @@ import (
 	"plaid/pkg/handoff"
 	"plaid/pkg/netcfg"
 	"plaid/pkg/version"
+	"plaid/pkg/vxlan"
 )
 
 func main() {
@@ -63,8 +64,9 @@ func main() {
 		}
 		fmt.Println()
 		if status.OverlayTransport != "" {
-			fmt.Printf("Overlay:      %s socket %s (tx=%d in %d sends, tx errors=%d, rx=%d in %d reads, rx invalid=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d, offload=%s)\n",
-				status.OverlayTransport, status.OverlayAddress, status.OverlayTxPackets, status.OverlayTxSends, status.OverlayTxErrors,
+			fmt.Printf("Overlay:      %s socket %s (sockets=%d rx/%d tx, rx per socket=%v, tx=%d in %d sends, tx errors=%d, rx=%d in %d reads, rx invalid=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d, offload=%s)\n",
+				status.OverlayTransport, status.OverlayAddress, status.OverlayRxSockets, status.OverlayTxSockets, status.OverlayRxPerSocket,
+				status.OverlayTxPackets, status.OverlayTxSends, status.OverlayTxErrors,
 				status.OverlayRxPackets, status.OverlayRxReads, status.OverlayRxInvalid, status.OverlayRxDropped,
 				status.OverlayRxQueueDrops, status.OverlaySocketDrops, status.OverlayRcvBuf, orNone(status.OverlayOffload))
 		}
@@ -269,41 +271,46 @@ func main() {
 }
 
 // overlaySocket is the helper the deployment runs in the physical host's network
-// namespace: it opens the overlay's UDP socket there and hands it to plaidd, which runs
+// namespace: it opens the overlay's UDP sockets there and hands them to plaidd, which runs
 // inside the bubble. It forwards nothing and exits once plaidd has acknowledged.
 func overlaySocket(args []string) {
 	fs := flag.NewFlagSet("overlay-socket", flag.ExitOnError)
 	bind := fs.String("bind", "", "IPv4 address to bind on the host (the address the other nodes send to)")
 	port := fs.Int("port", 8472, "UDP port")
-	path := fs.String("handoff", "", "UNIX socket on which plaidd is waiting for the descriptor")
+	sockets := fs.Int("sockets", vxlan.DefaultSockets, "receive sockets (1 to 16), in one SO_REUSEPORT group on the port, and four times as many send sockets")
+	path := fs.String("handoff", "", "UNIX socket on which plaidd is waiting for the descriptors")
 	timeout := fs.Duration("timeout", 10*time.Minute, "how long to wait for plaidd to listen")
 	_ = fs.Parse(args)
 	ip := net.ParseIP(*bind)
-	if ip == nil || ip.To4() == nil || *path == "" {
-		fmt.Fprintln(os.Stderr, "Usage: plaidctl overlay-socket --bind <ipv4> [--port 8472] --handoff <socket> [--timeout 10m]")
+	if ip == nil || ip.To4() == nil || *path == "" || *sockets < 1 || *sockets > vxlan.MaxSockets {
+		fmt.Fprintln(os.Stderr, "Usage: plaidctl overlay-socket --bind <ipv4> [--port 8472] [--sockets 4] --handoff <socket> [--timeout 10m]")
 		os.Exit(2)
 	}
 
 	// Bind first: a port that is taken is a failure right away, and holding it while
 	// waiting reserves it for plaidd.
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip.To4(), Port: *port})
+	rx, tx, err := vxlan.ListenSockets("udp4", ip.To4(), *port, *sockets)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: cannot open the overlay socket %s:%d: %v\n", ip, *port, err)
+		fmt.Fprintf(os.Stderr, "Error: cannot open the overlay sockets %s:%d: %v\n", ip, *port, err)
 		os.Exit(1)
 	}
-	defer conn.Close()
-	file, err := conn.File()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	var files []*os.File
+	for _, conn := range append(rx, tx...) {
+		defer conn.Close()
+		file, err := conn.File()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		defer file.Close()
+		files = append(files, file)
 	}
-	defer file.Close()
-	err = handoff.Send(context.Background(), *path, handoff.Request{Type: handoff.TypeOverlaySocket, Bind: ip.String(), Port: *port}, file, *timeout)
-	if err != nil {
+	req := handoff.Request{Type: handoff.TypeOverlaySocket, Bind: ip.String(), Port: *port, RxSockets: len(rx), TxSockets: len(tx)}
+	if err := handoff.Send(context.Background(), *path, req, files, *timeout); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: overlay socket handoff failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Overlay socket %s:%d handed to plaidd\n", ip, *port)
+	fmt.Printf("Overlay sockets %s:%d (%d receive, %d send) handed to plaidd\n", ip, *port, len(rx), len(tx))
 }
 
 func printUsage() {
@@ -315,7 +322,7 @@ Usage:
 Commands:
   version                                         Display version information
   status                                          Display daemon status & endpoints
-  overlay-socket --bind <ip> --handoff <socket>   Open the overlay UDP socket here and hand it to plaidd (host helper)
+  overlay-socket --bind <ip> --handoff <socket>   Open the overlay UDP sockets here and hand them to plaidd (host helper; --sockets N)
   endpoint del <endpoint-id>                      Remove a container endpoint
   service list                                    List the Service engine's table and flows
   service set <file.json|->                       Replace the Service table (plaidd --disable-kubernetes only)

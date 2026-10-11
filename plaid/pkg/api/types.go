@@ -161,7 +161,12 @@ type Response struct {
 	OverlayRxQueueDrops uint64 `json:"overlay_rx_queue_drops"`
 	OverlaySocketDrops  uint64 `json:"overlay_socket_drops"`
 	OverlayRcvBuf       int    `json:"overlay_rcvbuf"`
-	// The offloads of the socket that are on ("UDP_SEGMENT,UDP_GRO", or empty), and those
+	// The sockets: how many receive and send, and the packets each receive socket handed
+	// to the bridge.
+	OverlayRxSockets   int      `json:"overlay_rx_sockets"`
+	OverlayTxSockets   int      `json:"overlay_tx_sockets"`
+	OverlayRxPerSocket []uint64 `json:"overlay_rx_per_socket,omitempty"`
+	// The offloads of the sockets that are on ("UDP_SEGMENT,UDP_GRO", or empty), and those
 	// of the TAPs.
 	OverlayOffload string             `json:"overlay_offload,omitempty"`
 	TapOffload     *TapOffloadStatus  `json:"tap_offload,omitempty"`

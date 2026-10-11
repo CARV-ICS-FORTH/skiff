@@ -24,13 +24,16 @@ const (
 // run may be shorter) go out with UDP_SEGMENT, which the kernel, or the network card,
 // cuts again into the datagrams that were put in, one frame each, as VXLAN says. The
 // datagrams on the wire are the same as with one send each, and leave in the same order.
-// A TxBatch is used by one goroutine at a time.
+// A run is also for one send socket (frames of different flows leave from different
+// ports, see flowSocket): a frame for another socket ends it, as one for another node
+// does. A TxBatch is used by one goroutine at a time.
 type TxBatch struct {
 	oe  *OverlayEngine
 	buf *packet.Buffer // the datagrams of the run, back to back
 	err error          // the first send error since the last Flush
 
 	addr  netip.AddrPort // the run's destination
+	sock  int            // and its send socket, an index into the engine's send sockets
 	seg   int            // the size of its datagrams: the first one's
 	n     int            // how many it has
 	short bool           // the last one is shorter than seg, which ends the run
@@ -68,7 +71,8 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 			oe.txErrors.Add(1)
 		}
 	}()
-	if oe.conn.Load() == nil {
+	socks := oe.socks.Load()
+	if socks == nil {
 		return fmt.Errorf("overlay engine not started")
 	}
 
@@ -99,7 +103,8 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 	remoteAddr := netip.AddrPortFrom(remoteIP.Unmap(), uint16(remotePort))
 
 	size := packet.VXLANHeaderLen + packet.EthernetHeaderLen + len(frame.Payload)
-	if tb.n > 0 && !tb.joins(remoteAddr, size) {
+	sock := flowSocket(frame.EtherType, frame.Payload, len(socks.tx))
+	if tb.n > 0 && !tb.joins(remoteAddr, sock, size) {
 		tb.sendRun()
 	}
 	// The header and the frame go into one pooled buffer, behind the datagrams of the run.
@@ -113,7 +118,7 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 		return fmt.Errorf("failed to marshal inner frame: %w", err)
 	}
 	if tb.n == 0 {
-		tb.addr, tb.seg = remoteAddr, size
+		tb.addr, tb.sock, tb.seg = remoteAddr, sock, size
 	} else if size < tb.seg {
 		tb.short = true
 	}
@@ -124,9 +129,10 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 	return nil
 }
 
-// joins reports whether a datagram of size bytes to addr can go in the run.
-func (tb *TxBatch) joins(addr netip.AddrPort, size int) bool {
-	return tb.oe.gso.Load() && addr == tb.addr && !tb.short && size <= tb.seg &&
+// joins reports whether a datagram of size bytes to addr, from send socket sock, can go
+// in the run.
+func (tb *TxBatch) joins(addr netip.AddrPort, sock, size int) bool {
+	return tb.oe.gso.Load() && addr == tb.addr && sock == tb.sock && !tb.short && size <= tb.seg &&
 		tb.n < maxSegments && len(tb.buf.B)+size <= maxSegmentedBytes
 }
 
@@ -144,7 +150,8 @@ func (tb *TxBatch) sendRun() {
 	if tb.n == 0 {
 		return
 	}
-	oe, conn := tb.oe, tb.oe.conn.Load()
+	oe := tb.oe
+	conn := oe.socks.Load().tx[tb.sock]
 	data, n, seg := tb.buf.B, tb.n, tb.seg
 	tb.buf.B, tb.n, tb.seg, tb.short = data[:0], 0, 0, false
 
