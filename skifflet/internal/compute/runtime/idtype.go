@@ -19,9 +19,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type JobIDType string
@@ -29,24 +26,6 @@ type JobIDType string
 const (
 	JobIDTypeProcess JobIDType = "pid://"
 )
-
-// SetPodID records the job ID annotation on a pod, normalizing the prefix to prevent pid://pid:// duplication.
-func SetPodID(pod *corev1.Pod, idType JobIDType, value string) {
-	cleanVal := strings.TrimPrefix(strings.TrimSpace(value), string(idType))
-	metav1.SetMetaDataAnnotation(&pod.ObjectMeta, "pod.skiff/id", string(idType)+cleanVal)
-}
-
-func GetPodID(pod *corev1.Pod) string {
-	if pod == nil || pod.Annotations == nil {
-		return ""
-	}
-	return pod.Annotations["pod.skiff/id"]
-}
-
-func HasJobID(pod *corev1.Pod) bool {
-	_, exists := pod.GetAnnotations()["pod.skiff/id"]
-	return exists
-}
 
 // FormatProcessJobID formats a PID and start time into a typed job ID string "pid://<pid>:<starttime>" or "pid://<pid>".
 func FormatProcessJobID(pid int, startTime uint64) string {

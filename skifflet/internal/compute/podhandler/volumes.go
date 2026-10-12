@@ -17,9 +17,9 @@ package podhandler
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"skifflet/internal/compute/endpoint"
 	"skifflet/internal/compute/volume/configmap"
@@ -29,8 +29,6 @@ import (
 	"skifflet/internal/compute/volume/projected"
 	"skifflet/internal/compute/volume/secret"
 	"skifflet/internal/compute/volume/util"
-
-	mounter "k8s.io/utils/mount"
 
 	"skifflet/internal/compute"
 
@@ -149,29 +147,6 @@ func (h *PodHandler) mountVolumeSource(ctx context.Context, vol corev1.Volume) e
 		/*---------------------------------------------------
 		 * HostPath
 		 *---------------------------------------------------*/
-		if vol.VolumeSource.HostPath.Type == nil || *vol.VolumeSource.HostPath.Type == corev1.HostPathUnset {
-			// ensure that the references host path exists
-			exists, err := mounter.PathExists(vol.VolumeSource.HostPath.Path)
-			if err != nil {
-				return fmt.Errorf("failed to inspect HostPath at path '%s': %w", vol.VolumeSource.HostPath.Path, err)
-			}
-
-			if !exists {
-				return fmt.Errorf("HostPath '%s' does not exist", vol.VolumeSource.HostPath.Path)
-			}
-
-			// Empty string (default) is for backward compatibility,
-			// which means that no checks will be performed before mounting the hostPath volume.
-			dstFullPath := filepath.Join(h.podDirectory.VolumeDir(), vol.Name)
-
-			if err := os.Symlink(vol.VolumeSource.HostPath.Path, dstFullPath); err != nil {
-				return fmt.Errorf("cannot link symlink at path '%s': %w", dstFullPath, err)
-			}
-
-			// nothing to do
-			return nil
-		}
-
 		mounter := hostpath.VolumeMounter{
 			Volume: vol,
 			Pod:    *h.Pod,
@@ -215,7 +190,7 @@ func (h *PodHandler) mountVolumeSource(ctx context.Context, vol corev1.Volume) e
 			return fmt.Errorf("cannot create dir '%s': %w", projectedDir, err)
 		}
 
-		mounter := projected.VolumeMounter{
+		mounter := &projected.VolumeMounter{
 			Volume:    vol,
 			Pod:       *h.Pod,
 			Resources: h.resourceResolver(ctx),
@@ -225,6 +200,10 @@ func (h *PodHandler) mountVolumeSource(ctx context.Context, vol corev1.Volume) e
 		if err := mounter.SetUpAt(ctx, projectedDir); err != nil {
 			return fmt.Errorf("failed to mount ProjectedVolume '%s': %w", vol.Name, err)
 		}
+		if h.projected == nil {
+			h.projected = map[string]*projected.VolumeMounter{}
+		}
+		h.projected[vol.Name] = mounter // (kept: syncVolumes renews its tokens)
 
 		return nil
 
@@ -251,22 +230,62 @@ func (h *PodHandler) DownwardAPIVolumeSource(ctx context.Context, vol corev1.Vol
 		defaultMode = *vol.DownwardAPI.DefaultMode
 	}
 
-	data, err := downwardapi.CollectData(vol.DownwardAPI.Items, h.Pod, &defaultMode, h.resourceResolver(ctx))
+	// The pod as it is now: its labels and annotations follow the API (see syncVolumes).
+	data, err := downwardapi.CollectData(vol.DownwardAPI.Items, h.lifecycle.GetPod(), &defaultMode, h.resourceResolver(ctx))
 	if err != nil {
 		return fmt.Errorf("downwardAPI volume '%s': %w", vol.Name, err)
 	}
+	writer, err := util.NewAtomicWriter(downApiDir, fmt.Sprintf("pod %s volume %s", h.podKey, vol.Name))
+	if err != nil {
+		return fmt.Errorf("downwardAPI volume '%s': %w", vol.Name, err)
+	}
+	if err := writer.Write(data); err != nil {
+		return fmt.Errorf("downwardAPI volume '%s': %w", vol.Name, err)
+	}
+	return nil
+}
 
-	for relPath, fileProj := range data {
-		itemPath := filepath.Join(downApiDir, relPath)
-		if err := os.MkdirAll(filepath.Dir(itemPath), endpoint.PodGlobalDirectoryPermissions); err != nil {
-			return fmt.Errorf("cannot create dir '%s': %w", filepath.Dir(itemPath), err)
+// volumeSyncPeriod is how often the files of the pod's ConfigMap, Secret, Downward API and
+// projected volumes are written again (tests change it).
+var volumeSyncPeriod = 30 * time.Second
+
+// syncVolumes writes the pod's ConfigMap, Secret, Downward API and projected volumes again,
+// every volumeSyncPeriod, for as long as the pod lives, as the kubelet does: a changed
+// ConfigMap or Secret, a changed label or annotation, a service account token due to be
+// renewed reach the files (through the atomic writer, so a reader sees one version or the
+// other). A mount of a subPath of them does not change: it is bound to what it was when the
+// container started, as in Kubernetes. What cannot be read now is tried again next time.
+func (h *PodHandler) syncVolumes(ctx context.Context) {
+	ticker := time.NewTicker(volumeSyncPeriod)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
-		if err := os.WriteFile(itemPath, fileProj.Data, fs.FileMode(fileProj.Mode)); err != nil {
-			return fmt.Errorf("cannot write downwardAPI file '%s': %w", itemPath, err)
+		pod := h.lifecycle.GetPod()
+		for _, vol := range pod.Spec.Volumes {
+			dir := filepath.Join(h.podDirectory.VolumeDir(), vol.Name)
+			var err error
+			switch {
+			case vol.ConfigMap != nil:
+				err = (&configmap.VolumeMounter{Volume: vol, Pod: *pod, Logger: h.logger}).Sync(ctx, dir)
+			case vol.Secret != nil:
+				err = (&secret.VolumeMounter{Volume: vol, Pod: *pod, Logger: h.logger}).Sync(ctx, dir)
+			case vol.DownwardAPI != nil:
+				err = h.DownwardAPIVolumeSource(ctx, vol)
+			case vol.Projected != nil:
+				if m := h.projected[vol.Name]; m != nil {
+					m.Pod = *pod
+					err = m.Sync(ctx, dir)
+				}
+			}
+			if err != nil && ctx.Err() == nil {
+				h.logger.Info("a volume could not be brought up to date; trying again later", "volume", vol.Name, "reason", err.Error())
+			}
 		}
 	}
-
-	return nil
 }
 
 // VolumePendingError says a volume cannot be mounted yet but may be later: its claim does
@@ -360,8 +379,9 @@ func (h *PodHandler) PersistentVolumeClaimSource(ctx context.Context, vol corev1
 	case pv.Spec.HostPath != nil:
 		dstFullPath := filepath.Join(h.podDirectory.VolumeDir(), vol.Name)
 
-		if err := os.MkdirAll(pv.Spec.HostPath.Path, endpoint.PodGlobalDirectoryPermissions); err != nil && !os.IsExist(err) {
-			return fmt.Errorf("cannot create hostpath directory at path '%s': %w", pv.Spec.HostPath.Path, err)
+		// The volume's type, as for a pod's hostPath (with none, a missing directory is made).
+		if err := hostpath.CheckType(pv.Spec.HostPath.Path, pv.Spec.HostPath.Type); err != nil {
+			return fmt.Errorf("PersistentVolume %s: %w", pv.Name, err)
 		}
 		if err := os.Symlink(pv.Spec.HostPath.Path, dstFullPath); err != nil && !os.IsExist(err) {
 			return fmt.Errorf("cannot link symlink at path '%s': %w", dstFullPath, err)

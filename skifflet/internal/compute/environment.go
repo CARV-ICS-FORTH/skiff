@@ -25,10 +25,7 @@ import (
 
 // HostEnvironment containers information about the execution environment.
 type HostEnvironment struct {
-	KubeMasterHost    string
-	KubeMasterPort    string
-	ContainerRegistry string
-	ApptainerBin      string
+	ApptainerBin string
 
 	WorkingDirectory string
 	// TmpDirectory is the node's scratch root (see endpoint.SkiffPath): the pods

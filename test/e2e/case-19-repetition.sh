@@ -49,7 +49,7 @@ census() {
         echo pod_dirs=\$(ls -d ${_RT_PODS_DIR}/${NS}/* 2>/dev/null | wc -l)
         echo leases=\$(ls /run/plaid/ipam/plaid-ipam 2>/dev/null | wc -l)
         echo netns=\$(for p in /proc/[0-9]*/ns/net; do stat -Lc %i \$p 2>/dev/null; done | sort -u | wc -l)
-        echo rootfs=\$(find '${_RT_APPTAINER_TMP}' -maxdepth 1 -name 'rootfs-*' 2>/dev/null | wc -l)
+        echo rootfs=\$(( \$(find '${_RT_APPTAINER_TMP}' -maxdepth 1 -name 'rootfs-*' 2>/dev/null | wc -l) + \$(find '${_RT_PODS_DIR}/${NS}' -mindepth 5 -maxdepth 5 -path '*/scratch/*/*/rootfs' 2>/dev/null | wc -l) ))
     " | tr '\n' ' '
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"sync"
 	"testing"
 	"time"
@@ -19,71 +20,6 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-func TestReconcileNonTerminalPodsNotifiesOnlyOnChange(t *testing.T) {
-	tmpDir := t.TempDir()
-	compute.Skiff = endpoint.SkiffWithTmp(tmpDir, filepath.Join(tmpDir, ".skiff"))
-
-	podKey := client.ObjectKey{Namespace: "default", Name: "test-pod"}
-
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: podKey.Namespace,
-			Name:      podKey.Name,
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{Name: "c1", Image: "alpine"},
-			},
-		},
-		Status: corev1.PodStatus{
-			Phase: corev1.PodPending,
-			ContainerStatuses: []corev1.ContainerStatus{
-				{
-					Name: "c1",
-					State: corev1.ContainerState{
-						Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"},
-					},
-				},
-			},
-		},
-	}
-
-	podDir := compute.Skiff.Pod(podKey)
-	_ = os.MkdirAll(podDir.JobDir(), 0755)
-
-	var notifyCount int
-	vk := &VirtualK8S{
-		updatedPod: func(p *corev1.Pod) {
-			notifyCount++
-		},
-	}
-	vk.pods.Store(podKey, pod)
-
-	// First call - PodHandler.UpdateStatusFromRuntime will calculate status from runtime
-	vk.reconcileNonTerminalPods()
-
-	// Reconcile automatically persisted the updated status, so next reconcile has matching status.
-	notifyCount = 0
-
-	// Second reconcile without any runtime changes should NOT trigger updatedPod
-	vk.reconcileNonTerminalPods()
-
-	if notifyCount != 0 {
-		t.Fatalf("expected 0 notifications when pod status did not change, got %d", notifyCount)
-	}
-
-	// Now simulate a change in runtime (e.g. container terminated)
-	podCopy := pod.DeepCopy()
-	PodHandler.SetContainerTerminated(&podCopy.Status.ContainerStatuses[0], 0)
-	vk.pods.Store(podKey, podCopy)
-
-	vk.reconcileNonTerminalPods()
-
-	if notifyCount != 1 {
-		t.Fatalf("expected 1 notification when pod status changed, got %d", notifyCount)
-	}
-}
 
 func TestNodeNameFiltering(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -155,18 +91,6 @@ func TestNodeNameFiltering(t *testing.T) {
 		t.Fatalf("pod-b directory was deleted by node-a's DeletePod pass")
 	}
 
-	// 3. Reconcile should not trigger notifications for pod-b
-	var notifiedPods []string
-	vk.updatedPod = func(p *corev1.Pod) {
-		notifiedPods = append(notifiedPods, p.Name)
-	}
-	vk.reconcileNonTerminalPods()
-
-	for _, name := range notifiedPods {
-		if name == "pod-b" {
-			t.Fatalf("reconcileNonTerminalPods processed pod-b which belongs to node-b")
-		}
-	}
 }
 
 func TestProvider_UnsupportedOperations(t *testing.T) {
@@ -250,7 +174,7 @@ func TestProvider_UIDIsolation_RaceFree(t *testing.T) {
 	}
 }
 
-func TestProvider_ReconcileConcurrentReadersAndStaleSnapshot(t *testing.T) {
+func TestProvider_ConcurrentReadersAndDelayedCallback(t *testing.T) {
 	tmpDir := t.TempDir()
 	compute.Skiff = endpoint.SkiffWithTmp(tmpDir, filepath.Join(tmpDir, ".skiff"))
 	key := client.ObjectKey{Namespace: "default", Name: "snapshot-pod"}
@@ -262,14 +186,13 @@ func TestProvider_ReconcileConcurrentReadersAndStaleSnapshot(t *testing.T) {
 	vk := &VirtualK8S{}
 	vk.activeUIDs.Store(key, old.UID)
 	vk.pods.Store(key, old.DeepCopy())
-	stale, _ := vk.pods.Load(key)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
-			vk.reconcileNonTerminalPods()
+			vk.saveAndNotifyPod("owner", old.DeepCopy())
 		}
 	}()
 	go func() {
@@ -287,10 +210,27 @@ func TestProvider_ReconcileConcurrentReadersAndStaleSnapshot(t *testing.T) {
 	vk.activeUIDs.Store(key, replacement.UID)
 	vk.pods.Store(key, replacement.DeepCopy())
 	vk.stateMu.Unlock()
-	vk.saveAndNotifyPodExpected("delayed-reconcile", old, stale.(*corev1.Pod))
+	vk.saveAndNotifyPod("delayed-old", old)
 	current, err := vk.GetPod(context.Background(), key.Namespace, key.Name)
 	if err != nil || current.UID != replacement.UID {
-		t.Fatalf("stale snapshot affected replacement: pod=%v error=%v", current, err)
+		t.Fatalf("a delayed callback of the old pod affected the replacement: pod=%v error=%v", current, err)
+	}
+}
+
+// No status reaches the API server but through the callback Virtual Kubelet gave:
+// NotifyPods starts nothing that writes on its own (a periodic writer once did).
+func TestProvider_NotifyPodsOnlyInstallsTheCallback(t *testing.T) {
+	vk := &VirtualK8S{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := goruntime.NumGoroutine()
+	vk.NotifyPods(ctx, func(*corev1.Pod) {})
+	if vk.updatedPod == nil {
+		t.Fatal("the callback was not installed")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if after := goruntime.NumGoroutine(); after > before {
+		t.Fatalf("NotifyPods left %d goroutine(s) running", after-before)
 	}
 }
 
@@ -304,7 +244,7 @@ func TestProvider_ReplacementRejectsDelayedCallbackAndDelete(t *testing.T) {
 	key := client.ObjectKeyFromObject(old)
 	oldOwner := PodHandler.NewPodLifecycle(old.DeepCopy(), endpoint.PodPath(filepath.Join(root, "old")), nil)
 	PodHandler.GlobalRegistry.Register(oldOwner)
-	defer PodHandler.GlobalRegistry.Delete(old.UID)
+	defer forgetOwner(old.UID)
 	v := &VirtualK8S{}
 	preparationDone := make(chan struct{})
 	v.dispatchPreparation = func(run func()) {
@@ -312,13 +252,12 @@ func TestProvider_ReplacementRejectsDelayedCallbackAndDelete(t *testing.T) {
 	}
 	v.activeUIDs.Store(key, old.UID)
 	v.pods.Store(key, old.DeepCopy())
-	lookup, _ := v.pods.Load(key)
 	callbackReady, release := make(chan struct{}), make(chan struct{})
 	callbackDone := make(chan struct{})
 	go func() {
 		close(callbackReady)
 		<-release
-		v.saveAndNotifyPodExpected("delayed-old", old.DeepCopy(), lookup.(*corev1.Pod))
+		v.saveAndNotifyPod("delayed-old", old.DeepCopy())
 		close(callbackDone)
 	}()
 	<-callbackReady
@@ -351,7 +290,7 @@ func TestProvider_ReplacementRejectsDelayedCallbackAndDelete(t *testing.T) {
 		t.Fatal("replacement has no lifecycle owner")
 	}
 	defer newOwner.Terminate(0)
-	defer PodHandler.GlobalRegistry.Delete(replacement.UID)
+	defer forgetOwner(replacement.UID)
 	newCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	v.stateMu.Lock()

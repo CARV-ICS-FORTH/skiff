@@ -27,7 +27,7 @@ bash test/skiff-config-test.sh >/dev/null
 bash test/skiff-bubble-test.sh
 bash test/storage-manifest-test.sh
 if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
-    for suite in runtime-observer profile common; do
+    for suite in runtime-observer profile common teardown; do
         bash "test/e2e/lib/${suite}-test.sh"
     done
 else

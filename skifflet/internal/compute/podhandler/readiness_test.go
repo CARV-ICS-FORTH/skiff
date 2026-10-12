@@ -58,7 +58,7 @@ func TestWaitForReadiness_Success(t *testing.T) {
 		t.Fatalf("WaitForReadiness failed: %v", err)
 	}
 
-	if info.PausePID != 12345 || info.IP != "10.244.1.10" || info.Gateway != "10.244.1.1" || info.EndpointID != "ep-1" {
+	if info.PausePID != 12345 || info.IP != "10.244.1.10" || info.EndpointID != "ep-1" {
 		t.Errorf("unexpected SandboxInfo: %+v", info)
 	}
 }

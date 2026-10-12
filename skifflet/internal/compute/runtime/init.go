@@ -1,8 +1,10 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
@@ -33,7 +35,10 @@ func Initialize(pauseImage string) error {
 	}
 
 	if pauseImage != "" {
-		if _, err := image.Pull(compute.Skiff.ImageDir(), image.Docker, pauseImage); err != nil {
+		// (bounded: a pull that cannot finish must not keep the node from registering)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		if _, err := image.Pull(ctx, compute.Skiff.ImageDir(), image.Docker, pauseImage); err != nil {
 			compute.DefaultLogger.Info("Preflight pause image warmup skipped or deferred", "image", pauseImage, "err", err)
 		}
 	}

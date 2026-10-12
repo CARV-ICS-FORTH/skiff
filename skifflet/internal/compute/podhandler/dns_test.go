@@ -106,7 +106,7 @@ func TestPrepareDNS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read hosts: %v", err)
 	}
-	if !strings.Contains(string(hostsContent), "10.244.0.5 my-pod") {
+	if !strings.Contains(string(hostsContent), "10.244.0.5\tmy-pod\n") {
 		t.Errorf("hosts missing podIP mapping: %s", string(hostsContent))
 	}
 }
@@ -149,5 +149,74 @@ func TestHasNameserver(t *testing.T) {
 	}
 	if !hasNameserver("search svc.cluster.local\nnameserver 10.0.2.3\n") {
 		t.Fatal("usable outer resolver was rejected")
+	}
+}
+
+// dnsConfig adds to the cluster's settings as the kubelet merges them: one search line (the
+// resolver uses only the last), options replaced by name. A pod named like CoreDNS is not
+// treated as CoreDNS: only its dnsPolicy counts.
+func TestPrepareDNS_DNSConfigMerged(t *testing.T) {
+	two := "2"
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "coredns-test", Namespace: "team"},
+		Spec: corev1.PodSpec{
+			DNSPolicy: corev1.DNSClusterFirst,
+			DNSConfig: &corev1.PodDNSConfig{
+				Nameservers: []string{"10.9.9.9"},
+				Searches:    []string{"example.org", "svc.lab.test"},
+				Options:     []corev1.PodDNSConfigOption{{Name: "ndots", Value: &two}, {Name: "edns0"}},
+			},
+		},
+	}
+	got, err := resolvConf(pod, "10.201.0.10", "lab.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "search team.svc.lab.test svc.lab.test lab.test example.org\nnameserver 10.201.0.10\nnameserver 10.9.9.9\noptions ndots:2 edns0\n"
+	if got != want {
+		t.Fatalf("resolv.conf\n got %q\nwant %q", got, want)
+	}
+	pod.Spec.DNSPolicy = corev1.DNSNone
+	got, _ = resolvConf(pod, "10.201.0.10", "lab.test")
+	if want := "search example.org svc.lab.test\nnameserver 10.9.9.9\noptions ndots:2 edns0\n"; got != want {
+		t.Fatalf("None: resolv.conf\n got %q\nwant %q", got, want)
+	}
+}
+
+// The hosts file is the kubelet's: localhost in both families, the pod by its fully
+// qualified name when it has a subdomain, and its hostAliases.
+func TestHostsFile(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "web-0", Namespace: "team"},
+		Spec: corev1.PodSpec{
+			Subdomain:   "web",
+			HostAliases: []corev1.HostAlias{{IP: "10.1.2.3", Hostnames: []string{"db", "db.local"}}},
+		},
+	}
+	got := hostsFile(pod, "10.244.1.7", "lab.test")
+	for _, line := range []string{"127.0.0.1\tlocalhost\n", "::1\tlocalhost ip6-localhost ip6-loopback\n",
+		"10.244.1.7\tweb-0.web.team.svc.lab.test\tweb-0\n", "10.1.2.3\tdb\tdb.local\n"} {
+		if !strings.Contains(got, line) {
+			t.Fatalf("hosts lacks %q:\n%s", line, got)
+		}
+	}
+}
+
+// A pod's hostname is its name cut to 63 characters, or its hostname; setHostnameAsFQDN
+// makes the fully qualified name the containers' hostname, which may not exceed 64.
+func TestContainerHostname(t *testing.T) {
+	long := strings.Repeat("a", 62) + "-bcd"
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: long, Namespace: "ns"}}
+	if got, _ := containerHostname(pod, "cluster.local"); got != strings.Repeat("a", 62) {
+		t.Fatalf("a long name: %q", got)
+	}
+	yes := true
+	pod = &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "ns"}, Spec: corev1.PodSpec{Hostname: "h", Subdomain: "s", SetHostnameAsFQDN: &yes}}
+	if got, _ := containerHostname(pod, "cluster.local"); got != "h.s.ns.svc.cluster.local" {
+		t.Fatalf("setHostnameAsFQDN: %q", got)
+	}
+	pod.Spec.Hostname = strings.Repeat("h", 50)
+	if _, err := containerHostname(pod, "cluster.local"); !IsConfigError(err) {
+		t.Fatalf("a fully qualified name over 64 characters: %v", err)
 	}
 }

@@ -19,7 +19,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"time"
 
@@ -130,11 +129,8 @@ func runRootCommand(ctx context.Context, c Opts) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	defer func() {
-		if r := recover(); r != nil {
-			DefaultLogger.Error(fmt.Errorf("%v", r), "Recovered from panic in runRootCommand")
-		}
-	}()
+	// A panic is not recovered: Skifflet dies with the stack trace and a status that is not 0,
+	// which the bubble's supervisor records as the cause of the job's end.
 
 	DefaultLogger.Info("Starting runRootCommand...")
 
@@ -163,20 +159,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 		compute.Environment = c.DefaultHostEnvironment
 		compute.Environment.PauseImage = c.PauseImage
 
-		kubemaster, err := url.Parse(restConfig.Host)
-		if err != nil {
-			return fmt.Errorf("failed to extract hostname from url '%s': %w", restConfig.Host, err)
-		}
-		compute.Environment.KubeMasterHost = kubemaster.Hostname()
-		compute.Environment.KubeMasterPort = kubemaster.Port()
-		if compute.Environment.KubeMasterPort == "" {
-			compute.Environment.KubeMasterPort = "443"
-		}
-
-		DefaultLogger.Info("KubeClient is ready",
-			"Address", restConfig.Host,
-			"ContainerRegistry", compute.Environment.ContainerRegistry,
-		)
+		DefaultLogger.Info("KubeClient is ready", "Address", restConfig.Host)
 	}
 
 	/*---------------------------------------------------
@@ -238,7 +221,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 	// Register before pod execution so the controller can allocate a PodCIDR.
 	// The node stays NotReady until Plaid has attached the bubble gateway.
 	earlyNode := virtualk8s.NewVirtualNode(ctx, c.NodeName, nil)
-	setNodeNotReady(earlyNode)
+	setNodeNetworkPending(earlyNode)
 	if _, err := compute.K8SClientset.CoreV1().Nodes().Create(ctx, earlyNode, metav1.CreateOptions{}); err != nil && !k8serrors.IsAlreadyExists(err) {
 		return fmt.Errorf("register node before networking: %w", err)
 	}
@@ -247,7 +230,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 		if err != nil {
 			return err
 		}
-		setNodeNotReady(current)
+		setNodeNetworkPending(current)
 		_, err = compute.K8SClientset.CoreV1().Nodes().UpdateStatus(ctx, current, metav1.UpdateOptions{})
 		return err
 	}); err != nil {
@@ -263,16 +246,14 @@ func runRootCommand(ctx context.Context, c Opts) error {
 	 * Create Informers for CRDs and Pod Controller
 	 *---------------------------------------------------*/
 	{
-		podInformer, secretInformer, configMapInformer, serviceInformer, _, err := AddInformers(ctx, c, compute.K8SClientset)
-		if err != nil {
-			return fmt.Errorf("failed to add informers: %w", err)
-		}
+		podInformer, secretInformer, configMapInformer, serviceInformer := AddInformers(ctx, c, compute.K8SClientset)
 		virtualk8s.SetAssignedPodLister(podInformer.Lister())
+		// Puts back the status of pods that another writer changed (the node lifecycle
+		// controller, when it found the node's heartbeat late).
+		go virtualk8s.RunStatusRepair(ctx, compute.K8SClientset.CoreV1())
 
 		DefaultLogger.Info("Informers are ready",
-			"crds", []string{
-				"pods", "secrets", "configMap", "service", "serviceAccount",
-			})
+			"crds", []string{"pods", "secrets", "configMap", "service"})
 
 		eb := record.NewBroadcaster()
 		eb.StartLogging(logrus.Infof)
@@ -345,7 +326,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 		}
 
 		virtualNode := virtualk8s.NewVirtualNode(ctx, c.NodeName, taint)
-		setNodeNotReady(virtualNode)
+		setNodeNetworkPending(virtualNode)
 		if err := waitForPlaid(ctx, 3*time.Minute); err != nil {
 			return err
 		}
@@ -415,7 +396,7 @@ func runRootCommand(ctx context.Context, c Opts) error {
 
 					if !isPlaidAlive && wasReady {
 						wasReady = false
-						setNodeNotReady(virtualNode)
+						setNodeNotReady(virtualNode, "PlaidUnreachable", "The Plaid daemon of the node does not answer on its socket")
 						_ = np.UpdateStatus(ctx, virtualNode)
 						DefaultLogger.Info("Plaid daemon unreachable, marked node NotReady")
 					} else if isPlaidAlive && !wasReady {
@@ -463,15 +444,21 @@ func setNodeReady(n *corev1.Node) {
 	}
 }
 
-func setNodeNotReady(n *corev1.Node) {
+// setNodeNotReady says that the node is not Ready, and why: its network is not there yet when
+// it starts (NetworkPending), or Plaid went away after it was (PlaidUnreachable).
+func setNodeNotReady(n *corev1.Node, reason, message string) {
 	for i := range n.Status.Conditions {
 		if n.Status.Conditions[i].Type == corev1.NodeReady {
 			n.Status.Conditions[i].Status = corev1.ConditionFalse
-			n.Status.Conditions[i].Reason = "NetworkPending"
-			n.Status.Conditions[i].Message = "Waiting for Plaid gateway"
+			n.Status.Conditions[i].Reason = reason
+			n.Status.Conditions[i].Message = message
 			return
 		}
 	}
+}
+
+func setNodeNetworkPending(n *corev1.Node) {
+	setNodeNotReady(n, "NetworkPending", "Waiting for Plaid gateway")
 }
 
 func waitForPlaid(ctx context.Context, timeout time.Duration) error {

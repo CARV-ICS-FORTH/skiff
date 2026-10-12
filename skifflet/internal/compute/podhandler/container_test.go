@@ -191,3 +191,41 @@ func TestBuildContainerPreservesSupportedSubPaths(t *testing.T) {
 		})
 	}
 }
+
+// A subPath stays in its volume: one that steps up (..) after expansion, or whose symlinks lead
+// out of the volume (to / or to a sibling volume), is refused as a configuration error, and one
+// whose symlink stays inside is bound where it leads.
+func TestBuildContainerKeepsSubPathsInTheirVolume(t *testing.T) {
+	podDir := endpoint.PodPath(t.TempDir())
+	volumeDir := filepath.Join(podDir.VolumeDir(), "data")
+	sibling := filepath.Join(podDir.VolumeDir(), "other")
+	for _, dir := range []string{podDir.JobDir(), filepath.Join(volumeDir, "real"), sibling} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for link, target := range map[string]string{"to-root": "/", "to-sibling": sibling, "inside": "real"} {
+		if err := os.Symlink(target, filepath.Join(volumeDir, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	imagePath := filepath.Join(t.TempDir(), "fixture.sif")
+	if err := os.WriteFile(imagePath, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	build := func(mount corev1.VolumeMount, env ...corev1.EnvVar) (Container, error) {
+		h := newTestHandler(&corev1.Pod{Spec: corev1.PodSpec{Volumes: []corev1.Volume{
+			{Name: "data", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}}}}, podDir)
+		mount.Name, mount.MountPath = "data", "/data"
+		return h.buildContainer(context.Background(), &corev1.Container{Name: "app", Image: imagePath, ImagePullPolicy: corev1.PullNever, Env: env, VolumeMounts: []corev1.VolumeMount{mount}})
+	}
+	for _, mount := range []corev1.VolumeMount{{SubPath: "to-root"}, {SubPath: "to-sibling"}, {SubPathExpr: "$(UP)/other"}} {
+		if _, err := build(mount, corev1.EnvVar{Name: "UP", Value: ".."}); !IsConfigError(err) {
+			t.Errorf("%+v: %v, want a configuration error", mount, err)
+		}
+	}
+	c, err := build(corev1.VolumeMount{SubPath: "inside"})
+	if err != nil || len(c.Binds) != 1 || c.Binds[0] != filepath.Join(volumeDir, "real")+":/data:rw" {
+		t.Fatalf("a symlink inside the volume: %v %v", c.Binds, err)
+	}
+}

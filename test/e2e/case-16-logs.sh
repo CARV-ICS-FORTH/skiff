@@ -47,6 +47,9 @@ EOF
 }
 
 logs() { e2e_kubectl logs "$@" -n "$NS"; }
+# logs_or_error ARGS...: the logs, or what the request failed with (an empty answer has to be the
+# log's, not a request that failed with nothing on standard output).
+logs_or_error() { local out; out=$(logs "$@" 2>&1) || { printf '(the request failed: %s)' "$out"; return 0; }; printf '%s' "$out"; }
 node_proxy() { e2e_kubectl get --raw "/api/v1/nodes/${NODE_A}/proxy/$1" 2>&1 || true; }
 restarts() { e2e_kubectl get pod "$1" -n "$NS" -o jsonpath='{.status.containerStatuses[0].restartCount}'; }
 
@@ -67,7 +70,7 @@ default_and_tail() {
     done
     e2e_assert_contains "standard error is in the log" "$ALL" "attempt=1 seq=3 err"
     e2e_assert_eq "blank lines are kept" "$(printf '%s\n' "$ALL" | grep -c '^$')" 3
-    e2e_assert_eq "tail 0 is nothing" "$(logs e2e16-known --tail=0)" ""
+    e2e_assert_eq "tail 0 is nothing" "$(logs_or_error e2e16-known --tail=0)" ""
     e2e_assert_eq "tail 1 is the last, unfinished, line" "$(logs e2e16-known --tail=1)" "attempt=1 partial"
     e2e_assert_eq "tail 3 is the last three lines of the log (blank ones count)" "$(logs e2e16-known --tail=3)" "$(printf '%s\n' "$ALL" | tail -n 3)"
     e2e_assert_eq "tail beyond the log is the whole log" "$(logs e2e16-known --tail=500)" "$ALL"
@@ -114,7 +117,7 @@ since() {
     if printf '%s' "$out" | e2e_grep_q 'seq=5 out'; then e2e_fail "records before the time are in the output"; fi
     e2e_assert_eq "a long enough duration is everything" "$(logs e2e16-known --since=1h)" "$ALL"
     sleep 3
-    e2e_assert_eq "a short duration, long after the end, is nothing" "$(logs e2e16-known --since=2s)" ""
+    e2e_assert_eq "a short duration, long after the end, is nothing" "$(logs_or_error e2e16-known --since=2s)" ""
     e2e_assert_eq "a time filter and a tail" "$(logs e2e16-known --since-time="$moment" --tail=1)" "attempt=1 partial"
 }
 e2e_subcase_run T12-since since

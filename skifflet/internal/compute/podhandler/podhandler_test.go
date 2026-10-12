@@ -3,7 +3,6 @@ package podhandler
 import (
 	"os"
 	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -52,20 +51,10 @@ func TestDeletePod_CleanRemoval(t *testing.T) {
 	}
 }
 
-func TestGetPodIPFromNetns_Fallback(t *testing.T) {
-	if goruntime.GOOS == "linux" {
-		_, err := GetPodIPFromNetns(999999)
-		if err == nil {
-			t.Fatalf("expected error on Linux for non-existent PID")
-		}
-	} else {
-		ip, err := GetPodIPFromNetns(999999)
-		if err != nil {
-			t.Fatalf("unexpected error from fallback: %v", err)
-		}
-		if ip == "" || strings.HasPrefix(ip, "127.") {
-			t.Errorf("expected non-empty non-loopback IP from fallback, got %q", ip)
-		}
+// A process that does not exist has no pod address.
+func TestObservePodIP_NoProcess(t *testing.T) {
+	if _, err := observePodIP(999999, nil); err == nil {
+		t.Fatal("an address was observed for a process that does not exist")
 	}
 }
 

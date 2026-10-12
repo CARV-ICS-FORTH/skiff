@@ -310,7 +310,8 @@ func (t *Target) Command(ctx context.Context, argv []string) (cmd *exec.Cmd, rel
 }
 
 // nsenterArgs is the nsenter command line that runs argv in the namespaces of a container's
-// main process: mount, network and pid, its root and working directory, and, for a container
+// main process: mount, network, pid and UTS (its hostname, which is the pod's), its root and
+// working directory, and, for a container
 // that runs in a user namespace of its own (as another user than root), that user namespace
 // too, so that the command is the container's user, with the container's view of ids and
 // files, and not root of the bubble's namespace (what it was before: `kubectl exec` in a
@@ -323,7 +324,7 @@ func nsenterArgs(payload int, userNamespace bool, argv []string) []string {
 		// ids the container's main process has.)
 		args = append(args, "-U", "--preserve-credentials")
 	}
-	args = append(args, "-m", "-n", "-p", "-r", "-w", "--")
+	args = append(args, "-m", "-n", "-p", "-u", "-r", "-w", "--")
 	return append(args, argv...)
 }
 

@@ -3,6 +3,7 @@ package podhandler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,5 +304,23 @@ func TestBuildContainer_GPUs(t *testing.T) {
 	env, _ = os.ReadFile(c.EnvFilePath)
 	if len(c.GPUs) != 0 || strings.Contains(string(env), "NVIDIA") {
 		t.Errorf("a container that asked for none has GPUs %v and environment %q", c.GPUs, env)
+	}
+}
+
+// A RuntimeClass Skifflet does not run refuses the pod; one that cannot be read now is not a
+// refusal (it is asked about again).
+func TestCheckRuntimeClass_TransientIsNotARefusal(t *testing.T) {
+	old := RuntimeHandlers
+	t.Cleanup(func() { RuntimeHandlers = old })
+	name := "nvidia"
+	pod := &corev1.Pod{Spec: corev1.PodSpec{RuntimeClassName: &name}}
+	RuntimeHandlers = func(context.Context, string) (string, error) { return "", fmt.Errorf("connection refused") }
+	var refused *RuntimeClassRefusal
+	if err := CheckRuntimeClass(context.Background(), pod); err == nil || errors.As(err, &refused) {
+		t.Fatalf("an API server that cannot be asked: %v, want an error that is not a refusal", err)
+	}
+	RuntimeHandlers = func(context.Context, string) (string, error) { return "runc", nil }
+	if err := CheckRuntimeClass(context.Background(), pod); !errors.As(err, &refused) {
+		t.Fatalf("another handler: %v, want a refusal", err)
 	}
 }

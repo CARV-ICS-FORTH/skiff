@@ -58,7 +58,6 @@ func TotalResources() corev1.ResourceList {
 	res := corev1.ResourceList{
 		corev1.ResourceCPU:              *cpuQuantity,
 		corev1.ResourceMemory:           *memQuantity,
-		corev1.ResourceStorage:          *storageQuantity,
 		corev1.ResourceEphemeralStorage: *storageQuantity,
 		corev1.ResourcePods:             podsQuantity,
 	}
@@ -79,10 +78,7 @@ func AllocatableResources(ctx context.Context) corev1.ResourceList {
 	// Reserve 100m CPU if >= 2 cores
 	cpuVal := total.Cpu().MilliValue()
 	if cpuVal >= 2000 {
-		reservedCPU := resource.NewMilliQuantity(100, resource.DecimalSI)
-		allocatableCPU := resource.NewMilliQuantity(cpuVal-100, resource.DecimalSI)
-		allocatable[corev1.ResourceCPU] = *allocatableCPU
-		_ = reservedCPU
+		allocatable[corev1.ResourceCPU] = *resource.NewMilliQuantity(cpuVal-100, resource.DecimalSI)
 	}
 
 	// Reserve memory (5% of total, capped between 64Mi and 512Mi)
@@ -222,10 +218,6 @@ func getEffectiveCPUMillis() int64 {
 		return cpus * 1000
 	}
 	return 1000
-}
-
-func getEffectiveCPUCount() int64 {
-	return getEffectiveCPUMillis() / 1000
 }
 
 func getEffectiveMemoryBytes(cpuCount int64) uint64 {

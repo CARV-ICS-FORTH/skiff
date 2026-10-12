@@ -21,7 +21,8 @@ func InstanceLockDir() string {
 	return compute.Skiff.TmpDir()
 }
 
-// InstanceLock represents an advisory lock held on the Skiff runtime directory.
+// InstanceLock represents an advisory lock held on the Skiff runtime directory, for as long as
+// Skifflet runs (the kernel gives it back when the process ends).
 type InstanceLock struct {
 	file *os.File
 }
@@ -45,12 +46,4 @@ func AcquireInstanceLock(skiffDir string) (*InstanceLock, error) {
 	}
 
 	return &InstanceLock{file: f}, nil
-}
-
-// Release releases the advisory instance lock.
-func (l *InstanceLock) Release() {
-	if l != nil && l.file != nil {
-		_ = syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
-		_ = l.file.Close()
-	}
 }

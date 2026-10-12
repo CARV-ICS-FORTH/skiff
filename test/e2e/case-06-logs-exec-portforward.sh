@@ -47,13 +47,16 @@ TAIL=$(e2e_kubectl logs e2e06-pod -n $NS --tail=2)
 TAIL_LINES=$(echo "$TAIL" | wc -l | tr -d ' ')
 e2e_assert_eq "tail 2 lines" "$TAIL_LINES" "2"
 
+# Streams run without e2e_kubectl's request timeout (10 s), which would end them by itself.
+kubectl_stream() { "${E2E_KUBECTL:-kubectl}" --kubeconfig "${KUBECONFIG:-$HOME/.skiff/kubeconfig}" "$@"; }
+
 TMP_LOG=$(mktemp)
 e2e_cleanup_register "rm -f $TMP_LOG"
-e2e_kubectl logs e2e06-pod -n $NS --follow > "$TMP_LOG" 2>&1 &
+kubectl_stream logs e2e06-pod -n $NS --follow > "$TMP_LOG" 2>&1 &
 FOLLOW_PID=$!
 e2e_wait_condition 20 "log-line-4 in follow" "grep 'log-line-4' $TMP_LOG"
 kill $FOLLOW_PID || true
-e2e_wait_condition 5 "follow process exited" "! kill -0 $FOLLOW_PID 2>/dev/null" || true
+e2e_wait_condition 5 "follow process exited" "! kill -0 $FOLLOW_PID 2>/dev/null"
 
 FOLLOW_CONTENT=$(cat "$TMP_LOG")
 e2e_assert_contains "follow contains initial line-1" "$FOLLOW_CONTENT" "log-line-1"
@@ -86,7 +89,7 @@ exec_workdir() {
 e2e_subcase_run T17-exec-environment exec_environment
 e2e_subcase_run T17-exec-workdir exec_workdir
 
-e2e_kubectl port-forward e2e06-pod 18080:8080 -n $NS &
+kubectl_stream port-forward e2e06-pod 18080:8080 -n $NS &
 PF_PID=$!
 e2e_cleanup_register "kill $PF_PID 2>/dev/null || true"
 e2e_wait_condition 10 "port listening" "e2e_curl -sf http://localhost:18080/"
@@ -95,7 +98,7 @@ BODY=$(e2e_curl -sf http://localhost:18080/)
 e2e_assert_eq "port-forward body" "$BODY" "e2e06-http-ok"
 
 kill $PF_PID
-e2e_wait_condition 5 "port-forward exited" "! kill -0 $PF_PID 2>/dev/null" || true
+e2e_wait_condition 5 "port-forward exited" "! kill -0 $PF_PID 2>/dev/null"
 
 # T04: the kubelet HTTP surface, reached through the API server's node proxy.
 # The implemented operations were exercised above; report them as subcases.
@@ -136,7 +139,7 @@ e2e_subcase_run T04-logs-missing-container t04_missing "containerLogs/${NS}/e2e0
 runtime_record_pod "$NS" "e2e06-pod"
 e2e_kubectl delete pod e2e06-pod -n "$NS"
 
-e2e_wait_condition 10 "follow and pf exit" "! kill -0 $FOLLOW_PID 2>/dev/null && ! kill -0 $PF_PID 2>/dev/null" || true
+e2e_wait_condition 10 "follow and pf exit" "! kill -0 $FOLLOW_PID 2>/dev/null && ! kill -0 $PF_PID 2>/dev/null"
 
 runtime_verify_gone "$NS" "e2e06-pod" 60
 

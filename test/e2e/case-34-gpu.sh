@@ -12,8 +12,10 @@
 # Skiff assumes exclusive allocations in which the job has all the GPUs of its nodes (partial
 # allocations of a node's GPUs are not supported yet), so the GPUs of a node are the job's.
 #
-# This needs a cluster with GPUs. Where no node has any, every result is UNAVAILABLE with that
-# reason. Results that need more than one GPU on a node are UNAVAILABLE on nodes with one.
+# This needs a cluster with GPUs. Whether it has them is Slurm's word (what the job holds on each
+# node), not the nodes' own: a cluster whose job holds GPUs and whose nodes do not advertise them
+# is a failure, not a host without GPUs. Where the job holds none, every result is UNAVAILABLE
+# with that reason. Results that need more than one GPU on a node are UNAVAILABLE on nodes with one.
 set -euo pipefail
 E2E_CASE=34
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,6 +30,31 @@ e2e_require_nodes 2
 
 gpu_capacity() { e2e_kubectl get node "$1" -o jsonpath='{.status.capacity.nvidia\.com/gpu}' 2>/dev/null || true; }
 
+# slurm_gpus NODE: how many GPUs Slurm says are in use on the node, which in the suite's exclusive
+# jobs are the job's (GresUsed=gpu:2(IDX:0-1), gpu:a100:4(IDX:0-3), gpu:0, (null)), as
+# scripts/skiff.slurm reads it. Fails when Slurm could not be asked.
+slurm_gpus() {
+    local out used item count
+    out=$(scontrol -d show node "$1" -o) || return 1
+    used=$(printf '%s\n' "$out" | tr ' ' '\n' | sed -n 's/^GresUsed=//p')
+    for item in ${used//,/ }; do
+        case "$item" in
+            gpu:*)
+                count=${item%%(*}
+                count=${count##*:}
+                if [[ "$count" =~ ^[0-9]+$ ]]; then echo "$count"; return 0; fi ;;
+        esac
+    done
+    echo 0
+}
+
+declare -A SLURM_GPUS
+JOB_HAS_GPUS=0
+for node in $(e2e_all_nodes); do
+    SLURM_GPUS[$node]=$(slurm_gpus "$node") || e2e_die "cannot ask Slurm which GPUs the job holds on $node"
+    [ "${SLURM_GPUS[$node]}" -eq 0 ] || JOB_HAS_GPUS=1
+done
+
 # The node with the most GPUs (the nodes of a cluster may have different numbers).
 GPU_NODE=""
 GPUS=0
@@ -37,11 +64,16 @@ for node in $(e2e_all_nodes); do
 done
 
 ALL_RESULTS="T46-gpu-node T47-nvidia-smi T48-no-request T49-exhaustion-and-reuse T50-too-many T51-init-and-restart T52-several-gpus T53-runtime-class T57-cuda-on-every-gpu"
-if [ -z "$GPU_NODE" ]; then
+if [ "$JOB_HAS_GPUS" -eq 0 ]; then
     for id in $ALL_RESULTS; do
-        e2e_subcase_unavailable "$id" "no node of the cluster has GPUs (the job was given none on any node: the nodes have no GPUs, or the job did not get them)"
+        e2e_subcase_unavailable "$id" "the job holds no GPUs on any node (Slurm: the nodes have none, or the job did not get them)"
     done
     exit 0
+fi
+if [ -z "$GPU_NODE" ]; then
+    # The job has GPUs and no node offers them: everything below would have nothing to run on.
+    for id in $ALL_RESULTS; do e2e_subcase "$id" FAIL; done
+    e2e_die "the job holds GPUs ($(for node in "${!SLURM_GPUS[@]}"; do printf '%s=%s ' "$node" "${SLURM_GPUS[$node]}"; done)) and no node advertises nvidia.com/gpu"
 fi
 GPU_IP=$(runtime_node_ip "$GPU_NODE")
 
@@ -96,6 +128,7 @@ gpu_node() {
     e2e_assert_eq "the RuntimeClass nvidia exists, with the handler nvidia" "$(e2e_kubectl get runtimeclass nvidia -o jsonpath='{.handler}')" nvidia
     local node
     for node in $(e2e_all_nodes); do
+        e2e_assert_eq "$node advertises the GPUs the job holds there (Slurm)" "$(gpu_capacity "$node")" "$([ "${SLURM_GPUS[$node]}" -eq 0 ] || echo "${SLURM_GPUS[$node]}")"
         [ "$node" = "$GPU_NODE" ] && continue
         if [ -z "$(gpu_capacity "$node")" ]; then
             e2e_assert_eq "$node, which has no GPUs, has no GPU label" "$(e2e_kubectl get node "$node" -o jsonpath='{.metadata.labels.nvidia\.com/gpu\.present}')" ""

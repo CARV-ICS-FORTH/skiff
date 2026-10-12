@@ -126,12 +126,18 @@ func CheckRuntimeClass(ctx context.Context, pod *corev1.Pod) error {
 	handler, err := RuntimeHandlers(ctx, *name)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("unsupported features: Spec.RuntimeClassName (RuntimeClass %q not found)", *name)
+			return &RuntimeClassRefusal{fmt.Sprintf("unsupported features: Spec.RuntimeClassName (RuntimeClass %q not found)", *name)}
 		}
 		return fmt.Errorf("cannot read RuntimeClass %q: %w", *name, err)
 	}
 	if !slices.Contains(nvidiaHandlers, handler) {
-		return fmt.Errorf("unsupported features: Spec.RuntimeClassName (RuntimeClass %q has the handler %q, and Skifflet has only %s)", *name, handler, strings.Join(nvidiaHandlers, " and "))
+		return &RuntimeClassRefusal{fmt.Sprintf("unsupported features: Spec.RuntimeClassName (RuntimeClass %q has the handler %q, and Skifflet has only %s)", *name, handler, strings.Join(nvidiaHandlers, " and "))}
 	}
 	return nil
 }
+
+// A RuntimeClassRefusal says that the pod's RuntimeClass is not one Skifflet runs: the pod is
+// refused. Any other error of CheckRuntimeClass (the API server could not be asked) is waited out.
+type RuntimeClassRefusal struct{ Message string }
+
+func (e *RuntimeClassRefusal) Error() string { return e.Message }

@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"al.essio.dev/pkg/shellescape"
 	"skifflet/internal/compute/endpoint"
@@ -60,8 +61,15 @@ type Container struct {
 	RunAsUser     int64
 	RunAsGroup    int64
 	ImageFilePath string
-	EnvFilePath   string
-	Binds         []string
+	// WorkingDir is the directory the container starts in (see workingDirOf); "" means /.
+	WorkingDir string
+	// TerminationMessagePath is where the container writes its termination message, when
+	// Skifflet can keep it (see terminationMessageBound); "" otherwise.
+	TerminationMessagePath string
+	// StopSignal asks the container to stop (see stopSignalOf); 0 means SIGTERM.
+	StopSignal  syscall.Signal
+	EnvFilePath string
+	Binds       []string
 	// GPUs are the minor numbers of the GPUs the container asks for and the pod gave it.
 	GPUs          []int
 	Command       []string
@@ -103,7 +111,7 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 		"--pid",
 		"--no-init",
 		"--contain",
-		"--pwd", "/", // (--contain would start it in its home)
+		"--pwd", c.workingDir(), // (--contain would start it in its home)
 		"--cleanenv",
 		"--no-eval",
 		"--no-mount", NoMounts,
@@ -149,6 +157,9 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 			binds = append(binds, tmp.host+":"+tmp.mountPath+":rw")
 		}
 	}
+	if c.TerminationMessagePath != "" && !c.mounts(c.TerminationMessagePath) {
+		binds = append(binds, own.AttemptTerminationLog(attempt)+":"+c.TerminationMessagePath+":rw")
+	}
 	binds = append(binds, c.Binds...)
 	if len(binds) > 0 {
 		args = append(args, "--bind", strings.Join(binds, ","))
@@ -169,6 +180,14 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 	args = append(args, c.Args...)
 
 	return args
+}
+
+// workingDir is the directory the container starts in.
+func (c *Container) workingDir() string {
+	if c.WorkingDir == "" {
+		return "/"
+	}
+	return c.WorkingDir
 }
 
 // runsInUserNamespace says whether the container runs as another user than root, which

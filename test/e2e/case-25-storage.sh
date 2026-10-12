@@ -71,9 +71,12 @@ bound() { [ "$(claim_phase "$1")" = Bound ]; }
 # root nor that machine (the home is on a storage server, not on a node).
 CHATTR_REASON="needs sudo without a password (chattr +i) on $SHARED_HOME_HOST, the node used as the machine that holds the shared home"
 chattr_available() { runtime_ssh_node "$SHARED_HOME_HOST" "sudo -n true" >/dev/null 2>&1; }
-host_has() { [ "$(runtime_ssh_node "$SHARED_HOME_HOST" "test -e '$1' && echo yes || echo no")" = yes ]; }
-host_lacks() { ! host_has "$1"; }
-volume_gone() { [ -z "$(e2e_kubectl get pv -o name 2>/dev/null | grep -F "$1" || true)" ]; }
+# host_has and host_lacks each need the host's answer: a look that failed (ssh) is neither.
+host_path_state() { runtime_ssh_node "$SHARED_HOME_HOST" "test -e '$1' && echo yes || echo no"; }
+host_has() { [ "$(host_path_state "$1")" = yes ]; }
+host_lacks() { [ "$(host_path_state "$1")" = no ]; }
+# volume_gone PV: the API server answered that the volume does not exist.
+volume_gone() { local out; out=$(e2e_kubectl get pv "$1" --ignore-not-found -o name) && [ -z "$out" ]; }
 event_reasons() { e2e_kubectl get events -n "$NS" --field-selector "involvedObject.name=$1" -o jsonpath='{range .items[*]}{.reason}{"\n"}{end}'; }
 volumes_dir() { host_path "$(dirname "$(volume_path "$1")")"; }   # this job's directory, on the host
 

@@ -127,7 +127,7 @@ func newInitialPreparationFixture(t *testing.T) *initialPreparationFixture {
 		}
 		for _, owner := range PodHandler.GlobalRegistry.All() {
 			owner.Terminate(0)
-			PodHandler.GlobalRegistry.Delete(owner.UID())
+			forgetOwner(owner.UID())
 		}
 		compute.K8SClient, compute.Skiff, PodHandler.GlobalRegistry = oldClient, oldSkiff, oldRegistry
 		PodHandler.MountTmpfs, PodHandler.UnmountTmpfs = oldMount, oldUnmount

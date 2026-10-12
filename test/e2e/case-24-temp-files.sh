@@ -32,8 +32,15 @@ SLEEP='command: ["sleep", "3600"]'
 # pod_of NAME: the pod's directory on its node.
 pod_dir() { runtime_pod_dir "$NS" "$1" "$(e2e_kubectl get pod "$1" -n "$NS" -o jsonpath='{.metadata.uid}')"; }
 in_container() { local pod="$1" container="$2"; shift 2; e2e_kubectl exec "$pod" -n "$NS" -c "$container" -- "$@"; }
-# listing POD CONTAINER DIR: what is in the directory, one name per line ("none" when empty)
-listing() { in_container "$1" "$2" sh -c "ls -A $3 | sort | tr '\n' ' '; true"; }
+# listing POD CONTAINER DIR: what is in the directory, the names sorted and each followed by a
+# space; "none" when it is empty. A listing that could not be made says so, and matches neither.
+listing() {
+    local out
+    if ! out=$(in_container "$1" "$2" sh -c "l=\$(ls -A '$3') || exit 3; [ -n \"\$l\" ] || { echo none; exit 0; }; printf '%s\n' \"\$l\" | sort | tr '\n' ' '"); then
+        out="(could not list $3 in $1/$2)"
+    fi
+    printf '%s' "$out"
+}
 
 # dir_gone DIR: the pod's directory, and with it the temporary files of its containers, is removed.
 absent() { [ "$(runtime_ssh_node "$IP_A" "test -e '$1' && echo yes || echo no")" = no ]; }
@@ -67,12 +74,12 @@ spec:
     ${SLEEP}
 EOF
     e2e_wait_pod_phase "$NS" e2e24-private Running 120
-    e2e_assert_eq "the init container's /tmp is not the application's" "$(listing e2e24-private a /tmp)" ""
-    e2e_assert_eq "nor its /var/tmp" "$(listing e2e24-private a /var/tmp)" ""
+    e2e_assert_eq "the init container's /tmp is not the application's" "$(listing e2e24-private a /tmp)" none
+    e2e_assert_eq "nor its /var/tmp" "$(listing e2e24-private a /var/tmp)" none
     in_container e2e24-private a sh -c "echo a > /tmp/marker-a; echo a > /var/tmp/marker-a"
     e2e_assert_eq "container a sees its own /tmp" "$(listing e2e24-private a /tmp)" "marker-a "
-    e2e_assert_eq "container b does not see a's /tmp" "$(listing e2e24-private b /tmp)" ""
-    e2e_assert_eq "nor a's /var/tmp" "$(listing e2e24-private b /var/tmp)" ""
+    e2e_assert_eq "container b does not see a's /tmp" "$(listing e2e24-private b /tmp)" none
+    e2e_assert_eq "nor a's /var/tmp" "$(listing e2e24-private b /var/tmp)" none
     e2e_assert_eq "/tmp and /var/tmp of a container are different directories" "$(listing e2e24-private a /var/tmp)" "marker-a "
 
     local dir
@@ -107,8 +114,8 @@ spec:
     ${SLEEP}
 EOF
     e2e_wait_pod_phase "$NS" e2e24-later Running 90
-    e2e_assert_eq "a later pod finds nothing of the earlier one in /tmp" "$(listing e2e24-later a /tmp)" ""
-    e2e_assert_eq "or in /var/tmp" "$(listing e2e24-later a /var/tmp)" ""
+    e2e_assert_eq "a later pod finds nothing of the earlier one in /tmp" "$(listing e2e24-later a /tmp)" none
+    e2e_assert_eq "or in /var/tmp" "$(listing e2e24-later a /var/tmp)" none
     e2e_kubectl delete pod e2e24-later -n "$NS" --timeout=60s > /dev/null
     runtime_ssh_node "$IP_A" "rm -f /tmp/e2e24-node-marker"
 }
@@ -155,8 +162,8 @@ EOF
     in_container e2e24-restart app curl -sf http://127.0.0.1:8080/ctl/live/off > /dev/null
     restarted() { [ "$(e2e_kubectl get pod e2e24-restart -n "$NS" -o jsonpath='{.status.containerStatuses[0].restartCount}')" -ge 1 ] && started; }
     e2e_wait_condition 90 "the container is restarted and runs again" restarted
-    e2e_assert_eq "the restarted container's /tmp is empty" "$(listing e2e24-restart app /tmp)" ""
-    e2e_assert_eq "and its /var/tmp" "$(listing e2e24-restart app /var/tmp)" ""
+    e2e_assert_eq "the restarted container's /tmp is empty" "$(listing e2e24-restart app /tmp)" none
+    e2e_assert_eq "and its /var/tmp" "$(listing e2e24-restart app /var/tmp)" none
     e2e_assert_eq "the emptyDir kept its file" "$(in_container e2e24-restart app cat /shared/marker)" one
     e2e_assert_eq "only the directories of the attempt that runs are left on the node" "$(runtime_ssh_node "$IP_A" "ls '${dir}/scratch/app' | tr '\n' ' '")" "2 "
     e2e_assert_eq "attempt 1's files are gone from the node" "$(runtime_ssh_node "$IP_A" "find '${dir}/scratch' -name marker | wc -l" | tr -d ' ')" 0
@@ -213,7 +220,7 @@ EOF
     e2e_assert_eq "the application sees what the init container wrote to the emptyDir" "$(in_container e2e24-share a cat /shared/from-init)" init
     e2e_assert_eq "so does a sibling that mounts it" "$(in_container e2e24-share b cat /shared/from-init)" init
     e2e_assert_eq "a volume mounted at /tmp is what the container sees there" "$(listing e2e24-share a /tmp)" "from-init "
-    e2e_assert_eq "a container that does not mount it has a /tmp of its own" "$(listing e2e24-share b /tmp)" ""
+    e2e_assert_eq "a container that does not mount it has a /tmp of its own" "$(listing e2e24-share b /tmp)" none
     in_container e2e24-share a sh -c "echo before > /shared/from-before"
     e2e_kubectl delete pod e2e24-share -n "$NS" --timeout=60s > /dev/null
     # The same name again is a new pod with a new emptyDir.
@@ -223,5 +230,65 @@ EOF
     e2e_kubectl delete pod e2e24-share -n "$NS" --timeout=60s > /dev/null
 }
 e2e_subcase_run T31-emptydir emptydir_sharing
+
+# ---------------------------------------------------------------------------
+# T31-working-dir: a container starts where the kubelet's runtime starts it: in its workingDir,
+# made when the image does not have it; else in its image's WORKDIR; else in /. An exec starts
+# there too.
+# ---------------------------------------------------------------------------
+working_dir() {
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e24-workdir, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  terminationGracePeriodSeconds: 1
+  containers:
+  - {name: plain, image: ${FIXTURE_IMAGE}, command: ["sh", "-c", "pwd > /tmp/start; sleep 3600"]}
+  - {name: image-dir, image: ${FIXTURE_USER_IMAGE}, command: ["sh", "-c", "pwd > /tmp/start; sleep 3600"]}
+  - {name: spec-dir, image: ${FIXTURE_IMAGE}, workingDir: /srv/made/here, command: ["sh", "-c", "pwd > /tmp/start; sleep 3600"]}
+EOF
+    e2e_wait_pod_phase "$NS" e2e24-workdir Running 120
+    e2e_wait_condition 30 "every container has said where it started" "e2e_kubectl exec e2e24-workdir -n $NS -c spec-dir -- test -s /tmp/start"
+    e2e_assert_eq "an image without a WORKDIR starts in /" "$(in_container e2e24-workdir plain cat /tmp/start)" /
+    e2e_assert_eq "an image's WORKDIR is where its container starts" "$(in_container e2e24-workdir image-dir cat /tmp/start)" /home/appuser
+    e2e_assert_eq "a workingDir the image does not have is made, and the container starts there" "$(in_container e2e24-workdir spec-dir cat /tmp/start)" /srv/made/here
+    e2e_assert_eq "an exec starts there too" "$(in_container e2e24-workdir spec-dir pwd)" /srv/made/here
+    e2e_kubectl delete pod e2e24-workdir -n "$NS" --timeout=60s > /dev/null
+}
+e2e_subcase_run T31-working-dir working_dir
+
+# ---------------------------------------------------------------------------
+# T31-subpath-escape: a subPath cannot take a mount out of its volume: an init container makes
+# a symlink to the bubble's /root/.skiff (the cluster's credentials) in an emptyDir, and the
+# container that mounts it as a subPath is refused, as the kubelet refuses it, and sees nothing.
+# ---------------------------------------------------------------------------
+subpath_escape() {
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e24-escape, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  terminationGracePeriodSeconds: 1
+  initContainers:
+  - name: plant
+    image: ${FIXTURE_IMAGE}
+    command: ["sh", "-c", "ln -s /root/.skiff /work/out"]
+    volumeMounts: [{name: work, mountPath: /work}]
+  containers:
+  - name: app
+    image: ${FIXTURE_IMAGE}
+    command: ["sh", "-c", "ls /creds; sleep 3600"]
+    volumeMounts: [{name: work, mountPath: /creds, subPath: out}]
+  volumes: [{name: work, emptyDir: {}}]
+EOF
+    e2e_wait_condition 120 "the container is refused" "[ \"\$(e2e_kubectl get pod e2e24-escape -n $NS -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}')\" = CreateContainerConfigError ]"
+    e2e_assert_contains "the message says why" "$(e2e_kubectl get pod e2e24-escape -n "$NS" -o jsonpath='{.status.containerStatuses[0].state.waiting.message}')" "outside its volume"
+    e2e_assert_eq "the container never ran" "$(e2e_kubectl get pod e2e24-escape -n "$NS" -o jsonpath='{.status.containerStatuses[0].restartCount}{.status.containerStatuses[0].state.running}')" 0
+    e2e_kubectl delete pod e2e24-escape -n "$NS" --timeout=60s > /dev/null
+}
+e2e_subcase_run T31-subpath-escape subpath_escape
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

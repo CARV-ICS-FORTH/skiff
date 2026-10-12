@@ -15,7 +15,9 @@ RUN chmod +x /usr/local/bin/fixture
 ENTRYPOINT ["/usr/local/bin/fixture"]
 
 # The same image with a USER, named, as an image of a non-root service has: the user and the
-# group of its passwd entry are what a container runs as when its pod does not say.
+# group of its passwd entry are what a container runs as when its pod does not say. Its WORKDIR
+# is where a container of it starts when its pod does not say.
 FROM fixture AS fixture-user
 RUN addgroup -g 4322 appgroup && adduser -D -u 4321 -G appgroup appuser
 USER appuser
+WORKDIR /home/appuser

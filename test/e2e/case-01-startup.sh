@@ -35,12 +35,18 @@ source "\$LIB_DIR/common.sh"
 source "\$LIB_DIR/fixture.sh"
 source "\$LIB_DIR/runtime.sh"
 
+# wait_clean NODELIST: every node of the list is clean of the job's resources. A list that is
+# empty, or names no host, is a failure: nothing would have been inspected.
 wait_clean() {
-    local max=300 elapsed=0
-    local nodelist="\${JOB_NODELIST:-\${SLURM_JOB_NODELIST:-}}"
+    local nodelist="\$1" max=300 elapsed=0 hosts host ok
+    hosts=\$(scontrol show hostnames "\$nodelist" 2>/dev/null || true)
+    if [ -z "\$hosts" ]; then
+        e2e_fail "no node to inspect (node list '\${nodelist}')"
+        return 1
+    fi
     while [ \$elapsed -lt \$max ]; do
-        local ok=1
-        for host in \$(scontrol show hostnames "\$nodelist"); do
+        ok=1
+        for host in \$hosts; do
             if ! runtime_host_resources_gone "\$host"; then
                 ok=0
                 break
@@ -52,32 +58,28 @@ wait_clean() {
         sleep 5
         elapsed=\$((elapsed+5))
     done
+    e2e_fail "the nodes \${nodelist} still hold resources of the job after \${max}s"
     return 1
 }
+
+# job_nodelist JOB: the nodes of a job, while Slurm still has its record.
+job_nodelist() { scontrol show job "\$1" -o 2>/dev/null | tr ' ' '\n' | sed -n 's/^NodeList=//p' | sed -n 1p; }
 
 check_nodes_ready() {
     local cnt=\$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c "True" || true)
     [ "\$cnt" -ge "\$E2E_NODES" ]
 }
 
+# The job to end is the suite's own: without its ID nothing is cancelled (another job of the
+# user's is never a guess).
 TARGET_JOB="\${SKIFF_JOB_ID:-${SKIFF_JOB_ID:-}}"
-if [ -z "\$TARGET_JOB" ]; then
-    TARGET_JOB=\$(squeue -u \$(whoami) -h -o "%i" | sed -n 1p || true)
-fi
-
-# The nodes of the job, whatever they are called, while Slurm still has the job's record.
-JOB_NODELIST="\${SLURM_JOB_NODELIST:-}"
-if [ -z "\$JOB_NODELIST" ] && [ -n "\$TARGET_JOB" ]; then
-    JOB_NODELIST=\$(scontrol show job "\$TARGET_JOB" -o 2>/dev/null | tr ' ' '\n' | sed -n 's/^NodeList=//p' | sed -n 1p)
-fi
-
 if [ "\${NO_TEARDOWN:-0}" != "1" ]; then
-    if [ -n "\$TARGET_JOB" ]; then
-        e2e_log "Canceling job \$TARGET_JOB"
-        scancel "\$TARGET_JOB" 2>/dev/null || true
-    fi
-    wait_clean
-    
+    [[ "\$TARGET_JOB" =~ ^[0-9]+\$ ]] || e2e_die "the suite's job ID is unknown ('\${TARGET_JOB}'): nothing is cancelled"
+    JOB_NODELIST=\$(job_nodelist "\$TARGET_JOB")
+    e2e_log "Canceling job \$TARGET_JOB (nodes \${JOB_NODELIST:-unknown})"
+    scancel "\$TARGET_JOB"
+    wait_clean "\$JOB_NODELIST"
+
     REPO_ROOT="\${SKIFF_ARTIFACT_DIR:-\$(git rev-parse --show-toplevel 2>/dev/null || echo ".")}"
     if [ ! -f "\${REPO_ROOT}/scripts/skiff.slurm" ]; then
         for cand in "\$HOME/skiff" "\$(cd "\$(dirname "\$0")" && pwd)/../../.." "\$(cd "\$(dirname "\$0")" && pwd)/../.."; do
@@ -89,11 +91,29 @@ if [ "\${NO_TEARDOWN:-0}" != "1" ]; then
     fi
     e2e_log "Submitting second skiff.slurm from \${REPO_ROOT}"
     NEW_JOB=\$(e2e_sbatch "\${REPO_ROOT}/scripts/skiff.slurm")
-    
+    [[ "\$NEW_JOB" =~ ^[0-9]+\$ ]] || e2e_die "cannot submit the second job"
+
     e2e_wait_condition 300 "$E2E_NODES nodes ready (2nd time)" check_nodes_ready
-    
+    NEW_NODELIST=\$(job_nodelist "\$NEW_JOB")
+    # The second cluster runs a pod, not only nodes that say they are Ready.
+    NS2="e2e-01-second-boot-\$NEW_JOB"
+    e2e_kubectl create namespace "\$NS2" >/dev/null
+    cat <<POD | e2e_kubectl apply -f - >/dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: second-boot, namespace: \$NS2}
+spec:
+  restartPolicy: Never
+  containers:
+  - {name: app, image: \$FIXTURE_IMAGE, command: ["sh", "-c", "echo second-boot-ok"]}
+POD
+    e2e_wait_pod_phase "\$NS2" second-boot Succeeded 180
+    e2e_assert_eq "the second cluster ran a pod" "\$(e2e_kubectl logs second-boot -n "\$NS2")" second-boot-ok
+
+    e2e_log "Canceling the second job \$NEW_JOB (nodes \${NEW_NODELIST:-unknown})"
     scancel "\$NEW_JOB"
-    wait_clean
+    wait_clean "\$NEW_NODELIST"
+    [ "\${E2E_FAILED:-0}" -eq 0 ] || exit 1
     e2e_pass "Deferred teardown and second cluster boot verified"
 fi
 EOF

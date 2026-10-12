@@ -325,7 +325,7 @@ func TestTarget_EnvironmentIsTheContainersNeverSkifflets(t *testing.T) {
 	if strings.Contains(strings.Join(cmd.Env, "\n"), "SKIFF_SECRET") || strings.Join(cmd.Env, " ") != "PATH=/container/bin APP_MODE=fixture" {
 		t.Fatalf("command environment %v", cmd.Env)
 	}
-	want := []string{"nsenter", "-t", strconv.Itoa(fakePayload), "-m", "-n", "-p", "-r", "-w", "--", "sh", "-c", "pwd"}
+	want := []string{"nsenter", "-t", strconv.Itoa(fakePayload), "-m", "-n", "-p", "-u", "-r", "-w", "--", "sh", "-c", "pwd"}
 	if strings.Join(cmd.Args, " ") != strings.Join(want, " ") {
 		t.Fatalf("command line %v, want %v", cmd.Args, want)
 	}
@@ -525,11 +525,11 @@ func TestKillProcessTree_KillsDescendantsLeavesOthers(t *testing.T) {
 // none to join.
 func TestNsenterArgs(t *testing.T) {
 	got := strings.Join(nsenterArgs(42, false, []string{"id", "-u"}), " ")
-	if got != "-t 42 -m -n -p -r -w -- id -u" {
+	if got != "-t 42 -m -n -p -u -r -w -- id -u" {
 		t.Errorf("without a user namespace: %q", got)
 	}
 	got = strings.Join(nsenterArgs(42, true, []string{"id", "-u"}), " ")
-	if got != "-t 42 -U --preserve-credentials -m -n -p -r -w -- id -u" {
+	if got != "-t 42 -U --preserve-credentials -m -n -p -u -r -w -- id -u" {
 		t.Errorf("with a user namespace: %q", got)
 	}
 	// The test process is in no other user namespace than itself.

@@ -25,7 +25,6 @@ type SandboxInfo struct {
 	NetnsInode uint64 `json:"netns_inode"`
 	EndpointID string `json:"endpoint_id"`
 	IP         string `json:"ip"`
-	Gateway    string `json:"gateway"`
 }
 
 // WaitForReadiness waits for the launcher to write its readiness JSON handshake to readinessFile.
@@ -44,9 +43,6 @@ func WaitForReadiness(ctx context.Context, readinessFile string, timeout time.Du
 				var info SandboxInfo
 				if jsonErr := json.Unmarshal(data, &info); jsonErr == nil && info.PausePID > 1 && info.IP != "" {
 					info.IP = strings.Split(info.IP, "/")[0]
-					if info.Gateway != "" {
-						info.Gateway = strings.Split(info.Gateway, "/")[0]
-					}
 					return &info, nil
 				}
 			}

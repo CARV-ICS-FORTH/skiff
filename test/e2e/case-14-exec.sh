@@ -74,6 +74,21 @@ e2e_wait_pod_ready "$NS" e2e14-app 90
 POD=e2e14-app
 
 # ---------------------------------------------------------------------------
+# T71-kubectl-cp: kubectl cp, which is exec with tar, copies a file into the container and
+# back out unchanged.
+# ---------------------------------------------------------------------------
+kubectl_cp() {
+    local dir
+    dir=$(mktemp -d)
+    head -c 65536 /dev/urandom > "$dir/in.bin"
+    "${E2E_KUBECTL:-kubectl}" --kubeconfig "${KUBECONFIG:-$HOME/.skiff/kubeconfig}" cp "$dir/in.bin" "$NS/$POD:/tmp/in.bin"
+    "${E2E_KUBECTL:-kubectl}" --kubeconfig "${KUBECONFIG:-$HOME/.skiff/kubeconfig}" cp "$NS/$POD:/tmp/in.bin" "$dir/out.bin"
+    e2e_assert_eq "the file came back unchanged" "$(cmp -s "$dir/in.bin" "$dir/out.bin" && echo same || echo different)" same
+    rm -rf "$dir"
+}
+e2e_subcase_run T71-kubectl-cp kubectl_cp
+
+# ---------------------------------------------------------------------------
 # T17-exec-streams: without a terminal, output and error stay separate, input
 # ends with end of file, and the exit status is the command's.
 # ---------------------------------------------------------------------------

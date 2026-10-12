@@ -34,10 +34,9 @@ func envVarsToMap(envs []corev1.EnvVar) map[string]string {
 	return result
 }
 
-// ExpandContainerCommandOnlyStatic substitutes only static environment variable values from the
-// container environment definitions. This does *not* include valueFrom substitutions.
-// TODO: callers should use ExpandContainerCommandAndArgs with a fully resolved list of environment.
-func ExpandContainerCommandOnlyStatic(containerCommand []string, envs []corev1.EnvVar) (command []string) {
+// ExpandContainerCommand substitutes $(VAR) references in a container's command or arguments
+// with the values of its environment, which the caller gives fully resolved (valueFrom too).
+func ExpandContainerCommand(containerCommand []string, envs []corev1.EnvVar) (command []string) {
 	mapping := expansion.MappingFuncFor(envVarsToMap(envs))
 	if len(containerCommand) != 0 {
 		for _, cmd := range containerCommand {

@@ -108,8 +108,17 @@ unsupported_forms() {
     args: '"${app_args}"'
     restartPolicy: Always' "" "Spec.InitContainers[0].RestartPolicy"
     unsupported_pod e2e18-deadline '  activeDeadlineSeconds: 30' "" "Spec.ActiveDeadlineSeconds"
+    # What is not implemented is refused, named (sprint 5): no field passes unnoticed.
+    unsupported_pod e2e18-sharepid '  shareProcessNamespace: true' "" "Spec.ShareProcessNamespace"
+    unsupported_pod e2e18-gates '  readinessGates:
+  - conditionType: example.org/ready' "" "Spec.ReadinessGates"
+    unsupported_pod e2e18-pullsecret '  imagePullSecrets:
+  - name: regcred' "" "Spec.ImagePullSecrets"
+    unsupported_pod e2e18-tty "" '    stdin: true
+    tty: true' "Spec.Containers[0].Stdin/TTY"
+    unsupported_pod e2e18-windows '  os: {name: windows}' "" "Spec.OS"
     sentinel_serves
-    e2e_kubectl delete pod e2e18-grpc e2e18-nfs e2e18-sidecar e2e18-deadline -n "$NS" --wait=false > /dev/null
+    e2e_kubectl delete pod e2e18-grpc e2e18-nfs e2e18-sidecar e2e18-deadline e2e18-sharepid e2e18-gates e2e18-pullsecret e2e18-tty e2e18-windows -n "$NS" --wait=false > /dev/null
 }
 e2e_subcase_run T05-unsupported-forms unsupported_forms
 
@@ -155,8 +164,12 @@ unsupported_updates() {
     # the same difference again and again: reported once
     e2e_kubectl annotate pod e2e18-sentinel -n "$NS" again=1 --overwrite > /dev/null
     e2e_kubectl annotate pod e2e18-sentinel -n "$NS" again=2 --overwrite > /dev/null
-    sleep 4
-    e2e_assert_eq "the same difference is reported once" "$(e2e_kubectl get events -n "$NS" --field-selector involvedObject.name=e2e18-sentinel,reason=UpdateNotApplied -o name | wc -l | tr -d ' ')" 1
+    # Both updates have reached the node when its runtime view shows the last annotation; the
+    # event recorder folds repeats of one event into one object with a count, so the count of
+    # every UpdateNotApplied event is what says "once".
+    e2e_wait_condition 30 "the node has seen both updates" "e2e_kubectl get --raw /api/v1/nodes/${NODE_A}/proxy/runningpods/ | e2e_grep_q '\"again\":\"2\"'"
+    e2e_assert_eq "the same difference is reported once" \
+        "$(e2e_kubectl get events -n "$NS" --field-selector involvedObject.name=e2e18-sentinel,reason=UpdateNotApplied -o jsonpath='{range .items[*]}{.count}{" "}{end}')" "1 "
 
     e2e_kubectl patch pod e2e18-sentinel -n "$NS" -p '{"spec":{"activeDeadlineSeconds":600}}' > /dev/null
     e2e_wait_condition 60 "the deadline is reported" has_message activeDeadlineSeconds
@@ -389,5 +402,260 @@ EOF
     e2e_assert_eq "the node is still ready" "$(e2e_kubectl get node "$NODE_A" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" True
 }
 e2e_subcase_run T16-continuity continuity
+
+# ---------------------------------------------------------------------------
+# T60-pod-names-and-dns: the pod's hosts file and resolver are the kubelet's: hostAliases
+# resolve, a pod with a subdomain has its fully qualified name, setHostnameAsFQDN makes it the
+# hostname, and dnsConfig adds to the cluster's search path and options instead of replacing them.
+# ---------------------------------------------------------------------------
+pod_names_and_dns() {
+    local fqdn="web-0.web.${NS}.svc.${SKIFF_CLUSTER_DOMAIN}"
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e18-names, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  terminationGracePeriodSeconds: 1
+  hostname: web-0
+  subdomain: web
+  hostAliases:
+  - {ip: 10.1.2.3, hostnames: [db.example, db]}
+  dnsConfig:
+    searches: [example.org]
+    options: [{name: ndots, value: "2"}]
+  containers:
+  - {name: app, image: ${FIXTURE_IMAGE}, command: ["sleep", "3600"]}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e18-fqdn, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  terminationGracePeriodSeconds: 1
+  hostname: web-0
+  subdomain: web
+  setHostnameAsFQDN: true
+  containers:
+  - {name: app, image: ${FIXTURE_IMAGE}, command: ["sleep", "3600"]}
+EOF
+    e2e_wait_pod_phase "$NS" e2e18-names Running 120
+    e2e_wait_pod_phase "$NS" e2e18-fqdn Running 120
+    local resolv
+    in_names() { e2e_kubectl exec e2e18-names -n "$NS" -c app -- "$@"; }
+    e2e_assert_eq "a host alias resolves" "$(in_names getent hosts db.example | awk '{print $1}')" 10.1.2.3
+    e2e_assert_eq "the pod's hostname" "$(in_names hostname)" web-0
+    e2e_assert_contains "the hosts file names the pod by its fully qualified name" "$(in_names cat /etc/hosts)" "${fqdn}"
+    e2e_assert_eq "setHostnameAsFQDN makes it the hostname" "$(e2e_kubectl exec e2e18-fqdn -n "$NS" -c app -- hostname)" "${fqdn}"
+    resolv=$(in_names cat /etc/resolv.conf)
+    e2e_assert_eq "one search line" "$(grep -c '^search ' <<< "$resolv")" 1
+    e2e_assert_contains "dnsConfig adds to the cluster's search path" "$resolv" "search ${NS}.svc.${SKIFF_CLUSTER_DOMAIN} svc.${SKIFF_CLUSTER_DOMAIN} ${SKIFF_CLUSTER_DOMAIN} example.org"
+    e2e_assert_contains "and replaces an option by name" "$resolv" "ndots:2"
+    if [[ "$resolv" == *"ndots:5"* ]]; then e2e_fail "the cluster's ndots:5 is still there: $resolv"; fi
+    e2e_assert_eq "the cluster's names still resolve" "$(in_names getent hosts kubernetes.default | awk '{print $1}')" "$SKIFF_API_SERVICE_IP"
+    e2e_kubectl delete pod e2e18-names e2e18-fqdn -n "$NS" --timeout=60s > /dev/null
+}
+e2e_subcase_run T60-pod-names-and-dns pod_names_and_dns
+
+# ---------------------------------------------------------------------------
+# T61-termination-message: what a container writes at its terminationMessagePath is the
+# message of its terminated state; with FallbackToLogsOnError, a failed container that wrote
+# nothing there has the end of its log. (A path below /dev, the default /dev/termination-log,
+# cannot be kept: the support table says so.)
+# ---------------------------------------------------------------------------
+termination_message() {
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e18-term, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  restartPolicy: Never
+  containers:
+  - name: file
+    image: ${FIXTURE_IMAGE}
+    terminationMessagePath: /var/log/termination
+    command: ["sh", "-c", "echo 'it went wrong' > /var/log/termination; exit 3"]
+  - name: fallback
+    image: ${FIXTURE_IMAGE}
+    terminationMessagePolicy: FallbackToLogsOnError
+    command: ["sh", "-c", "echo 'last words'; exit 4"]
+EOF
+    e2e_wait_pod_phase "$NS" e2e18-term Failed 120
+    e2e_assert_eq "the message the container wrote" \
+        "$(e2e_kubectl get pod e2e18-term -n "$NS" -o jsonpath='{.status.containerStatuses[?(@.name=="file")].state.terminated.message}')" "it went wrong"
+    e2e_assert_contains "the end of the log of a failed container" \
+        "$(e2e_kubectl get pod e2e18-term -n "$NS" -o jsonpath='{.status.containerStatuses[?(@.name=="fallback")].state.terminated.message}')" "last words"
+    e2e_kubectl delete pod e2e18-term -n "$NS" --timeout=60s > /dev/null
+}
+e2e_subcase_run T61-termination-message termination_message
+
+# ---------------------------------------------------------------------------
+# T62-stop-signal: a container is asked to stop with its lifecycle.stopSignal (here when its
+# liveness probe fails), not SIGTERM. Where the API server does not keep the field (its feature
+# gate is off), UNAVAILABLE.
+# ---------------------------------------------------------------------------
+stop_signal() {
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e18-stopsig, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  os: {name: linux}
+  terminationGracePeriodSeconds: 10
+  containers:
+  - name: app
+    image: ${FIXTURE_IMAGE}
+    command: ["sh", "-c", "trap 'echo got=USR1; exit 0' USR1; trap 'echo got=TERM; exit 0' TERM; while :; do sleep 1; done"]
+    lifecycle: {stopSignal: SIGUSR1}
+    livenessProbe:
+      exec: {command: ["sh", "-c", "test ! -e /tmp/die"]}
+      periodSeconds: 1
+      failureThreshold: 1
+EOF
+    if [ -z "$(e2e_kubectl get pod e2e18-stopsig -n "$NS" -o jsonpath='{.spec.containers[0].lifecycle.stopSignal}')" ]; then
+        e2e_kubectl delete pod e2e18-stopsig -n "$NS" --wait=false > /dev/null
+        e2e_subcase_unavailable T62-stop-signal "the API server does not keep lifecycle.stopSignal (its feature gate ContainerStopSignals is off)"
+        return 0
+    fi
+    e2e_wait_pod_phase "$NS" e2e18-stopsig Running 120
+    e2e_kubectl exec e2e18-stopsig -n "$NS" -- touch /tmp/die
+    e2e_wait_condition 60 "the container was stopped for its liveness probe" "[ \"\$(e2e_kubectl get pod e2e18-stopsig -n $NS -o jsonpath='{.status.containerStatuses[0].restartCount}')\" -ge 1 ]"
+    e2e_assert_contains "it was asked to stop with its stop signal" "$(e2e_kubectl logs e2e18-stopsig -n "$NS" --previous)" "got=USR1"
+    e2e_kubectl delete pod e2e18-stopsig -n "$NS" --timeout=60s > /dev/null
+}
+# (Where it cannot run, stop_signal reports UNAVAILABLE, which outranks the PASS of its return.)
+e2e_subcase_run T62-stop-signal stop_signal
+
+# ---------------------------------------------------------------------------
+# T63-api-service: a pod finds the API server through the kubernetes Service, as with the
+# kubelet: the variables are the Service's address and port, and its service account's token
+# is accepted there.
+# ---------------------------------------------------------------------------
+api_service() {
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e18-api, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  terminationGracePeriodSeconds: 1
+  containers:
+  - {name: app, image: ${FIXTURE_IMAGE}, command: ["sleep", "3600"]}
+EOF
+    e2e_wait_pod_phase "$NS" e2e18-api Running 120
+    local ip port
+    ip=$(e2e_kubectl get service kubernetes -n default -o jsonpath='{.spec.clusterIP}')
+    port=$(e2e_kubectl get service kubernetes -n default -o jsonpath='{.spec.ports[0].port}')
+    e2e_assert_eq "KUBERNETES_SERVICE_HOST is the Service's address" "$(e2e_kubectl exec e2e18-api -n "$NS" -- printenv KUBERNETES_SERVICE_HOST)" "$ip"
+    e2e_assert_eq "KUBERNETES_SERVICE_PORT is its port" "$(e2e_kubectl exec e2e18-api -n "$NS" -- printenv KUBERNETES_SERVICE_PORT)" "$port"
+    e2e_assert_eq "the API server answers there to the pod's token" \
+        "$(e2e_kubectl exec e2e18-api -n "$NS" -- sh -c 'curl -sk -m 10 -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" "https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT}/version"')" 200
+    e2e_kubectl delete pod e2e18-api -n "$NS" --timeout=60s > /dev/null
+}
+e2e_subcase_run T63-api-service api_service
+
+# ---------------------------------------------------------------------------
+# T65-restart-sees-new-config: every start of a container is prepared anew, as with the
+# kubelet: a restarted container has the ConfigMap's value of the moment, not the first one's.
+# ---------------------------------------------------------------------------
+restart_sees_new_config() {
+    e2e_kubectl create configmap e2e18-live -n "$NS" --from-literal=v=one > /dev/null
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e18-live, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  restartPolicy: Always
+  terminationGracePeriodSeconds: 1
+  containers:
+  - name: app
+    image: ${FIXTURE_IMAGE}
+    command: ["sh", "-c", "echo value=\$V; sleep 2"]
+    env: [{name: V, valueFrom: {configMapKeyRef: {name: e2e18-live, key: v}}}]
+EOF
+    e2e_wait_condition 120 "the first attempt says the first value" "e2e_kubectl logs e2e18-live -n $NS 2>/dev/null | e2e_grep_q value=one"
+    e2e_kubectl patch configmap e2e18-live -n "$NS" -p '{"data":{"v":"two"}}' > /dev/null
+    e2e_wait_condition 180 "a later attempt says the new value" "e2e_kubectl logs e2e18-live -n $NS 2>/dev/null | e2e_grep_q value=two"
+    e2e_kubectl delete pod e2e18-live -n "$NS" --timeout=60s > /dev/null
+    e2e_kubectl delete configmap e2e18-live -n "$NS" > /dev/null
+}
+e2e_subcase_run T65-restart-sees-new-config restart_sees_new_config
+
+# ---------------------------------------------------------------------------
+# T66-volume-updates: while a pod runs, its ConfigMap volume follows the ConfigMap and its
+# Downward API volume the pod's labels, as with the kubelet; a subPath mount of the ConfigMap
+# stays what it was when the container started.
+# ---------------------------------------------------------------------------
+volume_updates() {
+    e2e_kubectl create configmap e2e18-follow -n "$NS" --from-literal=k=one > /dev/null
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e18-follow, namespace: ${NS}, labels: {tier: front}}
+spec:
+  nodeName: ${NODE_A}
+  terminationGracePeriodSeconds: 1
+  containers:
+  - name: app
+    image: ${FIXTURE_IMAGE}
+    command: ["sleep", "3600"]
+    volumeMounts:
+    - {name: cfg, mountPath: /cfg}
+    - {name: cfg, mountPath: /fixed/k, subPath: k}
+    - {name: info, mountPath: /info}
+  volumes:
+  - {name: cfg, configMap: {name: e2e18-follow}}
+  - name: info
+    downwardAPI: {items: [{path: labels, fieldRef: {fieldPath: metadata.labels}}]}
+EOF
+    e2e_wait_pod_phase "$NS" e2e18-follow Running 120
+    in_pod() { e2e_kubectl exec e2e18-follow -n "$NS" -- "$@"; }
+    e2e_assert_eq "the ConfigMap's value" "$(in_pod cat /cfg/k)" one
+    e2e_kubectl patch configmap e2e18-follow -n "$NS" -p '{"data":{"k":"two"}}' > /dev/null
+    e2e_kubectl label pod e2e18-follow -n "$NS" tier=back --overwrite > /dev/null
+    e2e_wait_condition 90 "the ConfigMap volume follows the ConfigMap" "[ \"\$(e2e_kubectl exec e2e18-follow -n $NS -- cat /cfg/k)\" = two ]"
+    e2e_wait_condition 90 "the Downward API volume follows the labels" "e2e_kubectl exec e2e18-follow -n $NS -- cat /info/labels | e2e_grep_q 'tier=\"back\"'"
+    e2e_assert_eq "a subPath mount stays as it was" "$(in_pod cat /fixed/k)" one
+    e2e_kubectl delete pod e2e18-follow -n "$NS" --timeout=60s > /dev/null
+    e2e_kubectl delete configmap e2e18-follow -n "$NS" > /dev/null
+}
+e2e_subcase_run T66-volume-updates volume_updates
+
+# ---------------------------------------------------------------------------
+# T72-file-modes: the files of a ConfigMap and a Secret volume have the volume's defaultMode,
+# or an item's own mode.
+# ---------------------------------------------------------------------------
+file_modes() {
+    e2e_kubectl create configmap e2e18-modes -n "$NS" --from-literal=a=1 --from-literal=b=2 > /dev/null
+    e2e_kubectl create secret generic e2e18-modes -n "$NS" --from-literal=s=3 > /dev/null
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e18-modes, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  terminationGracePeriodSeconds: 1
+  containers:
+  - name: app
+    image: ${FIXTURE_IMAGE}
+    command: ["sleep", "3600"]
+    volumeMounts: [{name: cm, mountPath: /cm}, {name: sec, mountPath: /sec}]
+  volumes:
+  - name: cm
+    configMap: {name: e2e18-modes, defaultMode: 0640, items: [{key: a, path: a}, {key: b, path: b, mode: 0600}]}
+  - name: sec
+    secret: {secretName: e2e18-modes, defaultMode: 0400}
+EOF
+    e2e_wait_pod_phase "$NS" e2e18-modes Running 120
+    e2e_assert_eq "the volume's defaultMode" "$(e2e_kubectl exec e2e18-modes -n "$NS" -- stat -L -c %a /cm/a)" 640
+    e2e_assert_eq "an item's own mode" "$(e2e_kubectl exec e2e18-modes -n "$NS" -- stat -L -c %a /cm/b)" 600
+    e2e_assert_eq "a Secret's defaultMode" "$(e2e_kubectl exec e2e18-modes -n "$NS" -- stat -L -c %a /sec/s)" 400
+    e2e_kubectl delete pod e2e18-modes -n "$NS" --timeout=60s > /dev/null
+    e2e_kubectl delete configmap,secret e2e18-modes -n "$NS" > /dev/null
+}
+e2e_subcase_run T72-file-modes file_modes
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

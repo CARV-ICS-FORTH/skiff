@@ -216,6 +216,9 @@ func UnappliedSecurityContext(pod *corev1.Pod) string {
 		if len(sc.Sysctls) > 0 {
 			fields = append(fields, "sysctls")
 		}
+		if sc.SELinuxChangePolicy != nil {
+			fields = append(fields, "seLinuxChangePolicy")
+		}
 		if len(fields) > 0 {
 			parts = append(parts, "pod: "+strings.Join(fields, ", "))
 		}

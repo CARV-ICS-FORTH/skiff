@@ -12,17 +12,22 @@ import (
 	"skifflet/internal/compute/image"
 )
 
-// The images of the tests are files that are not SIFs: none of them says who it runs as,
-// unless a test says so (withImageUser).
+// The images of the tests are files that are not SIFs: none of them says who it runs as or
+// where it starts, unless a test says so (withImageUser, withImageConfig).
 func init() {
-	imageUserOf = func(context.Context, *image.Image) (image.User, error) { return image.User{}, nil }
+	imageConfigOf = func(context.Context, *image.Image) (image.Config, error) { return image.Config{}, nil }
 }
 
 func withImageUser(t *testing.T, user image.User, err error) {
 	t.Helper()
-	old := imageUserOf
-	imageUserOf = func(context.Context, *image.Image) (image.User, error) { return user, err }
-	t.Cleanup(func() { imageUserOf = old })
+	withImageConfig(t, image.Config{User: user}, err)
+}
+
+func withImageConfig(t *testing.T, config image.Config, err error) {
+	t.Helper()
+	old := imageConfigOf
+	imageConfigOf = func(context.Context, *image.Image) (image.Config, error) { return config, err }
+	t.Cleanup(func() { imageConfigOf = old })
 }
 
 func buildWith(t *testing.T, pod *corev1.Pod) (Container, error) {

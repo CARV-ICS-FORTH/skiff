@@ -49,6 +49,15 @@ type VolumeMounter struct {
 	Resources fieldpath.ResourceResolver
 
 	Logger logr.Logger
+
+	// tokens are the service account tokens of the volume, by path, kept until 80% of their
+	// life has passed (as the kubelet renews them), so that a sync does not ask for new ones.
+	tokens map[string]projectedToken
+}
+
+type projectedToken struct {
+	data       []byte
+	renewAfter time.Time
 }
 
 func (b *VolumeMounter) SetUpAt(ctx context.Context, dir string) error {
@@ -89,12 +98,24 @@ func (b *VolumeMounter) SetUpAt(ctx context.Context, dir string) error {
 	if err != nil {
 		return fmt.Errorf("Error writing payload to dir: %w", err)
 	}
-
-	if !earliestExpiry.IsZero() {
-		go b.startTokenRefreshLoop(ctx, dir, writer, earliestExpiry)
-	}
+	_ = earliestExpiry
 
 	return nil
+}
+
+// Sync writes the volume again from what its sources say now: a changed ConfigMap, Secret or
+// label, and a token that is due to be renewed. What cannot be read now leaves the volume as
+// it is. The files change at once, through the atomic writer.
+func (b *VolumeMounter) Sync(ctx context.Context, dir string) error {
+	data, _, err := b.collectDataWithExpiry(ctx)
+	if err != nil {
+		return err
+	}
+	writer, err := util.NewAtomicWriter(dir, fmt.Sprintf("pod %s/%s volume %v", b.Pod.GetNamespace(), b.Pod.GetName(), b.Volume.Name))
+	if err != nil {
+		return err
+	}
+	return writer.Write(data)
 }
 
 func (b *VolumeMounter) collectDataWithExpiry(ctx context.Context) (map[string]util.FileProjection, time.Time, error) {
@@ -210,6 +231,10 @@ func (b *VolumeMounter) collectDataWithExpiry(ctx context.Context) (map[string]u
 			/*---------------------------------------------------
 			 * Projected ServiceAccountToken
 			 *---------------------------------------------------*/
+			if cached, ok := b.tokens[source.ServiceAccountToken.Path]; ok && time.Now().Before(cached.renewAfter) {
+				payload[source.ServiceAccountToken.Path] = util.FileProjection{Data: cached.data, Mode: *b.Volume.Projected.DefaultMode}
+				continue
+			}
 			tokenRequest, err := compute.K8SClientset.CoreV1().
 				ServiceAccounts(b.Pod.GetNamespace()).
 				CreateToken(ctx, b.Pod.Spec.ServiceAccountName, &authenticationv1.TokenRequest{
@@ -244,70 +269,16 @@ func (b *VolumeMounter) collectDataWithExpiry(ctx context.Context) (map[string]u
 				Data: []byte(tokenRequest.Status.Token),
 				Mode: *b.Volume.Projected.DefaultMode,
 			}
+			if b.tokens == nil {
+				b.tokens = map[string]projectedToken{}
+			}
+			now := time.Now()
+			renewAfter := now.Add(10 * time.Minute)
+			if expiry := tokenRequest.Status.ExpirationTimestamp.Time; expiry.After(now) {
+				renewAfter = now.Add(time.Duration(float64(expiry.Sub(now)) * 0.8))
+			}
+			b.tokens[source.ServiceAccountToken.Path] = projectedToken{data: []byte(tokenRequest.Status.Token), renewAfter: renewAfter}
 		}
 	}
 	return payload, earliestExpiry, utilerrors.NewAggregate(errlist)
-}
-
-func (b *VolumeMounter) collectData(ctx context.Context) (map[string]util.FileProjection, error) {
-	data, _, err := b.collectDataWithExpiry(ctx)
-	return data, err
-}
-
-func (b *VolumeMounter) startTokenRefreshLoop(ctx context.Context, dir string, writer *util.AtomicWriter, initialExpiry time.Time) {
-	currentExpiry := initialExpiry
-
-	for {
-		now := time.Now()
-		totalLifetime := currentExpiry.Sub(now)
-		if totalLifetime <= 0 {
-			totalLifetime = 10 * time.Minute
-		}
-
-		// Rotate at 80% of total lifetime
-		refreshDelay := time.Duration(float64(totalLifetime) * 0.8)
-		if refreshDelay <= 0 {
-			refreshDelay = 30 * time.Second
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(refreshDelay):
-		}
-
-		var data map[string]util.FileProjection
-		var nextExpiry time.Time
-		var err error
-
-		// Retry with bounded backoff in case of temporary API outages
-		for attempt := 0; attempt < 5; attempt++ {
-			if ctx.Err() != nil {
-				return
-			}
-			data, nextExpiry, err = b.collectDataWithExpiry(ctx)
-			if err == nil {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
-			}
-		}
-
-		if err != nil {
-			b.Logger.Error(err, "Failed to refresh projected service account token after retries")
-			continue
-		}
-
-		if err := writer.Write(data); err != nil {
-			b.Logger.Error(err, "Failed to write refreshed projected token atomically")
-			continue
-		}
-
-		if !nextExpiry.IsZero() {
-			currentExpiry = nextExpiry
-		}
-	}
 }

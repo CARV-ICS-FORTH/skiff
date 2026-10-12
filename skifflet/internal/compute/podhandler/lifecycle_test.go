@@ -549,3 +549,55 @@ func TestPodRegistry_DrainAll(t *testing.T) {
 		t.Error("draining removed pods from the registry")
 	}
 }
+
+// A pod failed by FailPod stays failed under every restart policy, also when a sibling
+// container publishes afterwards.
+func TestAttempt_FailPodStaysFailedWithASiblingRunning(t *testing.T) {
+	for _, policy := range []corev1.RestartPolicy{corev1.RestartPolicyAlways, corev1.RestartPolicyOnFailure} {
+		pl := testLifecycle(t, nil, "app", "sibling")
+		pl.spec.Spec.RestartPolicy = policy
+		sib, err := pl.BeginAttempt("sibling", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := sleeper("30")
+		if err := sib.Start(cmd, NoProbes); err != nil {
+			t.Fatal(err)
+		}
+		waited := make(chan struct{})
+		go func() { sib.Wait(cmd); close(waited) }()
+		a, err := pl.BeginAttempt("app", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		a.FailPod(128, "LogFileError", "cannot open %s", "app.logs")
+		sib.SetReady(true) // a later publication of the sibling
+		if st := pl.GetPodStatus(); st.Phase != corev1.PodFailed || st.Reason != "LogFileError" {
+			t.Fatalf("%s: phase %s reason %q, want Failed/LogFileError", policy, st.Phase, st.Reason)
+		}
+		pl.ReleaseLiveResources(0)
+		<-waited
+	}
+}
+
+// A container killed by a signal reports 128 plus the signal, as with the kubelet, and the
+// reason of a failure is Error.
+func TestAttempt_ExitCodeOfASignal(t *testing.T) {
+	for sig, want := range map[syscall.Signal]int{syscall.SIGKILL: 137, syscall.SIGTERM: 143} {
+		pl := testLifecycle(t, nil, "app")
+		a, err := pl.BeginAttempt("app", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("sh", "-c", fmt.Sprintf("kill -%d $$", int(sig)))
+		if err := a.Start(cmd, NoProbes); err != nil {
+			t.Fatal(err)
+		}
+		if got := a.Wait(cmd); got != want {
+			t.Fatalf("%v: exit code %d, want %d", sig, got, want)
+		}
+		if cs := containerState(pl, "app"); cs.State.Terminated.ExitCode != int32(want) || cs.State.Terminated.Reason != "Error" {
+			t.Fatalf("%v: terminated %+v, want %d and Error", sig, cs.State.Terminated, want)
+		}
+	}
+}

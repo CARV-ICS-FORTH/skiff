@@ -137,19 +137,64 @@ func TestPrepareContainer_StopsWhenThePodDoes(t *testing.T) {
 	}
 }
 
-// What is not configuration still fails the pod, with the reason: an image that is
-// not there.
-func TestPrepareContainer_ImageFailureFailsThePod(t *testing.T) {
+// An image that cannot be had does not fail the pod, as with the kubelet: the container waits
+// with ErrImageNeverPull (ErrImagePull for a pull), then ImagePullBackOff, and is tried again,
+// and it starts once the image is there.
+func TestPrepareContainer_ImageFailureBacksOff(t *testing.T) {
 	useConfig(t, &fakeConfig{})
+	old := backOffUnit
+	backOffUnit = 50 * time.Millisecond
+	t.Cleanup(func() { backOffUnit = old })
 	h, _ := handlerFor(t, corev1.Container{Name: "app"})
 	spec := &h.Pod.Spec.Containers[0]
-	spec.Image = filepath.Join(t.TempDir(), "missing.sif")
-	_, ok := h.prepareContainer(context.Background(), spec, false, 0)
-	if ok {
-		t.Fatal("a container with no image was prepared")
+	spec.Image = filepath.Join(t.TempDir(), "late.sif")
+	done := make(chan bool, 1)
+	go func() { _, ok := h.prepareContainer(context.Background(), spec, false, 0); done <- ok }()
+	eventually(t, "the container to wait for its image", func() bool {
+		w := containerState(h.lifecycle, "app").State.Waiting
+		return w != nil && w.Reason == "ErrImageNeverPull"
+	})
+	eventually(t, "the container to back off", func() bool {
+		w := containerState(h.lifecycle, "app").State.Waiting
+		return w != nil && w.Reason == "ImagePullBackOff"
+	})
+	if phase := h.lifecycle.GetPodStatus().Phase; phase == corev1.PodFailed {
+		t.Fatal("an image that is not there failed the pod")
 	}
-	status := h.lifecycle.GetPodStatus()
-	if status.Phase != corev1.PodFailed || status.Reason == "" {
-		t.Fatalf("pod %s (%q): an image failure must fail the pod with a reason", status.Phase, status.Reason)
+	if err := os.WriteFile(spec.Image, []byte("image"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("the container was not prepared once its image was there")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still backing off after the image appeared")
+	}
+}
+
+// The back-off of restarts: the first at once, then the unit doubling to its maximum, and
+// again from the start after a long run.
+func TestBackOff(t *testing.T) {
+	old := backOffUnit
+	backOffUnit = time.Second
+	t.Cleanup(func() { backOffUnit = old })
+	b := restartBackOff()
+	var got []time.Duration
+	for i := 0; i < 8; i++ {
+		got = append(got, b.delay(0))
+	}
+	want := []time.Duration{0, 1, 2, 4, 8, 16, 30, 30}
+	for i := range want {
+		if got[i] != want[i]*time.Second {
+			t.Fatalf("delays %v, want %v seconds", got, want)
+		}
+	}
+	if d := b.delay(backOffResetAfter()); d != 0 {
+		t.Fatalf("after a long run the pause is %v, want 0", d)
+	}
+	if d := pullBackOff().delay(0); d != time.Second {
+		t.Fatalf("the first pull retry waits %v, want the unit", d)
 	}
 }

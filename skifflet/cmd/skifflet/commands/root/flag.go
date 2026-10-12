@@ -44,8 +44,6 @@ type Opts struct {
 	// KubeletPorts determines the port to listen for requests from the Kubernetes API server.
 	KubeletPort int32
 
-	// MetricsPort int32
-
 	K8sAPICertFilepath string
 	K8sAPIKeyFilepath  string
 
@@ -98,15 +96,12 @@ func installFlags(flags *pflag.FlagSet, c *Opts) {
 	flags.StringVar(&c.KubeletAddress, "kubelet-addr", os.Getenv(EnvKubeletAddress), "which address to tell API server to use")
 	flags.Int32Var(&c.KubeletPort, "kubelet-port", 10250, "port to listen for incoming requests from API server")
 
-	// flags.Int32Var(&c.MetricsPort, "metrics-port", 10255, "address to listen for metrics/stats requests")
-
 	flags.StringVar(&c.K8sAPICertFilepath, "certificate", os.Getenv(EnvAPICertLocation), "location for certificate to the API server")
 	flags.StringVar(&c.K8sAPIKeyFilepath, "key", os.Getenv(EnvAPIKeyLocation), "location for key for the API server")
 
 	flags.StringVar(&c.NodeName, "nodename", "skifflet", "kubernetes node name")
 
 	flags.StringVar(&c.DefaultHostEnvironment.ApptainerBin, "apptainer", "plaidtainer", "path to Apptainer bin")
-	flags.StringVar(&c.DefaultHostEnvironment.ContainerRegistry, "registry", "docker://", "container registry")
 	flags.StringVar(&c.DefaultHostEnvironment.WorkingDirectory, "working-dir", GetUserHomeDir(), "sets up the Skiff working directory")
 	flags.StringVar(&c.DefaultHostEnvironment.TmpDirectory, "tmp-dir", endpoint.DefaultTmpDir, "the node's scratch directory: pod runtime state (.pods) and Apptainer scratch are below it")
 	flags.StringVar(&c.DefaultHostEnvironment.PlaidSocket, "plaid-socket", envOrDefault(EnvPlaidSocket, endpoint.DefaultPlaidSocket), "API socket of plaidd")

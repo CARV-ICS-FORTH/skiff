@@ -100,6 +100,9 @@ if [ "$SKIFF_ROLE" = "controller" ]; then
     sed "s|@VOLUMES_BASE@|${SKIFF_VOLUMES_BASE}|g" /usr/share/skiff/storage.yaml > /var/lib/rancher/k3s/server/manifests/skiff-storage.yaml
 
     echo "Starting K3s Server..."
+    # The node monitor's grace period is Kubernetes' own (50 s): Skifflet renews a node's
+    # lease every 10 s, and with a grace period of 10 s a renewal a moment late under load
+    # made the node NotReady and its pods not Ready.
     k3s server \
       --bind-address 0.0.0.0 \
       --advertise-address "${HOST_IP}" \
@@ -112,7 +115,6 @@ if [ "$SKIFF_ROLE" = "controller" ]; then
       --cluster-domain "$SKIFF_CLUSTER_DOMAIN" \
       --cluster-dns "$SKIFF_CLUSTER_DNS" \
       --kube-controller-manager-arg=allocate-node-cidrs=true \
-      --kube-controller-manager-arg=node-monitor-grace-period=10s \
       --kube-controller-manager-arg=node-monitor-period=2s \
       --disable-agent \
       --disable servicelb \

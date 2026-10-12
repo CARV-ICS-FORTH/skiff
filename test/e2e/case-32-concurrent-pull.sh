@@ -56,10 +56,16 @@ concurrent_pull() {
         done
     }
     e2e_wait_condition 90 "every node sees the image gone from the cache" gone_everywhere
-    # A pod on every node, created together.
+    # Where each node's log is now: the conversions are counted from there.
+    local -A log_lines
+    for node in "${NODES[@]}"; do
+        log_lines[$node]=$(runtime_bubble_exec "$node" "wc -l < /var/log/skifflet.log")
+    done
+    # A pod on every node, created together (one apply).
+    local manifest=""
     for node in "${NODES[@]}"; do
         i=$((i + 1)); pod="pull-$i"; pods+=("$pod")
-        cat <<EOF | e2e_kubectl apply -f - >/dev/null
+        manifest+="---
 apiVersion: v1
 kind: Pod
 metadata: {name: ${pod}, namespace: ${NS}}
@@ -69,9 +75,10 @@ spec:
   containers:
   - name: app
     image: ${IMAGE}
-    command: ["sleep", "3600"]
-EOF
+    command: [\"sleep\", \"3600\"]
+"
     done
+    printf '%s' "$manifest" | e2e_kubectl apply -f - >/dev/null
     for pod in "${pods[@]}"; do
         e2e_wait_pod_phase "$NS" "$pod" Running 300
     done
@@ -80,7 +87,21 @@ EOF
     # One converted file, and nothing half-done beside it.
     e2e_assert_eq "one converted image in the shared cache" "$(cached_files | wc -l | tr -d ' ')" 1
     e2e_assert_eq "and it is a whole SIF, not a partial file" "$(cached_files | grep -c '\.sif$' || true)" 1
-    e2e_assert_eq "no temporary file of a conversion is left" "$(find "$CACHE_DIR" -maxdepth 1 \( -name "${CACHE_NAME}*.tmp" -o -name "${CACHE_NAME}*.part" \) | wc -l | tr -d ' ')" 0
+    e2e_assert_eq "no temporary file of a conversion is left" "$(find "$CACHE_DIR" -maxdepth 1 -name "${CACHE_NAME}*.tmp-*" | wc -l | tr -d ' ')" 0
+    # Converted once: one node pulled, the others waited for its lock and found the image. Where
+    # the shared filesystem refuses the lock (Skifflet says so in its log), each node may convert
+    # it, which only costs time: that is said, not failed.
+    local conversions=0 unlocked=0 new_lines
+    for node in "${NODES[@]}"; do
+        new_lines=$(runtime_bubble_exec "$node" "tail -n +$(( ${log_lines[$node]} + 1 )) /var/log/skifflet.log")
+        conversions=$(( conversions + $(grep -F 'Downloading image' <<< "$new_lines" | grep -cF "$IMAGE" || true) ))
+        if grep -qF 'without a lock between the nodes' <<< "$new_lines"; then unlocked=1; fi
+    done
+    if [ "$unlocked" -eq 1 ]; then
+        e2e_log "the shared filesystem refuses the lock between the nodes: the image was converted ${conversions} time(s)"
+    else
+        e2e_assert_eq "the image was converted once, by one node" "$conversions" 1
+    fi
     # Every pod really runs the image.
     for pod in "${pods[@]}"; do
         e2e_assert_eq "$pod runs the image" "$(e2e_kubectl exec -n "$NS" "$pod" -- sh -c 'echo ok')" ok

@@ -29,12 +29,10 @@ func setup(tmpDir string) {
 	podhandler.UnmountTmpfs = func(string) error { return nil }
 
 	compute.Environment = compute.HostEnvironment{
-		KubeMasterHost:    "",
-		ContainerRegistry: "",
-		ApptainerBin:      "apptainer",
-		WorkingDirectory:  tmpDir,
-		TmpDirectory:      filepath.Join(tmpDir, ".skiff"),
-		KubeDNS:           "",
+		ApptainerBin:     "apptainer",
+		WorkingDirectory: tmpDir,
+		TmpDirectory:     filepath.Join(tmpDir, ".skiff"),
+		KubeDNS:          "",
 	}
 	compute.Skiff = endpoint.SkiffWithTmp(tmpDir, compute.Environment.TmpDirectory)
 	_ = os.MkdirAll(compute.Skiff.PodsDir(), 0755)

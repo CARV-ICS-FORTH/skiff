@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"skifflet/internal/compute/endpoint"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestEscapeSingleQuote_ShellRoundTrip(t *testing.T) {
@@ -139,7 +141,7 @@ func TestPrepareAttemptScratch(t *testing.T) {
 	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
 	app, sidecar := podDir.Container("app"), podDir.Container("sidecar")
 	for _, c := range []endpoint.ContainerPath{app, sidecar} {
-		if err := prepareAttemptScratch(c, 1); err != nil {
+		if err := prepareAttemptScratch(c, 1, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -167,7 +169,7 @@ func TestPrepareAttemptScratch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := prepareAttemptScratch(app, 2); err != nil {
+	if err := prepareAttemptScratch(app, 2, ""); err != nil {
 		t.Fatalf("attempt 2: %v", err)
 	}
 	if attempts, _ := app.ScratchAttempts(); len(attempts) != 1 || attempts[0] != 2 {
@@ -186,7 +188,7 @@ func TestPrepareAttemptScratch(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(app.AttemptTmp(2), "stale"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareAttemptScratch(app, 2); err != nil {
+	if err := prepareAttemptScratch(app, 2, ""); err != nil {
 		t.Fatal(err)
 	}
 	if entries, _ := os.ReadDir(app.AttemptTmp(2)); len(entries) != 0 {
@@ -236,7 +238,7 @@ func TestPrepareAttemptScratch_WritableLayerIsPerAttempt(t *testing.T) {
 	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
 	app, other := podDir.Container("app"), podDir.Container("other")
 	for _, c := range []endpoint.ContainerPath{app, other} {
-		if err := prepareAttemptScratch(c, 1); err != nil {
+		if err := prepareAttemptScratch(c, 1, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -253,7 +255,7 @@ func TestPrepareAttemptScratch_WritableLayerIsPerAttempt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(other.AttemptOverlayDir(1), "written"), []byte("other"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareAttemptScratch(app, 2); err != nil {
+	if err := prepareAttemptScratch(app, 2, ""); err != nil {
 		t.Fatal(err)
 	}
 	if entries, err := os.ReadDir(app.AttemptOverlayDir(2)); err != nil || len(entries) != 0 {
@@ -300,5 +302,41 @@ func TestLaunchCommand_PodNetworkNamespace(t *testing.T) {
 	// No sandbox (a bare launch): nothing to join.
 	if bin, args = (&Container{Name: "app", ExecutionMode: "exec", RunAsUser: 1000}).LaunchCommand("/usr/bin/apptainer", 0, podDir, 1); bin != "/usr/bin/apptainer" {
 		t.Errorf("without a sandbox: %s %v", bin, args)
+	}
+}
+
+// A container starts in its workingDir, else its image's WORKDIR, else /, as with the
+// kubelet's runtime; a relative one is a configuration error.
+func TestWorkingDirOf(t *testing.T) {
+	for _, tc := range []struct{ spec, image, want string }{
+		{"", "", "/"},
+		{"", "/app", "/app"},
+		{"/data", "/app", "/data"},
+		{"/data/", "", "/data"},
+	} {
+		got, err := workingDirOf(&corev1.Container{WorkingDir: tc.spec}, tc.image)
+		if err != nil || got != tc.want {
+			t.Fatalf("spec %q image %q: got %q %v, want %q", tc.spec, tc.image, got, err, tc.want)
+		}
+	}
+	if _, err := workingDirOf(&corev1.Container{WorkingDir: "relative"}, ""); !IsConfigError(err) {
+		t.Fatalf("a relative working directory: %v, want a configuration error", err)
+	}
+	c := Container{Name: "app", ImageFilePath: "/img.sif", WorkingDir: "/data"}
+	args := strings.Join(c.BuildApptainerArgs(0, endpoint.PodPath(t.TempDir()), 1), " ")
+	if !strings.Contains(args, "--pwd /data ") {
+		t.Fatalf("the container does not start in its working directory: %s", args)
+	}
+}
+
+// A working directory the image does not have is made in the attempt's writable layer, so
+// that the container can start there.
+func TestPrepareAttemptScratch_MakesTheWorkingDirectory(t *testing.T) {
+	app := endpoint.PodPath(t.TempDir()).Container("app")
+	if err := prepareAttemptScratch(app, 1, "/srv/work"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(app.AttemptOverlayDir(1), "upper", "srv", "work")); err != nil || !info.IsDir() {
+		t.Fatalf("the working directory is not in the writable layer: %v", err)
 	}
 }

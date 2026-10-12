@@ -127,6 +127,14 @@ e2e_wait_condition 90 "the nodes are released" all_released
 # claim attached itself to the old files; the same claim name gets a directory of its own,
 # empty, next to the old one, which is untouched.
 # ---------------------------------------------------------------------------
+# count_objects KUBECTL_GET_ARGS...: how many objects the API server lists; a request that failed
+# is said so, and is no count.
+count_objects() {
+    local out
+    out=$(e2e_kubectl get "$@" -o name --ignore-not-found) || { echo "(could not ask the API server)"; return 0; }
+    printf '%s' "$out" | grep -c . || true
+}
+
 fresh_job() {
     local job new_dir
     e2e_assert_eq "the data outlived the job" "$(cat "$OLD_DIR/file" 2>/dev/null || true)" from-the-first-job
@@ -137,9 +145,9 @@ fresh_job() {
     printf '%s\n' "$job" > "${E2E_LOGDIR}/fresh-job-id"
     e2e_wait_condition 300 "the new cluster is ready" cluster_ready
 
-    e2e_assert_eq "the new cluster has no volumes of the old one" "$(e2e_kubectl get pv -o name | wc -l | tr -d ' ')" 0
-    e2e_assert_eq "no namespace or claim of the old cluster" "$(e2e_kubectl get pvc -A -o name | wc -l | tr -d ' ')" 0
-    e2e_assert_eq "nothing attached itself to the old files" "$(e2e_kubectl get namespace "$NS" -o name 2>/dev/null | wc -l | tr -d ' ')" 0
+    e2e_assert_eq "the new cluster has no volumes of the old one" "$(count_objects pv)" 0
+    e2e_assert_eq "no namespace or claim of the old cluster" "$(count_objects pvc -A)" 0
+    e2e_assert_eq "nothing attached itself to the old files" "$(count_objects namespace "$NS")" 0
 
     use_claim second
     e2e_wait_pod_phase "$NS" second Running 120

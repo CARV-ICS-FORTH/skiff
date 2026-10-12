@@ -33,26 +33,26 @@ spec:
     command: ["sleep", "3600"]
 EOF
 
-e2e_wait_condition 60 "ImagePullBackOff or ErrImagePull" "e2e_kubectl get pod e2e10-bad -n $NS -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' | grep -E 'ErrImagePull|ImagePullBackOff'"
-
-PHASE=$(e2e_kubectl get pod e2e10-bad -n "$NS" -o jsonpath='{.status.phase}')
-if [ "$PHASE" = "Running" ] || [ "$PHASE" = "Succeeded" ]; then
-    e2e_fail "Pod phase should not be Running or Succeeded"
-fi
-
+# An image that cannot be pulled does not fail the pod, as with the kubelet (sprint 5): the
+# container waits with ErrImagePull, then ImagePullBackOff, the pod stays Pending (also with
+# restartPolicy Never) and the pull is tried again; deleting the pod ends it, and nothing of
+# it is left.
+e2e_wait_condition 120 "the container backs off pulling its image" "[ \"\$(e2e_kubectl get pod e2e10-bad -n $NS -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}')\" = ImagePullBackOff ]"
+e2e_assert_contains "the reason is said" "$(e2e_kubectl get events -n "$NS" --field-selector involvedObject.name=e2e10-bad,reason=Failed -o jsonpath='{.items[*].message}')" "Failed to pull image"
 UID_BAD=$(e2e_record_uid "$NS" "e2e10-bad")
-# The pause sandbox is allocated before the application image is resolved.
-# Its retained handshake lets us prove the failed image released live resources
-# while the API object still reports the pull error.
 runtime_record_pod "$NS" "e2e10-bad"
-runtime_verify_released "$NS" "e2e10-bad" 60
-
-PROC_COUNT=$(runtime_count_processes "$NODE_A" "$UID_BAD")
-e2e_assert_eq "no running process for UID" "$PROC_COUNT" "0"
-
+# Through two pauses of the back-off (10 s, then 20 s), the pod is never failed.
+for _ in $(seq 1 18); do
+    PHASE=$(e2e_kubectl get pod e2e10-bad -n "$NS" -o jsonpath='{.status.phase}')
+    [ "$PHASE" = Pending ] || { e2e_fail "a pod whose image cannot be pulled is ${PHASE:-unknown}, want Pending"; break; }
+    sleep 2
+done
+e2e_assert_eq "it is still waiting for its image" "$(e2e_kubectl get pod e2e10-bad -n "$NS" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' | sed 's/^ErrImagePull$/ImagePullBackOff/')" ImagePullBackOff
 e2e_kubectl delete pod e2e10-bad -n "$NS" --grace-period=5
 e2e_wait_pod_gone "$NS" "e2e10-bad" 30
 runtime_verify_gone "$NS" "e2e10-bad" 60
+PROC_COUNT=$(runtime_count_processes "$NODE_A" "$UID_BAD")
+e2e_assert_eq "no running process for UID" "$PROC_COUNT" "0"
 
 cat <<EOF | e2e_kubectl apply -f -
 apiVersion: v1
@@ -129,6 +129,47 @@ fi
 runtime_verify_released "$NS" e2e10-log-failure 60
 e2e_kubectl delete pod e2e10-log-failure -n "$NS" --grace-period=1 --timeout=30s
 runtime_verify_gone "$NS" e2e10-log-failure 60
+
+# ---------------------------------------------------------------------------
+# T59-files-failure-stops-pod: the same failure under restartPolicy Always, with a sibling
+# that starts: the pod is Failed with the reason and stays so, and nothing of it runs any more
+# (the sibling and the sandbox are stopped), as when an image fails.
+# ---------------------------------------------------------------------------
+files_failure_stops_pod() {
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e10-log-failure-always, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  restartPolicy: Always
+  terminationGracePeriodSeconds: 1
+  initContainers:
+  - name: init
+    image: ${FIXTURE_IMAGE}
+    command: ["sh", "-c", "while [ ! -f /gate/release ]; do sleep 1; done"]
+    volumeMounts: [{name: gate, mountPath: /gate}]
+  containers:
+  - {name: app, image: ${FIXTURE_IMAGE}, command: ["sleep", "3600"]}
+  - {name: sibling, image: ${FIXTURE_IMAGE}, command: ["sleep", "3600"]}
+  volumes: [{name: gate, emptyDir: {}}]
+EOF
+    e2e_wait_condition 60 "held in init" "test -n \"\$(e2e_kubectl get pod e2e10-log-failure-always -n $NS -o jsonpath='{.status.initContainerStatuses[0].state.running}')\""
+    runtime_record_pod "$NS" e2e10-log-failure-always
+    local dir
+    IFS='|' read -r _ _ _ _ _ _ _ _ dir _ _ _ <<< "${_RT_IDENTITY[$NS/e2e10-log-failure-always]}"
+    runtime_bubble_exec "$NODE_A" "mkdir -p '${dir}/logs/app/1.log'; touch '${dir}/volumes/gate/release'"
+    e2e_wait_pod_phase "$NS" e2e10-log-failure-always Failed 60
+    e2e_assert_eq "the reason is said" "$(e2e_kubectl get pod e2e10-log-failure-always -n "$NS" -o jsonpath='{.status.reason}')" LogFileError
+    runtime_verify_released "$NS" e2e10-log-failure-always 60
+    local uid
+    uid=$(e2e_kubectl get pod e2e10-log-failure-always -n "$NS" -o jsonpath='{.metadata.uid}')
+    e2e_wait_condition 60 "no process of the pod runs, the sibling's included" "[ \"\$(runtime_count_processes $NODE_A $uid)\" = 0 ]"
+    e2e_assert_eq "and the pod stays failed" "$(e2e_kubectl get pod e2e10-log-failure-always -n "$NS" -o jsonpath='{.status.phase}')" Failed
+    e2e_kubectl delete pod e2e10-log-failure-always -n "$NS" --grace-period=1 --timeout=30s > /dev/null
+    runtime_verify_gone "$NS" e2e10-log-failure-always 60
+}
+e2e_subcase_run T59-files-failure-stops-pod files_failure_stops_pod
 
 e2e_kubectl delete namespace "$NS"
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

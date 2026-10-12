@@ -2,6 +2,7 @@ package podhandler
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -307,5 +308,57 @@ func TestValidatePodCapabilities_DownwardAPIReferences(t *testing.T) {
 				t.Fatalf("error %v, want one containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// Every field of a pod is classified: implemented, accepted with a reason, or refused. A field
+// that a new Kubernetes brings fails this test until it is.
+func TestPodFields_EveryFieldIsClassified(t *testing.T) {
+	for _, v := range []any{corev1.PodSpec{}, corev1.Container{}, corev1.PodSecurityContext{}, corev1.SecurityContext{}, corev1.Lifecycle{}} {
+		ty := reflect.TypeOf(v)
+		known := podFields[ty.Name()]
+		if known == nil {
+			t.Fatalf("%s is not classified at all", ty.Name())
+		}
+		for i := 0; i < ty.NumField(); i++ {
+			if _, ok := known[ty.Field(i).Name]; !ok {
+				t.Errorf("%s.%s is not classified (implemented, accepted with a reason, or refused)", ty.Name(), ty.Field(i).Name)
+			}
+		}
+		for name := range known {
+			if _, ok := ty.FieldByName(name); !ok {
+				t.Errorf("%s.%s is classified and does not exist", ty.Name(), name)
+			}
+		}
+	}
+}
+
+// The fields refused since sprint 5 are refused at creation, each named.
+func TestValidatePodCapabilities_NotImplementedFields(t *testing.T) {
+	yes := true
+	always := corev1.ContainerRestartPolicyAlways
+	host := "h"
+	for field, mutate := range map[string]func(*corev1.Pod){
+		"Spec.ShareProcessNamespace":            func(p *corev1.Pod) { p.Spec.ShareProcessNamespace = &yes },
+		"Spec.ReadinessGates":                   func(p *corev1.Pod) { p.Spec.ReadinessGates = []corev1.PodReadinessGate{{ConditionType: "x"}} },
+		"Spec.ResourceClaims":                   func(p *corev1.Pod) { p.Spec.ResourceClaims = []corev1.PodResourceClaim{{Name: "x"}} },
+		"Spec.ImagePullSecrets":                 func(p *corev1.Pod) { p.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "x"}} },
+		"Spec.OS":                               func(p *corev1.Pod) { p.Spec.OS = &corev1.PodOS{Name: corev1.Windows} },
+		"Spec.HostnameOverride":                 func(p *corev1.Pod) { p.Spec.HostnameOverride = &host },
+		"Spec.Containers[0].RestartPolicy":      func(p *corev1.Pod) { p.Spec.Containers[0].RestartPolicy = &always },
+		"Spec.Containers[0].RestartPolicyRules": func(p *corev1.Pod) { p.Spec.Containers[0].RestartPolicyRules = []corev1.ContainerRestartRule{{}} },
+		"Spec.Containers[0].Stdin/TTY":          func(p *corev1.Pod) { p.Spec.Containers[0].TTY = true },
+		"Spec.Containers[0].Resources.Claims":   func(p *corev1.Pod) { p.Spec.Containers[0].Resources.Claims = []corev1.ResourceClaim{{Name: "x"}} },
+	} {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "i"}}}}
+		mutate(pod)
+		err := ValidatePodCapabilities(pod)
+		if err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("%s: %v, want a refusal that names it", field, err)
+		}
+	}
+	linux := &corev1.Pod{Spec: corev1.PodSpec{OS: &corev1.PodOS{Name: corev1.Linux}, Containers: []corev1.Container{{Name: "app", Image: "i"}}}}
+	if err := ValidatePodCapabilities(linux); err != nil {
+		t.Fatalf("a pod for Linux: %v", err)
 	}
 }

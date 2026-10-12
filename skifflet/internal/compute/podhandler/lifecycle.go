@@ -37,7 +37,6 @@ type SandboxRuntime struct {
 	NetnsFile    *os.File
 	EndpointID   string
 	IP           string
-	Gateway      string
 }
 
 // PodLifecycle is the single execution owner of one pod UID: everything that
@@ -259,6 +258,25 @@ func (l *PodLifecycle) SetSandbox(sb *SandboxRuntime) {
 	})
 }
 
+// SetRestarting publishes that a container that ended is to be started again: what it did is
+// its last termination state, and it is Waiting with the reason (CrashLoopBackOff while it
+// backs off).
+func (l *PodLifecycle) SetRestarting(name string, init bool, waiting corev1.ContainerStateWaiting) {
+	l.apply(true, func(pod *corev1.Pod) bool {
+		cs := containerStatus(&pod.Status, name, init)
+		if cs == nil {
+			return false
+		}
+		if cs.State.Terminated != nil {
+			cs.LastTerminationState = corev1.ContainerState{Terminated: cs.State.Terminated}
+		}
+		cs.State = corev1.ContainerState{Waiting: &waiting}
+		notStarted := false
+		cs.Started, cs.Ready = &notStarted, false
+		return true
+	})
+}
+
 // SetContainerWaiting publishes why a container has not started.
 func (l *PodLifecycle) SetContainerWaiting(name string, init bool, reason, message string) {
 	l.apply(false, func(pod *corev1.Pod) bool {
@@ -356,6 +374,9 @@ type Attempt struct {
 	// PostStart and Stop run.
 	spec *corev1.Container
 
+	// stopSignal asks the container to stop (Stop sends it); 0 is SIGTERM.
+	stopSignal syscall.Signal
+
 	// log is the attempt's output, set before the process starts (guarded by pl.mu).
 	log *AttemptLog
 
@@ -441,7 +462,7 @@ func (a *Attempt) Start(cmd *exec.Cmd, gates probeGates) error {
 	a.logger.Info("container attempt started", "action", "start", "pid", a.pid)
 	if gates.postStart {
 		a.update(func(cs *corev1.ContainerStatus) bool {
-			beginAttempt(cs)
+			beginAttempt(cs, a.ID)
 			cs.ContainerID = runtime.FormatProcessJobID(a.pid, a.startTime)
 			cs.State.Running = nil
 			cs.State.Waiting = &corev1.ContainerStateWaiting{Reason: "PostStartHookPending", Message: "Waiting for the postStart hook"}
@@ -463,7 +484,7 @@ func (a *Attempt) SetRunning() {
 		if cs.State.Running != nil {
 			return false
 		}
-		SetContainerRunning(cs, a.pid, a.startTime)
+		SetContainerRunning(cs, a.pid, a.startTime, a.ID)
 		started := !a.gates.startup
 		cs.Started = &started
 		cs.Ready = started && !a.gates.readiness
@@ -486,15 +507,36 @@ func (a *Attempt) Wait(cmd *exec.Cmd) int {
 		a.log.Finish() // the container's last output is in its log before its exit is published
 	}
 
-	exitCode := 0
-	if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() >= 0 {
-		exitCode = cmd.ProcessState.ExitCode()
-	} else if waitErr != nil {
-		exitCode = 1
-	}
+	exitCode := exitCodeOf(cmd.ProcessState, waitErr)
 	a.logger.Info("container attempt exited", "action", "exit", "exitCode", exitCode)
-	a.update(func(cs *corev1.ContainerStatus) bool { SetContainerTerminated(cs, exitCode); return true })
+	message := a.terminationMessage(exitCode)
+	a.update(func(cs *corev1.ContainerStatus) bool {
+		SetContainerTerminated(cs, exitCode)
+		if message != "" {
+			cs.State.Terminated.Message = message
+		}
+		return true
+	})
 	return exitCode
+}
+
+// exitCodeOf is a container's exit code as the kubelet reports it: the process's own, or
+// 128 plus the signal that killed it. Apptainer dies of the signal that killed the
+// container's process (it raises it on itself), so a container killed with SIGKILL is 137,
+// one that died of SIGTERM 143.
+func exitCodeOf(state *os.ProcessState, waitErr error) int {
+	if state != nil {
+		if ws, ok := state.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			return 128 + int(ws.Signal())
+		}
+		if code := state.ExitCode(); code >= 0 {
+			return code
+		}
+	}
+	if waitErr != nil {
+		return 1
+	}
+	return 0
 }
 
 // Fail ends an attempt that never started a process, as a container that
@@ -509,12 +551,13 @@ func (a *Attempt) Fail(exitCode int) {
 // FailPod ends an attempt that never started a process and, in the same
 // publication, fails the pod with the reason. One publication matters: the
 // controller skips status updates for a pod the API server already shows as
-// Failed, so a later reason would never arrive.
+// Failed, so a later reason would never arrive. The phase is not derived again
+// from the containers: the pod failed as a whole, whatever its restart policy.
 func (a *Attempt) FailPod(exitCode int, reason, format string, args ...any) {
 	a.cancel()
 	a.lifeCancel()
 	a.logger.Info("container attempt could not start", "action", "start", "reason", reason, "exitCode", exitCode)
-	a.pl.apply(true, func(pod *corev1.Pod) bool {
+	a.pl.apply(false, func(pod *corev1.Pod) bool {
 		if a.pl.current[a.Container] != a {
 			return false
 		}
@@ -615,14 +658,19 @@ func (a *Attempt) Stop(grace time.Duration, reason string) {
 	}
 }
 
-// signalTerm sends the termination signal to the launcher's process group, which
-// carries it to the container's main process.
+// signalTerm sends the termination signal (the container's stop signal, SIGTERM unless it
+// says otherwise) to the launcher's process group, which carries it to the container's main
+// process.
 func (a *Attempt) signalTerm() {
 	if !a.verified() {
 		return
 	}
-	if syscall.Kill(-a.pid, syscall.SIGTERM) != nil {
-		_ = a.process.Signal(syscall.SIGTERM)
+	sig := a.stopSignal
+	if sig == 0 {
+		sig = syscall.SIGTERM
+	}
+	if syscall.Kill(-a.pid, sig) != nil {
+		_ = a.process.Signal(sig)
 	}
 }
 

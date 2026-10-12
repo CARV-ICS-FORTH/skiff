@@ -35,7 +35,21 @@ fi
 # 3. Verify primary plaidd is still running and its socket was not removed
 STATUS_AFTER=$(runtime_plaidctl "$NODE_A" status 2>/dev/null || echo "")
 e2e_assert_nonempty "primary plaidd responsive after collision attempt" "$STATUS_AFTER"
-e2e_assert_eq "primary plaidd status preserved" "$STATUS_AFTER" "$STATUS_BEFORE"
+# The same daemon, as it was: its settings unchanged (a second daemon has another node range),
+# and its counters not started again (they move with traffic, so they are not compared as they
+# are).
+plaid_identity() {
+    printf '%s\n' "$1" | sed -nE 's/ *\(tx=.*//; /^(Node CIDR|Cluster CIDR|Gateway IP|Gateway|Uplink|Resolver|MTU|Overlay):/p'
+}
+overlay_tx() { printf '%s\n' "$1" | sed -n 's/^Overlay:.*(tx=\([0-9]*\),.*/\1/p'; }
+e2e_assert_nonempty "the primary plaidd's settings are read" "$(plaid_identity "$STATUS_BEFORE")"
+e2e_assert_eq "primary plaidd settings preserved" "$(plaid_identity "$STATUS_AFTER")" "$(plaid_identity "$STATUS_BEFORE")"
+TX_BEFORE=$(overlay_tx "$STATUS_BEFORE"); TX_AFTER=$(overlay_tx "$STATUS_AFTER")
+if [ -n "$TX_BEFORE" ] && [ -n "$TX_AFTER" ] && [ "$TX_AFTER" -ge "$TX_BEFORE" ]; then
+    e2e_pass "the primary plaidd was not started again (overlay tx ${TX_BEFORE} then ${TX_AFTER})"
+else
+    e2e_fail "the primary plaidd's overlay counter went from '${TX_BEFORE}' to '${TX_AFTER}'"
+fi
 
 # 4. Verify socket file remains intact on the node
 SOCKET_CHECK=$(runtime_ssh_node "$NODE_A_IP" \

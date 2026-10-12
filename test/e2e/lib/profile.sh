@@ -8,7 +8,7 @@ profile_required_cases() {
     printf '%s\n' \
         E2E-01 E2E-02 E2E-03 E2E-04 E2E-05 E2E-06 \
         E2E-07 E2E-08 E2E-09 E2E-09-skifflet E2E-09-plaidd \
-        E2E-09-slirp E2E-09-k3s E2E-09-relay E2E-10 E2E-11 E2E-12 E2E-13 E2E-14 E2E-15 E2E-16 E2E-17 E2E-18 E2E-19 E2E-20 E2E-21 E2E-22 E2E-23 E2E-24 E2E-25 E2E-26 E2E-27 E2E-28 E2E-29 E2E-30 E2E-31 E2E-32 E2E-33 E2E-34 E2E-35 \
+        E2E-09-slirp E2E-09-k3s E2E-09-relay E2E-10 E2E-11 E2E-12 E2E-13 E2E-14 E2E-15 E2E-16 E2E-17 E2E-18 E2E-19 E2E-20 E2E-21 E2E-22 E2E-23 E2E-24 E2E-25 E2E-26 E2E-27 E2E-28 E2E-29 E2E-30 E2E-31 E2E-32 E2E-33 E2E-34 E2E-35 E2E-36 \
         NET-1-plaid-integration NET-2-plaid-standalone NET-3-tap-acceptance NET-4-tap-webhook CANDIDATE E2E-01-teardown \
         T04-logs T04-exec T04-portforward T04-pods-assigned T04-runningpods \
         T04-attach-501 T04-stats T04-metrics \
@@ -20,13 +20,14 @@ profile_required_cases() {
         T17-exec-streams T17-exec-tty T17-exec-right-after-start T17-exec-init-running T17-exec-init-finished \
         T14-exec-client-cancel T14-exec-target-ends T14-exec-resources \
         T10-exec-hooks T10-http-hook T10-completed T11-poststart-failure T11-prestop-failure \
-        T11-prestop-hang T11-zero-grace T11-liveness-prestop T26-deletion-progress T27-default-class T27-delayed-provisioning T27-create-failure T28-shared-replacement T28-local-control T29-delete-and-retain T29-cleanup-retry T29-user-owned T30-fresh-job T27-claim-waits T27-waiting-cancel T31-private-tmp T31-reset-on-restart T31-emptydir T34-writable-layer T34-private-layer T34-reset-layer T37-kubelet-endpoints T37-metrics-api T38-nonroot-network T38-fields-not-applied T39-graceful-job-end T40-node-capacity T40-requests T41-volume-forms \
+        T11-prestop-hang T11-zero-grace T11-liveness-prestop T26-deletion-progress T27-default-class T27-delayed-provisioning T27-create-failure T28-shared-replacement T28-local-control T29-delete-and-retain T29-cleanup-retry T29-user-owned T30-fresh-job T27-claim-waits T27-waiting-cancel T31-private-tmp T31-reset-on-restart T31-emptydir T31-working-dir T31-subpath-escape T34-writable-layer T34-private-layer T34-reset-layer T37-kubelet-endpoints T37-metrics-api T38-nonroot-network T38-fields-not-applied T39-graceful-job-end T40-node-capacity T40-requests T41-volume-forms \
         T12-default-and-tail T12-partial-line T12-timestamps T12-since T12-limit-bytes T12-invalid T12-follow-tail \
         T13-previous-missing T13-attempts T13-init-attempts \
         T05-unsupported-forms T06-metadata-updates T06-unsupported-updates T06-rollout \
         T15-environment-and-files T15-missing-configuration T16-continuity \
         T20-cycles T20-no-leaks \
         T18-services T18-node-networks T18-startup-report T18-pod-network T18-connectivity T18-runtime-path T32-scratch T32-volume-roots T32-unusable-scratch \
+        E2E-17-alt T18-alt-services T18-alt-node-networks T18-alt-startup-report T18-alt-pod-network T18-alt-connectivity T18-alt-runtime-path T32-alt-scratch T32-alt-volume-roots \
         T21-owner T21-no-forward T21-traffic T36-failure-cause \
         T22-cancel-during-startup T22-helper-killed T22-port-taken T22-second-boot \
         T23-translation T23-named-ports T23-dns T23-bubble T23-large T23-selectorless T23-untranslated T23-no-local-backend \
@@ -34,7 +35,11 @@ profile_required_cases() {
         T25-tcp-udp T25-slirp-state T25-changes T25-no-backends T25-drain T25-bind-collision T25-unsupported T25-reconcile T25-cleanup \
         T42-concurrent-pull T43-second-id T44-image-user T45-egress \
         T46-gpu-node T47-nvidia-smi T48-no-request T49-exhaustion-and-reuse T50-too-many T51-init-and-restart T52-several-gpus T53-runtime-class \
-        T54-shm-default T55-memory-emptydir T56-memory-emptydir-unbounded T57-cuda-on-every-gpu
+        T54-shm-default T55-memory-emptydir T56-memory-emptydir-unbounded T57-cuda-on-every-gpu \
+        T58-init-retry T59-files-failure-stops-pod \
+        T60-pod-names-and-dns T61-termination-message T62-stop-signal T63-api-service \
+        T64-crash-loop-backoff T65-restart-sees-new-config T66-volume-updates \
+        T67-statefulset T68-daemonset T69-job-retries T70-cronjob T71-kubectl-cp T72-file-modes T73-status-repaired
 }
 
 profile_is_required() {
@@ -88,6 +93,22 @@ profile_unavailable_summary() {
         reason=$(awk -F '\t' -v l="$label" '$1 == l {r = $2} END {print r}' "${E2E_LOGDIR}/unavailable.tsv" 2>/dev/null)
         out="${out:+$out; }${label} (${reason:-no reason recorded})"
     done < <(profile_required_cases)
+    printf '%s' "$out"
+}
+
+# profile_not_run_summary: every recorded result that did not run, UNAVAILABLE (with its reason)
+# or SKIP, as "label (reason); label (skipped)", sorted; empty when everything recorded ran. A
+# smoke run checks no profile, but it must not call a run passed that left checks out.
+profile_not_run_summary() {
+    local label reason out=""
+    while IFS= read -r label; do
+        case "${RESULTS[$label]}" in
+            UNAVAILABLE)
+                reason=$(awk -F '\t' -v l="$label" '$1 == l {r = $2} END {print r}' "${E2E_LOGDIR}/unavailable.tsv" 2>/dev/null)
+                out="${out:+$out; }${label} (${reason:-no reason recorded})" ;;
+            SKIP) out="${out:+$out; }${label} (skipped)" ;;
+        esac
+    done < <(printf '%s\n' "${!RESULTS[@]}" | sort)
     printf '%s' "$out"
 }
 

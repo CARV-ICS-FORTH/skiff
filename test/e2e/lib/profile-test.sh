@@ -77,3 +77,12 @@ RESULTS[T99-beta]=PASS
 [ "$(merged 'A\tUNAVAILABLE\nA\tPASS\n')" = "A=UNAVAILABLE;" ] || { echo "an unavailable result was overridden by a pass" >&2; exit 1; }
 [ "$(merged 'A\tUNAVAILABLE\nA\tSKIP\n')" = "A=SKIP;" ] || { echo "a skip was overridden by an unavailable result" >&2; exit 1; }
 [ "$(merged 'A\tUNAVAILABLE\nA\tFAIL\n')" = "A=FAIL;" ] || { echo "a failure was overridden by an unavailable result" >&2; exit 1; }
+
+# What a smoke run leaves out is said: an UNAVAILABLE result with its reason, a skipped one.
+unset RESULTS; declare -A RESULTS
+RESULTS[E2E-02]=PASS
+[ -z "$(profile_not_run_summary)" ] || { echo "a run that ran everything has something not run" >&2; exit 1; }
+RESULTS[T46-gpu-node]=UNAVAILABLE RESULTS[E2E-33]=SKIP
+printf 'T46-gpu-node\tno node of the cluster has GPUs\n' > "$tmp/unavailable.tsv"
+want="E2E-33 (skipped); T46-gpu-node (no node of the cluster has GPUs)"
+[ "$(profile_not_run_summary)" = "$want" ] || { echo "not-run summary: $(profile_not_run_summary)" >&2; exit 1; }

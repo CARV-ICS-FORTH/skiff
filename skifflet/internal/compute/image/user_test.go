@@ -79,19 +79,19 @@ func Test_ResolveUser_ReadsOnlyWhatItNeeds(t *testing.T) {
 	}
 }
 
-func Test_ociConfigUser(t *testing.T) {
-	config := []byte(`{"Cmd":["nginx"],"Entrypoint":["/e.sh"],"User":"101","WorkingDir":"/"}`)
-	if user, ok := ociConfigUser(config); !ok || user != "101" {
-		t.Errorf("config: %q, %v", user, ok)
+func Test_ociConfig(t *testing.T) {
+	config := []byte(`{"Cmd":["nginx"],"User":"101","WorkingDir":"/app","StopSignal":"SIGQUIT"}`)
+	if user, dir, signal, ok := ociConfig(config); !ok || user != "101" || dir != "/app" || signal != "SIGQUIT" {
+		t.Fatalf("got %q %q %q %v, want 101 /app SIGQUIT true", user, dir, signal, ok)
 	}
-	if user, ok := ociConfigUser([]byte(`{"Cmd":["sh"]}`)); !ok || user != "" {
-		t.Errorf("a config without USER: %q, %v", user, ok)
+	if user, dir, signal, ok := ociConfig([]byte(`{"Cmd":["sh"]}`)); !ok || user != "" || dir != "" || signal != "" {
+		t.Fatalf("an image without USER, WORKDIR or STOPSIGNAL: %q %q %q %v", user, dir, signal, ok)
 	}
-	if _, ok := ociConfigUser([]byte(`{"data":{"attributes":{"labels":{}}},"type":"container"}`)); ok {
-		t.Errorf("Apptainer's metadata was taken for the image's configuration")
+	if _, _, _, ok := ociConfig([]byte(`{"data":{"attributes":{"labels":{}}},"type":"container"}`)); ok {
+		t.Fatal("Apptainer's metadata taken for the OCI configuration")
 	}
-	if _, ok := ociConfigUser([]byte(`not json`)); ok {
-		t.Errorf("garbage was taken for the image's configuration")
+	if _, _, _, ok := ociConfig([]byte(`not json`)); ok {
+		t.Fatal("garbage taken for the OCI configuration")
 	}
 }
 
@@ -104,7 +104,7 @@ ID   |GROUP   |LINK    |SIF POSITION (start-end)  |TYPE
 4    |1       |NONE    |40960-20819968            |FS (Squashfs/*System/arm64)
 `
 
-func Test_User_FromASIF(t *testing.T) {
+func Test_Config_FromASIF(t *testing.T) {
 	old := runCommand
 	defer func() { runCommand = old }()
 	runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -114,7 +114,7 @@ func Test_User_FromASIF(t *testing.T) {
 		case name == "apptainer" && args[0] == "sif" && args[1] == "dump" && args[2] == "2":
 			return []byte(`{"data":{"attributes":{}},"type":"container"}`), nil
 		case name == "apptainer" && args[0] == "sif" && args[1] == "dump" && args[2] == "3":
-			return []byte(`{"Cmd":["x"],"User":"nonroot:nonroot"}`), nil
+			return []byte(`{"Cmd":["x"],"User":"nonroot:nonroot","WorkingDir":"/home/nonroot"}`), nil
 		case name == "apptainer" && args[0] == "buildcfg":
 			return []byte("LIBEXECDIR=/nonexistent\n"), nil
 		case args[0] == "-o" && args[1] == "40960" && args[2] == "-cat" && args[4] == "etc/passwd":
@@ -129,8 +129,8 @@ func Test_User_FromASIF(t *testing.T) {
 	defer func() { lookPath = old2 }()
 	lookPath = func(string) (string, error) { return "unsquashfs", nil }
 
-	got, err := (&Image{Filepath: "/images/a.sif"}).User(context.Background())
-	if err != nil || got != (User{UID: 65532, GID: 65532, Set: true}) {
-		t.Fatalf("User() = %+v, %v", got, err)
+	got, err := (&Image{Filepath: "/images/a.sif"}).Config(context.Background())
+	if err != nil || got != (Config{User: User{UID: 65532, GID: 65532, Set: true}, WorkingDir: "/home/nonroot"}) {
+		t.Fatalf("Config() = %+v, %v", got, err)
 	}
 }

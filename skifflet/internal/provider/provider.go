@@ -36,7 +36,7 @@ import (
 	"github.com/virtual-kubelet/virtual-kubelet/errdefs"
 	vkapi "github.com/virtual-kubelet/virtual-kubelet/node/api"
 	corev1 "k8s.io/api/core/v1"
-	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -347,7 +347,30 @@ func (v *VirtualK8S) deletePodLocked(ctx context.Context, pod *corev1.Pod) (func
 			_ = PodHandler.DeletePod(podKey, localPod)
 		}
 		logger.Info("[K8s] <- DeletePod (SUCCESS)")
+		v.removeFromAPI(pod)
 	}, nil
+}
+
+// removeFromAPI removes a pod whose deletion has finished on the node from the API server, as
+// the kubelet does once the pod's containers have stopped (a zero grace period, and only that
+// pod: its UID is a precondition). Virtual Kubelet would remove it only a whole grace period
+// later, so that `kubectl delete` and a controller's replacement wait for nothing. A pod that is
+// already gone, or replaced, is left alone.
+func (v *VirtualK8S) removeFromAPI(pod *corev1.Pod) {
+	if compute.K8SClientset == nil || pod.GetUID() == "" || pod.GetDeletionTimestamp() == nil {
+		return
+	}
+	zero := int64(0)
+	uid := pod.GetUID()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := compute.K8SClientset.CoreV1().Pods(pod.Namespace).Delete(ctx, pod.Name, metav1.DeleteOptions{
+		GracePeriodSeconds: &zero,
+		Preconditions:      &metav1.Preconditions{UID: &uid},
+	})
+	if err != nil && !k8serrors.IsNotFound(err) && !k8serrors.IsConflict(err) {
+		v.Logger.Info("the pod could not be removed from the API server; Virtual Kubelet will", "obj", client.ObjectKeyFromObject(pod), "reason", err.Error())
+	}
 }
 
 // GetPod retrieves a pod by name from the provider.
@@ -375,7 +398,7 @@ func (v *VirtualK8S) GetPod(ctx context.Context, namespace, name string) (*corev
 // GetPodStatus retrieves the status of a pod by name from the provider.
 func (v *VirtualK8S) GetPodStatus(ctx context.Context, namespace, name string) (*corev1.PodStatus, error) {
 	podKey := client.ObjectKey{Namespace: namespace, Name: name}
-	logger := v.Logger.WithValues("obj", podKey, "job")
+	logger := v.Logger.WithValues("obj", podKey)
 
 	logger.Info("[K8s] -> GetPodStatus")
 
@@ -417,7 +440,10 @@ func (v *VirtualK8S) GetPods(ctx context.Context) ([]*corev1.Pod, error) {
 }
 
 // NotifyPods instructs the notifier to call the passed in function when
-// the pod status changes.
+// the pod status changes. Every change of a pod's status reaches it from the pod's
+// lifecycle owner (saveAndNotifyPod), in order; Virtual Kubelet writes it to the API
+// server, retrying a failed write. The only other write is RunStatusRepair's, which puts
+// that status back when another writer changed it.
 func (v *VirtualK8S) NotifyPods(ctx context.Context, f func(*corev1.Pod)) {
 	v.Logger.Info("[K8s] -> NotifyPods")
 	defer v.Logger.Info("[K8s] <- NotifyPods")
@@ -425,28 +451,12 @@ func (v *VirtualK8S) NotifyPods(ctx context.Context, f func(*corev1.Pod)) {
 	v.stateMu.Lock()
 	v.updatedPod = f
 	v.stateMu.Unlock()
-
-	/*-- periodic reconcile of non-terminal pods --*/
-	go func() {
-		ticker := time.NewTicker(10 * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				v.reconcileNonTerminalPods()
-			}
-		}
-	}()
 }
 
+// saveAndNotifyPod records a snapshot that a pod's lifecycle owner published and
+// hands it to Virtual Kubelet, unless it comes from a generation of the pod that has
+// been replaced or deleted.
 func (v *VirtualK8S) saveAndNotifyPod(source string, pod *corev1.Pod) {
-	v.saveAndNotifyPodExpected(source, pod, nil)
-}
-
-func (v *VirtualK8S) saveAndNotifyPodExpected(source string, pod, expected *corev1.Pod) {
 	if pod == nil {
 		v.Logger.Error(fmt.Errorf("nil pod received in saveAndNotifyPod"), "skipping notification", "source", source)
 		return
@@ -456,12 +466,6 @@ func (v *VirtualK8S) saveAndNotifyPodExpected(source string, pod, expected *core
 	uid := pod.GetUID()
 	v.stateMu.Lock()
 	defer v.stateMu.Unlock()
-	if expected != nil {
-		current, ok := v.pods.Load(podKey)
-		if !ok || current != expected {
-			return
-		}
-	}
 
 	// UID validation: discard callbacks from superseded UIDs
 	if activeUIDVal, ok := v.activeUIDs.Load(podKey); ok {
@@ -495,59 +499,6 @@ func (v *VirtualK8S) saveAndNotifyPodExpected(source string, pod, expected *core
 			"phase", pod.Status.Phase,
 		)
 	}
-}
-
-func (v *VirtualK8S) reconcileNonTerminalPods() {
-	v.pods.Range(func(key, val interface{}) bool {
-		podKey := key.(client.ObjectKey)
-		pod := val.(*corev1.Pod).DeepCopy()
-		if !isPodOwnedByNode(pod, v.NodeName) {
-			return true
-		}
-
-		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-			return true
-		}
-
-		// Verify UID is still active for this podKey
-		if activeUIDVal, ok := v.activeUIDs.Load(podKey); ok {
-			if activeUID, ok := activeUIDVal.(types.UID); ok && activeUID != "" && pod.GetUID() != "" {
-				if activeUID != pod.GetUID() {
-					return true
-				}
-			}
-		}
-
-		oldStatus := pod.Status.DeepCopy()
-		PodHandler.UpdateStatusFromRuntime(pod)
-
-		changed := oldStatus.Phase != pod.Status.Phase ||
-			!apiequality.Semantic.DeepEqual(oldStatus.Conditions, pod.Status.Conditions) ||
-			!apiequality.Semantic.DeepEqual(oldStatus.ContainerStatuses, pod.Status.ContainerStatuses) ||
-			!apiequality.Semantic.DeepEqual(oldStatus.InitContainerStatuses, pod.Status.InitContainerStatuses)
-
-		if changed {
-			v.saveAndNotifyPodExpected("reconciler", pod, val.(*corev1.Pod))
-		}
-
-		if compute.K8SClientset != nil {
-			if apiPod, err := compute.K8SClientset.CoreV1().Pods(pod.Namespace).Get(context.Background(), pod.Name, metav1.GetOptions{}); err == nil {
-				// Require matching UID before pushing status to API server!
-				if apiPod.GetUID() == pod.GetUID() {
-					if !apiequality.Semantic.DeepEqual(apiPod.Status.Conditions, pod.Status.Conditions) || apiPod.Status.Phase != pod.Status.Phase {
-						apiPodCopy := apiPod.DeepCopy()
-						apiPodCopy.Status = *pod.Status.DeepCopy()
-						if _, err := compute.K8SClientset.CoreV1().Pods(pod.Namespace).UpdateStatus(context.Background(), apiPodCopy, metav1.UpdateOptions{}); err == nil {
-							v.Logger.Info("Reconciled out-of-sync pod status on API server", "pod", key)
-						}
-					}
-				} else {
-					v.Logger.Info("Skipping API server status reconcile: pod UID mismatch", "pod", key, "localUID", pod.GetUID(), "apiUID", apiPod.GetUID())
-				}
-			}
-		}
-		return true
-	})
 }
 
 func (v *VirtualK8S) PortForward(ctx context.Context, namespace, pod string, port int32, stream io.ReadWriteCloser) error {

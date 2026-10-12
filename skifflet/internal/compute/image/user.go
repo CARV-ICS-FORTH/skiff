@@ -46,48 +46,59 @@ var runCommand = func(ctx context.Context, name string, args ...string) ([]byte,
 // lookPath finds a program on the PATH; tests replace it.
 var lookPath = exec.LookPath
 
-// userCache keeps what an image says, by the path of its SIF: a converted image is a
-// file named after its content and never changes.
-var userCache sync.Map
+// Config is what an image's configuration says about how its processes run: the
+// account (its Dockerfile's USER) and the directory they start in (WORKDIR, "" when
+// the image says nothing).
+type Config struct {
+	User       User
+	WorkingDir string
+	// StopSignal is the signal that asks the image's program to stop (STOPSIGNAL; "" when the
+	// image says nothing, which is SIGTERM).
+	StopSignal string
+}
 
-// User returns the account the image's configuration says to run as. The SIF made from
-// an OCI image keeps the image's configuration as a JSON object, which is read with
-// Apptainer (apptainer sif dump); a user that is a name, or a user without a group, is
-// looked up in the image's own /etc/passwd and /etc/group, read from its filesystem
-// without starting a container.
-func (i *Image) User(ctx context.Context) (User, error) {
-	if cached, ok := userCache.Load(i.Filepath); ok {
-		return cached.(User), nil
+// configCache keeps what an image says, by the path of its SIF: a converted image is a
+// file named after its content and never changes.
+var configCache sync.Map
+
+// Config returns what the image's configuration says. The SIF made from an OCI image
+// keeps the image's configuration as a JSON object, which is read with Apptainer
+// (apptainer sif dump); a user that is a name, or a user without a group, is looked up
+// in the image's own /etc/passwd and /etc/group, read from its filesystem without
+// starting a container.
+func (i *Image) Config(ctx context.Context) (Config, error) {
+	if cached, ok := configCache.Load(i.Filepath); ok {
+		return cached.(Config), nil
 	}
 	objects, err := listSIF(ctx, i.Filepath)
 	if err != nil {
-		return User{}, err
+		return Config{}, err
 	}
-	spec := ""
+	spec, workingDir, stopSignal := "", "", ""
 	for _, o := range objects {
 		if !o.json {
 			continue
 		}
 		out, err := runCommand(ctx, "apptainer", "sif", "dump", strconv.Itoa(o.id), i.Filepath)
 		if err != nil {
-			return User{}, fmt.Errorf("cannot read the configuration of image %s: %w", i.Filepath, err)
+			return Config{}, fmt.Errorf("cannot read the configuration of image %s: %w", i.Filepath, err)
 		}
-		if config, ok := ociConfigUser(out); ok {
-			spec = config
+		if user, dir, signal, ok := ociConfig(out); ok {
+			spec, workingDir, stopSignal = user, dir, signal
 			break
 		}
 	}
-	if spec == "" {
-		userCache.Store(i.Filepath, User{})
-		return User{}, nil
+	config := Config{WorkingDir: workingDir, StopSignal: stopSignal}
+	if spec != "" {
+		fsys := func(file string) (string, error) { return readFromImage(ctx, objects, i.Filepath, file) }
+		user, err := ResolveUser(spec, func() (string, error) { return fsys("etc/passwd") }, func() (string, error) { return fsys("etc/group") })
+		if err != nil {
+			return Config{}, err
+		}
+		config.User = user
 	}
-	fsys := func(file string) (string, error) { return readFromImage(ctx, objects, i.Filepath, file) }
-	user, err := ResolveUser(spec, func() (string, error) { return fsys("etc/passwd") }, func() (string, error) { return fsys("etc/group") })
-	if err != nil {
-		return User{}, err
-	}
-	userCache.Store(i.Filepath, user)
-	return user, nil
+	configCache.Store(i.Filepath, config)
+	return config, nil
 }
 
 // sifObject is one entry of the table of a SIF.
@@ -122,28 +133,34 @@ func listSIF(ctx context.Context, path string) ([]sifObject, error) {
 	return objects, nil
 }
 
-// ociConfigUser reads the User of the JSON of an image's OCI configuration (a Dockerfile's
-// USER, ENTRYPOINT, CMD, ENV: {"Cmd": ..., "User": "101"}). ok is false for another JSON
+// ociConfig reads the User, the WorkingDir and the StopSignal of the JSON of an image's OCI
+// configuration (a Dockerfile's USER, WORKDIR, STOPSIGNAL, ENTRYPOINT, CMD, ENV: {"Cmd": ...,
+// "User": "101", "WorkingDir": "/app", "StopSignal": "SIGQUIT"}). ok is false for another JSON
 // object of the SIF, Apptainer's own metadata ({"data": ...}), which has no such keys.
-func ociConfigUser(object []byte) (user string, ok bool) {
+func ociConfig(object []byte) (user, workingDir, stopSignal string, ok bool) {
 	var config map[string]json.RawMessage
 	if json.Unmarshal(object, &config) != nil {
-		return "", false
+		return "", "", "", false
 	}
 	if _, isMetadata := config["data"]; isMetadata {
-		return "", false
+		return "", "", "", false
 	}
-	for _, key := range []string{"User", "Cmd", "Entrypoint", "Env", "WorkingDir", "Labels"} {
+	for _, key := range []string{"User", "Cmd", "Entrypoint", "Env", "WorkingDir", "StopSignal", "Labels"} {
 		raw, has := config[key]
 		if !has {
 			continue
 		}
 		ok = true
-		if key == "User" {
+		switch key {
+		case "User":
 			_ = json.Unmarshal(raw, &user)
+		case "WorkingDir":
+			_ = json.Unmarshal(raw, &workingDir)
+		case "StopSignal":
+			_ = json.Unmarshal(raw, &stopSignal)
 		}
 	}
-	return user, ok
+	return user, workingDir, stopSignal, ok
 }
 
 // readFromImage returns a file of the image's root filesystem (the squashfs partition of

@@ -58,3 +58,47 @@ E2E_SUBRESULTS="$tmp/sub.tsv" bash -c '
     E2E_FAILED=0   # the exit trap would otherwise turn the recorded failure into rc=1' _ "$lib_dir" >"$tmp/sub.log" 2>&1 || { cat "$tmp/sub.log"; echo "subcase helpers misbehaved" >&2; exit 1; }
 want=$(printf 'T00-ok\tPASS\nT00-status\tFAIL\nT00-assert\tFAIL\nT00-skip\tSKIP')
 [ "$(cat "$tmp/sub.tsv")" = "$want" ] || { cat "$tmp/sub.tsv"; echo "unexpected subcase results" >&2; exit 1; }
+
+# A failed step in the middle of a subcase body fails the subcase, although the body's last
+# command succeeds; a deliberate test (if, ||) and a command substitution judged by an
+# assertion do not; the case shell's errexit and ERR trap are what they were afterwards.
+E2E_SUBRESULTS="$tmp/steps.tsv" bash -c '
+    source "$1/common.sh"
+    middle() { false; true; }
+    assigned() { local x; x=$(false); true; }
+    nested() { helper() { false; true; }; helper; true; }
+    deliberate() { if false; then :; fi; false || true; e2e_assert_eq probe "$(false; echo out)" out; }
+    e2e_subcase_run T00-middle middle
+    e2e_subcase_run T00-assigned assigned
+    e2e_subcase_run T00-nested nested
+    e2e_subcase_run T00-deliberate deliberate
+    [[ $- == *e* ]] || exit 8
+    [ -z "$(trap -p ERR)" ] || exit 9
+    E2E_FAILED=0' _ "$lib_dir" >"$tmp/steps.log" 2>&1 || { cat "$tmp/steps.log"; echo "the subcase step checks misbehaved" >&2; exit 1; }
+want=$(printf 'T00-middle\tFAIL\nT00-assigned\tFAIL\nT00-nested\tFAIL\nT00-deliberate\tPASS')
+[ "$(cat "$tmp/steps.tsv")" = "$want" ] || { cat "$tmp/steps.tsv" "$tmp/steps.log"; echo "a failed step was not a failure of its subcase" >&2; exit 1; }
+
+# An empty expected text proves nothing and is a failure.
+check_exit 1 'e2e_assert_contains empty "anything" ""'
+check_exit 0 'e2e_assert_contains present "abc" "b"'
+
+# A case that failed and then skipped the rest is a failure, not a skip.
+check_exit 1 'e2e_fail injected; e2e_skip rest'
+
+# e2e_wait_pod_ready reports its timeout; e2e_wait_pod_gone takes only the API server's word
+# that the pod does not exist, and a question it could not answer is a failure at the deadline.
+cat > "$tmp/kubectl" <<'KUBECTL'
+#!/usr/bin/env bash
+case "$FAKE_KUBECTL" in
+    gone) exit 0 ;;
+    present) echo pod/x ;;
+    down) echo "The connection to the server was refused" >&2; exit 1 ;;
+esac
+KUBECTL
+chmod +x "$tmp/kubectl"
+fake() { FAKE_KUBECTL="$1" E2E_KUBECTL="$tmp/kubectl" E2E_POLL_INTERVAL=1 KUBECONFIG="$tmp/kubeconfig" check_exit "$2" "$3"; }
+touch "$tmp/kubeconfig"
+fake gone 0 'e2e_wait_pod_gone ns x 2'
+fake present 1 'e2e_wait_pod_gone ns x 2'
+fake down 1 'e2e_wait_pod_gone ns x 2'
+fake down 1 'e2e_wait_pod_ready ns x 1 || true'

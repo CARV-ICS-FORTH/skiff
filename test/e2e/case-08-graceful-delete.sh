@@ -97,6 +97,9 @@ EOF
 
     UID_OLD=$(e2e_record_uid "$NS" "e2e08-replace")
     runtime_record_pod "$NS" "e2e08-replace"
+    # Kept under a key of its own: the replacement is recorded under the pod's name below, and
+    # what the old generation leaves must be verified too.
+    _RT_IDENTITY["$NS/e2e08-replace-old-$i"]="${_RT_IDENTITY[$NS/e2e08-replace]}"
 
     e2e_kubectl delete pod e2e08-replace -n "$NS" --grace-period=1 &
 
@@ -135,6 +138,7 @@ EOF
     runtime_record_pod "$NS" "e2e08-replace"
     e2e_kubectl delete pod e2e08-replace -n "$NS"
     runtime_verify_gone "$NS" "e2e08-replace" 30
+    runtime_verify_gone "$NS" "e2e08-replace-old-$i" 30
     e2e_wait_pod_gone "$NS" "e2e08-replace" 30
 done
 

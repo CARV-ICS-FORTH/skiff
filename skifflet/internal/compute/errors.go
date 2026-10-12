@@ -25,7 +25,6 @@ import (
 )
 
 var (
-	ReasonSpecError           = "SpecError"
 	ReasonUnsupportedFeatures = "UnsupportedFeatures"
 	ReasonInitializationError = "InitializationError"
 )
@@ -48,12 +47,4 @@ func PodError(pod *corev1.Pod, reason string, msgFormat string, msgArgs ...any) 
 		Reason:             "PodUnready",
 		Message:            "Pod Has Failed.",
 	})
-}
-
-func SystemPanic(err error, errFormat string, errArgs ...any) {
-	werr := fmt.Errorf(errFormat+": %w", append(errArgs, err)...)
-
-	DefaultLogger.Error(werr, "SystemERROR")
-
-	panic(werr)
 }

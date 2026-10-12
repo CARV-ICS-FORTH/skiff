@@ -32,31 +32,6 @@ import (
 	"github.com/virtual-kubelet/virtual-kubelet/log"
 )
 
-// NewRootCommand creates a new providers subcommand
-// This subcommand is used to determine which providers are registered.
-func NewRootCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "providers",
-		Short: "Show the list of supported providers",
-		Long:  "Show the list of supported providers",
-		Args:  cobra.MaximumNArgs(2),
-		Run: func(cmd *cobra.Command, args []string) {
-			switch len(args) {
-			case 0:
-				fmt.Fprintln(cmd.OutOrStdout(), "skiff")
-			case 1:
-				if args[0] != "skiff" {
-					fmt.Fprintln(cmd.OutOrStderr(), "no such provider", args[0])
-
-					os.Exit(1)
-				}
-				fmt.Fprintln(cmd.OutOrStdout(), args[0])
-			}
-			return
-		},
-	}
-}
-
 // NewVersionCommand creates a new version subcommand command
 func NewVersionCommand(version, buildTime, gitCommit string) *cobra.Command {
 	return &cobra.Command{
@@ -88,7 +63,7 @@ func main() {
 	var opts root.Opts
 
 	rootCmd := root.NewCommand(ctx, filepath.Base(os.Args[0]), opts)
-	rootCmd.AddCommand(NewVersionCommand(commands.BuildVersion, commands.BuildTime, commands.GitCommit), NewRootCommand())
+	rootCmd.AddCommand(NewVersionCommand(commands.BuildVersion, commands.BuildTime, commands.GitCommit))
 	preRun := rootCmd.PreRunE
 
 	var logLevel string

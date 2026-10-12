@@ -585,7 +585,13 @@ skiff_check_node() {
         # that are only in LD_LIBRARY_PATH (a module) are not found by it.
         if [ -z "$gpu_missing" ]; then
             local ldcache
-            ldcache=$({ ldconfig -p || /sbin/ldconfig -p; } 2>/dev/null) || ldcache=""
+            # (/sbin/ldconfig only when there is no ldconfig on the PATH: a user's PATH may lack
+            # /sbin, while an ldconfig that is there and fails means the cache cannot be read.)
+            if command -v ldconfig >/dev/null 2>&1; then
+                ldcache=$(ldconfig -p 2>/dev/null) || ldcache=""
+            else
+                ldcache=$(/sbin/ldconfig -p 2>/dev/null) || ldcache=""
+            fi
             if [ -n "$ldcache" ]; then
                 for gpu_file in libcuda.so.1 libnvidia-ml.so.1; do
                     if ! grep -q "$gpu_file" <<< "$ldcache"; then

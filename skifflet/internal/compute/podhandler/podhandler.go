@@ -31,186 +31,52 @@ import (
 	"syscall"
 	"time"
 
-	goruntime "runtime"
 	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
 	"skifflet/internal/compute/gpu"
 	"skifflet/internal/compute/image"
 	"skifflet/internal/compute/runtime"
+	"skifflet/internal/compute/volume/projected"
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// FindContainerPID locates the live process beneath the Apptainer launcher of the
-// pause container, by heuristics. It is the fallback for a sandbox launched without
-// the Plaid handshake, which reports the process itself. Application containers do
-// not use it: they are resolved through Attempt.Target, which verifies what it finds.
-func FindContainerPID(parentPID int) int {
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		entries, err := os.ReadDir("/proc")
-		if err == nil {
-			parentOf := make(map[int]int)
-			pgrpOf := make(map[int]int)
-			var pids []int
-			for _, entry := range entries {
-				pid, err := strconv.Atoi(entry.Name())
-				if err != nil || pid <= 0 {
-					continue
-				}
-				pids = append(pids, pid)
-				if statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
-					idx := strings.LastIndex(string(statData), ")")
-					if idx != -1 && idx+2 < len(statData) {
-						statFields := strings.Fields(string(statData[idx+2:]))
-						if len(statFields) >= 2 {
-							if ppid, _ := strconv.Atoi(statFields[1]); ppid > 0 {
-								parentOf[pid] = ppid
-							}
-						}
-						if len(statFields) >= 3 {
-							if pgrp, _ := strconv.Atoi(statFields[2]); pgrp > 0 {
-								pgrpOf[pid] = pgrp
-							}
-						}
-					}
-				}
-			}
-
-			isDescendant := func(pid int) bool {
-				if pid == parentPID {
-					return false
-				}
-				if pgrp, ok := pgrpOf[pid]; ok && pgrp == parentPID {
-					return true
-				}
-				curr := pid
-				for {
-					ppid, ok := parentOf[curr]
-					if !ok || ppid <= 1 {
-						return false
-					}
-					if ppid == parentPID {
-						return true
-					}
-					curr = ppid
-				}
-			}
-
-			// Priority 1: A descendant whose comm is pause
-			for _, pid := range pids {
-				if isDescendant(pid) {
-					comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-					cStr := strings.TrimSpace(string(comm))
-					if cStr == "pause" {
-						return pid
-					}
-				}
-			}
-
-			// Priority 2: Any descendant whose network namespace differs from host /proc/1/ns/net
-			hostNetns, _ := os.Readlink("/proc/1/ns/net")
-			if hostNetns != "" {
-				for _, pid := range pids {
-					if isDescendant(pid) {
-						ns, _ := os.Readlink(fmt.Sprintf("/proc/%d/ns/net", pid))
-						if ns != "" && ns != hostNetns {
-							comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-							cStr := strings.TrimSpace(string(comm))
-							if !strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "plaidtainer") {
-								return pid
-							}
-						}
-					}
-				}
-			}
-
-			// Priority 3: Any non-fuse descendant whose comm is not starter/apptainer/plaidtainer
-			for _, pid := range pids {
-				if isDescendant(pid) {
-					comm, _ := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-					cStr := strings.TrimSpace(string(comm))
-					if !strings.Contains(cStr, "fuse") && !strings.Contains(cStr, "starter") && !strings.Contains(cStr, "apptainer") && !strings.Contains(cStr, "plaidtainer") {
-						return pid
-					}
-				}
-			}
-		}
-
-		if time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
+// observePodIP reads the IPv4 address of eth0 in the network namespace of process pid, as the
+// node sees it, and returns the first that is a pod address of the node's subnet (Plaid's,
+// see waitForPodNetwork). The sandbox handshake says what the address is; this checks that
+// the namespace really has it.
+func observePodIP(pid int, subnet *net.IPNet) (string, error) {
+	netnsPath := fmt.Sprintf("/proc/%d/ns/net", pid)
+	if _, err := os.Stat(netnsPath); err != nil {
+		return "", fmt.Errorf("netns path %s: %w", netnsPath, err)
 	}
-
-	if goruntime.GOOS != "linux" {
-		return parentPID
-	}
-	return 0
-}
-
-// GetPodIPFromNetns queries the network namespace of pausePID to find its assigned non-loopback IPv4 address on eth0.
-func GetPodIPFromNetns(pausePID int) (string, error) {
-	if testIP := os.Getenv("SKIFF_TEST_POD_IP"); testIP != "" {
-		return testIP, nil
-	}
-
-	netnsPath := fmt.Sprintf("/proc/%d/ns/net", pausePID)
-	if _, err := os.Stat(netnsPath); os.IsNotExist(err) {
-		if goruntime.GOOS != "linux" {
-			return "10.244.0.100", nil
-		}
-		return "", fmt.Errorf("netns path %s does not exist", netnsPath)
-	}
-
-	var expectedSubnet *net.IPNet
-	if podCIDR := os.Getenv("POD_CIDR"); podCIDR != "" {
-		_, expectedSubnet, _ = net.ParseCIDR(podCIDR)
-	}
-
 	hostNetns, _ := os.Readlink("/proc/1/ns/net")
-
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		// Ensure the process has actually unshared its network namespace
-		currNetns, _ := os.Readlink(netnsPath)
-		if currNetns != "" && hostNetns != "" && currNetns == hostNetns {
-			if time.Now().After(deadline) {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		cmd := exec.Command("nsenter", "-t", strconv.Itoa(pausePID), "-n", "ip", "-o", "-4", "addr", "show", "dev", "eth0")
-		output, err := cmd.Output()
-		if err == nil {
-			lines := strings.Split(string(output), "\n")
-			for _, line := range lines {
-				fields := strings.Fields(line)
-				for i, field := range fields {
-					if field == "inet" && i+1 < len(fields) {
-						ipCIDR := fields[i+1]
-						ipStr := strings.Split(ipCIDR, "/")[0]
-						if err := VerifyPodIP(ipStr, expectedSubnet); err == nil {
-							if expectedSubnet != nil || !strings.HasPrefix(ipStr, "10.0.") {
-								return ipStr, nil
+		// The process must have a network namespace of its own.
+		if currNetns, _ := os.Readlink(netnsPath); currNetns != "" && currNetns != hostNetns {
+			output, err := exec.Command("nsenter", "-t", strconv.Itoa(pid), "-n", "ip", "-o", "-4", "addr", "show", "dev", "eth0").Output()
+			if err == nil {
+				for _, line := range strings.Split(string(output), "\n") {
+					fields := strings.Fields(line)
+					for i, field := range fields {
+						if field == "inet" && i+1 < len(fields) {
+							ip := strings.Split(fields[i+1], "/")[0]
+							if VerifyPodIP(ip, subnet) == nil {
+								return ip, nil
 							}
 						}
 					}
 				}
 			}
 		}
-
 		if time.Now().After(deadline) {
-			break
+			return "", fmt.Errorf("timeout waiting for an address of %v on eth0 in the netns of PID %d", subnet, pid)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-
-	return "", fmt.Errorf("timeout waiting for valid pod IP on eth0 in netns of PID %d", pausePID)
 }
 
 // SafeRemovePodDirectory removes a pod directory, retrying for NFS file handle release
@@ -243,7 +109,11 @@ func SafeRemovePodDirectory(podDir string) error {
 // first, so a pod keeps one set per container, and a restart can never see its
 // predecessor's files. The temporary directories are world-writable with the sticky bit,
 // like a /tmp, whatever user the container runs as.
-func prepareAttemptScratch(container endpoint.ContainerPath, attempt int) error {
+//
+// The working directory, when it is not /, is made in the writable layer (its upper
+// directory, which Apptainer lays over the image), so that a directory the image does not
+// have exists when the container starts there, as the kubelet's runtime makes it.
+func prepareAttemptScratch(container endpoint.ContainerPath, attempt int, workingDir string) error {
 	attempts, err := container.ScratchAttempts()
 	if err != nil {
 		return err
@@ -263,6 +133,11 @@ func prepareAttemptScratch(container endpoint.ContainerPath, attempt int) error 
 	}
 	for _, dir := range []string{container.AttemptOverlayDir(attempt), container.AttemptUnpackDir(attempt)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	if workingDir != "" && workingDir != "/" {
+		if err := os.MkdirAll(filepath.Join(container.AttemptOverlayDir(attempt), "upper", workingDir), 0o755); err != nil {
 			return err
 		}
 	}
@@ -444,6 +319,10 @@ type PodHandler struct {
 	// gpus are the GPUs of each container that asks for some, by name (see reserveGPUs).
 	gpus map[string][]gpu.Device
 
+	// projected are the writers of the pod's projected volumes, by name, which syncVolumes
+	// keeps (their service account tokens are renewed through them).
+	projected map[string]*projected.VolumeMounter
+
 	logger logr.Logger
 	pids   podPIDsRecord
 }
@@ -547,9 +426,14 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 		return 128, attemptFilesError, err
 	}
 
-	if err := prepareAttemptScratch(h.podDirectory.Container(spec.Name), a.ID); err != nil {
+	if err := prepareAttemptScratch(h.podDirectory.Container(spec.Name), a.ID, c.WorkingDir); err != nil {
 		logs.Abort()
 		a.FailPod(128, "TmpDirError", "failed to create the container's /tmp: %v", err)
+		return 128, attemptFilesError, err
+	}
+	if err := prepareTerminationLog(c, h.podDirectory.Container(spec.Name).AttemptTerminationLog(a.ID)); err != nil {
+		logs.Abort()
+		a.FailPod(128, "TerminationLogError", "failed to create the container's termination message file: %v", err)
 		return 128, attemptFilesError, err
 	}
 
@@ -562,9 +446,10 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 	cmd.Stderr = logs.Stderr()
 
 	var gates probeGates
+	a.spec = spec // (an init container has no hooks or probes: admission refuses them)
+	a.stopSignal = c.StopSignal
 	if !init {
 		gates = gatesOf(spec)
-		a.spec = spec
 	}
 	if err := a.Start(cmd, gates); err != nil {
 		logs.Abort()
@@ -603,8 +488,10 @@ func backoffFor(attempt, maxShift int, floor time.Duration) time.Duration {
 // honoured) is not the pod's failure. As the kubelet reports it, the container is
 // Waiting with the reason CreateContainerConfigError and the message, an event says
 // so, and it is tried again with a growing pause, so that creating what was missing
-// lets it start; its siblings are not held back. Anything else (its image, its
-// mounts) fails the pod. ok is false when the container will not be started.
+// lets it start; its siblings are not held back. An image that cannot be pulled is
+// tried again the same way, with the kubelet's back-off: the container is Waiting with
+// ErrImagePull, then ImagePullBackOff while it waits. Anything else (its mounts) fails
+// the pod. ok is false when the container will not be started.
 func (h *PodHandler) prepareContainer(ctx context.Context, spec *corev1.Container, init bool, index int) (c Container, ok bool) {
 	pl := h.lifecycle
 	failReason, field := "MainContainerError", "Containers"
@@ -612,6 +499,7 @@ func (h *PodHandler) prepareContainer(ctx context.Context, spec *corev1.Containe
 		failReason, field = "InitContainerError", "InitContainers"
 	}
 	lastMessage := ""
+	pulls := pullBackOff()
 	for attempt := 0; ; attempt++ {
 		c, err := h.buildContainer(ctx, spec)
 		if err == nil {
@@ -620,6 +508,24 @@ func (h *PodHandler) prepareContainer(ctx context.Context, spec *corev1.Containe
 		}
 		if ctx.Err() != nil {
 			return Container{}, false
+		}
+		var pullErr *ImagePullError
+		if errors.As(err, &pullErr) {
+			h.logger.Info("image cannot be pulled; backing off", "container", spec.Name, "image", spec.Image, "reason", pullErr.Err.Error())
+			pl.SetContainerWaiting(spec.Name, init, pullErr.Reason(), err.Error())
+			pl.ContainerEvent(spec.Name, corev1.EventTypeWarning, "Failed", "Failed to pull image %q: %v", spec.Image, pullErr.Err)
+			// The failure itself is shown for a fifth of the pause (the kubelet shows it until
+			// its next look at the pod), then the back-off for the rest.
+			pause := pulls.delay(0)
+			if !sleepCtx(ctx, pause/5) {
+				return Container{}, false
+			}
+			pl.SetContainerWaiting(spec.Name, init, "ImagePullBackOff", fmt.Sprintf("Back-off pulling image %q", spec.Image))
+			pl.ContainerEvent(spec.Name, corev1.EventTypeNormal, "BackOff", "Back-off pulling image %q", spec.Image)
+			if !sleepCtx(ctx, pause-pause/5) {
+				return Container{}, false
+			}
+			continue
 		}
 		if IsConfigError(err) {
 			if message := err.Error(); message != lastMessage {
@@ -635,12 +541,8 @@ func (h *PodHandler) prepareContainer(ctx context.Context, spec *corev1.Containe
 			}
 			continue
 		}
-		reason := "ErrImagePull"
-		if !strings.Contains(err.Error(), "ImagePull") && !strings.Contains(err.Error(), "image") {
-			reason = failReason
-		}
-		pl.SetContainerWaiting(spec.Name, init, reason, err.Error())
-		pl.Fail(reason, "failed to materialize pod.Spec.%s[%d]: %v", field, index, err)
+		pl.SetContainerWaiting(spec.Name, init, failReason, err.Error())
+		pl.Fail(failReason, "failed to materialize pod.Spec.%s[%d]: %v", field, index, err)
 		return Container{}, false
 	}
 }
@@ -719,9 +621,22 @@ func PreparePod(pl *PodLifecycle) {
 		return
 	}
 
-	if err := CheckRuntimeClass(ctx, pod); err != nil {
-		pl.Fail(compute.ReasonUnsupportedFeatures, "capability validation failed: %v", err)
-		return
+	// The pod's RuntimeClass: one Skifflet does not run refuses the pod; a RuntimeClass that
+	// cannot be read now (the API server is away) is asked about again.
+	for attempt := 0; ; attempt++ {
+		err := CheckRuntimeClass(ctx, pod)
+		if err == nil {
+			break
+		}
+		var refused *RuntimeClassRefusal
+		if errors.As(err, &refused) {
+			pl.Fail(compute.ReasonUnsupportedFeatures, "capability validation failed: %v", err)
+			return
+		}
+		logger.Info("the pod's RuntimeClass cannot be read yet; asking again", "reason", err.Error())
+		if !sleepCtx(ctx, backoffFor(attempt, 5, time.Second)) {
+			return
+		}
 	}
 
 	// The GPUs the pod asks for, taken from the node's before anything of the pod exists and
@@ -795,8 +710,9 @@ func PreparePod(pl *PodLifecycle) {
 		return
 	}
 	h.logger.Info(" * All volumes have been mounted")
+	go h.syncVolumes(ctx)
 
-	// Pull Pause Image
+	// The node's pod network (Plaid's TAP datapath and the node's subnet), then the pause image
 	expectedSubnet, err := waitForPodNetwork(ctx)
 	if err != nil {
 		pl.Fail("NetworkNotReady", "%v", err)
@@ -816,23 +732,19 @@ func PreparePod(pl *PodLifecycle) {
 	readinessFile := h.podDirectory.ReadinessFile()
 	_ = os.Remove(readinessFile)
 
-	// Launch Pause Container via compute.Environment.ApptainerBin (without --host-networking)
+	// The pause container, through plaidtainer (without --host-networking: it gives the pod its
+	// network namespace and address on the overlay, and says so in the readiness handshake).
 	pauseArgs := []string{
 		"exec",
-	}
-	usesPlaidtainer := strings.Contains(compute.Environment.ApptainerBin, "plaidtainer") || filepath.Base(compute.Environment.ApptainerBin) == "plaidtainer"
-	if usesPlaidtainer {
-		pauseArgs = append(pauseArgs, "--readiness-file", readinessFile)
-	}
-	pauseArgs = append(pauseArgs,
+		"--readiness-file", readinessFile,
 		"--dns", compute.Environment.KubeDNS,
-		"--bind", h.podDirectory.ResolvConf()+":/etc/resolv.conf",
+		"--bind", h.podDirectory.ResolvConf() + ":/etc/resolv.conf",
 		"--cleanenv",
 		"--writable-tmpfs",
 		"--no-mount", NoMounts,
 		pauseImage.Filepath,
 		"/pause",
-	)
+	}
 
 	pauseCmd := exec.Command(compute.Environment.ApptainerBin, pauseArgs...)
 	pauseCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -885,73 +797,53 @@ func PreparePod(pl *PodLifecycle) {
 		}
 	}()
 
+	// The handshake is the only way the sandbox is known: its process, its namespace (opened
+	// and checked against the inode it reports) and its address, which the namespace must have.
 	info, err := WaitForReadiness(ctx, readinessFile, 15*time.Second)
-	if usesPlaidtainer && (err != nil || info == nil || info.PausePID <= 1 || info.NetnsPath == "" || info.NetnsInode == 0 || info.EndpointID == "") {
+	if err != nil || info == nil || info.PausePID <= 1 || info.NetnsPath == "" || info.NetnsInode == 0 || info.EndpointID == "" {
 		killPauseAndWait()
 		pl.Fail("SandboxReadinessError", "plaidtainer readiness handshake failed: %v", err)
 		return
 	}
-	if err == nil && info != nil && info.PausePID > 1 {
-		containerPID = info.PausePID
-		podIP = strings.Split(info.IP, "/")[0]
-		netnsPath = info.NetnsPath
-		if netnsFile, err = VerifyNetnsDescriptor(netnsPath); err != nil {
-			killPauseAndWait()
-			pl.Fail("NetnsError", "failed to verify netns descriptor: %v", err)
-			return
-		}
-		if usesPlaidtainer {
-			stat, statErr := netnsFile.Stat()
-			if statErr != nil {
-				killPauseAndWait()
-				pl.Fail("NetnsError", "failed to stat sandbox namespace: %v", statErr)
-				return
-			}
-			if sys, ok := stat.Sys().(*syscall.Stat_t); !ok || sys.Ino != info.NetnsInode {
-				killPauseAndWait()
-				pl.Fail("NetnsError", "sandbox namespace changed during handshake")
-				return
-			}
-		}
-	} else {
-		containerPID = FindContainerPID(pausePID)
-		if containerPID <= 0 {
-			killPauseAndWait()
-			pl.Fail("ContainerPIDError", "failed to discover container PID under pause PID %d", pausePID)
-			return
-		}
-		var ipErr error
-		podIP, ipErr = GetPodIPFromNetns(containerPID)
-		if ipErr != nil {
-			killPauseAndWait()
-			pl.Fail("NetnsIPError", "failed to discover pod IP from netns: %v", ipErr)
-			return
-		}
-		netnsPath = fmt.Sprintf("/proc/%d/ns/net", containerPID)
+	containerPID = info.PausePID
+	podIP = strings.Split(info.IP, "/")[0]
+	netnsPath = info.NetnsPath
+	if netnsFile, err = VerifyNetnsDescriptor(netnsPath); err != nil {
+		killPauseAndWait()
+		pl.Fail("NetnsError", "failed to verify netns descriptor: %v", err)
+		return
 	}
-
+	stat, statErr := netnsFile.Stat()
+	if statErr != nil {
+		killPauseAndWait()
+		pl.Fail("NetnsError", "failed to stat sandbox namespace: %v", statErr)
+		return
+	}
+	if sys, ok := stat.Sys().(*syscall.Stat_t); !ok || sys.Ino != info.NetnsInode {
+		killPauseAndWait()
+		pl.Fail("NetnsError", "sandbox namespace changed during handshake")
+		return
+	}
 	if err := VerifyPodIP(podIP, h.expectedSubnet); err != nil {
 		killPauseAndWait()
 		pl.Fail("NetnsIPError", "invalid pod IP %q: %v", podIP, err)
 		return
 	}
-	if usesPlaidtainer {
-		observedIP, observeErr := GetPodIPFromNetns(containerPID)
-		if observeErr != nil || observedIP != podIP {
-			killPauseAndWait()
-			pl.Fail("NetnsIPError", "sandbox eth0 address does not match handshake: assigned=%s observed=%s error=%v", podIP, observedIP, observeErr)
-			return
-		}
+	if observedIP, observeErr := observePodIP(containerPID, h.expectedSubnet); observeErr != nil || observedIP != podIP {
+		killPauseAndWait()
+		pl.Fail("NetnsIPError", "sandbox eth0 address does not match handshake: assigned=%s observed=%s error=%v", podIP, observedIP, observeErr)
+		return
 	}
 
+	// A container that is not root may bind any port, as the support table says; a sandbox
+	// where that cannot be set is not one the pod can run in.
 	if err := allowUnprivilegedPorts(containerPID); err != nil {
-		h.logger.Info("could not let non-root containers bind low ports", "pod", h.podKey, "error", err.Error())
+		killPauseAndWait()
+		pl.Fail("SandboxError", "could not let the pod's containers bind ports below 1024: %v", err)
+		return
 	}
 
-	var endpointID string
-	if info != nil && info.EndpointID != "" {
-		endpointID = info.EndpointID
-	}
+	endpointID := info.EndpointID
 
 	pl.SetSandbox(&SandboxRuntime{
 		PausePID:     pausePID,
@@ -983,46 +875,20 @@ func PreparePod(pl *PodLifecycle) {
 	// finished. A container whose configuration cannot be resolved waits, and only
 	// it does (see prepareContainer).
 
-	// Execute Init Containers sequentially with retry policy support
+	// The init containers one after the other, each until it succeeds (or the pod's policy is
+	// Never and it failed); then the application containers together, each as the restart
+	// policy says (runContainer).
 	for i := range pod.Spec.InitContainers {
-		spec := &pod.Spec.InitContainers[i]
-		c, ok := h.prepareContainer(ctx, spec, true, i)
-		if !ok {
+		exitCode, done := h.runContainer(ctx, &pod.Spec.InitContainers[i], true, i, containerPID)
+		if !done || exitCode != 0 {
+			if done {
+				logger.Error(fmt.Errorf("init container %s exited with %d", pod.Spec.InitContainers[i].Name, exitCode), "init container failed")
+			}
 			killPauseAndWait() // the pod is failed with the reason, or is going away
 			return
 		}
-		initAttempt := 0
-		for {
-			if ctx.Err() != nil {
-				killPauseAndWait()
-				return
-			}
-			exitCode, result, _ := h.runAttempt(&c, spec, true, containerPID)
-			if result == attemptFilesError {
-				killPauseAndWait() // the pod is already failed with the reason
-				return
-			}
-			if result == attemptExited && exitCode == 0 {
-				break // Init container succeeded, proceed to next
-			}
-			if pl.RestartPolicy() == corev1.RestartPolicyNever {
-				killPauseAndWait()
-				if result == attemptExited {
-					logger.Error(fmt.Errorf("init container %s exited with %d", c.InstanceName, exitCode), "init container failed")
-				}
-				return
-			}
-			initAttempt++
-			select {
-			case <-ctx.Done():
-				killPauseAndWait()
-				return
-			case <-time.After(backoffFor(initAttempt, 4, 0)):
-			}
-		}
 	}
 
-	// Execute Main Containers concurrently with restart policy support
 	var appWg sync.WaitGroup
 	for i := range pod.Spec.Containers {
 		spec := &pod.Spec.Containers[i]
@@ -1030,42 +896,10 @@ func PreparePod(pl *PodLifecycle) {
 		appWg.Add(1)
 		go func() {
 			defer appWg.Done()
-			c, ok := h.prepareContainer(ctx, spec, false, index)
-			if !ok {
-				if ctx.Err() == nil {
-					// A container that cannot be made ready for a reason other than its
-					// configuration (its image) fails the pod, with everything in it.
-					pl.ReleaseLiveResources(0)
-				}
-				return
-			}
-			restartAttempt := 0
-			for {
-				if ctx.Err() != nil {
-					return
-				}
-				exitCode, result, _ := h.runAttempt(&c, spec, false, containerPID)
-				if result == attemptFilesError {
-					return // the pod is already failed with the reason
-				}
-				if ctx.Err() != nil {
-					return
-				}
-				switch pl.RestartPolicy() {
-				case corev1.RestartPolicyAlways:
-				case corev1.RestartPolicyOnFailure:
-					if exitCode == 0 {
-						return
-					}
-				default:
-					return
-				}
-				restartAttempt++
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(backoffFor(restartAttempt, 5, 500*time.Millisecond)):
-				}
+			if _, done := h.runContainer(ctx, spec, false, index, containerPID); !done && ctx.Err() == nil {
+				// The pod failed as a whole (an image that cannot be had, a container's log or
+				// scratch that cannot be made): what still runs in it stops.
+				pl.ReleaseLiveResources(0)
 			}
 		}()
 	}

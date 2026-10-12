@@ -33,7 +33,7 @@ func TestInstanceLock_MutualExclusion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first AcquireInstanceLock failed: %v", err)
 	}
-	defer lock1.Release()
+	defer lock1.file.Close()
 
 	// Second acquire on the same directory must fail with ErrInstanceLocked
 	_, err2 := AcquireInstanceLock(tmpDir)
@@ -42,11 +42,11 @@ func TestInstanceLock_MutualExclusion(t *testing.T) {
 	}
 
 	// After release, re-acquire succeeds
-	lock1.Release()
+	lock1.file.Close()
 
 	lock3, err3 := AcquireInstanceLock(tmpDir)
 	if err3 != nil {
 		t.Fatalf("AcquireInstanceLock failed after release: %v", err3)
 	}
-	defer lock3.Release()
+	defer lock3.file.Close()
 }

@@ -45,7 +45,20 @@ func (b *VolumeMounter) SetUpAt(ctx context.Context) error {
 		return fmt.Errorf("invalid HostPath '%s': %w", source.Path, err)
 	}
 
-	return checkType(source.Path, source.Type, hostutil.NewHostUtil())
+	return CheckType(source.Path, source.Type)
+}
+
+// CheckType checks the path of a hostPath volume (of a pod, or a claim's volume) against its
+// type, making what the type says to make. With no type the kubelet checks nothing and the
+// container runtime makes a directory that is missing (containerd does), so Skifflet makes it.
+func CheckType(path string, pathType *corev1.HostPathType) error {
+	if pathType == nil || *pathType == corev1.HostPathUnset {
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			return os.MkdirAll(path, 0o755)
+		}
+		return nil
+	}
+	return checkType(path, pathType, hostutil.NewHostUtil())
 }
 
 type hostPathTypeChecker interface {

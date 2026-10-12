@@ -277,7 +277,7 @@ runtime_verify_gone() {
         observation=$(runtime_observe "$node" "$process_cmd")
         case "$observation" in ABSENT) ;; PRESENT) lingering+=(process) ;; *) unknown+=(process) ;; esac
 
-        observation=$(runtime_observe "$node" "set -e; for p in /proc/[0-9]*/ns/net; do [ -e \$p ] || continue; inode=\$(stat -Lc %i \$p); if [ \"\$inode\" = '${netns_inode}' ]; then echo 1; exit 0; fi; done; echo 0")
+        observation=$(runtime_observe "$node" "set -e; for p in /proc/[0-9]*/ns/net; do [ -e \$p ] || continue; inode=\$(stat -Lc %i \$p 2>/dev/null) || continue; if [ \"\$inode\" = '${netns_inode}' ]; then echo 1; exit 0; fi; done; echo 0")
         case "$observation" in ABSENT) ;; PRESENT) lingering+=(namespace) ;; *) unknown+=(namespace) ;; esac
 
         observation=$(runtime_observe "$node" "set -e; status=\$(plaidctl status); case \"\$status\" in *'${endpoint_id}'*) echo 1;; *) echo 0;; esac")
@@ -357,8 +357,9 @@ runtime_count_processes() {
     local node="$1" pattern="$2"
     local node_ip
     node_ip=$(runtime_node_ip "$node")
+    # (A count that could not be made is said so, never 0: item 28 of sprint 5.)
     runtime_ssh_node "$node_ip" \
-        "ps -eo pid,args 2>/dev/null | grep -F '${pattern}' | grep -v grep | wc -l" 2>/dev/null || echo 0
+        "ps -eo pid,args | grep -F '${pattern}' | grep -v grep | wc -l" 2>/dev/null || echo "(could not count the processes on ${node})"
 }
 
 # ---------------------------------------------------------------------------

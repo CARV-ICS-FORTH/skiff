@@ -17,7 +17,6 @@ package podhandler
 import (
 	"fmt"
 	"os/exec"
-	goruntime "runtime"
 	"strconv"
 	"strings"
 )
@@ -32,8 +31,8 @@ const unprivilegedPortStart = "net.ipv4.ip_unprivileged_port_start"
 // bind a port below 1024 (CoreDNS, whose image runs as 65532, binds 53; a web server binds
 // 80). The namespace is the pod's alone, so nothing else is affected. pid is a process in it.
 func allowUnprivilegedPorts(pid int) error {
-	if goruntime.GOOS != "linux" || pid <= 1 {
-		return nil
+	if pid <= 1 {
+		return fmt.Errorf("no process %d to enter", pid)
 	}
 	out, err := exec.Command("nsenter", "-t", strconv.Itoa(pid), "-n", "sysctl", "-w", unprivilegedPortStart+"=0").CombinedOutput()
 	if err != nil {

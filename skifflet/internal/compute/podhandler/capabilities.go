@@ -26,6 +26,25 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 		unsupported = append(unsupported, "Spec.ActiveDeadlineSeconds (the pod deadline is not enforced)")
 	}
 
+	if pod.Spec.ShareProcessNamespace != nil && *pod.Spec.ShareProcessNamespace {
+		unsupported = append(unsupported, "Spec.ShareProcessNamespace (not implemented: every container has a PID namespace of its own)")
+	}
+	if len(pod.Spec.ReadinessGates) > 0 {
+		unsupported = append(unsupported, "Spec.ReadinessGates (not implemented)")
+	}
+	if len(pod.Spec.ResourceClaims) > 0 {
+		unsupported = append(unsupported, "Spec.ResourceClaims (dynamic resource allocation is not implemented)")
+	}
+	if len(pod.Spec.ImagePullSecrets) > 0 {
+		unsupported = append(unsupported, "Spec.ImagePullSecrets (private registries are not implemented: remove the field for a public image)")
+	}
+	if pod.Spec.OS != nil && pod.Spec.OS.Name != corev1.Linux {
+		unsupported = append(unsupported, fmt.Sprintf("Spec.OS (the pod is for %s and the node runs Linux)", pod.Spec.OS.Name))
+	}
+	if pod.Spec.HostnameOverride != nil {
+		unsupported = append(unsupported, "Spec.HostnameOverride (not implemented)")
+	}
+
 	if pod.Spec.HostNetwork {
 		unsupported = append(unsupported, "Spec.HostNetwork")
 	}
@@ -46,6 +65,18 @@ func ValidatePodCapabilities(pod *corev1.Pod) error {
 	validateContainer := func(prefix string, c *corev1.Container, init bool) {
 		if init && c.RestartPolicy != nil {
 			unsupported = append(unsupported, prefix+".RestartPolicy (restartable init containers)")
+		}
+		if !init && c.RestartPolicy != nil {
+			unsupported = append(unsupported, prefix+".RestartPolicy (restart rules of a container are not implemented)")
+		}
+		if len(c.RestartPolicyRules) > 0 {
+			unsupported = append(unsupported, prefix+".RestartPolicyRules (not implemented)")
+		}
+		if c.Stdin || c.StdinOnce || c.TTY {
+			unsupported = append(unsupported, prefix+".Stdin/TTY (nothing attaches to a container: use kubectl exec -it)")
+		}
+		if len(c.Resources.Claims) > 0 {
+			unsupported = append(unsupported, prefix+".Resources.Claims (dynamic resource allocation is not implemented)")
 		}
 		if len(c.VolumeDevices) > 0 {
 			unsupported = append(unsupported, prefix+".VolumeDevices (block devices)")
@@ -190,4 +221,74 @@ func validateEnvironment(pod *corev1.Pod, prefix string, c *corev1.Container) []
 		}
 	}
 	return out
+}
+
+// What Skifflet does with each field of a pod, so that none passes unnoticed. Every field of
+// the structures below is in the list (a test makes sure of it, so a field that comes with a
+// new Kubernetes is classified before the build passes):
+//
+//   - fieldImplemented: Skifflet does what Kubernetes does with it (the support table of
+//     skifflet/README.md says where it falls short);
+//   - fieldAccepted: accepted with the reason given and the support table saying so; the
+//     scheduler's fields, for one, are done with before a pod reaches the node;
+//   - fieldRefused: a pod that sets it is refused at creation (ValidatePodCapabilities), with
+//     the field named.
+type fieldSupport int
+
+const (
+	fieldImplemented fieldSupport = iota
+	fieldAccepted
+	fieldRefused
+)
+
+const scheduled = fieldAccepted // the scheduler's business, done with before the pod reaches the node
+
+var podFields = map[string]map[string]fieldSupport{
+	"PodSpec": {
+		"Volumes": fieldImplemented, "InitContainers": fieldImplemented, "Containers": fieldImplemented,
+		"EphemeralContainers": fieldRefused, "RestartPolicy": fieldImplemented,
+		"TerminationGracePeriodSeconds": fieldImplemented, "ActiveDeadlineSeconds": fieldRefused,
+		"DNSPolicy": fieldImplemented, "NodeSelector": scheduled, "ServiceAccountName": fieldImplemented,
+		"DeprecatedServiceAccount": fieldImplemented, "AutomountServiceAccountToken": fieldImplemented,
+		"NodeName": fieldImplemented, "HostNetwork": fieldRefused, "HostPID": fieldRefused, "HostIPC": fieldRefused,
+		"ShareProcessNamespace": fieldRefused, "SecurityContext": fieldImplemented, "ImagePullSecrets": fieldRefused,
+		"Hostname": fieldImplemented, "Subdomain": fieldImplemented, "Affinity": scheduled, "SchedulerName": scheduled,
+		"Tolerations": scheduled, "HostAliases": fieldImplemented, "PriorityClassName": scheduled, "Priority": scheduled,
+		"DNSConfig": fieldImplemented, "ReadinessGates": fieldRefused, "RuntimeClassName": fieldImplemented,
+		"EnableServiceLinks": fieldImplemented, "PreemptionPolicy": scheduled,
+		"Overhead":                  fieldAccepted, // counted by the scheduler, not enforced (as limits are not)
+		"TopologySpreadConstraints": scheduled, "SetHostnameAsFQDN": fieldImplemented, "OS": fieldImplemented,
+		"HostUsers":       fieldAccepted, // the containers always run in a user namespace of the job's user
+		"SchedulingGates": scheduled, "ResourceClaims": fieldRefused,
+		"Resources":        fieldAccepted, // the pod's requests are the scheduler's; limits are not enforced
+		"HostnameOverride": fieldRefused, "SchedulingGroup": scheduled,
+	},
+	"Container": {
+		"Name": fieldImplemented, "Image": fieldImplemented, "Command": fieldImplemented, "Args": fieldImplemented,
+		"WorkingDir": fieldImplemented, "Ports": fieldImplemented, "EnvFrom": fieldImplemented, "Env": fieldImplemented,
+		"Resources":     fieldImplemented, // requests and GPUs; limits accepted and not enforced (support table)
+		"ResizePolicy":  fieldAccepted,    // an in-place resize is not applied, and is reported (UpdateNotApplied)
+		"RestartPolicy": fieldRefused, "RestartPolicyRules": fieldRefused, "VolumeMounts": fieldImplemented,
+		"VolumeDevices": fieldRefused, "LivenessProbe": fieldImplemented, "ReadinessProbe": fieldImplemented,
+		"StartupProbe": fieldImplemented, "Lifecycle": fieldImplemented, "TerminationMessagePath": fieldImplemented,
+		"TerminationMessagePolicy": fieldImplemented, "ImagePullPolicy": fieldImplemented,
+		"SecurityContext": fieldImplemented, "Stdin": fieldRefused, "StdinOnce": fieldRefused, "TTY": fieldRefused,
+	},
+	// The fields of a security context that are not applied are named in the pod's Warning event
+	// SecurityContextNotApplied (UnappliedSecurityContext); WindowsOptions apply to Windows only.
+	"PodSecurityContext": {
+		"SELinuxOptions": fieldAccepted, "WindowsOptions": fieldAccepted, "RunAsUser": fieldImplemented,
+		"RunAsGroup": fieldImplemented, "RunAsNonRoot": fieldImplemented, "SupplementalGroups": fieldAccepted,
+		"SupplementalGroupsPolicy": fieldAccepted, "FSGroup": fieldAccepted, "Sysctls": fieldAccepted,
+		"FSGroupChangePolicy": fieldAccepted, "SeccompProfile": fieldAccepted, "AppArmorProfile": fieldAccepted,
+		"SELinuxChangePolicy": fieldAccepted,
+	},
+	"SecurityContext": {
+		"Capabilities": fieldAccepted, "Privileged": fieldAccepted, "SELinuxOptions": fieldAccepted,
+		"WindowsOptions": fieldAccepted, "RunAsUser": fieldImplemented, "RunAsGroup": fieldImplemented,
+		"RunAsNonRoot": fieldImplemented, "ReadOnlyRootFilesystem": fieldAccepted,
+		"AllowPrivilegeEscalation": fieldAccepted, "ProcMount": fieldAccepted, "SeccompProfile": fieldAccepted,
+		"AppArmorProfile": fieldAccepted,
+	},
+	"Lifecycle": {"PostStart": fieldImplemented, "PreStop": fieldImplemented, "StopSignal": fieldImplemented},
 }

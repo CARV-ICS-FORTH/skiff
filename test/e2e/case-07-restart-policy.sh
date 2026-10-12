@@ -133,8 +133,9 @@ for record in "${attempt_records[@]}"; do
 done
 e2e_assert_eq "one recorded application attempt remains alive" "$live_attempts" "1"
 # Apptainer may rewrite its command line. Count actual server payloads by the
-# recorded Pod network namespace, independently of launcher arguments.
-POD_PROCS=$(runtime_bubble_exec "$NODE_A" "count=0; for f in /proc/[0-9]*/ns/net; do [ -e \$f ] || continue; ns=\$(stat -Lc %i \$f); if [ \"\$ns\" = '${pod_netns}' ]; then comm=\$(cat \"\${f%/ns/net}/comm\"); case \"\$comm\" in python*) count=\$((count + 1));; esac; fi; done; echo \$count")
+# recorded Pod network namespace, independently of launcher arguments. A process that ends
+# while the list is read is skipped.
+POD_PROCS=$(runtime_bubble_exec "$NODE_A" "count=0; for f in /proc/[0-9]*/ns/net; do [ -e \$f ] || continue; ns=\$(stat -Lc %i \$f 2>/dev/null) || continue; if [ \"\$ns\" = '${pod_netns}' ]; then comm=\$(cat \"\${f%/ns/net}/comm\" 2>/dev/null) || continue; case \"\$comm\" in python*) count=\$((count + 1));; esac; fi; done; echo \$count")
 [[ "$POD_PROCS" =~ ^[0-9]+$ ]] || e2e_die "UNKNOWN server process count: '$POD_PROCS'"
 e2e_assert_eq "one server payload remains in the Pod namespace" "$POD_PROCS" "1"
 e2e_kubectl delete pod e2e07-always -n "$NS"
@@ -167,5 +168,95 @@ e2e_assert_eq "hook rejected without pod IP" "$pod_ip" ""
 allocated=$(runtime_bubble_exec "$NODE_A" "if [ -e '$(runtime_pod_dir "$NS" "e2e07-unsupported-hook" "$uid")' ]; then echo 1; else echo 0; fi")
 e2e_assert_eq "hook rejected before runtime allocation" "$allocated" "0"
 e2e_kubectl delete pod "e2e07-unsupported-hook" -n "$NS" --wait=true
+
+# ---------------------------------------------------------------------------
+# T58-init-retry: an init container that fails is run again under Always and OnFailure, and
+# the pod stays Pending meanwhile (never Failed), then runs; under Never the pod fails with
+# InitializationError.
+# ---------------------------------------------------------------------------
+init_retry() {
+    local policy name
+    for policy in Always OnFailure; do
+        name="e2e07-init-$(tr '[:upper:]' '[:lower:]' <<< "$policy")"
+        cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: ${name}, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  restartPolicy: ${policy}
+  terminationGracePeriodSeconds: 1
+  initContainers:
+  - name: init
+    image: ${FIXTURE_IMAGE}
+    command: ["sh", "-c", "echo x >> /state/tries; [ \$(wc -l < /state/tries) -ge 3 ]"]
+    volumeMounts: [{name: state, mountPath: /state}]
+  containers:
+  - name: app
+    image: ${FIXTURE_IMAGE}
+    command: ["sleep", "3600"]
+  volumes: [{name: state, emptyDir: {}}]
+EOF
+        # e2e_wait_pod_phase fails at once on a terminal phase: a Failed pod on the way is a failure.
+        e2e_wait_pod_phase "$NS" "$name" Running 180
+        e2e_assert_eq "$policy: the init container was run again until it succeeded" \
+            "$(e2e_kubectl get pod "$name" -n "$NS" -o jsonpath='{.status.initContainerStatuses[0].restartCount}')" 2
+        e2e_assert_eq "$policy: the pod is initialized" \
+            "$(e2e_kubectl get pod "$name" -n "$NS" -o jsonpath='{.status.conditions[?(@.type=="Initialized")].status}')" True
+        e2e_kubectl delete pod "$name" -n "$NS" --timeout=60s > /dev/null
+    done
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e07-init-never, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  restartPolicy: Never
+  initContainers:
+  - {name: init, image: ${FIXTURE_IMAGE}, command: ["sh", "-c", "exit 3"]}
+  containers:
+  - {name: app, image: ${FIXTURE_IMAGE}, command: ["sleep", "3600"]}
+EOF
+    e2e_wait_pod_phase "$NS" e2e07-init-never Failed 120
+    e2e_assert_eq "Never: the pod fails with the reason" "$(e2e_kubectl get pod e2e07-init-never -n "$NS" -o jsonpath='{.status.reason}')" InitializationError
+    e2e_assert_eq "Never: the init container ran once" "$(e2e_kubectl get pod e2e07-init-never -n "$NS" -o jsonpath='{.status.initContainerStatuses[0].restartCount}')" 0
+    e2e_kubectl delete pod e2e07-init-never -n "$NS" --timeout=60s > /dev/null
+}
+e2e_subcase_run T58-init-retry init_retry
+
+# ---------------------------------------------------------------------------
+# T64-crash-loop-backoff: a container that keeps failing is started again with the kubelet's
+# back-off (at once, then 10 s, then 20 s, ... up to 5 minutes), Waiting with CrashLoopBackOff
+# meanwhile, and the pod is Running, as with the kubelet.
+# ---------------------------------------------------------------------------
+crash_loop_backoff() {
+    cat <<EOF | e2e_kubectl apply -f - > /dev/null
+apiVersion: v1
+kind: Pod
+metadata: {name: e2e07-crashloop, namespace: ${NS}}
+spec:
+  nodeName: ${NODE_A}
+  restartPolicy: Always
+  terminationGracePeriodSeconds: 1
+  containers:
+  - {name: app, image: ${FIXTURE_IMAGE}, command: ["sh", "-c", "exit 1"]}
+EOF
+    local seen="" message restarts deadline=$(( $(date +%s) + 150 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        message=$(e2e_kubectl get pod e2e07-crashloop -n "$NS" -o jsonpath='{.status.containerStatuses[0].state.waiting.reason} {.status.containerStatuses[0].state.waiting.message}')
+        case "$message" in
+            "CrashLoopBackOff back-off 10s "*) [[ "$seen" == *10s* ]] || seen+=" 10s" ;;
+            "CrashLoopBackOff back-off 20s "*) [[ "$seen" == *20s* ]] || seen+=" 20s" ;;
+        esac
+        restarts=$(e2e_kubectl get pod e2e07-crashloop -n "$NS" -o jsonpath='{.status.containerStatuses[0].restartCount}')
+        [ "${restarts:-0}" -ge 3 ] && [[ "$seen" == *20s* ]] && break
+        sleep 1
+    done
+    e2e_assert_eq "it backed off 10 s, then 20 s" "$seen" " 10s 20s"
+    e2e_assert_eq "the pod is Running, as with the kubelet" "$(e2e_kubectl get pod e2e07-crashloop -n "$NS" -o jsonpath='{.status.phase}')" Running
+    e2e_assert_eq "the last termination is kept" "$(e2e_kubectl get pod e2e07-crashloop -n "$NS" -o jsonpath='{.status.containerStatuses[0].lastState.terminated.exitCode}')" 1
+    e2e_kubectl delete pod e2e07-crashloop -n "$NS" --timeout=60s > /dev/null
+}
+e2e_subcase_run T64-crash-loop-backoff crash_loop_backoff
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

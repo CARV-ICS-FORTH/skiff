@@ -6,6 +6,8 @@
 # networks, DNS address, cluster domain, pod MTU, runtime paths) alike: run the
 # tests with the variables the cluster was submitted with.
 set -euo pipefail
+# (E2E_CONFIG_VARIANT names a run on other settings than the defaults, "-alt" for the one the
+# aggregate makes, see run_alternative_network: its results are labelled T18-alt-..., T32-alt-....)
 
 E2E_CASE="17"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,7 +15,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
 
-NS=$(e2e_namespace 17)
+NS=$(e2e_namespace "17${E2E_CONFIG_VARIANT:-}")  # (the alternative run has a namespace of its own)
 NODE_A=$(e2e_node_a)
 NODE_B=$(e2e_node_b)
 
@@ -38,7 +40,7 @@ services() {
     skiff_ip_in_cidr "$api" "$SKIFF_SERVICE_CIDR" || e2e_fail "the API Service ($api) is outside $SKIFF_SERVICE_CIDR"
     skiff_ip_in_cidr "$dns" "$SKIFF_SERVICE_CIDR" || e2e_fail "the DNS Service ($dns) is outside $SKIFF_SERVICE_CIDR"
 }
-e2e_subcase_run T18-services services
+e2e_subcase_run T18${E2E_CONFIG_VARIANT:-}-services services
 
 # ---------------------------------------------------------------------------
 # T18-node-networks: the nodes' PodCIDRs (allocated by Kubernetes) come out of the
@@ -58,7 +60,7 @@ node_networks() {
         e2e_assert_contains "Plaid on $node: MTU" "$status" "MTU:          $SKIFF_POD_MTU"
     done
 }
-e2e_subcase_run T18-node-networks node_networks
+e2e_subcase_run T18${E2E_CONFIG_VARIANT:-}-node-networks node_networks
 
 # ---------------------------------------------------------------------------
 # T18-startup-report: each bubble reported its effective configuration once, and
@@ -74,7 +76,7 @@ startup_report() {
         e2e_assert_contains "report of $node: MTU" "$log" "Pod MTU:          ${SKIFF_POD_MTU}"
     done
 }
-e2e_subcase_run T18-startup-report startup_report
+e2e_subcase_run T18${E2E_CONFIG_VARIANT:-}-startup-report startup_report
 
 # One server pod on each node, and a Service in front of the second.
 server_pod() { # server_pod NAME NODE
@@ -123,7 +125,7 @@ pod_network() {
     e2e_assert_eq "the API Service by name" "$(in_pod dig +short "kubernetes.default.svc.${SKIFF_CLUSTER_DOMAIN}")" "$SKIFF_API_SERVICE_IP"
     e2e_assert_eq "the API Service by its short name" "$(in_pod dig +short +search kubernetes.default.svc)" "$SKIFF_API_SERVICE_IP"
 }
-e2e_subcase_run T18-pod-network pod_network
+e2e_subcase_run T18${E2E_CONFIG_VARIANT:-}-pod-network pod_network
 
 # ---------------------------------------------------------------------------
 # T18-connectivity: across the nodes by pod address, Service address and Service
@@ -139,7 +141,7 @@ connectivity() {
     e2e_assert_eq "the reverse direction" "$(e2e_kubectl exec e2e17-b -n "$NS" -- curl -sf --max-time 5 "http://${IP_A}:8080/hostname")" "e2e17-a"
     e2e_assert_eq "the API server to a pod" "$(e2e_kubectl get --raw "/api/v1/namespaces/${NS}/pods/e2e17-b:8080/proxy/hostname")" "e2e17-b"
 }
-e2e_subcase_run T18-connectivity connectivity
+e2e_subcase_run T18${E2E_CONFIG_VARIANT:-}-connectivity connectivity
 
 # ---------------------------------------------------------------------------
 # T18-runtime-path: the pod's runtime directory is under the configured one, and
@@ -161,7 +163,7 @@ runtime_path() {
     runtime_verify_gone "$NS" e2e17-a 60
     e2e_assert_eq "the pod's directory is removed" "$(runtime_bubble_exec "$NODE_A" "test -e '${pod_dir}' && echo yes || echo no")" no
 }
-e2e_subcase_run T18-runtime-path runtime_path
+e2e_subcase_run T18${E2E_CONFIG_VARIANT:-}-runtime-path runtime_path
 
 # ---------------------------------------------------------------------------
 # T32-scratch: what Apptainer unpacks and converts goes to the deployment's scratch
@@ -208,7 +210,7 @@ echo started" > /dev/null
     e2e_assert_eq "the pod's unpacked root filesystem is in its own directory" \
         "$(runtime_ssh_node "$(runtime_node_ip "$NODE_B")" "find '${pod_dir}/scratch' -mindepth 4 -maxdepth 4 -type d -name 'rootfs-*' | wc -l" | tr -d ' ')" 1
 }
-e2e_subcase_run T32-scratch scratch_files
+e2e_subcase_run T32${E2E_CONFIG_VARIANT:-}-scratch scratch_files
 
 # ---------------------------------------------------------------------------
 # T32-volume-roots: a volume may use the user's ~/.skiff (the bubble's /root/.skiff) and
@@ -310,6 +312,6 @@ EOF
     e2e_remove_below "${HOME}/.skiff" "${HOME}/.skiff/${dir_state}"
     runtime_ssh_node "$ip" "rm -rf '${dir_scratch}'" || true
 }
-e2e_subcase_run T32-volume-roots volume_roots
+e2e_subcase_run T32${E2E_CONFIG_VARIANT:-}-volume-roots volume_roots
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

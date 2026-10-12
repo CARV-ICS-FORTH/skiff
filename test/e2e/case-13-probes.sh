@@ -113,10 +113,20 @@ startup_failure_kills() {
       failureThreshold: 2
       terminationGracePeriodSeconds: 2'
     e2e_wait_pod_phase "$NS" e2e13-stuck Failed 90
-    local code
-    code=$(field e2e13-stuck state.terminated.exitCode)
-    e2e_assert_nonempty "the exit code of the killed container" "$code"
-    e2e_assert_ne "killed after the grace period" "$code" 0
+    e2e_assert_eq "the container was killed (128 + SIGKILL)" "$(field e2e13-stuck state.terminated.exitCode)" 137
+    # The kill came after the probe's grace period (2 s) and well before the application would
+    # have stopped by itself (60 s): from the Killing event to the end of the container (the
+    # times are to the second, so at least 1 s).
+    local killing finished elapsed
+    killing=$(e2e_kubectl get events -n "$NS" --field-selector involvedObject.name=e2e13-stuck,reason=Killing -o jsonpath='{.items[0].lastTimestamp}')
+    finished=$(field e2e13-stuck state.terminated.finishedAt)
+    e2e_assert_nonempty "the Killing event" "$killing"
+    elapsed=$(( $(date -d "$finished" +%s) - $(date -d "$killing" +%s) ))
+    if [ "$elapsed" -lt 1 ] || [ "$elapsed" -gt 30 ]; then
+        e2e_fail "the container ended ${elapsed}s after it was asked to stop: want after the 2 s grace period and well before its own 60 s"
+    else
+        e2e_pass "killed ${elapsed}s after it was asked to stop"
+    fi
 }
 e2e_subcase_run T07-startup-failure-kill startup_failure_kills
 
@@ -137,7 +147,12 @@ named_ports() {
       httpGet: {path: /ready, port: no-such-port}
       periodSeconds: 1'
     e2e_wait_pod_phase "$NS" e2e13-unresolved Running 60
-    sleep 15
+    # Never ready: watched for 15 s (15 periods of the probe), not just looked at once.
+    local i
+    for i in $(seq 1 15); do
+        [ "$(field e2e13-unresolved ready)" = false ] || { e2e_fail "an unresolved name made the container ready"; break; }
+        sleep 1
+    done
     e2e_assert_eq "an unresolved name is never ready" "$(field e2e13-unresolved ready)" false
     e2e_assert_eq "a readiness failure does not restart" "$(field e2e13-unresolved restartCount)" 0
     e2e_assert_eq "the container keeps running" "$(field e2e13-unresolved started)" true

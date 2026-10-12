@@ -104,9 +104,32 @@ func (b *VolumeMounter) SetUpAt(ctx context.Context, dir string) error {
 		return fmt.Errorf("Error writing payload to dir: %w", err)
 	}
 
-	// fixme: add permissions
-
 	return nil
+}
+
+// Sync writes the volume again from the Secret as it is now, which the kubelet does for as long
+// as the pod runs. One read, without waiting: a Secret that cannot be read now, or that is gone,
+// leaves the files as they are; an optional one that is gone empties the volume.
+func (b *VolumeMounter) Sync(ctx context.Context, dir string) error {
+	var object corev1.Secret
+	source := b.Volume.Secret
+	optional := source.Optional != nil && *source.Optional
+	key := types.NamespacedName{Namespace: b.Pod.GetNamespace(), Name: source.SecretName}
+	if err := compute.K8SClient.Get(ctx, key, &object); err != nil {
+		if !optional || !k8errors.IsNotFound(err) {
+			return err
+		}
+		object = corev1.Secret{}
+	}
+	payload, err := MakePayload(source.Items, &object, source.DefaultMode, optional)
+	if err != nil {
+		return err
+	}
+	writer, err := util.NewAtomicWriter(dir, fmt.Sprintf("Pod %v/%v volume %v", b.Pod.Namespace, b.Pod.Name, b.Volume.Name))
+	if err != nil {
+		return err
+	}
+	return writer.Write(payload)
 }
 
 // MakePayload function is exported so that it can be called from the projection volume driver

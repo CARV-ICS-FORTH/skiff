@@ -58,10 +58,18 @@ d = json.load(sys.stdin)
 for e in d.get("entries") or d.get("return", {}).get("entries", []):
     print(e["proto"], "%s:%d->%s:%d" % (e["host_addr"], e["host_port"], e["guest_addr"], e["guest_port"]), e["id"])'
 }
+# The counts below need slirp4netns's answer: a listing that failed is not "no forward", it is
+# a value that matches no count.
 ranged_forwards() {  # ranged_forwards NODE: how many forwards are on host ports of the NodePort range
-    forwards "$1" | awk '{ split($2, a, "->"); n = split(a[1], h, ":"); if (h[n] >= 30000 && h[n] <= 32767) c++ } END { print c + 0 }'
+    local list
+    list=$(forwards "$1") || { echo "(could not list the forwards of $1)"; return 0; }
+    printf '%s\n' "$list" | awk '{ split($2, a, "->"); n = split(a[1], h, ":"); if (h[n] >= 30000 && h[n] <= 32767) c++ } END { print c + 0 }'
 }
-published() { forwards "$1" | grep -c " ${IPS[$1]}:$2->" || true; }  # published NODE PORT: how many forwards for the port
+published() {  # published NODE PORT: how many forwards for the port
+    local list
+    list=$(forwards "$1") || { echo "(could not list the forwards of $1)"; return 0; }
+    printf '%s\n' "$list" | grep -c " ${IPS[$1]}:$2->" || true
+}
 http_code() {  # http_code FROM_NODE TO_NODE PORT [PATH]
     host_sh "$1" "curl -sS -m 6 -o /dev/null -w '%{http_code}' http://${IPS[$2]}:$3${4:-/} 2>/dev/null || true"
 }

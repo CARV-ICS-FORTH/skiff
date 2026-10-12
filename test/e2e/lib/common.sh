@@ -100,11 +100,35 @@ e2e_subcase_unavailable() {
 # e2e_subcase_run ID COMMAND...: run COMMAND in the current shell and report
 # PASS when it returns 0 without recording an e2e_fail, otherwise FAIL. The
 # failure stays visible to the case afterwards.
+#
+# A step of the body that fails is a failure of the subcase, as errexit would make it, but the
+# case goes on to its next subcase. Bash ignores errexit in a function that is called where its
+# status is tested, so the body is run with errexit off and an ERR trap (inherited by the
+# functions it calls, set -E) records each failed step instead. A deliberate test (if, ||, &&,
+# while) does not trip it, and neither does a command in a subshell: a poll of e2e_wait_condition,
+# or $(...) in the arguments of an assertion, which judges the output itself.
+_e2e_step_failed() {
+    [ "$BASH_SUBSHELL" -eq 0 ] || return 0
+    local where
+    where=$(caller 0 | awk '{print $2 ":" $1}')
+    e2e_fail "a step failed (status $1) in ${where}: $2"
+}
+
 e2e_subcase_run() {
-    local id="$1" prev="$E2E_FAILED" rc=0
+    local id="$1" prev="$E2E_FAILED" rc=0 had_errexit=0 had_errtrace=0 err_trap
     shift
     E2E_FAILED=0
-    "$@" || rc=$?
+    [[ $- == *e* ]] && had_errexit=1
+    [[ $- == *E* ]] && had_errtrace=1
+    err_trap=$(trap -p ERR)
+    set +e -E
+    trap '_e2e_step_failed $? "$BASH_COMMAND"' ERR
+    "$@"
+    rc=$?
+    trap - ERR
+    [ -z "$err_trap" ] || eval "$err_trap"
+    [ "$had_errtrace" -eq 1 ] || set +E
+    [ "$had_errexit" -eq 0 ] || set -e
     if [ "$rc" -eq 0 ] && [ "$E2E_FAILED" -eq 0 ]; then
         e2e_subcase "$id" PASS
     else
@@ -294,8 +318,11 @@ e2e_wait_pod_phase() {
 e2e_wait_pod_ready() {
     local ns="$1" pod="$2" deadline="$3"
     e2e_log "Waiting for pod ${ns}/${pod} to be Ready (${deadline}s)..."
-    e2e_kubectl wait --for=condition=Ready "pod/${pod}" \
-        -n "$ns" --timeout="${deadline}s"
+    if ! e2e_kubectl wait --for=condition=Ready "pod/${pod}" \
+        -n "$ns" --timeout="${deadline}s"; then
+        e2e_fail "Pod ${ns}/${pod}: not Ready after ${deadline}s"
+        return 1
+    fi
 }
 
 # e2e_wait_job_complete NS JOB DEADLINE
@@ -325,16 +352,24 @@ e2e_wait_job_complete() {
     done
 }
 
-# e2e_wait_pod_gone NS POD DEADLINE
+# e2e_wait_pod_gone NS POD DEADLINE: the API server says the pod does not exist. A question it
+# did not answer (unreachable, refused credentials) is not an answer: it is asked again, and at
+# the deadline it is a failure that says the pod could not be observed.
 e2e_wait_pod_gone() {
     local ns="$1" pod="$2" deadline="$3"
-    local start_time now elapsed
+    local start_time now elapsed out rc state
     start_time=$(date +%s)
-    while e2e_kubectl get pod "$pod" -n "$ns" >/dev/null 2>&1; do
+    while true; do
+        rc=0
+        out=$(e2e_kubectl get pod "$pod" -n "$ns" --ignore-not-found -o name 2>&1) || rc=$?
+        if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+            return 0
+        fi
+        if [ "$rc" -eq 0 ]; then state="still exists"; else state="could not be observed (${out})"; fi
         now=$(date +%s)
         elapsed=$((now - start_time))
         if [ "$elapsed" -ge "$deadline" ]; then
-            e2e_fail "Pod ${ns}/${pod} still exists after ${deadline}s"
+            e2e_fail "Pod ${ns}/${pod} ${state} after ${deadline}s"
             return 1
         fi
         sleep "$E2E_POLL_INTERVAL"
@@ -387,7 +422,7 @@ e2e_preserve_failure() {
         > "${outdir}/pods.txt" 2>&1 || true
     # What a pod says about itself, and what its container said now and before its last restart:
     # for the pod asked for, or for every pod of the namespace.
-    local p pods
+    local p pods node
     if [ -n "$pod" ]; then pods="$pod"; else pods=$(e2e_kubectl get pods -n "$ns" -o name 2>/dev/null | sed 's|^pod/||' || true); fi
     for p in $pods; do
         e2e_kubectl describe pod "$p" -n "$ns" \
@@ -400,7 +435,17 @@ e2e_preserve_failure() {
             | sed 's/\(secret\|password\|token\|key\)=[^ ]*/\1=***/gi' \
             > "${outdir}/logs-previous-${p}.txt" 2>&1 || true
     done
-    # What Skifflet of each node says about the namespace (the runtime's side of it).
+    # The cluster's own services, which a failure may come from: where kube-system's pods run,
+    # and what CoreDNS said lately.
+    e2e_kubectl get pods -n kube-system -o wide > "${outdir}/kube-system-pods.txt" 2>&1 || true
+    e2e_kubectl logs -n kube-system -l k8s-app=kube-dns --tail=200 --prefix > "${outdir}/coredns.txt" 2>&1 || true
+    # What Skifflet of each node says about the namespace (the runtime's side of it), and
+    # Plaid's view of the Services.
+    if declare -F runtime_bubble_exec >/dev/null 2>&1; then
+        for node in $(e2e_all_nodes 2>/dev/null || true); do
+            runtime_bubble_exec "$node" "plaidctl status" > "${outdir}/plaid-${node}.txt" 2>&1 || true
+        done
+    fi
     if declare -F runtime_bubble_exec >/dev/null 2>&1; then
         local node
         for node in $(e2e_all_nodes 2>/dev/null || true); do
@@ -466,7 +511,8 @@ _e2e_on_exit() {
         e2e_log "Case ${E2E_CASE} exiting with failure (rc=${rc}, E2E_FAILED=${E2E_FAILED:-0})"
     fi
     e2e_cleanup_run
-    if [ "${E2E_FAILED:-0}" -ne 0 ] && [ "$rc" -eq 0 ]; then
+    # A failure is a failure, also of a case that then skipped (status 77) what was left.
+    if [ "${E2E_FAILED:-0}" -ne 0 ] && { [ "$rc" -eq 0 ] || [ "$rc" -eq 77 ]; }; then
         rc=1
     fi
     exit "$rc"
@@ -506,10 +552,13 @@ e2e_assert_ne() {
     fi
 }
 
-# e2e_assert_contains LABEL STRING SUBSTRING
+# e2e_assert_contains LABEL STRING SUBSTRING: an empty SUBSTRING is a failure (every string
+# contains it, so it would prove nothing: typically a value that could not be read).
 e2e_assert_contains() {
     local label="$1" string="$2" sub="$3"
-    if [[ "$string" == *"$sub"* ]]; then
+    if [ -z "$sub" ]; then
+        e2e_fail "${label}: nothing to look for (the expected text is empty)"
+    elif [[ "$string" == *"$sub"* ]]; then
         e2e_pass "${label}: contains '${sub}'"
     else
         e2e_fail "${label}: '${string}' does not contain '${sub}'"

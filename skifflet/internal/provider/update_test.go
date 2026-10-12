@@ -92,7 +92,7 @@ func newUpdateRig(t *testing.T, pod *corev1.Pod) *updateRig {
 	owner := PodHandler.NewPodLifecycle(pod.DeepCopy(), endpoint.PodPath(filepath.Join(t.TempDir(), "pod")), nil)
 	owner.InitializeStatuses()
 	PodHandler.GlobalRegistry.Register(owner)
-	t.Cleanup(func() { PodHandler.GlobalRegistry.Delete(pod.UID) })
+	t.Cleanup(func() { forgetOwner(pod.UID) })
 	key := client.ObjectKeyFromObject(pod)
 	vk.pods.Store(key, owner.GetPod())
 	vk.activeUIDs.Store(key, pod.UID)

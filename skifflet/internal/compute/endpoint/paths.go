@@ -335,6 +335,12 @@ func (c ContainerPath) AttemptUnpackDir(attempt int) string {
 	return filepath.Join(c.AttemptScratchDir(attempt), "rootfs")
 }
 
+// AttemptTerminationLog is the file a container's termination message is written to in
+// attempt N, bound at its terminationMessagePath (see Attempt.terminationMessage).
+func (c ContainerPath) AttemptTerminationLog(attempt int) string {
+	return filepath.Join(c.AttemptScratchDir(attempt), "termination-log")
+}
+
 // AttemptScratchDir is the directory that holds all of attempt N's directories.
 func (c ContainerPath) AttemptScratchDir(attempt int) string {
 	return filepath.Join(c.ScratchDir(), strconv.Itoa(attempt))

@@ -137,17 +137,6 @@ func verifyProcessIdentity(pid int, recordedStartTime uint64) bool {
 	return VerifyProcessIdentity(pid, recordedStartTime)
 }
 
-// KillProcessByPID terminates a process by its PID using syscall.Kill with a default timeout of 35 seconds.
-func KillProcessByPID(pidStr string) (string, error) {
-	return KillProcessByPIDWithTimeout(pidStr, 35*time.Second)
-}
-
-// KillProcessByPIDWithTimeout sends SIGTERM to a process by its PID and polls for process exit until timeout.
-// If the process does not exit within timeout, SIGKILL is sent to force termination.
-func KillProcessByPIDWithTimeout(pidStr string, timeout time.Duration) (string, error) {
-	return KillPodProcessesWithTimeout(pidStr, nil, timeout)
-}
-
 // sweepSecondaryPIDs sends SIGTERM to secondary container process groups (-pgid) and PIDs,
 // waits briefly, and then sends SIGKILL to clean up any orphaned container processes.
 // Start time identity is revalidated before both SIGTERM and SIGKILL.

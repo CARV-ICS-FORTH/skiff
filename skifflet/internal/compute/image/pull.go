@@ -37,6 +37,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"skifflet/internal/compute"
 	"skifflet/pkg/process"
+
+	"golang.org/x/sys/unix"
 )
 
 // ResolveLocal resolves an image reference to a local SIF file without pulling.
@@ -126,8 +128,8 @@ func ParseImageNameForArch(rawImageName string, arch string) string {
 }
 
 // Pull downloads an image if not present using default pull policy.
-func Pull(imageDir string, transport Transport, imageName string) (*Image, error) {
-	return PullWithPolicy(context.Background(), imageDir, transport, imageName, corev1.PullIfNotPresent)
+func Pull(ctx context.Context, imageDir string, transport Transport, imageName string) (*Image, error) {
+	return PullWithPolicy(ctx, imageDir, transport, imageName, corev1.PullIfNotPresent)
 }
 
 // PullWithPolicy downloads an image honoring ImagePullPolicy and caller context.
@@ -155,26 +157,16 @@ func PullWithPolicy(ctx context.Context, imageDir string, transport Transport, i
 	}
 	defer lock.Unlock()
 
-	// 2. Inter-process / multi-node flock synchronization on shared NFS (cancellable)
-	flockPath := img.Filepath + ".flock"
-	flockFile, flockErr := os.OpenFile(flockPath, os.O_CREATE|os.O_RDWR, 0600)
-	if flockErr == nil {
-		defer flockFile.Close()
-		for {
-			err := syscall.Flock(int(flockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-			if err == nil {
-				defer syscall.Flock(int(flockFile.Fd()), syscall.LOCK_UN)
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-time.After(100 * time.Millisecond):
-			}
-		}
+	// 2. Between the nodes, which share the cache, a lock on the shared filesystem
+	if unlock := lockBetweenNodes(ctx, img.Filepath+".flock"); unlock != nil {
+		defer unlock()
+	} else if ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
-	// Re-check after acquiring locks
+	// Re-check after acquiring locks. Listing the directory first makes an NFS client look again
+	// (it revalidates a directory it opens), so the image another node just finished is seen.
+	_, _ = os.ReadDir(imageDir)
 	if policy != corev1.PullAlways {
 		if checkedImg, err := ResolveLocal(imageDir, imageName); err == nil {
 			return checkedImg, nil
@@ -409,4 +401,80 @@ func CleanupAbandonedTempFiles(imageDir string, maxAge time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// The lock between nodes. Every node's Skifflet pulls into the same cache on the shared
+// home, so that an image is converted once per user and not once per node: while one node
+// converts it, another that wants it waits for the lock and then finds the finished image
+// (the check after the lock). The lock is not needed for correctness: an image is written to
+// a file of its own and renamed into place, which is atomic, so a reader sees the old file or
+// the new one, never part of one. It only saves converting an image twice.
+//
+// So nothing but another holder makes a pull wait: a filesystem whose locks do not work
+// (Lustre without its flock option refuses them; NFS mounted nolock only locks one node), a
+// lock file that cannot be made, is a pull without the lock, said once in the log. And the
+// wait is bounded (lockWait): a pull on another node may hang, and a filesystem may keep the
+// lock of a node that died until its lock recovery runs.
+
+// lockFile takes an exclusive lock on the whole file without waiting, and unlockFile gives it
+// back (tests replace them). The lock is a POSIX open-file-description lock (F_OFD_SETLK), not
+// flock: on Linux an NFS client turns its locks into POSIX locks on the server, which do not
+// conflict with a flock taken on the server itself (a node whose home is local and exported
+// to the others), and conflict with a POSIX lock. A held lock is EAGAIN or EACCES.
+var lockFile = func(fd int) error {
+	return unix.FcntlFlock(uintptr(fd), unix.F_OFD_SETLK, &unix.Flock_t{Type: unix.F_WRLCK, Whence: 0})
+}
+
+var unlockFile = func(fd int) error {
+	return unix.FcntlFlock(uintptr(fd), unix.F_OFD_SETLK, &unix.Flock_t{Type: unix.F_UNLCK, Whence: 0})
+}
+
+// heldByAnother says whether a failed lockFile means that another process holds the lock.
+func heldByAnother(err error) bool {
+	return errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EWOULDBLOCK)
+}
+
+// lockWait is the longest a pull waits for another node's.
+var lockWait = 10 * time.Minute
+
+var lockUnusable sync.Once
+
+// lockBetweenNodes takes the lock of an image's file and returns what gives it back, or nil
+// when the pull goes on without it (it could not be had, or ctx ended: the caller tells).
+func lockBetweenNodes(ctx context.Context, path string) (unlock func()) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		lockUnusable.Do(func() {
+			compute.DefaultLogger.Info("images are pulled without a lock between the nodes: the lock file cannot be made", "path", path, "err", err.Error())
+		})
+		return nil
+	}
+	deadline := time.Now().Add(lockWait)
+	for {
+		err := lockFile(int(file.Fd()))
+		if err == nil {
+			return func() {
+				_ = unlockFile(int(file.Fd()))
+				_ = file.Close()
+			}
+		}
+		if !heldByAnother(err) {
+			lockUnusable.Do(func() {
+				compute.DefaultLogger.Info("images are pulled without a lock between the nodes: the shared filesystem refuses it", "path", path, "err", err.Error())
+			})
+			_ = file.Close()
+			return nil
+		}
+		if time.Now().After(deadline) {
+			compute.DefaultLogger.Info("another node has held the image's lock too long; pulling without it", "path", path, "waited", lockWait.String())
+			_ = file.Close()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			_ = file.Close()
+			return nil
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }

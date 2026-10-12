@@ -98,20 +98,6 @@ func (r *PodRegistry) GetByKey(key client.ObjectKey) *PodLifecycle {
 	return r.byUID[uid]
 }
 
-// Delete removes a PodLifecycle from the registry.
-func (r *PodRegistry) Delete(uid types.UID) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if lifecycle, ok := r.byUID[uid]; ok {
-		key := lifecycle.Key()
-		if r.byKey[key] == uid {
-			delete(r.byKey, key)
-		}
-		delete(r.byUID, uid)
-	}
-}
-
 // All returns a slice of all active PodLifecycles.
 func (r *PodRegistry) All() []*PodLifecycle {
 	r.mu.RLock()

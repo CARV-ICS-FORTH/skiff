@@ -37,7 +37,8 @@ spec:
       sources:
       - configMap: {name: cm31}
       - secret: {name: sec31}
-      - serviceAccountToken: {path: tok, expirationSeconds: 3600, audience: api}
+      - serviceAccountToken: {path: tok, expirationSeconds: 3600}
+      - serviceAccountToken: {path: tok-other, expirationSeconds: 3600, audience: example.org}
   - {name: mem, emptyDir: {medium: Memory, sizeLimit: 8Mi}}
   - {name: disk, emptyDir: {}}
   containers:
@@ -55,7 +56,8 @@ EOF2
     inpod() { e2e_kubectl exec e2e31-forms -n "$NS" -c app -- "$@"; }
     e2e_assert_eq "a projected ConfigMap" "$(inpod cat /proj/a)" 1
     e2e_assert_eq "a projected Secret" "$(inpod cat /proj/b)" 2
-    e2e_assert_eq "a projected service-account token is there" "$(inpod sh -c 'test -s /proj/tok && echo yes || echo no')" yes
+    e2e_assert_eq "the projected token reaches the API server" "$(inpod sh -c 'curl -sk -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat /proj/tok)" https://kubernetes.default.svc/version')" 200
+    e2e_assert_eq "a token for another audience is refused there (the audience is honoured)" "$(inpod sh -c 'curl -sk -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat /proj/tok-other)" https://kubernetes.default.svc/version')" 401
     e2e_assert_eq "the default token reaches the API server" "$(inpod sh -c 'curl -sk -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" https://kubernetes.default.svc/version')" 200
     inpod sh -c 'mkdir -p /whole/inner && echo through-subpath > /sub/file && echo whole > /whole/top'
     e2e_assert_eq "a subPath mount is that directory of the volume" "$(inpod cat /whole/inner/file)" through-subpath

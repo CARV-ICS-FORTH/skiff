@@ -83,13 +83,6 @@ func (p *Pool) Release(owner string) {
 	}
 }
 
-// Held returns the GPUs the owner holds.
-func (p *Pool) Held(owner string) []Device {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.heldLocked(owner)
-}
-
 func (p *Pool) heldLocked(owner string) []Device {
 	var held []Device
 	for _, d := range p.devices {

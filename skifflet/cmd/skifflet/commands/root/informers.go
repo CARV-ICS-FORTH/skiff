@@ -24,13 +24,13 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
+// AddInformers starts the informers Virtual Kubelet's pod controller needs: the pods of this
+// node, and the Secrets, ConfigMaps and Services of the cluster.
 func AddInformers(ctx context.Context, c Opts, k8sclientset *kubernetes.Clientset) (
 	corev1.PodInformer,
 	corev1.SecretInformer,
 	corev1.ConfigMapInformer,
 	corev1.ServiceInformer,
-	corev1.PersistentVolumeClaimInformer,
-	error,
 ) {
 	// Create a shared informer factory for Kubernetes Pods assigned to this Node.
 	podInformerFactory := kubeinformers.NewSharedInformerFactoryWithOptions(
@@ -47,15 +47,11 @@ func AddInformers(ctx context.Context, c Opts, k8sclientset *kubernetes.Clientse
 	secretInformer := informerFactory.Core().V1().Secrets()
 	configMapInformer := informerFactory.Core().V1().ConfigMaps()
 	serviceInformer := informerFactory.Core().V1().Services()
-	serviceAccountInformer := informerFactory.Core().V1().ServiceAccounts()
-	pvcInformer := informerFactory.Core().V1().PersistentVolumeClaims()
 
 	podInformer.Lister()
 	secretInformer.Lister()
 	configMapInformer.Lister()
 	serviceInformer.Lister()
-	serviceAccountInformer.Lister()
-	pvcInformer.Lister()
 
 	// Finally, start the informers.
 	podInformerFactory.Start(ctx.Done())
@@ -64,5 +60,5 @@ func AddInformers(ctx context.Context, c Opts, k8sclientset *kubernetes.Clientse
 	informerFactory.Start(ctx.Done())
 	informerFactory.WaitForCacheSync(ctx.Done())
 
-	return podInformer, secretInformer, configMapInformer, serviceInformer, pvcInformer, nil
+	return podInformer, secretInformer, configMapInformer, serviceInformer
 }

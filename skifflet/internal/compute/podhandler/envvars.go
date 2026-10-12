@@ -77,18 +77,9 @@ func FromServices(ctx context.Context, namespace string, enableServiceLinks bool
 			continue
 		}
 
+		// The API server is reached through its Service, as with the kubelet: Plaid translates
+		// the Service's address in userspace like any other.
 		svcCopy := service.DeepCopy()
-		if svcCopy.GetNamespace() == metav1.NamespaceDefault && svcCopy.GetName() == "kubernetes" {
-			// Master service override
-			if compute.Environment.KubeMasterHost != "" {
-				svcCopy.Spec.ClusterIP = compute.Environment.KubeMasterHost
-			}
-			if compute.Environment.KubeMasterPort != "" {
-				if p, err := strconv.Atoi(compute.Environment.KubeMasterPort); err == nil && len(svcCopy.Spec.Ports) > 0 {
-					svcCopy.Spec.Ports[0].Port = int32(p)
-				}
-			}
-		}
 
 		if svcCopy.Spec.ClusterIP == "" || svcCopy.Spec.ClusterIP == "None" {
 			continue

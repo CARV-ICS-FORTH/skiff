@@ -196,7 +196,7 @@ func TestPool(t *testing.T) {
 	// Released GPUs are free for the next, and an owner that holds none releases nothing.
 	p.Release("a")
 	p.Release("nobody")
-	if got := p.Held("a"); len(got) != 0 {
+	if got := p.heldLocked("a"); len(got) != 0 {
 		t.Errorf("a still holds %v", got)
 	}
 	c, err := p.Reserve("c", 2)

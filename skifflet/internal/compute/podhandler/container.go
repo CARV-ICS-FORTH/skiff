@@ -48,9 +48,51 @@ func findVolume(pod *corev1.Pod, name string) *corev1.Volume {
 	return nil
 }
 
-// imageUserOf says who an image runs as (its USER); tests replace it, since their images are
-// files that are not SIFs.
-var imageUserOf = func(ctx context.Context, img *image.Image) (image.User, error) { return img.User(ctx) }
+// An ImagePullError says that a container's image cannot be had: it could not be pulled, or,
+// with imagePullPolicy Never, it is not on the node. The kubelet does not fail the pod for it:
+// it tries again with a back-off (see prepareContainer).
+type ImagePullError struct {
+	Image string
+	Never bool
+	Err   error
+}
+
+func (e *ImagePullError) Error() string {
+	if e.Never {
+		return fmt.Sprintf("container image %q is not present with pull policy of Never: %v", e.Image, e.Err)
+	}
+	return fmt.Sprintf("failed to pull image %q: %v", e.Image, e.Err)
+}
+
+func (e *ImagePullError) Unwrap() error { return e.Err }
+
+// Reason is the waiting reason the kubelet gives it.
+func (e *ImagePullError) Reason() string {
+	if e.Never {
+		return "ErrImageNeverPull"
+	}
+	return "ErrImagePull"
+}
+
+// imageConfigOf says who an image runs as (its USER) and where it starts (its WORKDIR); tests
+// replace it, since their images are files that are not SIFs.
+var imageConfigOf = func(ctx context.Context, img *image.Image) (image.Config, error) { return img.Config(ctx) }
+
+// workingDirOf is the directory a container starts in, as with the kubelet's runtime: its
+// workingDir, else its image's WORKDIR, else /. It must be an absolute path.
+func workingDirOf(container *corev1.Container, imageDir string) (string, error) {
+	dir := container.WorkingDir
+	if dir == "" {
+		dir = imageDir
+	}
+	if dir == "" {
+		return "/", nil
+	}
+	if !filepath.IsAbs(dir) {
+		return "", &ConfigError{Message: fmt.Sprintf("the working directory %q is not an absolute path", dir), Reason: "CreateContainerConfigError"}
+	}
+	return filepath.Clean(dir), nil
+}
 
 // buildContainer resolves everything one container needs to run: environment,
 // mounts and image. It reads the pod as the lifecycle owner knows it now, so the
@@ -111,8 +153,15 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		}
 
 		if subPath != "" {
+			// As the kubelet: an absolute subPath, or one that steps up (..), is refused after
+			// expansion, and so is one that leaves its volume through a symlink (below).
 			if filepath.IsAbs(subPath) {
-				return Container{}, fmt.Errorf("error SubPath '%s' must not be an absolute path", subPath)
+				return Container{}, &ConfigError{Message: fmt.Sprintf("subPath %q of volume %q must not be an absolute path", subPath, mount.Name), Reason: "CreateContainerConfigError"}
+			}
+			for _, part := range strings.Split(filepath.ToSlash(subPath), "/") {
+				if part == ".." {
+					return Container{}, &ConfigError{Message: fmt.Sprintf("subPath %q of volume %q must not contain '..'", subPath, mount.Name), Reason: "CreateContainerConfigError"}
+				}
 			}
 
 			subPathFile := filepath.Join(hostPath, subPath)
@@ -134,7 +183,15 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 				}
 			}
 
-			hostPath = subPathFile
+			// What the subPath is, its symlinks followed, must be inside the volume (whose own
+			// path may be a symlink: a hostPath or a claim's volume): a symlink made in the volume
+			// (by an init container, say) cannot take the mount out of it. The resolved path is
+			// what is bound.
+			resolved, err := subPathInside(hostPath, subPathFile)
+			if err != nil {
+				return Container{}, &ConfigError{Message: fmt.Sprintf("subPath %q of volume %q: %v", subPath, mount.Name, err), Reason: "CreateContainerConfigError"}
+			}
+			hostPath = resolved
 		}
 
 		accessMode := "rw"
@@ -171,13 +228,13 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 	}
 
 	if err != nil {
-		return Container{}, fmt.Errorf("ImagePull error. Image:%s: %w", container.Image, err)
+		return Container{}, &ImagePullError{Image: container.Image, Never: pullPolicy == corev1.PullNever, Err: err}
 	}
 
 	/*---------------------------------------------------
 	 * Determine the user: the pod's, else the image's, else root
 	 *---------------------------------------------------*/
-	imageUser, err := imageUserOf(pullCtx, img)
+	imageConfig, err := imageConfigOf(pullCtx, img)
 	if err != nil {
 		var notFound *image.NotFoundError
 		if errors.As(err, &notFound) {
@@ -185,12 +242,21 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		}
 		return Container{}, fmt.Errorf("image %s: %w", container.Image, err)
 	}
-	uid, gid, err := DetermineEffectiveRunAsUser(DetermineEffectiveSecurityContext(pod, container), imageUser)
+	uid, gid, err := DetermineEffectiveRunAsUser(DetermineEffectiveSecurityContext(pod, container), imageConfig.User)
 	if err != nil {
 		var cfg *ConfigError
 		if errors.As(err, &cfg) {
 			return Container{}, &ConfigError{Message: fmt.Sprintf("%s (pod: \"%s_%s(%s)\", container: %s)", cfg.Message, pod.Name, pod.Namespace, pod.UID, container.Name), Reason: cfg.Reason}
 		}
+		return Container{}, err
+	}
+
+	workingDir, err := workingDirOf(container, imageConfig.WorkingDir)
+	if err != nil {
+		return Container{}, err
+	}
+	stopSignal, err := stopSignalOf(container, imageConfig.StopSignal)
+	if err != nil {
 		return Container{}, err
 	}
 
@@ -204,9 +270,9 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 	 *---------------------------------------------------*/
 	containerPath := h.podDirectory.Container(container.Name)
 
-	hostname := h.Pod.GetName()
-	if h.Pod.Spec.Hostname != "" {
-		hostname = h.Pod.Spec.Hostname
+	hostname, err := containerHostname(h.Pod, compute.Environment.ClusterDomainOrDefault())
+	if err != nil {
+		return Container{}, err
 	}
 
 	c := Container{
@@ -216,30 +282,57 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		RunAsUser:     uid,
 		RunAsGroup:    gid,
 		ImageFilePath: img.Filepath,
+		WorkingDir:    workingDir,
+		StopSignal:    stopSignal,
+		TerminationMessagePath: func() string {
+			if terminationMessageBound(container.TerminationMessagePath) {
+				return container.TerminationMessagePath
+			}
+			return ""
+		}(),
 		EnvFilePath:   containerPath.EnvFilePath(),
 		Binds:         binds,
 		GPUs:          minors(devices),
-		Command:       kubecontainer.ExpandContainerCommandOnlyStatic(container.Command, resolvedEnvs),
-		Args:          kubecontainer.ExpandContainerCommandOnlyStatic(container.Args, resolvedEnvs),
+		Command:       kubecontainer.ExpandContainerCommand(container.Command, resolvedEnvs),
+		Args:          kubecontainer.ExpandContainerCommand(container.Args, resolvedEnvs),
 		ExecutionMode: executionMode,
 	}
 
 	return c, nil
 }
 
-// beginAttempt starts a new attempt in the status of a container that ran
-// before: what it last did is its last termination state, and it counts as a restart.
-func beginAttempt(containerStatus *corev1.ContainerStatus) {
+// subPathInside resolves path (below the volume at root) with its symlinks, and says whether it
+// stays inside the volume, itself resolved.
+func subPathInside(root, path string) (string, error) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	if real != realRoot && !strings.HasPrefix(real, realRoot+string(filepath.Separator)) {
+		return "", fmt.Errorf("it resolves to %s, outside its volume", real)
+	}
+	return real, nil
+}
+
+// beginAttempt starts attempt N in the status of a container: what it last did is its last
+// termination state, and every attempt after the first counts as a restart.
+func beginAttempt(containerStatus *corev1.ContainerStatus, attempt int) {
 	if containerStatus.State.Terminated != nil {
-		containerStatus.LastTerminationState = containerStatus.State
-		containerStatus.RestartCount++
+		containerStatus.LastTerminationState = corev1.ContainerState{Terminated: containerStatus.State.Terminated}
 		containerStatus.State.Terminated = nil
+	}
+	if attempt > 1 {
+		containerStatus.RestartCount = int32(attempt - 1)
 	}
 }
 
-// SetContainerRunning marks the container status as running.
-func SetContainerRunning(containerStatus *corev1.ContainerStatus, pid int, startTime uint64) {
-	beginAttempt(containerStatus)
+// SetContainerRunning marks the container status as running, as attempt N.
+func SetContainerRunning(containerStatus *corev1.ContainerStatus, pid int, startTime uint64, attempt int) {
+	beginAttempt(containerStatus, attempt)
 	containerStatus.ContainerID = runtime.FormatProcessJobID(pid, startTime)
 	containerStatus.State.Waiting = nil
 	containerStatus.State.Running = &corev1.ContainerStateRunning{
@@ -260,7 +353,7 @@ func SetContainerTerminated(containerStatus *corev1.ContainerStatus, exitCode in
 		reason = "Completed"
 		message = "Container successfully terminated"
 	} else {
-		reason = "Error(" + containerStatus.Name + ")"
+		reason = "Error"
 		message = HumanReadableCode(exitCode)
 	}
 

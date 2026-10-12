@@ -16,13 +16,14 @@ package provider
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 
 	"skifflet/internal/compute/gpu"
 	computeruntime "skifflet/internal/compute/runtime"
-	"skifflet/pkg/version"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -71,15 +72,6 @@ func (v *VirtualK8S) NewVirtualNode(ctx context.Context, nodename string, taint 
 			Allocatable: computeruntime.AllocatableResources(ctx),
 		},
 	}
-}
-
-// ConfigureNode enables a provider to configure the node object that
-// will be used for Kubernetes.
-func (v *VirtualK8S) ConfigureNode(ctx context.Context, node *corev1.Node) {
-	/*---------------------------------------------------
-	 * Preamble used for Request tracing on the logs
-	 *---------------------------------------------------*/
-	v.Logger.Info("[K8s] -> ConfigureNode (not yet supported)")
 }
 
 // NodeConditions creates a slice of node conditions representing a
@@ -158,6 +150,10 @@ func (v *VirtualK8S) NodeDaemonEndpoints(_ context.Context) corev1.NodeDaemonEnd
 	}
 }
 
+// NodeSystemInfo is what the node says about itself, as the kubelet says it: the machine and
+// boot ids, the kernel, and the container runtime, which is the Apptainer Skifflet runs (read
+// once). There is no kube-proxy (Plaid translates Services), and the kubelet leaves the
+// deprecated KubeProxyVersion empty anyway.
 func (v *VirtualK8S) NodeSystemInfo(_ context.Context) corev1.NodeSystemInfo {
 	kernelVersion := "unknown"
 	if out, err := exec.Command("uname", "-r").Output(); err == nil {
@@ -165,15 +161,37 @@ func (v *VirtualK8S) NodeSystemInfo(_ context.Context) corev1.NodeSystemInfo {
 	}
 
 	return corev1.NodeSystemInfo{
-		MachineID:               "",
-		SystemUUID:              "",
-		BootID:                  "",
+		MachineID:               readTrimmed("/etc/machine-id"),
+		BootID:                  readTrimmed("/proc/sys/kernel/random/boot_id"),
 		KernelVersion:           kernelVersion,
 		OSImage:                 "skiff",
-		KubeProxyVersion:        version.K8sVersion,
 		KubeletVersion:          v.InitConfig.BuildVersion,
-		ContainerRuntimeVersion: "apptainer://1.1.3", // fixme: find it automatically
+		ContainerRuntimeVersion: containerRuntimeVersion(),
 		OperatingSystem:         runtime.GOOS,
 		Architecture:            runtime.GOARCH,
 	}
 }
+
+func readTrimmed(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// apptainerVersion runs `apptainer version`; tests replace it.
+var apptainerVersion = func() (string, error) {
+	out, err := exec.Command("apptainer", "version").Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+var runtimeVersionOnce = sync.OnceValue(func() string {
+	if v, err := apptainerVersion(); err == nil && v != "" {
+		return "apptainer://" + v
+	}
+	return "apptainer://unknown"
+})
+
+// containerRuntimeVersion is the container runtime as the node reports it ("apptainer://1.5.4").
+func containerRuntimeVersion() string { return runtimeVersionOnce() }

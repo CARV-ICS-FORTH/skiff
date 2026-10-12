@@ -48,7 +48,7 @@ func TestKillProcessByPID_InvalidInputs(t *testing.T) {
 
 	for _, input := range invalidInputs {
 		t.Run("input_"+input, func(t *testing.T) {
-			_, err := KillProcessByPID(input)
+			_, err := KillPodProcessesWithTimeout(input, nil, 35*time.Second)
 			if err == nil {
 				t.Errorf("expected error for invalid PID %q, got nil", input)
 			}
@@ -58,7 +58,7 @@ func TestKillProcessByPID_InvalidInputs(t *testing.T) {
 
 func TestKillProcessByPID_NonExistentPID(t *testing.T) {
 	// A very high PID unlikely to exist
-	_, err := KillProcessByPID("9999999")
+	_, err := KillPodProcessesWithTimeout("9999999", nil, 35*time.Second)
 	if !errors.Is(err, ErrInvalidJob) {
 		t.Errorf("expected ErrInvalidJob (ESRCH) for non-existent process, got %v", err)
 	}
@@ -71,7 +71,7 @@ func TestKillProcessByPIDWithTimeout_GracefulExit(t *testing.T) {
 	}
 
 	pidStr := strconv.Itoa(cmd.Process.Pid)
-	_, err := KillProcessByPIDWithTimeout(pidStr, 2*time.Second)
+	_, err := KillPodProcessesWithTimeout(pidStr, nil, 2*time.Second)
 	if err != nil {
 		t.Fatalf("unexpected error killing process: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestKillProcessByPIDWithTimeout_SIGKILLEscalation(t *testing.T) {
 
 	pidStr := strconv.Itoa(cmd.Process.Pid)
 	// Use short timeout so test runs fast
-	_, err := KillProcessByPIDWithTimeout(pidStr, 200*time.Millisecond)
+	_, err := KillPodProcessesWithTimeout(pidStr, nil, 200*time.Millisecond)
 	if err != nil {
 		t.Fatalf("unexpected error killing process with escalation: %v", err)
 	}
@@ -190,14 +190,14 @@ func TestProcessIdentityVerification_StartTimeMismatch(t *testing.T) {
 
 	// Supply a mismatched start time (realSt + 999999)
 	mismatchedPIDStr := fmt.Sprintf("%d:%d", cmd.Process.Pid, realSt+999999)
-	_, err = KillProcessByPIDWithTimeout(mismatchedPIDStr, 1*time.Second)
+	_, err = KillPodProcessesWithTimeout(mismatchedPIDStr, nil, 1*time.Second)
 	if !errors.Is(err, ErrInvalidJob) {
 		t.Fatalf("expected ErrInvalidJob for start time mismatch, got %v", err)
 	}
 
 	// Now supply correct start time
 	correctPIDStr := fmt.Sprintf("%d:%d", cmd.Process.Pid, realSt)
-	_, err = KillProcessByPIDWithTimeout(correctPIDStr, 2*time.Second)
+	_, err = KillPodProcessesWithTimeout(correctPIDStr, nil, 2*time.Second)
 	if err != nil {
 		t.Fatalf("unexpected error killing process with matching start time: %v", err)
 	}

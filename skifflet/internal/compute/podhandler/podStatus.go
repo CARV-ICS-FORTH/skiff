@@ -41,14 +41,11 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 			compute.PodError(pod, compute.ReasonUnsupportedFeatures, "%v", err)
 			return
 		}
-	case corev1.PodSucceeded:
-		if pod.Spec.RestartPolicy != corev1.RestartPolicyAlways {
-			return
-		}
-	case corev1.PodFailed:
-		if pod.Spec.RestartPolicy == corev1.RestartPolicyNever {
-			return
-		}
+	case corev1.PodSucceeded, corev1.PodFailed:
+		// A terminal phase is final, as in Kubernetes: a pod that failed as a whole (its
+		// spec refused, a step of its start that could not complete) stays failed whatever
+		// its restart policy, and what its containers do afterwards does not revive it.
+		return
 	}
 
 	/*---------------------------------------------------
@@ -67,13 +64,24 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 			if initContainer.State.Terminated == nil {
 				/*-- Still Initializing: at least one init container is still running --*/
 				return
-			} else {
-				/*-- Initialization error: at least one init container has failed --*/
-				if initContainer.State.Terminated.ExitCode != 0 {
+			} else if initContainer.State.Terminated.ExitCode != 0 {
+				// A failed init container fails the pod only when it will not be run again
+				// (restartPolicy Never). Otherwise it is retried, and the pod is Pending until
+				// it succeeds, as with the kubelet.
+				if pod.Spec.RestartPolicy == corev1.RestartPolicyNever {
 					compute.PodError(pod, compute.ReasonInitializationError, "Init container '%s' has failed", initContainer.Name)
-
 					return
 				}
+				pod.Status.Phase = corev1.PodPending
+				pod.Status.Reason = ""
+				pod.Status.Message = ""
+				crdtools.SetPodStatusCondition(&pod.Status.Conditions, corev1.PodCondition{
+					Type:    corev1.PodInitialized,
+					Status:  corev1.ConditionFalse,
+					Reason:  "ContainersNotInitialized",
+					Message: fmt.Sprintf("containers with incomplete status: [%s]", initContainer.Name),
+				})
+				return
 			}
 		}
 
@@ -113,7 +121,7 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 	allContainersCompleted := (state.NumFailedJobs()+state.NumSuccessfulJobs() == totalJobs) && state.NumRunningJobs() == 0 && state.NumPendingJobs() == 0
 	hasEverStarted := false
 	for _, cs := range pod.Status.ContainerStatuses {
-		if cs.RestartCount > 0 || cs.State.Running != nil || cs.State.Terminated != nil {
+		if cs.RestartCount > 0 || cs.State.Running != nil || cs.State.Terminated != nil || cs.LastTerminationState.Terminated != nil {
 			hasEverStarted = true
 			break
 		}
@@ -217,8 +225,7 @@ func UpdateStatusFromRuntime(pod *corev1.Pod) {
 			return
 		}
 	}
-
-	compute.PodError(pod, "StatusError", "unhandled lifecycle conditions. current: '%v', totalJobs: '%d', jobs: '%s'", pod.Status.Phase, totalJobs, state.ListAll())
+	// (Not reached: the last transition always applies.)
 }
 
 func setTerminationConditions(pod *corev1.Pod) {
@@ -348,13 +355,4 @@ func (in *Classifier) ListFailedJobs() []string {
 	}
 	sort.Strings(list)
 	return list
-}
-
-func (in *Classifier) ListAll() string {
-	return fmt.Sprint(
-		"\n * Pending:", in.ListPendingJobs(),
-		"\n * Success:", in.ListSuccessfulJobs(),
-		"\n * Failed:", in.ListFailedJobs(),
-		"\n",
-	)
 }

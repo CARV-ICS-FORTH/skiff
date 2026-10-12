@@ -381,6 +381,38 @@ run_fresh_job_storage() {
     fi
 }
 
+# Case 17 again, on a cluster of its own whose network and scratch settings all differ from the
+# defaults (sprint 5, item 33): a pod range inside 10.0.0.0/16 (not a bubble's network), another
+# Service range (and with it another API and DNS address), domain and MTU, and a scratch
+# directory outside /tmp. Its results are required under labels of their own (T18-alt-...,
+# T32-alt-..., E2E-17-alt), so a run cannot qualify without it. The cluster of the run is
+# replaced for it (one Skiff job per user), and a fresh default one replaces it afterwards.
+ALT_NETWORK_SETTINGS=(SKIFF_POD_CIDR=10.0.64.0/18 SKIFF_SERVICE_CIDR=10.201.0.0/16 SKIFF_CLUSTER_DNS=10.201.0.10
+    SKIFF_CLUSTER_DOMAIN=lab.test SKIFF_POD_MTU=1400 "SKIFF_TMP_DIR=/var/tmp/skiff-alt-$(id -u)")
+run_alternative_network() {
+    [ -z "$ONLY_CASE" ] || return 0
+    local prior="$SKIFF_JOB_ID" alt
+    scancel "$prior" || { record E2E-17-alt FAIL 0; return 0; }
+    e2e_wait_condition 90 "job ${prior} stopped" "test -z \"\$(squeue -j ${prior} -h -o %i 2>/dev/null)\"" || { record E2E-17-alt FAIL 0; return 0; }
+    alt=$(export "${ALT_NETWORK_SETTINGS[@]}"; e2e_sbatch "${SKIFF_ARTIFACT_DIR:-$HOME/skiff}/scripts/skiff.slurm")
+    if [[ "$alt" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$alt" >> "${E2E_LOGDIR}/matrix-job-ids"
+        if e2e_wait_condition 300 "the cluster on the alternative settings" matrix_ready; then
+            run_script "E2E-17-alt" env "${ALT_NETWORK_SETTINGS[@]}" E2E_CONFIG_VARIANT=-alt SKIFF_JOB_ID="$alt" "$E2E_DIR/case-17-network-config.sh"
+        else
+            record E2E-17-alt FAIL 0
+        fi
+        scancel "$alt" || true
+        e2e_wait_condition 90 "job ${alt} stopped" "test -z \"\$(squeue -j ${alt} -h -o %i 2>/dev/null)\"" || true
+    else
+        record E2E-17-alt FAIL 0
+    fi
+    SKIFF_JOB_ID=$(e2e_sbatch "${SKIFF_ARTIFACT_DIR:-$HOME/skiff}/scripts/skiff.slurm")
+    export SKIFF_JOB_ID
+    printf '%s\n' "$SKIFF_JOB_ID" >> "${E2E_LOGDIR}/matrix-job-ids"
+    e2e_wait_condition 300 "a fresh default cluster" matrix_ready || true
+}
+
 run_workload_cases() {
     echo "--- E2E CASES ---------------------------------------------------------"
     run_case "02" "init-shared-net"
@@ -414,8 +446,10 @@ run_workload_cases() {
     run_case "33" "second-id"
     run_case "34" "gpu"
     run_case "35" "memory-volumes"
+    run_case "36" "controllers"
     run_overlay_startup_failures
     run_fresh_job_storage
+    run_alternative_network
     run_daemon_failure_matrix
 }
 
@@ -526,6 +560,7 @@ if [ -n "$ONLY_CASE" ]; then
             33) run_case "33" "second-id" ;;
             34) run_case "34" "gpu" ;;
             35) run_case "35" "memory-volumes" ;;
+            36) run_case "36" "controllers" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi
@@ -569,6 +604,13 @@ _run_deferred
 runtime_record_disposable end
 
 INCOMPLETE=0
+NOT_RUN=""
+if [ "$SMOKE" -eq 1 ]; then
+    # No profile is checked, but a check that could not run or was skipped is said, and the run is
+    # not called passed (status 3, as an incomplete profile).
+    NOT_RUN=$(profile_not_run_summary)
+    [ -z "$NOT_RUN" ] || INCOMPLETE=1
+fi
 if [ -z "$ONLY_CASE" ] && [ "$NETWORK_ONLY" -eq 0 ] && [ "$SMOKE" -eq 0 ]; then
     profile_status=0
     profile_check_results || profile_status=$?
@@ -590,18 +632,24 @@ printf "%-30s %-10s %s\n" "Test" "Result" "Duration"
 printf "%-30s %-10s %s\n" "----" "------" "--------"
 
 # Required labels first, in profile order, then any other recorded results.
+# (A run that checks no profile, smoke or focused, lists only what it recorded.)
 summary_labels=()
-while IFS= read -r label; do summary_labels+=("$label"); done < <(profile_required_cases)
+profile_checked=0
+if [ -z "$ONLY_CASE" ] && [ "$NETWORK_ONLY" -eq 0 ] && [ "$SMOKE" -eq 0 ]; then
+    profile_checked=1
+    while IFS= read -r label; do summary_labels+=("$label"); done < <(profile_required_cases)
+fi
 for label in $(printf '%s\n' "${!RESULTS[@]}" | sort); do
     [ -n "$label" ] || continue
-    profile_is_required "$label" || summary_labels+=("$label")
+    if [ "$profile_checked" -eq 0 ] || ! profile_is_required "$label"; then summary_labels+=("$label"); fi
 done
 for label in "${summary_labels[@]}"; do
-    result="${RESULTS[$label]:-SKIP}"
+    result="${RESULTS[$label]:-MISSING}"
     dur="${DURATIONS[$label]:-}"
     colour='\033[0m'
     [ "$result" = "PASS" ] && colour='\033[0;32m'
     [ "$result" = "FAIL" ] && colour='\033[0;31m'
+    [ "$result" = "MISSING" ] && colour='\033[0;31m'
     [ "$result" = "SKIP" ] && colour='\033[1;33m'
     [ "$result" = "UNAVAILABLE" ] && colour='\033[1;33m'
     printf "%-30s ${colour}%-10s\033[0m %s\n" "$label" "$result" "$dur"
@@ -637,6 +685,8 @@ PYEOF
 # The verdict says what was covered: a focused run did not check the profile.
 if [ $OVERALL -ne 0 ]; then
     echo -e "\033[0;31m>>> FAILED: see the results marked FAIL or missing above <<<\033[0m"
+elif [ "$SMOKE" -eq 1 ] && [ -n "$NOT_RUN" ]; then
+    echo -e "\033[1;33m>>> SMOKE RUN INCOMPLETE: ${#RESULTS[@]} results (${ENVIRONMENT}), none failed, but these did not run: ${NOT_RUN} <<<\033[0m"
 elif [ "$SMOKE" -eq 1 ]; then
     echo -e "\033[1;33m>>> SMOKE RUN PASSED: ${#RESULTS[@]} results (${ENVIRONMENT}), a selection of the profile, which was not checked <<<\033[0m"
 elif [ "$INCOMPLETE" -eq 1 ]; then

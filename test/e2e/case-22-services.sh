@@ -144,10 +144,16 @@ dns() {
             e2e_assert_eq "$round: $client resolves the API Service" "$(in_pod "$client" dig +short +time=3 +tries=2 @"$dnsip" kubernetes.default.svc."$SKIFF_CLUSTER_DOMAIN" | tail -1)" "$SKIFF_API_SERVICE_IP"
         done
         if [ "$round" = before ]; then
+            # CoreDNS is moved to another node: its node is cordoned while its pod is replaced.
+            local was now
+            was=$(e2e_kubectl -n kube-system get pod -l k8s-app=kube-dns -o jsonpath='{.items[0].spec.nodeName}')
+            e2e_kubectl cordon "$was" >/dev/null
             e2e_kubectl -n kube-system delete pod -l k8s-app=kube-dns --grace-period=2 >/dev/null
-            sleep 3
             e2e_wait_condition 120 "a new CoreDNS pod is Ready" coredns_ready
-            sleep 5
+            e2e_kubectl uncordon "$was" >/dev/null
+            now=$(e2e_kubectl -n kube-system get pod -l k8s-app=kube-dns -o jsonpath='{.items[0].spec.nodeName}')
+            e2e_assert_ne "CoreDNS moved to another node" "$now" "$was"
+            e2e_wait_condition 30 "the Service has the new CoreDNS as its endpoint" "e2e_kubectl -n kube-system get endpointslices -l kubernetes.io/service-name=kube-dns -o jsonpath='{.items[*].endpoints[*].nodeName}' | e2e_grep_q -w '$now'"
         fi
     done
     # The resolver the pods are configured with is that Service too.
@@ -342,6 +348,38 @@ YAML
 e2e_subcase_run T23-no-local-backend no_local_backend
 
 # ---------------------------------------------------------------------------
+# T73-status-repaired: a pod's status that another writer changed is put back. The node
+# lifecycle controller marks a node's pods not Ready when the node's heartbeat is late; once
+# the node is back, Skifflet makes them Ready again (as the kubelet does), and the Service
+# has its endpoint again. Here the outside write is made by hand.
+# ---------------------------------------------------------------------------
+ready_of() { e2e_kubectl -n "$NS" get pod "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'; }
+endpoint_ready() {  # endpoint_ready IP: the Service's endpoint for IP is ready
+    e2e_kubectl -n "$NS" get endpointslices -l kubernetes.io/service-name=svc -o json | python3 -c '
+import json, sys
+ip = sys.argv[1]
+ready = [e.get("conditions", {}).get("ready") for s in json.load(sys.stdin)["items"]
+         for e in s.get("endpoints") or [] if ip in e.get("addresses", [])]
+sys.exit(0 if ready == [True] else 1)' "$1"
+}
+# b-a's address now: T24-pinned replaces the pod, so it is not the one in POD_IPS.
+backend_ready_again() {
+    [ "$(ready_of b-a)" = True ] && endpoint_ready "$(e2e_kubectl -n "$NS" get pod b-a -o jsonpath='{.status.podIP}')"
+}
+status_repaired() {
+    local index
+    index=$(e2e_kubectl -n "$NS" get pod b-a -o json | python3 -c '
+import json, sys
+print([c["type"] for c in json.load(sys.stdin)["status"]["conditions"]].index("Ready"))')
+    e2e_kubectl -n "$NS" patch pod b-a --subresource=status --type=json -p \
+        "[{\"op\":\"test\",\"path\":\"/status/conditions/${index}/type\",\"value\":\"Ready\"},{\"op\":\"replace\",\"path\":\"/status/conditions/${index}/status\",\"value\":\"False\"}]" >/dev/null
+    e2e_assert_eq "the outside write took" "$(ready_of b-a)" False
+    e2e_wait_condition 60 "the backend is Ready again and in the Service" backend_ready_again
+    e2e_wait_condition 30 "the Service reaches both backends" both_backends_served
+}
+e2e_subcase_run T73-status-repaired status_repaired
+
+# ---------------------------------------------------------------------------
 # T24-refusal: a Service without endpoints refuses at once (an ICMP error, as kube-proxy does).
 # ---------------------------------------------------------------------------
 refusal() {
@@ -413,7 +451,7 @@ e2e_subcase_run T24-unsupported unsupported
 no_kube_proxy() {
     local node status
     for node in "${NODES[@]}"; do
-        e2e_assert_eq "no kube-proxy process in the bubble of $node" "$(runtime_bubble_exec "$node" 'pgrep -x kube-proxy || true')" ""
+        e2e_assert_eq "no kube-proxy process in the bubble of $node" "$(runtime_bubble_exec "$node" 'pgrep -x kube-proxy || echo none')" none
         status=$(runtime_plaidctl "$node" status)
         e2e_assert_contains "the table of $node comes from Kubernetes" "$status" "table from kubernetes (synced=true)"
         e2e_assert_contains "the watch of $node is healthy" "$status" "watch errors=0"
