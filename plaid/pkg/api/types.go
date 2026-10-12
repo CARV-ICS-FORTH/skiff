@@ -168,9 +168,10 @@ type Response struct {
 	OverlayRxPerSocket []uint64 `json:"overlay_rx_per_socket,omitempty"`
 	// The offloads of the sockets that are on ("UDP_SEGMENT,UDP_GRO", or empty), and those
 	// of the TAPs.
-	OverlayOffload string             `json:"overlay_offload,omitempty"`
-	TapOffload     *TapOffloadStatus  `json:"tap_offload,omitempty"`
-	TapPipeline    *TapPipelineStatus `json:"tap_pipeline,omitempty"`
+	OverlayOffload string              `json:"overlay_offload,omitempty"`
+	OverlaySuper   *OverlaySuperStatus `json:"overlay_super,omitempty"`
+	TapOffload     *TapOffloadStatus   `json:"tap_offload,omitempty"`
+	TapPipeline    *TapPipelineStatus  `json:"tap_pipeline,omitempty"`
 
 	FilterRules []string `json:"filter_rules,omitempty"`
 
@@ -183,6 +184,25 @@ type Response struct {
 	ServiceWatch   *ServiceWatchStatus `json:"service_watch,omitempty"`
 	NodePorts      *NodePortStatus     `json:"node_ports,omitempty"`
 	Services       []ServiceEntry      `json:"services,omitempty"`
+}
+
+// OverlaySuperStatus reports the overlay's TCP super-frames: whether this node sends them
+// whole to nodes that take them, how many it has sent and the datagrams that carried them,
+// how many it has received and handed to the bridge, the frames lost on the way in
+// (a chunk missing, repeated or out of order), the chunks and frames that were invalid and
+// the frames dropped to make room for another source's, and how many nodes have said
+// within the last two seconds that they take them, and the sends of one that failed before
+// anything was on the wire (for a second after each the node cuts them).
+type OverlaySuperStatus struct {
+	Enabled  bool   `json:"enabled"`
+	Tx       uint64 `json:"tx"`
+	TxChunks uint64 `json:"tx_chunks"`
+	Rx       uint64 `json:"rx"`
+	Partial  uint64 `json:"partial"`
+	Invalid  uint64 `json:"invalid"`
+	Evicted  uint64 `json:"evicted"`
+	Peers    int    `json:"peers"`
+	TxFailed uint64 `json:"tx_failed"`
 }
 
 // TapPipelineStatus reports the pipelines of the TAPs, which split the work of a TAP

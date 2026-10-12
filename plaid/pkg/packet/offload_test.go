@@ -335,6 +335,60 @@ func TestSegmentRejectsWhatItCannotDescribe(t *testing.T) {
 	}
 }
 
+// The segment size a frame may state is at least the smallest MSS of its IP version, and
+// the frame stands for at most 128 segments.
+func TestCheckTSOSize(t *testing.T) {
+	for _, v6 := range []bool{false, true} {
+		least := packet.MinTSOSizeV4
+		if v6 {
+			least = packet.MinTSOSizeV6
+		}
+		for _, tc := range []struct {
+			size, payload int
+			ok            bool
+		}{
+			{least - 1, 3000, false},
+			{least, 3000, true},
+			{least + 1, 3000, true},
+			{1, 3000, false},
+			{65535, 3000, true},
+			{least, packet.MaxTSOSegments * least, true},    // 128 segments, the last one full
+			{least, packet.MaxTSOSegments*least + 1, false}, // 129
+			{least, packet.MaxTSOSegments*least - 1, true},  // 128, the last one short
+			{least, (packet.MaxTSOSegments + 1) * least, false},
+			{1460, packet.MaxTSOSegments * 1460, true},
+			{1460, packet.MaxTSOSegments*1460 + 1, false},
+		} {
+			name := fmt.Sprintf("v6=%v size=%d payload=%d", v6, tc.size, tc.payload)
+			h, f := kernelSuper(spec{v6: v6, flags: 0x10, seq: 1, sport: 1, payload: randomBytes(tc.payload)}, tc.size)
+			if h.GSOSize = uint16(tc.size); packet.CheckTSOSize(h, f) == nil != tc.ok || h.TSOSizeOK(tc.payload) != tc.ok {
+				t.Errorf("%s: CheckTSOSize %v, TSOSizeOK %v, want ok=%v", name, packet.CheckTSOSize(h, f), h.TSOSizeOK(tc.payload), tc.ok)
+			}
+			if err := packet.CheckTSOSize(h, f); err != nil && !errors.Is(err, packet.ErrOffload) {
+				t.Errorf("%s: %v is not ErrOffload", name, err)
+			}
+			// CheckTSO is not about the size.
+			if packet.CheckTSO(h, f) != nil {
+				t.Errorf("%s: CheckTSO refuses it", name)
+			}
+		}
+	}
+	// The ECN bit does not change the IP version, and a frame CheckTSO refuses is refused.
+	h, f := kernelSuper(spec{v6: true, flags: 0x10, seq: 1, sport: 1, payload: randomBytes(3000)}, 1220)
+	h.GSOType |= packet.VnetGSOECN
+	if packet.CheckTSOSize(h, f) != nil {
+		t.Error("an IPv6 frame of 1220 with the ECN bit is refused")
+	}
+	h.GSOSize = 1219
+	if packet.CheckTSOSize(h, f) == nil {
+		t.Error("an IPv6 frame of 1219 with the ECN bit is accepted")
+	}
+	h.GSOSize = 0
+	if packet.CheckTSOSize(h, f) == nil || h.TSOSizeOK(3000) {
+		t.Error("a segment size of 0 is accepted")
+	}
+}
+
 func TestChecksum16MatchesTheDefinition(t *testing.T) {
 	// The worked example of RFC 1071 section 3.
 	if got := packet.Checksum16([]byte{0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7}); got != ^uint16(0xddf2) {

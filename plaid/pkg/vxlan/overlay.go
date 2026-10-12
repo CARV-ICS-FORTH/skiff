@@ -1,3 +1,39 @@
+// Package vxlan is Plaid's overlay between nodes: Ethernet frames in VXLAN (RFC 7348)
+// in UDP, one frame in each datagram, sent and received on several sockets.
+//
+// Between two Plaid nodes that both have the feature (OverlayConfig.Super) a pod's TCP
+// super-frame, the segment of up to 64 KiB that a pod's stack hands over with a virtio
+// header (packet.VnetHeader) instead of cutting it, crosses the overlay whole, so that
+// neither node cuts it, sums it or joins it again. Nothing is negotiated. Every datagram
+// that a node with the feature sends has the VXLANFlagSuperOK bit, a reserved bit that
+// RFC 7348 says to ignore and that ParseVXLAN does, in the flags of its VXLAN header; a
+// node sends a super-frame whole only to one whose address sent that bit within the last
+// two seconds, and cuts it otherwise. A TCP stream has answers going the other way all
+// the time, so the sender learns at once.
+//
+// A super-frame is sent as chunks, datagrams with the VXLANFlagChunk bit, the VNI of
+// the route and then, all numbers big-endian:
+//
+//	byte 0      version, 1 (any other is invalid, as are non-zero bytes 1-3)
+//	bytes 1-3   zero
+//	bytes 4-7   id of the super-frame, a counter of the send socket
+//	bytes 8-11  length of the whole Ethernet frame
+//	bytes 12-15 offset in the frame of the bytes that follow
+//	[first chunk only: the virtio header's flags, gso_type (with the ECN bit),
+//	 hdr_len, gso_size, csum_start and csum_offset, of 1, 1, 2, 2, 2 and 2 bytes]
+//	the bytes of the Ethernet frame as the pod handed it over (with the MAC addresses
+//	that the bridge sets for the overlay), up to the end of the datagram
+//
+// The datagrams are as large as the datagrams of the frame's segments would be, all but
+// the last of them equal, and leave from the send socket that the frame's flow selects,
+// so that a run of them goes in one send with UDP_SEGMENT and arrives, with UDP_GRO, in
+// one read. The receiving lane puts the chunks of a source (a node's socket, by address
+// and port) together, one frame at a time: a chunk that is not the next one drops the
+// frame in progress, which is counted. A complete frame is checked and handed to the
+// bridge as a super-frame that came from the overlay. The check includes the segment
+// size the virtio header states, which the sending node chooses and the frame is cut by:
+// below the smallest MSS of its IP version (536 for IPv4, 1220 for IPv6), or for more than
+// 128 segments, the frame is invalid, and a node does not send such a frame whole.
 package vxlan
 
 import (
@@ -5,8 +41,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
+	"syscall"
+	"time"
 
 	"plaid/pkg/packet"
 )
@@ -25,9 +64,10 @@ type BatchInjector interface {
 
 // InjectBatch injects frames like a FrameInjector but may hold their delivery until
 // Flush. The overlay's worker flushes it when it has nothing more to inject for the
-// moment, and releases it when it stops.
+// moment, and releases it when it stops. It also takes the super-frames that arrive whole.
 type InjectBatch interface {
 	FrameInjector
+	SuperInjector
 	Flush() error
 	Release()
 }
@@ -56,6 +96,11 @@ type OverlayConfig struct {
 	// and a node with the offload talks to one without. Where the kernel has no such
 	// feature the overlay sends and reads one datagram at a time.
 	Offload bool
+	// Super lets the engine send a TCP super-frame whole to a node that takes them, and
+	// says to the nodes it sends to that it takes them (see the package comment). It needs
+	// the offload to be on, UDP_GRO included; without it the engine does neither, but it
+	// still receives the super-frames that arrive.
+	Super bool
 }
 
 // defaultRxQueueLen is enough to absorb a TCP window's worth of jumbo frames arriving
@@ -80,7 +125,7 @@ type Stats struct {
 	TxSends   uint64 // system calls that sent them: fewer than TxPackets with UDP_SEGMENT
 	TxErrors  uint64 // datagrams that were not sent (no route, marshal or socket errors)
 	RxReads   uint64 // system calls that received datagrams: fewer than the datagrams with UDP_GRO
-	RxPackets uint64 // valid VXLAN packets handed to the bridge, as many as RxPerSocket adds up to
+	RxPackets uint64 // valid VXLAN packets (datagrams, or whole super-frames) handed to the bridge, as many as RxPerSocket adds up to
 	RxInvalid uint64 // datagrams that were not valid VXLAN
 	RxDropped uint64 // valid packets the bridge did not accept
 	// RxQueueDrops are datagrams read from a socket but dropped because the queue to the
@@ -99,6 +144,9 @@ type Stats struct {
 	// if the first send with it fails).
 	SegmentOffload bool
 	ReceiveOffload bool
+	// The super-frames (see the package comment); api.OverlaySuperStatus says what each counts.
+	SuperTx, SuperTxChunks, SuperRx, SuperPartial, SuperInvalid, SuperEvicted, SuperTxFailed uint64
+	SuperPeers                                                                               int
 }
 
 // OverlayEngine manages sending and receiving VXLAN packets over UDP.
@@ -120,17 +168,42 @@ type OverlayEngine struct {
 	closedChan chan struct{}
 
 	txPackets, txSends, txErrors, rxReads, rxInvalid, rxDropped, rxQueueDrops atomic.Uint64
+	superTx, superTxChunks, superRx, superPartial, superInvalid, superEvicted atomic.Uint64
+	superTxFailed                                                             atomic.Uint64
+	superHold                                                                 atomic.Int64 // no super-frame is sent whole before the clock reaches this
 	rcvBuf                                                                    atomic.Int64
 	// gso: sends use UDP_SEGMENT; gsoWorked: one did; gro: the receive sockets have UDP_GRO.
 	gso, gsoWorked, gro atomic.Bool
+
+	// sendFlags are the flags of the VXLAN header of every datagram: the I flag, and the
+	// mark that the node takes super-frames if it is to say so. Set when attached.
+	sendFlags byte
+	peers     peers
+	clock     func() int64 // nanoseconds from some start; a variable so that tests can move it
 }
+
+var clockStart = time.Now()
+
+func monotonic() int64 { return int64(time.Since(clockStart)) }
 
 // sockets are an engine's sockets, set once when it is attached.
 type sockets struct {
 	rx []*rxLane
 	// tx are the send sockets, never none. They only send: nothing reads them, and
 	// datagrams that reach them (to a port of theirs) are none of the overlay's.
-	tx []*net.UDPConn
+	tx []*txSock
+}
+
+// txSock is a send socket with its raw connection and the lock and counter of its
+// super-frames.
+type txSock struct {
+	conn *net.UDPConn
+	rc   syscall.RawConn // nil if the socket does not give one
+	v6   bool            // an AF_INET6 socket: the addresses it sends to are v4-mapped
+	// mu is held across the sends of a super-frame's chunks, so that the chunks of two
+	// frames leave the socket one frame after the other; id numbers the frames.
+	mu sync.Mutex
+	id uint32
 }
 
 // rxLane is a receive socket with the reader and the worker that serve it.
@@ -139,6 +212,11 @@ type rxLane struct {
 	conn      *net.UDPConn
 	delivered atomic.Uint64 // valid VXLAN packets handed to the bridge
 	drops     atomic.Uint64 // the socket's drop count at the last datagram read from it
+
+	// Used by the lane's worker only.
+	ra     reassembler
+	peer   netip.Addr // the last node whose mark the lane noted, and when, so that the shared table is not touched for every datagram
+	peerAt int64
 }
 
 // NewOverlayEngine creates an OverlayEngine instance.
@@ -161,6 +239,8 @@ func NewOverlayEngine(cfg OverlayConfig, routes *RouteTable, injector FrameInjec
 		routes:     routes,
 		injector:   injector,
 		closedChan: make(chan struct{}),
+		sendFlags:  packet.VXLANFlags,
+		clock:      monotonic,
 	}
 }
 
@@ -215,7 +295,14 @@ func (oe *OverlayEngine) Adopt(ctx context.Context, rx, tx []*net.UDPConn) error
 
 // attach tunes the sockets and starts the goroutines that serve them. The caller holds attachMu.
 func (oe *OverlayEngine) attach(ctx context.Context, rx, tx []*net.UDPConn, transport string) {
-	s := &sockets{tx: tx}
+	s := &sockets{}
+	for _, c := range tx {
+		ts := &txSock{conn: c}
+		if rc, err := c.SyscallConn(); err == nil {
+			ts.rc, ts.v6 = rc, isV6(rc)
+		}
+		s.tx = append(s.tx, ts)
+	}
 	gro := oe.cfg.Offload && segmentOffload
 	for i, conn := range rx {
 		// Neither setting is essential: without them the overlay works with the kernel's
@@ -234,6 +321,9 @@ func (oe *OverlayEngine) attach(ctx context.Context, rx, tx []*net.UDPConn, tran
 	}
 	oe.gro.Store(gro)
 	oe.gso.Store(gro)
+	if gro && oe.cfg.Super {
+		oe.sendFlags |= packet.VXLANFlagSuperOK
+	}
 
 	oe.transport.Store(transport)
 	oe.socks.Store(s)
@@ -267,6 +357,11 @@ func (oe *OverlayEngine) Stats() Stats {
 
 		SegmentOffload: oe.gso.Load(),
 		ReceiveOffload: oe.gro.Load(),
+
+		SuperTx: oe.superTx.Load(), SuperTxChunks: oe.superTxChunks.Load(), SuperRx: oe.superRx.Load(),
+		SuperPartial: oe.superPartial.Load(), SuperInvalid: oe.superInvalid.Load(), SuperEvicted: oe.superEvicted.Load(),
+		SuperTxFailed: oe.superTxFailed.Load(),
+		SuperPeers:    oe.peers.count(oe.clock()),
 	}
 	if t, ok := oe.transport.Load().(string); ok {
 		st.Transport = t
@@ -301,6 +396,7 @@ func (oe *OverlayEngine) stopped(ctx context.Context) bool {
 type rxRead struct {
 	buf *packet.Buffer
 	seg int
+	src netip.AddrPort // the sender's address (not 4-in-6) and port
 }
 
 // datagrams is how many datagrams the read holds.
@@ -323,7 +419,7 @@ func (l *rxLane) readLoop(ctx context.Context, queue chan<- rxRead) {
 	oob := make([]byte, rxOOBLen)
 
 	for !oe.stopped(ctx) {
-		n, oobn, _, _, err := l.conn.ReadMsgUDPAddrPort(buf.B[:cap(buf.B)], oob)
+		n, oobn, _, src, err := l.conn.ReadMsgUDPAddrPort(buf.B[:cap(buf.B)], oob)
 		if err != nil {
 			continue // the loop ends if the engine closed the socket
 		}
@@ -333,7 +429,7 @@ func (l *rxLane) readLoop(ctx context.Context, queue chan<- rxRead) {
 		}
 
 		buf.B = buf.B[:n]
-		r := rxRead{buf, parseGROSize(oob[:oobn])}
+		r := rxRead{buf, parseGROSize(oob[:oobn]), netip.AddrPortFrom(src.Addr().Unmap(), src.Port())}
 		select {
 		case queue <- r:
 			buf = packet.GetBuffer()
@@ -354,6 +450,7 @@ const rxDrainMax = 32
 // stops it releases what is left. The engine's other lanes run their own processLoop at
 // the same time, each with a batch of its own, into the same injector.
 func (l *rxLane) processLoop(ctx context.Context, queue <-chan rxRead) {
+	defer l.ra.release()
 	sink := l.oe.injector
 	var batch InjectBatch
 	if bi, ok := sink.(BatchInjector); ok {
@@ -385,23 +482,33 @@ func (l *rxLane) processLoop(ctx context.Context, queue <-chan rxRead) {
 // processRead handles the datagrams of one read and releases its buffer.
 func (l *rxLane) processRead(ctx context.Context, sink FrameInjector, r rxRead) {
 	if !l.oe.stopped(ctx) {
+		now := l.oe.clock()
 		for rest := r.buf.B; len(rest) > 0; {
 			n := len(rest)
 			if r.seg > 0 && r.seg < n {
 				n = r.seg
 			}
-			l.process(sink, rest[:n])
+			l.process(sink, rest[:n], r.src, now)
 			rest = rest[n:]
 		}
 	}
 	r.buf.Release()
 }
 
-// process handles one datagram; the frame it injects is valid only during the call.
-func (l *rxLane) process(sink FrameInjector, datagram []byte) {
+// process handles one datagram, from src, read at time now; the frame it injects is valid
+// only during the call.
+func (l *rxLane) process(sink FrameInjector, datagram []byte, src netip.AddrPort, now int64) {
 	oe := l.oe
 	if len(datagram) < packet.VXLANHeaderLen {
 		oe.rxInvalid.Add(1)
+		return
+	}
+	flags := datagram[0]
+	if flags&(packet.VXLANFlags|packet.VXLANFlagSuperOK) == packet.VXLANFlags|packet.VXLANFlagSuperOK && oe.cfg.Super {
+		l.notePeer(src.Addr(), now)
+	}
+	if flags&(packet.VXLANFlags|packet.VXLANFlagChunk) == packet.VXLANFlags|packet.VXLANFlagChunk {
+		l.chunk(sink, datagram, src, now)
 		return
 	}
 
@@ -424,6 +531,15 @@ func (l *rxLane) process(sink FrameInjector, datagram []byte) {
 	}
 }
 
+// notePeer records that the node at a said that it takes super-frames.
+func (l *rxLane) notePeer(a netip.Addr, now int64) {
+	if a == l.peer && now-l.peerAt < peerAge/20 {
+		return
+	}
+	l.oe.peers.note(a, now)
+	l.peer, l.peerAt = a, now
+}
+
 // Close closes the UDP sockets and terminates background readers and workers.
 func (oe *OverlayEngine) Close() error {
 	var err error
@@ -435,8 +551,8 @@ func (oe *OverlayEngine) Close() error {
 			for _, l := range s.rx {
 				err = errors.Join(err, l.conn.Close())
 			}
-			for _, c := range s.tx {
-				err = errors.Join(err, c.Close())
+			for _, ts := range s.tx {
+				err = errors.Join(err, ts.conn.Close())
 			}
 		}
 	})

@@ -12,6 +12,15 @@ const (
 	DefaultVNI       = 1
 )
 
+// Two of the header's reserved flag bits, which RFC 7348 says a receiver ignores and
+// ParseVXLAN does (it checks the I flag only): a node that sends the first says that it
+// takes TCP super-frames whole, and the second marks a datagram as a chunk of one (see
+// the vxlan package). They are not bits that Linux's own VXLAN device gives a meaning.
+const (
+	VXLANFlagSuperOK = 0x20
+	VXLANFlagChunk   = 0x10
+)
+
 var (
 	ErrVXLANPacketTooShort = errors.New("vxlan packet too short")
 	ErrInvalidVXLANFlags   = errors.New("invalid vxlan flags (missing I-flag)")
@@ -57,15 +66,16 @@ func ParseVXLAN(data []byte) (*VXLANPacket, error) {
 	}, nil
 }
 
-// AppendVXLANHeader appends the 8-byte VXLAN header for vni to dst.
-func AppendVXLANHeader(dst []byte, vni uint32) []byte {
+// AppendVXLANHeader appends the 8-byte VXLAN header for vni to dst, with the flags byte
+// given, which has the I flag and may have the VXLANFlag bits.
+func AppendVXLANHeader(dst []byte, flags byte, vni uint32) []byte {
 	// bytes 1, 2, 3 and 7 are reserved (0)
-	return append(dst, VXLANFlags, 0, 0, 0, byte(vni>>16), byte(vni>>8), byte(vni), 0)
+	return append(dst, flags, 0, 0, 0, byte(vni>>16), byte(vni>>8), byte(vni), 0)
 }
 
 // MarshalVXLAN encapsulates an inner Ethernet frame with a VXLAN header.
 func MarshalVXLAN(vni uint32, innerFrameBytes []byte) []byte {
-	buf := AppendVXLANHeader(make([]byte, 0, VXLANHeaderLen+len(innerFrameBytes)), vni)
+	buf := AppendVXLANHeader(make([]byte, 0, VXLANHeaderLen+len(innerFrameBytes)), VXLANFlags, vni)
 	return append(buf, innerFrameBytes...)
 }
 

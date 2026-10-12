@@ -444,6 +444,10 @@ type batchRecorder struct {
 }
 
 func (r *batchRecorder) NewBatch() InjectBatch { return r }
+func (r *batchRecorder) InjectSuper(_ packet.VnetHeader, buf *packet.Buffer) error {
+	buf.Release()
+	return nil
+}
 func (r *batchRecorder) InjectFrame(f *packet.EthernetFrame) error {
 	r.mu.Lock()
 	r.held = append(r.held, binary.BigEndian.Uint32(f.Payload))

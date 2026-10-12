@@ -55,13 +55,7 @@ func (w *tapWriter) AddSuper(h packet.VnetHeader, frame *packet.EthernetFrame) e
 	if cerr := w.t.errClosed(); cerr != nil {
 		return cerr
 	}
-	if len(frame.Payload) <= w.t.uplinkMTU && packet.CompleteSuper(h, frame.Payload) == nil {
-		h = packet.VnetHeader{}
-		stats.joinUplink.Add(1)
-	} else {
-		stats.passSuper.Add(1)
-		stats.passBytes.Add(uint64(packet.EthernetHeaderLen + len(frame.Payload)))
-	}
+	h = w.superHeader(h, frame)
 	if w.t.wq != nil {
 		if w.t.wpending.Load() != 0 {
 			pb := packet.GetBuffer()
@@ -83,6 +77,45 @@ func (w *tapWriter) AddSuper(h packet.VnetHeader, frame *packet.EthernetFrame) e
 		err = werr
 	}
 	return err
+}
+
+// superHeader is the virtio header a super-frame is written with: its own, or none if the
+// TAP takes it as one ordinary packet (see AddSuper). It counts the frame.
+func (w *tapWriter) superHeader(h packet.VnetHeader, frame *packet.EthernetFrame) packet.VnetHeader {
+	if len(frame.Payload) <= w.t.uplinkMTU && packet.CompleteSuper(h, frame.Payload) == nil {
+		stats.joinUplink.Add(1)
+		return packet.VnetHeader{}
+	}
+	stats.passSuper.Add(1)
+	stats.passBytes.Add(uint64(packet.EthernetHeaderLen + len(frame.Payload)))
+	return h
+}
+
+// AddSuperBuffer is AddSuper for a frame that lies in pb (see bridge.BufferSuperWriter),
+// which the writer goroutine writes from there: nothing is copied, and the goroutine that
+// delivers goes on at once instead of waiting for the pod's stack to take the frame, which
+// is where the time of a stream goes. It is always queued, behind the frame held and the
+// writes already queued, so the order is that of AddSuper. If the queue is full it waits
+// for the writer, as every queued write does (see TapEndpoint.enqueue). An endpoint with
+// no writer goroutine (no pipeline) does not take it: the caller writes in place.
+func (w *tapWriter) AddSuperBuffer(h packet.VnetHeader, frame *packet.EthernetFrame, pb *packet.Buffer) (bool, error) {
+	if w.t.wq == nil || len(frame.DstMAC) != 6 || len(frame.SrcMAC) != 6 ||
+		len(pb.B) != packet.VnetHeaderLen+packet.EthernetHeaderLen+len(frame.Payload) {
+		return false, nil
+	}
+	err := w.flush(true)
+	if cerr := w.t.errClosed(); cerr != nil {
+		return false, cerr
+	}
+	w.superHeader(h, frame).Put(pb.B)
+	// The Ethernet header holds the MAC addresses of the frame the overlay carried; the
+	// bridge has set those of this one.
+	copy(pb.B[packet.VnetHeaderLen:], frame.DstMAC)
+	copy(pb.B[packet.VnetHeaderLen+6:], frame.SrcMAC)
+	if qerr := w.t.enqueue(pb); err == nil {
+		err = qerr
+	}
+	return true, err
 }
 
 // Flush writes the frame held.

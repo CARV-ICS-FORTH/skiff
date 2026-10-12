@@ -91,8 +91,8 @@ func TestStartOpensTheGroupAndTheSendSockets(t *testing.T) {
 					t.Error("a receive socket is not in the group")
 				}
 			}
-			for _, c := range s.tx {
-				p := c.LocalAddr().(*net.UDPAddr).Port
+			for _, ts := range s.tx {
+				p := ts.conn.LocalAddr().(*net.UDPAddr).Port
 				if seen[p] {
 					t.Errorf("send socket on port %d, which another socket has", p)
 				}
@@ -103,7 +103,11 @@ func TestStartOpensTheGroupAndTheSendSockets(t *testing.T) {
 				t.Errorf("Close: %v", err)
 			}
 			settle(t, before)
-			for _, c := range append([]*net.UDPConn{s.rx[0].conn}, s.tx...) {
+			conns := []*net.UDPConn{s.rx[0].conn}
+			for _, ts := range s.tx {
+				conns = append(conns, ts.conn)
+			}
+			for _, c := range conns {
 				if _, err := c.WriteToUDP([]byte("x"), &net.UDPAddr{IP: loopback, Port: 9}); err == nil {
 					t.Error("a socket is open after Close")
 				}
@@ -347,7 +351,7 @@ func TestTxBatchRunsBreakOnASocketChange(t *testing.T) {
 			if got := int(binary.BigEndian.Uint16(vx.InnerFrame.Payload[28:])); got != flow {
 				t.Errorf("%s: datagram %d is of flow %d, want %d: order was lost", tc.name, i, got, flow)
 			}
-			want := f.oe.socks.Load().tx[sockOf(flow)].LocalAddr().(*net.UDPAddr).Port
+			want := f.oe.socks.Load().tx[sockOf(flow)].conn.LocalAddr().(*net.UDPAddr).Port
 			if int(from.Port()) != want {
 				t.Errorf("%s: datagram %d left from port %d, want its socket's %d", tc.name, i, from.Port(), want)
 			}

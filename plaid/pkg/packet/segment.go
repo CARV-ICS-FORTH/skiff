@@ -153,6 +153,37 @@ func CheckTSO(h VnetHeader, frame []byte) error {
 	return err
 }
 
+// The smallest segment size a TSO segment may state, the smallest MSS that TCP allows for
+// its IP version (576 and 1280 less the IP and TCP headers), and the most segments it may
+// stand for. A pod's stack states a size from its MSS; one that comes from another node
+// does not have to, and a tiny one makes whoever cuts the frame (the Segmenter, the
+// pod's kernel) produce a huge number of segments.
+const (
+	MinTSOSizeV4   = 536
+	MinTSOSizeV6   = 1220
+	MaxTSOSegments = 128
+)
+
+// TSOSizeOK reports whether h, the virtio header of a TCP segment with payload bytes of
+// data, states a segment size within the limits above.
+func (h VnetHeader) TSOSizeOK(payload int) bool {
+	least, size := MinTSOSizeV4, int(h.GSOSize)
+	if h.GSOType&^VnetGSOECN == VnetGSOTCPv6 {
+		least = MinTSOSizeV6
+	}
+	return size >= least && (payload+size-1)/size <= MaxTSOSegments
+}
+
+// CheckTSOSize is CheckTSO and, as a node that takes a super-frame from the overlay
+// needs, a check of the segment size h states against the limits above.
+func CheckTSOSize(h VnetHeader, frame []byte) error {
+	f, err := checkTSO(h, frame)
+	if err == nil && !h.TSOSizeOK(len(frame)-f.payload) {
+		err = fmt.Errorf("%w: segment size %d for %d bytes of data", ErrOffload, h.GSOSize, len(frame)-f.payload)
+	}
+	return err
+}
+
 // cut is Segment for the TCP segments the kernel sends as one.
 func (s *Segmenter) cut(h VnetHeader, frame []byte) ([][]byte, error) {
 	f, err := checkTSO(h, frame)

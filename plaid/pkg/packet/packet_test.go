@@ -343,7 +343,7 @@ func TestMarshalVXLANEncoding(t *testing.T) {
 		if got := MarshalVXLAN(vni, inner); !bytes.Equal(got, want) {
 			t.Errorf("MarshalVXLAN(%#x) = %x, want %x", vni, got, want)
 		}
-		if got := AppendVXLANHeader([]byte{0xee}, vni); !bytes.Equal(got, append([]byte{0xee}, want[:VXLANHeaderLen]...)) {
+		if got := AppendVXLANHeader([]byte{0xee}, VXLANFlags, vni); !bytes.Equal(got, append([]byte{0xee}, want[:VXLANHeaderLen]...)) {
 			t.Errorf("AppendVXLANHeader(%#x) = %x", vni, got)
 		}
 	}

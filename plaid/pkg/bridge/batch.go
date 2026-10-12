@@ -31,6 +31,20 @@ type SuperWriter interface {
 	AddSuper(h packet.VnetHeader, frame *packet.EthernetFrame) error
 }
 
+// BufferSuperWriter is a SuperWriter that can take the buffer a super-frame lies in and
+// write it later, from there, without a copy: what a TAP with a writer goroutine does with
+// a frame that nothing else is waiting for.
+type BufferSuperWriter interface {
+	SuperWriter
+	// AddSuperBuffer is AddSuper for a frame that lies in buf, after packet.VnetHeaderLen
+	// bytes of room for the virtio header, as frame.Payload after the Ethernet header. If
+	// taken is true the writer owns buf, even if err is not nil: it fills in the header and
+	// the MAC addresses, writes it when its turn comes, in order with what it was given
+	// before, and releases it. If not, buf is still the caller's, and nothing has been
+	// written: for a writer that has to write at once, AddSuper does.
+	AddSuperBuffer(h packet.VnetHeader, frame *packet.EthernetFrame, buf *packet.Buffer) (taken bool, err error)
+}
+
 // BatchEndpoint is an Endpoint that gains from taking the frames of a batch together,
 // such as a TAP that merges consecutive TCP segments into one write.
 type BatchEndpoint interface {
@@ -48,6 +62,20 @@ type OverlayBatch interface {
 	Release()
 }
 
+// SuperOverlayBatch is an OverlayBatch that can send a TCP super-frame whole to a node
+// that takes them (see the vxlan package).
+type SuperOverlayBatch interface {
+	OverlayBatch
+	// AcceptsSuper reports whether the node that dstIP is routed to takes super-frames
+	// whole now. It changes nothing.
+	AcceptsSuper(dstIP net.IP) bool
+	// SendSuper sends frame, which the virtio header h describes, whole, after the frames
+	// that the batch holds (it sends them first, to keep their order) and not through
+	// them: it has finished with the frame when it returns, and sends at once. sent is
+	// false if it did not, and then nothing was sent and the caller is to cut the frame.
+	SendSuper(h packet.VnetHeader, frame *packet.EthernetFrame, dstIP net.IP) (sent bool, err error)
+}
+
 // Batch is a run of frames that enter the bridge together, from one read of a TAP or one
 // stretch of the overlay's receive queue. The bridge handles each frame as it comes, but
 // what it sends out is held until Flush: frames to the overlay, and frames to endpoints
@@ -62,10 +90,10 @@ type Batch struct {
 }
 
 // superFrame is the state of a Batch that routes a TCP super-frame from src. Only a
-// delivery to the one endpoint that can take it whole is allowed to take it; the places
-// where the routing would do anything else with the frame (send it over the overlay, to
-// the outbound handler, to everyone) leave it alone, so that the caller can cut it and
-// route the segments. The Service engine is the exception: it translates the frame, and
+// delivery to the one endpoint that can take it whole, or the overlay if the node it is for
+// takes it, is allowed to take it; the places where the routing would do anything else
+// with the frame (send it over the overlay otherwise, to the outbound handler, to everyone)
+// leave it alone, so that the caller can cut it and route the segments. The Service engine is the exception: it translates the frame, and
 // what comes out is routed the same way, except that the bridge cuts it itself if it
 // cannot go whole (see serviceSuper).
 type superFrame struct {
@@ -73,8 +101,14 @@ type superFrame struct {
 	dry   bool // only find out whether a delivery would take it, without delivering
 	whole bool // a delivery took it (would have), the filter dropped it, or the engine has it
 	src   Endpoint
-	h     packet.VnetHeader
-	raw   []byte // the Ethernet frame, to cut after the engine
+	// overlay says that the frame may be sent whole over the overlay, to a node that takes
+	// it. A frame that came from the overlay never goes back.
+	overlay bool
+	h       packet.VnetHeader
+	raw     []byte // the Ethernet frame, to cut after the engine
+	// buf, if not nil, is the buffer raw lies in, after the room for a virtio header; the
+	// batch owns it until a writer that takes it whole sets this to nil.
+	buf *packet.Buffer
 }
 
 type batchWriter struct {
@@ -177,24 +211,63 @@ func (x *Batch) deliverSuper(ep Endpoint, frame *packet.EthernetFrame) error {
 	if s.dry {
 		return nil
 	}
+	if bw, ok := sw.(BufferSuperWriter); ok && s.buf != nil {
+		taken, err := bw.AddSuperBuffer(s.h, frame, s.buf)
+		if taken {
+			s.buf = nil
+		}
+		if taken || err != nil {
+			return err
+		}
+	}
 	return sw.AddSuper(s.h, frame)
 }
 
-// sendOverlay sends frame through the overlay: held in the batch until Flush.
-func (x *Batch) sendOverlay(frame *packet.EthernetFrame, dstIP net.IP) error {
-	if x.sup.on {
-		return nil
-	}
+// overlayBatch returns the batch's hold on the overlay, made when first asked for, or nil
+// if the bridge has no overlay.
+func (x *Batch) overlayBatch() OverlayBatch {
 	if x.overlay == nil {
 		x.b.mu.RLock()
 		newBatch := x.b.overlayBatcher
 		x.b.mu.RUnlock()
 		if newBatch == nil {
-			return fmt.Errorf("overlay unavailable for %s", dstIP)
+			return nil
 		}
 		x.overlay = newBatch()
 	}
-	return x.overlay.Send(frame, dstIP)
+	return x.overlay
+}
+
+// sendOverlay sends frame through the overlay: held in the batch until Flush.
+func (x *Batch) sendOverlay(frame *packet.EthernetFrame, dstIP net.IP) error {
+	if x.sup.on {
+		return x.sendOverlaySuper(frame, dstIP)
+	}
+	ob := x.overlayBatch()
+	if ob == nil {
+		return fmt.Errorf("overlay unavailable for %s", dstIP)
+	}
+	return ob.Send(frame, dstIP)
+}
+
+// sendOverlaySuper sends the super-frame being routed over the overlay if the node it is
+// for takes super-frames whole, and leaves it to be cut otherwise.
+func (x *Batch) sendOverlaySuper(frame *packet.EthernetFrame, dstIP net.IP) error {
+	s := &x.sup
+	if !s.overlay {
+		return nil
+	}
+	sb, ok := x.overlayBatch().(SuperOverlayBatch)
+	if !ok {
+		return nil
+	}
+	if s.dry {
+		s.whole = sb.AcceptsSuper(dstIP)
+		return nil
+	}
+	sent, err := sb.SendSuper(s.h, frame, dstIP)
+	s.whole = sent
+	return err
 }
 
 // ProcessFrames is ProcessFrame for several frames from one source, which stay in
@@ -216,9 +289,10 @@ func (b *Bridge) ProcessTrustedFrames(srcEP Endpoint, frames [][]byte) error {
 // SuperWriter), or which the filter drops, or which is for the Service engine: the engine
 // translates it as one packet, in place, and the bridge delivers it whole to one endpoint
 // that takes super-frames or cuts it and routes the segments. Then whole is true and err
-// is the error of the delivery. If not, nothing has been done with the frame, and it is
-// for the caller to cut it and process the segments, which does what is to be done with
-// them.
+// is the error of the delivery. The frame bound for a pod on another node goes whole to
+// the overlay if the node takes it (see SuperOverlayBatch). If not, nothing has been done
+// with the frame, and it is for the caller to cut it and process the segments, which does
+// what is to be done with them.
 func (b *Bridge) ProcessSuperFrame(srcEP Endpoint, h packet.VnetHeader, raw []byte) (whole bool, err error) {
 	return b.routeSuper(srcEP, h, raw, false)
 }
@@ -235,7 +309,7 @@ func (b *Bridge) PassesWhole(srcEP Endpoint, raw []byte) bool {
 func (b *Bridge) routeSuper(srcEP Endpoint, h packet.VnetHeader, raw []byte, dry bool) (bool, error) {
 	x := b.NewBatch()
 	defer x.Release()
-	x.sup = superFrame{on: true, dry: dry, src: srcEP, h: h, raw: raw}
+	x.sup = superFrame{on: true, dry: dry, src: srcEP, h: h, raw: raw, overlay: true}
 	err := x.processFrame(srcEP, raw, false)
 	if !x.sup.whole {
 		return false, nil // the routing's errors come again with the segments

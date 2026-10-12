@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -180,12 +182,20 @@ func routeTo(port int) *RouteTable {
 type fixture struct {
 	oe    *OverlayEngine
 	sinks []*net.UDPConn
+	now   atomic.Int64 // the engine's clock, which a test moves; it starts at an hour
 }
+
+// fixtureVTEP is the VTEP MAC address of the routes of a fixture.
+var fixtureVTEP = net.HardwareAddr{2, 0, 0, 0, 0, 2}
+
+// peerAddr is the address of the fixture's sinks, and so of the node that "announces".
+var peerAddr = netip.MustParseAddr("127.0.0.1")
 
 func newFixture(tb testing.TB, cfg OverlayConfig, sinks int) *fixture {
 	tb.Helper()
 	routes := NewRouteTable()
 	f := &fixture{}
+	f.now.Store(int64(time.Hour))
 	for i := 0; i < sinks; i++ {
 		sink, err := net.ListenUDP("udp4", &net.UDPAddr{IP: loopback})
 		if err != nil {
@@ -195,13 +205,13 @@ func newFixture(tb testing.TB, cfg OverlayConfig, sinks int) *fixture {
 		tb.Cleanup(func() { sink.Close() })
 		f.sinks = append(f.sinks, sink)
 		_, subnet, _ := net.ParseCIDR(fmt.Sprintf("10.244.%d.0/24", i+2))
-		vtep, _ := net.ParseMAC("02:00:00:00:00:02")
-		routes.AddRoute(&RouteEntry{Subnet: subnet, RemoteHostIP: loopback, VtepMAC: vtep, VNI: 7, Port: sink.LocalAddr().(*net.UDPAddr).Port})
+		routes.AddRoute(&RouteEntry{Subnet: subnet, RemoteHostIP: loopback, VtepMAC: fixtureVTEP, VNI: 7, Port: sink.LocalAddr().(*net.UDPAddr).Port})
 	}
 	if cfg.BindAddress == "" {
 		cfg.BindAddress = "127.0.0.1"
 	}
 	f.oe = NewOverlayEngine(cfg, routes, nil)
+	f.oe.clock = f.now.Load
 	if err := f.oe.Start(context.Background()); err != nil {
 		tb.Fatalf("Failed to start engine: %v", err)
 	}
@@ -212,20 +222,48 @@ func newFixture(tb testing.TB, cfg OverlayConfig, sinks int) *fixture {
 // dst is an address behind sinks[sink].
 func (f *fixture) dst(sink int) net.IP { return net.IPv4(10, 244, byte(sink+2), 10) }
 
-// receive reads n datagrams from sinks[sink].
-func (f *fixture) receive(t *testing.T, sink, n int) [][]byte {
+// receiveFrom reads n datagrams from sinks[sink] and the ports they came from.
+func (f *fixture) receiveFrom(t *testing.T, sink, n int) (out [][]byte, ports []int) {
 	t.Helper()
-	var out [][]byte
 	buf := make([]byte, 70000)
 	for len(out) < n {
 		_ = f.sinks[sink].SetReadDeadline(time.Now().Add(3 * time.Second))
-		m, _, err := f.sinks[sink].ReadFromUDP(buf)
+		m, from, err := f.sinks[sink].ReadFromUDP(buf)
 		if err != nil {
 			t.Fatalf("sink %d: got %d of %d datagrams: %v", sink, len(out), n, err)
 		}
 		out = append(out, append([]byte(nil), buf[:m]...))
+		ports = append(ports, from.Port)
 	}
+	return out, ports
+}
+
+// receive reads n datagrams from sinks[sink].
+func (f *fixture) receive(t *testing.T, sink, n int) [][]byte {
+	t.Helper()
+	out, _ := f.receiveFrom(t, sink, n)
 	return out
+}
+
+// nothing checks that no datagram arrives at sinks[sink].
+func (f *fixture) nothing(t *testing.T, sink int) {
+	t.Helper()
+	_ = f.sinks[sink].SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	if m, _, err := f.sinks[sink].ReadFromUDP(make([]byte, 70000)); err == nil {
+		t.Fatalf("a datagram of %d bytes arrived", m)
+	}
+}
+
+// announce makes the sinks' node a peer, as a datagram from it with the mark does.
+func (f *fixture) announce() { f.oe.peers.note(peerAddr, f.now.Load()) }
+
+// ethernet is the frame in wire, whose payload shares its bytes.
+func ethernet(wire []byte) *packet.EthernetFrame {
+	f, err := packet.ParseEthernet(wire)
+	if err != nil {
+		panic(err)
+	}
+	return f
 }
 
 func BenchmarkSend(b *testing.B) {

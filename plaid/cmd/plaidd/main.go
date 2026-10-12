@@ -120,7 +120,7 @@ func main() {
 	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address (with --overlay-handoff: the address the handed-over socket must be bound to)")
 	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP sockets, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
 	flag.IntVar(&cfg.OverlaySockets, "overlay-sockets", vxlan.DefaultSockets, "Receive sockets of the overlay (1 to 16), in one SO_REUSEPORT group, each read and processed by its own goroutines so that what a node receives is not limited to one core, and four times as many send sockets, so that the kernel of the receiving node spreads the flows over its sockets. Only when plaidd opens the VXLAN port itself: with --overlay-handoff the helper's --sockets decides. The wire format is the same for any number, and nodes with different numbers interoperate")
-	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay sockets. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call, and a pod's TCP super-frames are cut instead of being written whole to the other pods and the bubble of this node")
+	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay sockets. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call, and a pod's TCP super-frames are cut instead of being written whole to the other pods and the bubble of this node or sent whole to other nodes (a node still receives the ones that arrive)")
 	flag.IntVar(&cfg.UplinkMTU, "uplink-mtu", 0, "MTU of the bubble's TAP (plaid0) and of its link to slirp4netns in tap mode, which may be much larger than the pods' (at most 65520), so that slirp4netns, which pays for every packet, moves fewer: what a pod sends is joined into packets of up to this size, and larger packets from the bubble are cut for the pods. 0: the pod MTU")
 	flag.StringVar(&cfg.SlirpBin, "slirp-bin", "slirp4netns", "Path to slirp4netns binary")
 	flag.StringVar(&cfg.SlirpSocket, "slirp-socket", "/run/plaid/slirp.sock", "UNIX socket path for slirp BESS mode")
@@ -339,6 +339,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		DefaultVNI:  uint32(cfg.VXLANVNI),
 		Sockets:     cfg.OverlaySockets,
 		Offload:     cfg.Offload,
+		Super:       cfg.Offload,
 	}, routes, bridgeInjector{b})
 
 	var slirpMgr *slirp.SlirpManager
@@ -779,6 +780,7 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		OverlayTxSockets:    ov.TxSockets,
 		OverlayRxPerSocket:  ov.RxPerSocket,
 		OverlayOffload:      overlayOffload(ov),
+		OverlaySuper:        d.overlaySuper(ov),
 		TapOffload:          d.tapOffload(),
 		TapPipeline:         d.tapPipeline(),
 		EndpointsCount:      len(eps),
@@ -888,6 +890,16 @@ func overlayOffload(st vxlan.Stats) string {
 		on = append(on, "UDP_GRO")
 	}
 	return strings.Join(on, ",")
+}
+
+// overlaySuper reports the overlay's super-frames: whether this node sends them whole
+// (it takes the ones that arrive in any case) and the counters.
+func (d *PlaidDaemon) overlaySuper(st vxlan.Stats) *api.OverlaySuperStatus {
+	return &api.OverlaySuperStatus{
+		Enabled: st.SegmentOffload,
+		Tx:      st.SuperTx, TxChunks: st.SuperTxChunks, Rx: st.SuperRx,
+		Partial: st.SuperPartial, Invalid: st.SuperInvalid, Evicted: st.SuperEvicted, Peers: st.SuperPeers, TxFailed: st.SuperTxFailed,
+	}
 }
 
 // tapEndpoints returns the TAP endpoints of the pods and of the bubble.

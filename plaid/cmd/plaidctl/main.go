@@ -64,11 +64,11 @@ func main() {
 		}
 		fmt.Println()
 		if status.OverlayTransport != "" {
-			fmt.Printf("Overlay:      %s socket %s (sockets=%d rx/%d tx, rx per socket=%v, tx=%d in %d sends, tx errors=%d, rx=%d in %d reads, rx invalid=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d, offload=%s)\n",
+			fmt.Printf("Overlay:      %s socket %s (sockets=%d rx/%d tx, rx per socket=%v, tx=%d in %d sends, tx errors=%d, rx=%d in %d reads, rx invalid=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d, offload=%s, super=%s)\n",
 				status.OverlayTransport, status.OverlayAddress, status.OverlayRxSockets, status.OverlayTxSockets, status.OverlayRxPerSocket,
 				status.OverlayTxPackets, status.OverlayTxSends, status.OverlayTxErrors,
 				status.OverlayRxPackets, status.OverlayRxReads, status.OverlayRxInvalid, status.OverlayRxDropped,
-				status.OverlayRxQueueDrops, status.OverlaySocketDrops, status.OverlayRcvBuf, orNone(status.OverlayOffload))
+				status.OverlayRxQueueDrops, status.OverlaySocketDrops, status.OverlayRcvBuf, orNone(status.OverlayOffload), superSummary(status.OverlaySuper))
 		}
 		if o := status.TapOffload; o != nil {
 			fmt.Printf("TAP offload:  enabled=%t, on %d TAPs (read %d super-frames as %d segments, %d dropped; wrote %d super-frames of %d segments; passed %d super-frames whole, %d bytes)\n",
@@ -338,4 +338,17 @@ func orNone(s string) string {
 		return "none"
 	}
 	return s
+}
+
+// superSummary is the overlay's super-frame counters in a few words (see api.OverlaySuperStatus).
+func superSummary(o *api.OverlaySuperStatus) string {
+	if o == nil {
+		return "none"
+	}
+	state := "off"
+	if o.Enabled {
+		state = "on"
+	}
+	return fmt.Sprintf("%s tx %d/%d chunks rx %d lost %d invalid %d evicted %d peers %d send failures %d",
+		state, o.Tx, o.TxChunks, o.Rx, o.Partial, o.Invalid, o.Evicted, o.Peers, o.TxFailed)
 }

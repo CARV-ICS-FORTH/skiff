@@ -583,9 +583,10 @@ func (b *Bridge) serviceTraffic(x *Batch, eng *svc.Engine, ipPacket []byte) erro
 
 // serviceSuper is serviceTraffic for the TCP super-frame being routed (x.sup): the engine
 // translates it as one packet and the result is routed like any packet the engine emits,
-// except that it goes whole to one endpoint that takes super-frames. Where it cannot (the
-// overlay, a pod without offloads, the pod that sent it) the bridge cuts it now, after the
-// translation, and routes the segments one by one, not through the engine again. An ICMP
+// except that it goes whole to one endpoint that takes super-frames, or to a node that does
+// over the overlay. Where it cannot (the overlay otherwise, a pod without offloads, the pod
+// that sent it) the bridge cuts it now, after the translation, and routes the segments one
+// by one, not through the engine again. An ICMP
 // refusal is an ordinary packet. Once the engine has the frame it is not for the caller to
 // cut. Before that, a frame whose IP header does not state the length of all of it is left
 // to the segments, as the engine's packet is what the header says.
@@ -726,7 +727,9 @@ func (b *Bridge) InjectFrame(frame *packet.EthernetFrame) error {
 }
 
 // InjectFrame is Bridge.InjectFrame within the batch: what the frame sends out is held
-// until the batch is flushed.
+// until the batch is flushed. It is also the routing of InjectSuper, which sets x.sup:
+// then only a delivery to the one endpoint that takes the frame whole does anything, and
+// where the routing would do anything else with it, it leaves the frame alone.
 func (x *Batch) InjectFrame(frame *packet.EthernetFrame) error {
 	b := x.b
 	if b.gatewayMode == "tap" {
@@ -743,6 +746,9 @@ func (x *Batch) InjectFrame(frame *packet.EthernetFrame) error {
 		}
 		// A backend on another node answering the Service engine's address.
 		if eng := b.serviceEngine(); eng != nil && eng.SNATAddr().Equal(ipPkt.Header.DstIP) {
+			if x.sup.on {
+				return b.serviceSuper(x, eng, frame)
+			}
 			return b.serviceTraffic(x, eng, frame.Payload)
 		}
 		if b.nodeCIDR == nil || !b.nodeCIDR.Contains(ipPkt.Header.DstIP) {
@@ -759,6 +765,9 @@ func (x *Batch) InjectFrame(frame *packet.EthernetFrame) error {
 		return x.deliver(target, frame, nil)
 	}
 	if frame.IsBroadcast() || frame.IsMulticast() {
+		if x.sup.on {
+			return nil
+		}
 		return b.floodFrame(frame)
 	}
 
@@ -800,7 +809,55 @@ func (x *Batch) InjectFrame(frame *packet.EthernetFrame) error {
 	}
 
 	// Flood if still unknown
+	if x.sup.on {
+		return nil
+	}
 	return b.floodFrame(frame)
+}
+
+// InjectSuper is InjectFrame for a TCP super-frame that came through the overlay and that
+// the virtio header h describes (packet.CheckTSO accepts them). The frame lies in buf,
+// after the room for a virtio header, and the batch owns the buffer from the call on. The
+// frame is delivered whole to the one endpoint that takes super-frames if that is where
+// InjectFrame would deliver it, which is how a pod with offloads gets it, or translated
+// whole if it is for the Service engine, as the super-frames of the pods and the bubble
+// are. An endpoint whose writer can take the buffer is given it, and writes the frame from
+// it when its turn comes, without a copy. Otherwise the frame is cut into the segments it
+// stands for, with their checksums done, and they are injected one by one. Whole or cut,
+// it is never sent over the overlay again, and the buffer is released before the call
+// returns unless a writer took it.
+func (x *Batch) InjectSuper(h packet.VnetHeader, buf *packet.Buffer) error {
+	raw := buf.B[packet.VnetHeaderLen:]
+	frame, err := packet.ParseEthernet(raw)
+	if err != nil {
+		buf.Release()
+		return err
+	}
+	x.sup = superFrame{on: true, h: h, raw: raw, buf: buf}
+	err = x.InjectFrame(frame)
+	whole, rest := x.sup.whole, x.sup.buf
+	if rest != nil {
+		defer rest.Release() // no writer took it: released once the segments, if any, are routed
+	}
+	x.sup = superFrame{}
+	if whole {
+		return err
+	}
+	segments, serr := x.seg.Segment(h, raw)
+	if serr != nil {
+		return serr
+	}
+	for _, seg := range segments {
+		f, perr := packet.ParseEthernet(seg)
+		if perr == nil {
+			f.Trusted = true // the checksums are the ones the Segmenter has just computed
+			perr = x.InjectFrame(f)
+		}
+		if perr != nil && err == nil {
+			err = perr
+		}
+	}
+	return err
 }
 
 func (b *Bridge) flood(srcEP Endpoint, raw []byte) error {
