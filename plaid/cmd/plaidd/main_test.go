@@ -1,10 +1,16 @@
 package main
 
 import (
+	"io"
 	"net"
+	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"k8s.io/client-go/kubernetes/fake"
+	"plaid/pkg/api"
 	"plaid/pkg/k8s"
 	"plaid/pkg/vxlan"
 )
@@ -108,5 +114,30 @@ func TestPlaidDaemonK8sRouteCallbacks(t *testing.T) {
 	daemon.routes.RemoveRoute("10.244.2.0/24")
 	if len(daemon.routes.Routes()) != 0 {
 		t.Errorf("expected 0 routes after remove, got %d", len(daemon.routes.Routes()))
+	}
+}
+
+// An address that is not 6 bytes long (net.ParseMAC takes 8 and 20) is refused, and the
+// descriptor of the request is closed.
+func TestHandleAddEndpointRefusesAMACThatIsNot6Bytes(t *testing.T) {
+	daemon, err := NewPlaidDaemon(tapConfig(func(c *Config) { c.SocketPath = filepath.Join(t.TempDir(), "plaidd.sock") }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_SEQPACKET|syscall.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Skipf("no socket pair: %v", err)
+	}
+	peer := os.NewFile(uintptr(p[1]), "peer")
+	defer peer.Close()
+	if err := daemon.HandleAddEndpoint(&api.Request{PodID: "bad", IP: "10.244.5.8", MAC: "02:00:00:00:00:00:00:08"}, p[0]); err == nil {
+		t.Fatal("an 8-byte MAC was accepted")
+	}
+	if _, ok := daemon.bridge.GetEndpoint("bad"); ok {
+		t.Error("a refused request left an endpoint")
+	}
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := peer.Read(make([]byte, 10)); err != io.EOF {
+		t.Errorf("the refused request left its descriptor open: %v", err)
 	}
 }

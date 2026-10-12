@@ -656,6 +656,10 @@ func (d *PlaidDaemon) HandleAddEndpoint(req *api.Request, tapFD int) error {
 		_ = epFile.Close()
 		return fmt.Errorf("invalid MAC: %w", err)
 	}
+	if len(epMAC) != 6 {
+		_ = epFile.Close()
+		return fmt.Errorf("invalid MAC %s: an Ethernet address is 6 bytes", req.MAC)
+	}
 
 	epID := req.PodID
 	if epID == "" {
