@@ -10,7 +10,10 @@ import (
 // tapWriter is the bridge.FrameWriter of a TAP with offloads: it holds the frames a
 // batch delivers in a Coalescer, which joins consecutive TCP segments of a flow, and
 // writes each result with one write: by the goroutine that delivers, or, if the endpoint
-// has a writer goroutine, by that (see TapEndpoint.enqueue).
+// has a writer goroutine, by that (see tapQueue.enqueue). A result is written to the queue
+// that its flow picks (see TapEndpoint.queueFor); the frame held is of one flow, so a
+// flow's frames are joined, and written, in the order they came in, whatever queues the
+// frames of other flows between them go to.
 type tapWriter struct {
 	t *TapEndpoint
 	c packet.Coalescer
@@ -62,8 +65,9 @@ func (w *tapWriter) AddSuper(h packet.VnetHeader, frame *packet.EthernetFrame) e
 		return cerr
 	}
 	h = w.superHeader(h, frame)
-	if w.t.wq != nil {
-		if w.t.wpending.Load() != 0 {
+	q := w.t.queueFor(frame.EtherType, frame.Payload)
+	if q.wq != nil {
+		if q.wpending.Load() != 0 {
 			pb := packet.GetBuffer()
 			pb.B = pb.B[:packet.VnetHeaderLen]
 			h.Put(pb.B)
@@ -72,14 +76,15 @@ func (w *tapWriter) AddSuper(h packet.VnetHeader, frame *packet.EthernetFrame) e
 				pb.Release()
 				return merr
 			}
-			if qerr := w.t.enqueue(pb); err == nil {
+			if qerr := q.enqueue(pb); err == nil {
 				err = qerr
 			}
 			return err
 		}
 		stats.writeInline.Add(1)
 	}
-	if werr := w.t.vw.writeSuper(h, frame); err == nil {
+	q.writes.Add(1)
+	if werr := q.vw.writeSuper(h, frame); err == nil {
 		err = werr
 	}
 	return err
@@ -105,7 +110,8 @@ func (w *tapWriter) superHeader(h packet.VnetHeader, frame *packet.EthernetFrame
 // for the writer, as every queued write does (see TapEndpoint.enqueue). An endpoint with
 // no writer goroutine (no pipeline) does not take it: the caller writes in place.
 func (w *tapWriter) AddSuperBuffer(h packet.VnetHeader, frame *packet.EthernetFrame, pb *packet.Buffer) (bool, error) {
-	if w.t.wq == nil || len(frame.DstMAC) != 6 || len(frame.SrcMAC) != 6 ||
+	q := w.t.queueFor(frame.EtherType, frame.Payload)
+	if q.wq == nil || len(frame.DstMAC) != 6 || len(frame.SrcMAC) != 6 ||
 		len(pb.B) != packet.VnetHeaderLen+packet.EthernetHeaderLen+len(frame.Payload) {
 		return false, nil
 	}
@@ -118,7 +124,7 @@ func (w *tapWriter) AddSuperBuffer(h packet.VnetHeader, frame *packet.EthernetFr
 	// bridge has set those of this one.
 	copy(pb.B[packet.VnetHeaderLen:], frame.DstMAC)
 	copy(pb.B[packet.VnetHeaderLen+6:], frame.SrcMAC)
-	if qerr := w.t.enqueue(pb); err == nil {
+	if qerr := q.enqueue(pb); err == nil {
 		err = qerr
 	}
 	return true, err
@@ -143,14 +149,14 @@ func (w *tapWriter) flush(more bool) error {
 		stats.writeSuper.Add(1)
 		stats.writeSegments.Add(uint64(segments))
 	}
-	if w.t.wq != nil {
-		if more || w.t.wpending.Load() != 0 {
-			return w.t.enqueue(w.c.Detach())
+	q := w.t.queueForFrame(b[packet.VnetHeaderLen:])
+	if q.wq != nil {
+		if more || q.wpending.Load() != 0 {
+			return q.enqueue(w.c.Detach())
 		}
 		stats.writeInline.Add(1)
 	}
-	_, err := w.t.file.Write(b)
-	return err
+	return q.write(b)
 }
 
 func (w *tapWriter) Release() {

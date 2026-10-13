@@ -344,7 +344,7 @@ func TestPassthroughKeepsOrderWithCutFrames(t *testing.T) {
 // to the TAP, by whoever, waits until the test reads.
 func fillTAP(t *testing.T, ep *TapEndpoint) int {
 	t.Helper()
-	rc, err := ep.file.SyscallConn()
+	rc, err := ep.queues[0].file.SyscallConn()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestWholeSuperFrameQueuesBehindWrites(t *testing.T) {
 	}
 	_ = x.Flush() // every write is queued: the writer has not finished the first
 	x.Release()
-	if got := b.wpending.Load(); got != frames {
+	if got := b.queues[0].wpending.Load(); got != frames {
 		t.Fatalf("%d writes with the writer, want %d", got, frames)
 	}
 	a, _ := br.GetEndpoint("a")
@@ -417,12 +417,12 @@ func TestPassthroughAllocations(t *testing.T) {
 			if _, err := aPod.Write(rec); err != nil {
 				t.Fatal(err)
 			}
-			frames, err := a.readFrames(&a.rb, br)
+			frames, err := a.queues[0].readFrames(&a.queues[0].rb, br)
 			if err != nil {
 				t.Fatal(err)
 			}
-			a.rb.frames = frames
-			a.forward(br, &a.rb)
+			a.queues[0].rb.frames = frames
+			a.forward(br, &a.queues[0].rb)
 			if _, err := bPod.Read(buf); err != nil {
 				t.Fatal(err)
 			}

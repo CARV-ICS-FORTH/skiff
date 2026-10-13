@@ -11,9 +11,12 @@ import (
 	"plaid/pkg/tap"
 )
 
-func createTapInNetNS(netnsPath string, cfg tap.TapConfig) (*os.File, error) {
+// createTapInNetNS creates a TAP with the given number of queues in the network namespace
+// at netnsPath (the current one if it is empty). All the queues are attached in it, by the
+// thread that is in it.
+func createTapInNetNS(netnsPath string, cfg tap.TapConfig, queues int) ([]*os.File, error) {
 	if netnsPath == "" {
-		return tap.CreateAndConfigureTap(cfg)
+		return tap.CreateAndConfigureTapQueues(cfg, queues)
 	}
 
 	runtime.LockOSThread()
@@ -51,16 +54,16 @@ func createTapInNetNS(netnsPath string, cfg tap.TapConfig) (*os.File, error) {
 		return nil, fmt.Errorf("setns to target netns failed: %w", err)
 	}
 
-	tapFile, tapErr := tap.CreateAndConfigureTap(cfg)
+	tapFiles, tapErr := tap.CreateAndConfigureTapQueues(cfg, queues)
 
 	// Revert to original host netns
 	if err := unix.Setns(int(curNS.Fd()), unix.CLONE_NEWNET); err != nil {
-		if tapFile != nil {
-			_ = tapFile.Close()
+		for _, f := range tapFiles {
+			_ = f.Close()
 		}
 		return nil, fmt.Errorf("failed to restore original netns (OS thread permanently locked): %w", err)
 	}
 
 	restored = true
-	return tapFile, tapErr
+	return tapFiles, tapErr
 }

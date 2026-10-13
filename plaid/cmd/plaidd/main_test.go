@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"plaid/pkg/api"
 	"plaid/pkg/k8s"
+	"plaid/pkg/tap"
 	"plaid/pkg/vxlan"
 )
 
@@ -117,8 +118,67 @@ func TestPlaidDaemonK8sRouteCallbacks(t *testing.T) {
 	}
 }
 
+// An AddEndpoint request with the files of several queues makes one endpoint with that many
+// queues, which the status counts; a request that is refused closes all of them.
+func TestHandleAddEndpointTakesEveryQueue(t *testing.T) {
+	daemon, err := NewPlaidDaemon(tapConfig(func(c *Config) { c.SocketPath = filepath.Join(t.TempDir(), "plaidd.sock") }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// queues makes n socket pairs and returns the descriptors of one end, for the request,
+	// and the other ends, which see the first closed.
+	queues := func(n int) (fds []int, peers []*os.File) {
+		for i := 0; i < n; i++ {
+			p, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_SEQPACKET|syscall.SOCK_CLOEXEC, 0)
+			if err != nil {
+				t.Skipf("no socket pair: %v", err)
+			}
+			fds, peers = append(fds, p[0]), append(peers, os.NewFile(uintptr(p[1]), "peer"))
+		}
+		return
+	}
+	closed := func(peers []*os.File) bool {
+		for _, p := range peers {
+			_ = p.SetReadDeadline(time.Now().Add(time.Second))
+			if _, err := p.Read(make([]byte, 10)); err != io.EOF {
+				return false
+			}
+		}
+		return true
+	}
+
+	fds, peers := queues(3)
+	if err := daemon.HandleAddEndpoint(&api.Request{PodID: "pod", PodName: "pod", IP: "10.244.5.7", MAC: "02:00:00:00:00:07"}, fds); err != nil {
+		t.Fatal(err)
+	}
+	ep, ok := daemon.bridge.GetEndpoint("pod")
+	if !ok || ep.(*tap.TapEndpoint).Queues() != 3 {
+		t.Fatalf("endpoint %v, %v: want one with 3 queues", ep, ok)
+	}
+	if st := daemon.tapPipeline(); st.Endpoints != 1 || st.Queues != 3 {
+		t.Errorf("status: %d endpoints, %d queues; want 1 and 3", st.Endpoints, st.Queues)
+	}
+	if err := daemon.HandleRemoveEndpoint(&api.Request{PodID: "pod"}); err != nil {
+		t.Fatal(err)
+	}
+	if !closed(peers) {
+		t.Error("removing the endpoint left a queue open")
+	}
+
+	fds, peers = queues(3)
+	if err := daemon.HandleAddEndpoint(&api.Request{PodID: "bad", IP: "192.0.2.1", MAC: "02:00:00:00:00:08"}, fds); err == nil {
+		t.Fatal("an endpoint outside the node range was accepted")
+	}
+	if !closed(peers) {
+		t.Error("a refused request left a queue open")
+	}
+	if err := daemon.HandleAddEndpoint(&api.Request{PodID: "bad", IP: "10.244.5.8", MAC: "nonsense"}, fds[:0]); err == nil {
+		t.Fatal("a request without a file descriptor was accepted")
+	}
+}
+
 // An address that is not 6 bytes long (net.ParseMAC takes 8 and 20) is refused, and the
-// descriptor of the request is closed.
+// descriptors of the request are closed.
 func TestHandleAddEndpointRefusesAMACThatIsNot6Bytes(t *testing.T) {
 	daemon, err := NewPlaidDaemon(tapConfig(func(c *Config) { c.SocketPath = filepath.Join(t.TempDir(), "plaidd.sock") }))
 	if err != nil {
@@ -130,7 +190,7 @@ func TestHandleAddEndpointRefusesAMACThatIsNot6Bytes(t *testing.T) {
 	}
 	peer := os.NewFile(uintptr(p[1]), "peer")
 	defer peer.Close()
-	if err := daemon.HandleAddEndpoint(&api.Request{PodID: "bad", IP: "10.244.5.8", MAC: "02:00:00:00:00:00:00:08"}, p[0]); err == nil {
+	if err := daemon.HandleAddEndpoint(&api.Request{PodID: "bad", IP: "10.244.5.8", MAC: "02:00:00:00:00:00:00:08"}, []int{p[0]}); err == nil {
 		t.Fatal("an 8-byte MAC was accepted")
 	}
 	if _, ok := daemon.bridge.GetEndpoint("bad"); ok {

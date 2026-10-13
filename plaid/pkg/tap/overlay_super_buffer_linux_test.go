@@ -57,7 +57,7 @@ func TestRebuiltSuperFrameIsWrittenByTheWriterFromTheBuffer(t *testing.T) {
 
 	t.Run("the buffer queued is the buffer given", func(t *testing.T) {
 		ep, pod := pipeTap(t, "b", 5, false, 0)
-		ep.wq = make(chan *packet.Buffer, 4) // a queue with no goroutine, so that the test sees what is queued
+		ep.queues[0].wq = make(chan *packet.Buffer, 4) // a queue with no goroutine, so that the test sees what is queued
 		w := ep.NewWriter().(*tapWriter)
 		defer w.Release()
 		rec := podRecordTo(1000, 11, net.HardwareAddr{2, 0, 0, 0, 0, 1}, podB)
@@ -70,7 +70,7 @@ func TestRebuiltSuperFrameIsWrittenByTheWriterFromTheBuffer(t *testing.T) {
 			t.Fatalf("taken=%v, %v", taken, err)
 		}
 		select {
-		case q := <-ep.wq:
+		case q := <-ep.queues[0].wq:
 			if q != pb {
 				t.Fatal("what was queued is not the buffer that was given")
 			}
@@ -80,7 +80,7 @@ func TestRebuiltSuperFrameIsWrittenByTheWriterFromTheBuffer(t *testing.T) {
 			if !bytes.Equal(q.B, want) {
 				t.Error("the queued record is not the header, the MACs and the frame")
 			}
-			ep.releaseWrite(q)
+			ep.queues[0].releaseWrite(q)
 		default:
 			t.Fatal("nothing was queued")
 		}
@@ -151,7 +151,7 @@ func TestRebuiltSuperFrameBufferIsReturnedOnEveryPath(t *testing.T) {
 			t.Fatal(taken, err)
 		}
 		read(t, pod)
-		waitUntil(t, "the buffer to be released", func() bool { return inFlight.Load() == 0 && ep.wpending.Load() == 0 })
+		waitUntil(t, "the buffer to be released", func() bool { return inFlight.Load() == 0 && ep.queues[0].wpending.Load() == 0 })
 	})
 	t.Run("the write fails", func(t *testing.T) {
 		ep, pod := pipeTap(t, "b", 5, true, 0)
@@ -161,7 +161,7 @@ func TestRebuiltSuperFrameBufferIsReturnedOnEveryPath(t *testing.T) {
 				t.Fatal(taken, err)
 			}
 		}
-		waitUntil(t, "the buffers to be released", func() bool { return inFlight.Load() == 0 && ep.wpending.Load() == 0 })
+		waitUntil(t, "the buffers to be released", func() bool { return inFlight.Load() == 0 && ep.queues[0].wpending.Load() == 0 })
 	})
 	t.Run("the endpoint is closed with frames queued", func(t *testing.T) {
 		before := goroutines()
@@ -172,8 +172,8 @@ func TestRebuiltSuperFrameBufferIsReturnedOnEveryPath(t *testing.T) {
 				t.Fatal(taken, err)
 			}
 		}
-		if ep.wpending.Load() < 2 {
-			t.Fatalf("%d writes queued", ep.wpending.Load())
+		if ep.queues[0].wpending.Load() < 2 {
+			t.Fatalf("%d writes queued", ep.queues[0].wpending.Load())
 		}
 		_ = ep.Close()
 		settle(t, before)

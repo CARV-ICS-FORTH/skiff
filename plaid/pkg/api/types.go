@@ -209,9 +209,11 @@ type OverlaySuperStatus struct {
 // between goroutines: how many TAPs have one, and for each direction how many batches or
 // writes were done in place by the goroutine that had them, how many were handed to the
 // next stage, and of those how many found the queue to it full (a time that a stage waited
-// for the next).
+// for the next). Queues is the number of queues of all the TAPs, pods' and bubble's: a pod's
+// TAP has several, each with a pipeline of its own.
 type TapPipelineStatus struct {
 	Endpoints      int    `json:"endpoints"`
+	Queues         int    `json:"queues"`
 	ReadInline     uint64 `json:"read_inline"`
 	ReadQueued     uint64 `json:"read_queued"`
 	ReadQueueFull  uint64 `json:"read_queue_full"`

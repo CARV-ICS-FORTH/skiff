@@ -16,9 +16,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// MaxEndpointFDs is the most file descriptors that an AddEndpoint request is taken to
+// carry: the queues of the pod's TAP (tap.MaxQueues is this). The server closes those
+// beyond.
+const MaxEndpointFDs = 16
+
 // EndpointHandler handles AddEndpoint and RemoveEndpoint requests.
 type EndpointHandler interface {
-	HandleAddEndpoint(req *Request, tapFD int) error
+	// HandleAddEndpoint is given the descriptors that came with the request, the first of
+	// them the TAP's first queue, and owns them whatever it returns.
+	HandleAddEndpoint(req *Request, tapFDs []int) error
 	HandleRemoveEndpoint(req *Request) error
 }
 
@@ -177,10 +184,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	claimed := false
-	var tapFD = -1
 	defer func() {
-		for _, fd := range allFDs {
-			if !claimed || fd != tapFD {
+		if !claimed {
+			for _, fd := range allFDs {
 				_ = syscall.Close(fd)
 			}
 		}
@@ -228,12 +234,13 @@ func (s *Server) handleConn(conn net.Conn) {
 			sendResponse(unixConn, &Response{Success: false, Error: "missing TAP file descriptor for add_endpoint"})
 			return
 		}
-		tapFD = allFDs[0]
-		// Close any extra FDs beyond the first one immediately
-		for _, extraFD := range allFDs[1:] {
-			_ = syscall.Close(extraFD)
+		// Close any FDs beyond the queues of a TAP immediately
+		if len(allFDs) > MaxEndpointFDs {
+			for _, extraFD := range allFDs[MaxEndpointFDs:] {
+				_ = syscall.Close(extraFD)
+			}
+			allFDs = allFDs[:MaxEndpointFDs]
 		}
-		allFDs = []int{tapFD}
 	}
 
 	var resp Response
@@ -244,9 +251,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	switch req.Action {
 	case ActionAddEndpoint:
 		if s.epHandler != nil {
-			// Ownership of tapFD is transferred to epHandler (which wraps it into os.File)
+			// Ownership of the FDs is transferred to epHandler (which wraps them into os.File)
 			claimed = true
-			err = s.epHandler.HandleAddEndpoint(&req, tapFD)
+			err = s.epHandler.HandleAddEndpoint(&req, allFDs)
 			if err != nil {
 				resp = Response{Success: false, Error: err.Error()}
 			} else {

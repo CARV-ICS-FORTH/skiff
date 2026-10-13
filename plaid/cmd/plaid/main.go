@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"plaid/pkg/netcfg"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,9 +28,29 @@ type CNIConfig struct {
 	Type       string          `json:"type"`
 	SocketPath string          `json:"socketPath,omitempty"`
 	MTU        int             `json:"mtu,omitempty"`
+	TapQueues  int             `json:"tapQueues,omitempty"` // queues of the pod's TAP: 0 is defaultTapQueues, 1 is a TAP with a single queue
 	IP         string          `json:"ip,omitempty"`
 	Gateway    string          `json:"gateway,omitempty"`
 	IPAM       json.RawMessage `json:"ipam,omitempty"`
+}
+
+// defaultTapQueues is the number of queues a pod's TAP gets if the network config (or, for
+// init and exec, the flag and the environment) does not say: the streams of a pod can then
+// run on several cores of plaidd's. A flow's queue is chosen by a hash, so with as many
+// queues as streams some streams share one, and with more queues than streams they rarely
+// do. A queue no flow uses costs a sleeping goroutine and a descriptor.
+const defaultTapQueues = 8
+
+// tapQueueCount is the number of queues to make of a TAP for the setting n: 0 is the
+// default, 1 a TAP with a single queue, and more than tap.MaxQueues is that many.
+func tapQueueCount(n int) (int, error) {
+	switch {
+	case n < 0:
+		return 0, fmt.Errorf("invalid number of TAP queues: %d", n)
+	case n == 0:
+		return defaultTapQueues, nil
+	}
+	return min(n, tap.MaxQueues), nil
 }
 
 // IPAMConfig extracts the type field from the ipam block.
@@ -274,22 +295,29 @@ func cmdAdd() {
 	// Generate MAC address (locally administered unicast: 02:xx:xx:xx:xx:xx)
 	podMAC := generateMAC()
 
-	// 2. Open TAP interface inside the container netns
-	tapFile, err := createTapInNetNS(netnsPath, tap.TapConfig{
+	// 2. Open TAP interface inside the container netns, with a file for each queue
+	queues, err := tapQueueCount(conf.TapQueues)
+	if err != nil {
+		cniError(1, "Invalid tapQueues", err.Error())
+	}
+	tapFiles, err := createTapInNetNS(netnsPath, tap.TapConfig{
 		Name:    ifName,
 		IP:      podIP,
 		Mask:    podMask,
 		Gateway: gwIP,
 		MAC:     podMAC,
 		MTU:     conf.MTU,
-	})
+	}, queues)
 	if err != nil {
 		cniError(3, "Failed to create TAP device in netns", err.Error())
 	}
-	defer tapFile.Close()
-	addRollback(func() {
-		_ = tapFile.Close()
-	})
+	closeFiles := func() {
+		for _, f := range tapFiles {
+			_ = f.Close()
+		}
+	}
+	defer closeFiles()
+	addRollback(closeFiles)
 
 	// 3. Connect to plaidd and register endpoint with TAP fd
 	client := api.NewClient(conf.SocketPath)
@@ -308,7 +336,7 @@ func cmdAdd() {
 		NetnsPath:    netnsPath,
 	}
 
-	if err := client.AddEndpoint(req, int(tapFile.Fd())); err != nil {
+	if err := client.AddEndpoint(req, fileFDs(tapFiles)...); err != nil {
 		cniError(4, "Failed to register endpoint with plaidd", err.Error())
 	}
 	addRollback(func() {
@@ -657,16 +685,32 @@ func cmdExec(args []string) {
 func runInit(args []string, verbose bool) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	var ipStr, gwStr, socketPath, ifName, containerID string
-	var mtu int
+	var mtu, queues int
 
+	// The default of --queues is $PLAID_TAP_QUEUES, as that of the others is theirs.
+	if v := os.Getenv("PLAID_TAP_QUEUES"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: PLAID_TAP_QUEUES %q is not a number\n", v)
+			os.Exit(1)
+		}
+		queues = n
+	}
 	fs.StringVar(&ipStr, "ip", os.Getenv("PLAID_IP"), "Container IP address (e.g. 10.244.1.10/24)")
 	fs.StringVar(&gwStr, "gateway", os.Getenv("PLAID_GATEWAY_IP"), "Gateway IP (defaults to .1 of subnet)")
 	fs.StringVar(&socketPath, "socket", "", "Path to plaidd UNIX domain socket (default: $PLAID_SOCKET_PATH, else "+netcfg.DefaultSocketPath+")")
 	fs.StringVar(&ifName, "ifname", os.Getenv("PLAID_IFNAME"), "Interface name to create (default: eth0)")
 	fs.IntVar(&mtu, "mtu", netcfg.EffectiveMTU(0), "MTU for the interface")
 	fs.StringVar(&containerID, "container-id", os.Getenv("PLAID_CONTAINER_ID"), "Container identifier")
+	fs.IntVar(&queues, "queues", queues, "Queues of the TAP (default: $PLAID_TAP_QUEUES, else 8; at most 16; 1 is a TAP with a single queue)")
 
 	_ = fs.Parse(args)
+
+	queues, err := tapQueueCount(queues)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: --queues: %v\n", err)
+		os.Exit(1)
+	}
 
 	socketPath = netcfg.SocketPath(socketPath)
 	if ifName == "" {
@@ -722,19 +766,25 @@ func runInit(args []string, verbose bool) {
 
 	podMAC := generateMAC()
 
-	tapFile, err := createTapInNetNS("", tap.TapConfig{
+	tapFiles, err := createTapInNetNS("", tap.TapConfig{
 		Name:    ifName,
 		IP:      podIP,
 		Mask:    podMask,
 		Gateway: gwIP,
 		MAC:     podMAC,
 		MTU:     mtu,
-	})
+	}, queues)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating TAP device %s: %v\n", ifName, err)
 		os.Exit(1)
 	}
-	defer tapFile.Close()
+	// The files are closed when this process ends or, for exec, runs the command (they are
+	// close-on-exec): plaidd has its own descriptors of the queues by then, which keep the TAP.
+	defer func() {
+		for _, f := range tapFiles {
+			_ = f.Close()
+		}
+	}()
 
 	client := api.NewClient(socketPath)
 	req := &api.Request{
@@ -746,7 +796,7 @@ func runInit(args []string, verbose bool) {
 		NetnsPath:   "",
 	}
 
-	if err := client.AddEndpoint(req, int(tapFile.Fd())); err != nil {
+	if err := client.AddEndpoint(req, fileFDs(tapFiles)...); err != nil {
 		fmt.Fprintf(os.Stderr, "Error registering endpoint with plaidd: %v\n", err)
 		os.Exit(1)
 	}
@@ -755,6 +805,15 @@ func runInit(args []string, verbose bool) {
 		fmt.Printf("Plaid network initialized: iface=%s ip=%s/%d gw=%s mac=%s\n",
 			ifName, podIP, maskBits(podMask), gwIP, podMAC)
 	}
+}
+
+// fileFDs returns the descriptors of files, which stay open as long as files are referenced.
+func fileFDs(files []*os.File) []int {
+	fds := make([]int, len(files))
+	for i, f := range files {
+		fds[i] = int(f.Fd())
+	}
+	return fds
 }
 
 func maskBits(mask net.IPMask) int {
@@ -816,6 +875,7 @@ Environment Variables (for init & exec):
   PLAID_SOCKET_PATH       Path to plaidd UNIX socket (default: /run/plaid/plaidd.sock)
   PLAID_IFNAME            Interface name (default: eth0)
   PLAID_MTU               Interface MTU (default: 1450)
+  PLAID_TAP_QUEUES        Queues of the TAP (default: 8, at most 16; 1 is a single-queue TAP; same as --queues)
   PLAID_CONTAINER_ID      Container identifier (default: hostname)
 
 When called by container runtimes via CNI, the standard CNI environment variables

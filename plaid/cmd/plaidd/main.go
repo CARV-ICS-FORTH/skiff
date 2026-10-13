@@ -639,25 +639,34 @@ func overlaps(a, b *net.IPNet) bool { return a.Contains(b.IP) || b.Contains(a.IP
 
 // API Server Callbacks
 
-func (d *PlaidDaemon) HandleAddEndpoint(req *api.Request, tapFD int) error {
-	if tapFD < 0 {
+func (d *PlaidDaemon) HandleAddEndpoint(req *api.Request, tapFDs []int) error {
+	if len(tapFDs) == 0 {
 		return fmt.Errorf("missing TAP file descriptor")
 	}
 
-	epFile := os.NewFile(uintptr(tapFD), req.PodName)
+	// One file for each queue of the pod's TAP; a plugin that makes a single queue passes one.
+	epFiles := make([]*os.File, len(tapFDs))
+	for i, fd := range tapFDs {
+		epFiles[i] = tap.FileFromFD(fd, req.PodName)
+	}
+	closeFiles := func() {
+		for _, f := range epFiles {
+			_ = f.Close()
+		}
+	}
 	epIP := net.ParseIP(req.IP)
 	_, nodeNet, _ := net.ParseCIDR(d.cfg.NodeCIDR)
 	if epIP == nil || epIP.To4() == nil || !nodeNet.Contains(epIP) || epIP.Equal(net.ParseIP(d.cfg.GatewayIP)) || epIP.To4()[3] < 4 || epIP.To4()[3] > 254 {
-		_ = epFile.Close()
+		closeFiles()
 		return fmt.Errorf("endpoint IP %q is outside the allocatable node range", req.IP)
 	}
 	epMAC, err := net.ParseMAC(req.MAC)
 	if err != nil {
-		_ = epFile.Close()
+		closeFiles()
 		return fmt.Errorf("invalid MAC: %w", err)
 	}
 	if len(epMAC) != 6 {
-		_ = epFile.Close()
+		closeFiles()
 		return fmt.Errorf("invalid MAC %s: an Ethernet address is 6 bytes", req.MAC)
 	}
 
@@ -666,16 +675,16 @@ func (d *PlaidDaemon) HandleAddEndpoint(req *api.Request, tapFD int) error {
 		epID = req.ContainerID
 	}
 
-	ep := tap.NewTapEndpoint(epID, req.PodName, epIP, epMAC, epFile, d.cfg.Offload)
+	ep := tap.NewTapEndpointQueues(epID, req.PodName, epIP, epMAC, epFiles, d.cfg.Offload)
 	ep.SetPipeline()
 	ep.SetPassthrough()
 	if err := d.bridge.AddEndpoint(ep); err != nil {
-		_ = ep.Close() // closes epFile and stops the goroutines SetPipeline started
+		_ = ep.Close() // closes the files and stops the goroutines SetPipeline started
 		return err
 	}
 
 	ep.StartReadLoop(context.Background(), d.bridge)
-	fmt.Printf("[plaidd] Added endpoint %s (IP=%s, MAC=%s, TAP offloads=%v)\n", epID, epIP, epMAC, ep.Offload())
+	fmt.Printf("[plaidd] Added endpoint %s (IP=%s, MAC=%s, TAP offloads=%v, queues=%d)\n", epID, epIP, epMAC, ep.Offload(), ep.Queues())
 	return nil
 }
 
@@ -939,14 +948,15 @@ func (d *PlaidDaemon) tapOffload() *api.TapOffloadStatus {
 	return st
 }
 
-// tapPipeline reports the TAP pipelines: how many endpoints have one and how often a
-// stage had to wait for the next.
+// tapPipeline reports the TAP pipelines: how many endpoints have one, how many queues the
+// TAPs have, and how often a stage had to wait for the next.
 func (d *PlaidDaemon) tapPipeline() *api.TapPipelineStatus {
 	st := &api.TapPipelineStatus{}
 	for _, t := range d.tapEndpoints() {
 		if t.Pipeline() {
 			st.Endpoints++
 		}
+		st.Queues += t.Queues()
 	}
 	c := tap.Pipeline()
 	st.ReadInline, st.ReadQueued, st.ReadQueueFull = c.ReadInline, c.ReadQueued, c.ReadQueueFull

@@ -80,8 +80,8 @@ func main() {
 			}
 		}
 		if p := status.TapPipeline; p != nil {
-			fmt.Printf("TAP pipeline: on %d TAPs (read: %d inline, %d queued, queue full %d times; write: %d inline, %d queued, queue full %d times)\n",
-				p.Endpoints, p.ReadInline, p.ReadQueued, p.ReadQueueFull, p.WriteInline, p.WriteQueued, p.WriteQueueFull)
+			fmt.Printf("TAP pipeline: on %d TAPs, %d queues (read: %d inline, %d queued, queue full %d times; write: %d inline, %d queued, queue full %d times)\n",
+				p.Endpoints, p.Queues, p.ReadInline, p.ReadQueued, p.ReadQueueFull, p.WriteInline, p.WriteQueued, p.WriteQueueFull)
 		}
 		if status.ServiceEngine != nil {
 			e := status.ServiceEngine

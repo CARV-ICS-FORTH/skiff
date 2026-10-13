@@ -20,7 +20,14 @@ import (
 // flowFrame is a UDP packet of flow (source port 10000+flow) that carries its sequence number.
 func flowFrame(flow int, seq uint32) *packet.EthernetFrame {
 	f := testFrame(0)
-	f.Payload = ipv4Packet(packet.IPProtocolUDP, podA, podB, uint16(10000+flow), 5001, 8+8, 0)
+	ip := make([]byte, 20+8+8)
+	ip[0], ip[8], ip[9] = 0x45, 64, packet.IPProtocolUDP
+	binary.BigEndian.PutUint16(ip[2:], uint16(len(ip)))
+	copy(ip[12:], []byte{10, 244, 1, 4})
+	copy(ip[16:], []byte{10, 244, 2, 9})
+	binary.BigEndian.PutUint16(ip[20:], uint16(10000+flow))
+	binary.BigEndian.PutUint16(ip[22:], 5001)
+	f.Payload = ip
 	binary.BigEndian.PutUint16(f.Payload[28:], uint16(flow))
 	binary.BigEndian.PutUint32(f.Payload[30:], seq)
 	return f
@@ -295,7 +302,7 @@ func TestTxBatchRunsBreakOnASocketChange(t *testing.T) {
 	skipWithoutSegmentation(t, f.oe)
 	// Find two flows on different sockets, and one more on the first one's.
 	n := len(f.oe.socks.Load().tx)
-	sockOf := func(flow int) int { return flowSocket(packet.EtherTypeIPv4, flowFrame(flow, 0).Payload, n) }
+	sockOf := func(flow int) int { return packet.FlowIndex(packet.EtherTypeIPv4, flowFrame(flow, 0).Payload, n) }
 	a, b, a2 := 0, 1, 1
 	for ; sockOf(b) == sockOf(a); b++ {
 		if b > 1000 {

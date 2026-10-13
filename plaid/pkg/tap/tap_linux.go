@@ -24,6 +24,8 @@ const (
 	IFF_NO_PI    = 0x1000
 	IFF_VNET_HDR = 0x4000
 
+	IFF_MULTI_QUEUE = 0x0100
+
 	TUNSETIFF       = 0x400454ca
 	TUNGETIFF       = 0x800454d2
 	TUNSETOFFLOAD   = 0x400454d0
@@ -108,26 +110,49 @@ func nameTo16(name string) [16]byte {
 	return b
 }
 
-// CreateAndConfigureTap opens /dev/net/tun, allocates a TAP interface, and configures IP/routes inside netns.
+// CreateAndConfigureTap is CreateAndConfigureTapQueues with one queue.
+func CreateAndConfigureTap(cfg TapConfig) (*os.File, error) {
+	files, err := CreateAndConfigureTapQueues(cfg, 1)
+	if err != nil {
+		return nil, err
+	}
+	return files[0], nil
+}
+
+// CreateAndConfigureTapQueues opens /dev/net/tun, allocates a TAP interface, and configures
+// IP/routes inside netns. With more than one queue the TAP is a multi-queue one and the
+// result holds a file for each queue, all attached to it (see the README, Queues of a pod's
+// TAP). A kernel that refuses multiple queues gives one. The first file is the one that a
+// reader that knows of one queue only should keep.
+//
 // The TAP has a virtio_net_hdr before every frame (IFF_VNET_HDR) so that offloads can be
 // switched on for it (see NewTapEndpoint); it has none switched on here, so the header
-// is zeros until then. A kernel that refuses the header gives a TAP without it.
-func CreateAndConfigureTap(cfg TapConfig) (*os.File, error) {
+// is zeros until then. A kernel that refuses the header gives a TAP without it. The header
+// size, like the offloads and the flags, is a setting of the device, which the first
+// queue makes; the others only attach.
+func CreateAndConfigureTapQueues(cfg TapConfig, queues int) ([]*os.File, error) {
 	fd, err := syscall.Open(tunDevice, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", tunDevice, err)
 	}
 
+	// The first flags the kernel takes are used: a kernel that does not know a flag says
+	// so with EINVAL, and an older one that ignores IFF_MULTI_QUEUE is found out below.
 	var req ifreq
-	req.flags = IFF_TAP | IFF_NO_PI | IFF_VNET_HDR
 	if cfg.Name != "" {
 		req.name = nameTo16(cfg.Name)
 	}
-
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(TUNSETIFF), uintptr(unsafe.Pointer(&req)))
-	if errno == syscall.EINVAL {
-		req.flags = IFF_TAP | IFF_NO_PI
+	flagSets := []uint16{IFF_TAP | IFF_NO_PI | IFF_VNET_HDR, IFF_TAP | IFF_NO_PI}
+	if queues > 1 {
+		flagSets = append([]uint16{IFF_TAP | IFF_NO_PI | IFF_VNET_HDR | IFF_MULTI_QUEUE}, flagSets...)
+	}
+	var errno syscall.Errno
+	for _, flags := range flagSets {
+		req.flags = flags
 		_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(TUNSETIFF), uintptr(unsafe.Pointer(&req)))
+		if errno != syscall.EINVAL {
+			break
+		}
 	}
 	if errno != 0 {
 		_ = syscall.Close(fd)
@@ -247,7 +272,60 @@ func CreateAndConfigureTap(cfg TapConfig) (*os.File, error) {
 		}
 	}
 
-	return os.NewFile(uintptr(fd), actualName), nil
+	files := []*os.File{os.NewFile(uintptr(fd), actualName)}
+	if !tunMultiQueue(fd) {
+		return files, nil // the kernel took no IFF_MULTI_QUEUE: this is the only queue there can be
+	}
+	for len(files) < min(queues, MaxQueues) {
+		q, err := attachQueue(actualName, req.flags)
+		if err != nil {
+			for _, f := range files {
+				_ = f.Close()
+			}
+			return nil, err
+		}
+		files = append(files, q)
+	}
+	return files, nil
+}
+
+// FileFromFD makes a file of the descriptor of a TAP queue that was passed to this process,
+// which it owns from now on. The file waits for the TAP in Go's poller, not in a thread
+// that is blocked in the kernel: a read of a file that blocks in the kernel is not ended by
+// closing the file, which a queue that no frames come in on (the others of a pod with one
+// busy connection) would never be, and that holds the TAP, and with it the pod's network
+// namespace, open. The descriptor is made non-blocking, which is a property of the open
+// file description: the sender, which does not use the descriptor again, shares it.
+func FileFromFD(fd int, name string) *os.File {
+	_ = syscall.SetNonblock(fd, true)
+	return os.NewFile(uintptr(fd), name)
+}
+
+// tunFlags returns the flags of the TAP of fd, and whether the kernel gave them.
+func tunFlags(fd uintptr) (flags uint16, ok bool) {
+	var req ifreq
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(TUNGETIFF), uintptr(unsafe.Pointer(&req)))
+	return req.flags, errno == 0
+}
+
+// tunMultiQueue reports whether the TAP of fd is a multi-queue one.
+func tunMultiQueue(fd int) bool {
+	flags, ok := tunFlags(uintptr(fd))
+	return ok && flags&IFF_MULTI_QUEUE != 0
+}
+
+// attachQueue opens another queue of the multi-queue TAP name, which was made with flags.
+func attachQueue(name string, flags uint16) (*os.File, error) {
+	fd, err := syscall.Open(tunDevice, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open %s: %w", tunDevice, err)
+	}
+	req := ifreq{name: nameTo16(name), flags: flags}
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), uintptr(TUNSETIFF), uintptr(unsafe.Pointer(&req))); errno != 0 {
+		_ = syscall.Close(fd)
+		return nil, fmt.Errorf("ioctl TUNSETIFF failed attaching a queue to %s: %w", name, errno)
+	}
+	return os.NewFile(uintptr(fd), name), nil
 }
 
 // hasVnetHdr reports whether the TAP behind f has a virtio header before its frames.
@@ -258,9 +336,8 @@ func hasVnetHdr(f *os.File) bool {
 	}
 	has := false
 	_ = rc.Control(func(fd uintptr) {
-		var req ifreq
-		_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(TUNGETIFF), uintptr(unsafe.Pointer(&req)))
-		has = errno == 0 && req.flags&IFF_VNET_HDR != 0
+		flags, ok := tunFlags(fd)
+		has = ok && flags&IFF_VNET_HDR != 0
 	})
 	return has
 }

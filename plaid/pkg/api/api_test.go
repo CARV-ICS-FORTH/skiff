@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -14,12 +15,12 @@ type mockHandlers struct {
 	lastDelReq   *Request
 	lastAddRoute *Request
 	lastDelRoute *Request
-	receivedFD   int
+	receivedFDs  []int
 }
 
-func (m *mockHandlers) HandleAddEndpoint(req *Request, tapFD int) error {
+func (m *mockHandlers) HandleAddEndpoint(req *Request, tapFDs []int) error {
 	m.lastAddReq = req
-	m.receivedFD = tapFD
+	m.receivedFDs = tapFDs
 	return nil
 }
 
@@ -122,12 +123,12 @@ func TestAPIServerAndClient(t *testing.T) {
 		t.Fatalf("AddEndpoint handler did not receive expected request")
 	}
 
-	if handlers.receivedFD < 0 {
-		t.Fatalf("Server did not receive FD over SCM_RIGHTS (got %d)", handlers.receivedFD)
+	if len(handlers.receivedFDs) != 1 || handlers.receivedFDs[0] < 0 {
+		t.Fatalf("Server did not receive one FD over SCM_RIGHTS (got %v)", handlers.receivedFDs)
 	}
 
 	// Test communicating through the passed file descriptor
-	receivedFile := os.NewFile(uintptr(handlers.receivedFD), "passed-tap-fd")
+	receivedFile := os.NewFile(uintptr(handlers.receivedFDs[0]), "passed-tap-fd")
 	defer receivedFile.Close()
 
 	testMsg := "hello via passed fd"
@@ -243,9 +244,11 @@ type mockFailingHandler struct {
 	mockHandlers
 }
 
-func (m *mockFailingHandler) HandleAddEndpoint(req *Request, tapFD int) error {
-	// Handler closes the file descriptor when returning an error, as plaidd does
-	_ = os.NewFile(uintptr(tapFD), "test-tap").Close()
+func (m *mockFailingHandler) HandleAddEndpoint(req *Request, tapFDs []int) error {
+	// Handler closes the file descriptors when returning an error, as plaidd does
+	for _, fd := range tapFDs {
+		_ = os.NewFile(uintptr(fd), "test-tap").Close()
+	}
 	return fmt.Errorf("invalid endpoint configuration error")
 }
 
@@ -283,5 +286,101 @@ func TestAddEndpointErr_FD(t *testing.T) {
 	status, err := client.GetStatus()
 	if err != nil || !status.Success {
 		t.Fatalf("Server unresponsive after endpoint addition error: %v", err)
+	}
+}
+
+// sendPipes sends the read ends of n new pipes with an AddEndpoint request and closes the
+// sender's own copies of them, so that only the server holds them. It returns the write ends
+// and the descriptors that the handler received.
+func sendPipes(t *testing.T, n int) (writers []*os.File, h *mockHandlers) {
+	t.Helper()
+	sockPath := filepath.Join(t.TempDir(), "fds.sock")
+	h = &mockHandlers{}
+	srv := NewServer(sockPath, h, h, h)
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("Failed to start server: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	srv.MarkReady()
+
+	var readers []*os.File
+	var fds []int
+	for i := 0; i < n; i++ {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("os.Pipe: %v", err)
+		}
+		t.Cleanup(func() { _ = w.Close() })
+		readers, writers = append(readers, r), append(writers, w)
+		fds = append(fds, int(r.Fd()))
+	}
+	if err := NewClient(sockPath).AddEndpoint(&Request{PodID: "queues"}, fds...); err != nil {
+		t.Fatalf("AddEndpoint: %v", err)
+	}
+	for _, r := range readers {
+		_ = r.Close()
+	}
+	t.Cleanup(func() {
+		for _, fd := range h.receivedFDs {
+			_ = syscall.Close(fd)
+		}
+	})
+	return writers, h
+}
+
+// A request with the files of several queues delivers all of them, in order, to the
+// handler, which owns them.
+func TestAddEndpointDeliversEveryQueue(t *testing.T) {
+	writers, h := sendPipes(t, 4)
+	if len(h.receivedFDs) != 4 {
+		t.Fatalf("the handler received %d descriptors, want 4", len(h.receivedFDs))
+	}
+	for i, fd := range h.receivedFDs {
+		msg := fmt.Sprintf("queue %d", i)
+		if _, err := writers[i].Write([]byte(msg)); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 16)
+		n, err := syscall.Read(fd, buf)
+		if err != nil || string(buf[:n]) != msg {
+			t.Errorf("descriptor %d read %q, %v: want %q", i, buf[:n], err, msg)
+		}
+	}
+}
+
+// The server keeps MaxEndpointFDs descriptors and closes the others: the write end of a
+// pipe whose read end it closed fails.
+func TestAddEndpointClosesDescriptorsBeyondTheMaximum(t *testing.T) {
+	writers, h := sendPipes(t, MaxEndpointFDs+4)
+	if len(h.receivedFDs) != MaxEndpointFDs {
+		t.Fatalf("the handler received %d descriptors, want %d", len(h.receivedFDs), MaxEndpointFDs)
+	}
+	for i, w := range writers {
+		_, err := w.Write([]byte("x"))
+		switch {
+		case i < MaxEndpointFDs && err != nil:
+			t.Errorf("pipe %d is kept but its read end is closed: %v", i, err)
+		case i >= MaxEndpointFDs && err == nil:
+			t.Errorf("pipe %d is beyond the maximum but its read end is still open", i)
+		}
+	}
+}
+
+// A request that fails before the handler has it does not leak the descriptors.
+func TestAddEndpointWithoutHandlerClosesDescriptors(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "nohandler.sock")
+	srv := NewServer(sockPath, nil, nil, nil) // not ready: every request but the status is refused
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	r, w, _ := os.Pipe()
+	defer w.Close()
+	if err := NewClient(sockPath).AddEndpoint(&Request{PodID: "x"}, int(r.Fd()), int(r.Fd())); err == nil {
+		t.Fatal("the request was accepted by a daemon that is initializing")
+	}
+	_ = r.Close()
+	if _, err := w.Write([]byte("x")); err == nil {
+		t.Error("the server still holds the read end it was sent")
 	}
 }

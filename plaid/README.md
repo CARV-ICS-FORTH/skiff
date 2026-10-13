@@ -52,6 +52,14 @@ A pod sends one frame per system call and `plaidd` forwards one frame per system
 
 `plaidctl status` shows which offloads are on and their counters, with those of the overlay and the TAPs (`pkg/api/types.go` lists the fields).
 
+### Queues of a pod's TAP
+
+A TAP with one queue has one reader, one processing stage and one writer in `plaidd`, however many connections its pod has. The CNI plugin therefore creates the pod's TAP with `IFF_MULTI_QUEUE` and several queues (the same device opened that many times, each `TUNSETIFF` with the same name and flags) and passes one descriptor for each in the `AddEndpoint` message. The number is the `tapQueues` field of the plugin's network config (default 8, at most 16); `"tapQueues": 1` gives a single-queue TAP with no `IFF_MULTI_QUEUE`, and a kernel that refuses the flag gives one queue too. `plaid init` and `plaid exec`, which `plaidtainer` runs in the container and which are how Apptainer pods get their TAP, make the same TAP: the number is their `--queues` flag, whose default is `$PLAID_TAP_QUEUES`, else 8 (same limits: at most 16, 1 for a single queue, a negative or non-numeric value is an error). `plaidtainer` passes nothing, so the default applies (and `PLAID_TAP_QUEUES` in its environment, if Apptainer passes the host environment on). The process that makes the TAP closes its descriptors when it ends or runs the command, which does not matter: `plaidd` has its own descriptors of every queue by then.
+
+`plaidd` keeps up to 16 descriptors of a request (and closes any beyond), and a pod is still one endpoint to the bridge (one MAC, one IP, one FDB entry), but with the state of the pipeline (see Offloads) for each queue: a reader, a processing stage, a writer goroutine and its queue, and the pending counts that keep a flow's writes in order. Frames read on any queue go through the bridge. **A frame for the pod is written to the queue that the hash of its flow picks** (the hash that picks the overlay's send socket, described under Overlay sockets; the first queue for what has no flow, such as ARP), so a flow is always written to one queue and in order, whether it is a single frame, a super-frame or a run joined by the coalescer, and different flows are written by different goroutines. The kernel's tun driver then sends the pod's packets of that flow out on the queue that the flow's frames were last written to (its automatic steering, `tun_flow_update`), which keeps the two directions of a connection on one queue. It learns the queue after it has passed a frame to the pod's stack, so the first answer of the stack to the first frame of a flow (a SYN-ACK, the ACK of a handshake), and at most a segment or two after it, can come out on another queue, which TCP absorbs as it does any reordering of the first segments of a connection. The flows of one pod are spread by a hash, not placed, so a pod with a few streams may use fewer queues than it has streams.
+
+In the kernel's tun driver the device, not a queue, holds the flags, the virtio header size (`TUNSETVNETHDRSZ`), the offloads (`TUNSETOFFLOAD`) and the send buffer (`TUNSETSNDBUF`), so they are set once through the first queue, and a queue only attaches; a queue that is closed leaves the others attached, so a `plaidd` that keeps the first descriptor of a pod and closes the others serves a working pod with one queue. `plaidd` makes the descriptors non-blocking, so that closing the endpoint ends the read of a queue that nothing arrives on; a read that blocks in the kernel is not ended by closing the file, and would keep the queue, the TAP and the pod's network namespace.
+
 ### Overlay sockets
 
 Standalone, `plaidd` opens the VXLAN UDP port itself. In a Skiff bubble the bubble's network namespace is private, so the overlay's UDP sockets are opened in the **physical host's** namespace and handed to `plaidd`, which then sends and receives overlay traffic directly, without going through the bubble's slirp4netns.
@@ -177,6 +185,8 @@ Place the CNI configuration in your runtime's CNI directory (e.g. `/etc/cni/net.
   ]
 }
 ```
+
+The plugin's config also takes `"tapQueues"`, the number of queues of each pod's TAP (see Queues of a pod's TAP).
 
 ### 3. Run Containers with Apptainer (`plaidtainer`)
 

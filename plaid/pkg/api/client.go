@@ -24,8 +24,8 @@ func NewClient(socketPath string) *Client {
 	}
 }
 
-// Send sends a request to plaidd, optionally passing a file descriptor via SCM_RIGHTS.
-func (c *Client) Send(req *Request, passFD int) (*Response, error) {
+// Send sends a request to plaidd, passing the file descriptors given, if any, via SCM_RIGHTS.
+func (c *Client) Send(req *Request, passFDs ...int) (*Response, error) {
 	conn, err := net.DialTimeout("unix", c.socketPath, c.timeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to plaidd API at %s: %w", c.socketPath, err)
@@ -54,8 +54,8 @@ func (c *Client) Send(req *Request, passFD int) (*Response, error) {
 	copy(frame[4:], data)
 
 	var oob []byte
-	if passFD >= 0 {
-		oob = syscall.UnixRights(passFD)
+	if len(passFDs) > 0 {
+		oob = syscall.UnixRights(passFDs...)
 	}
 
 	n, _, err := unixConn.WriteMsgUnix(frame, oob, nil)
@@ -97,10 +97,11 @@ func (c *Client) Send(req *Request, passFD int) (*Response, error) {
 	return &resp, nil
 }
 
-// AddEndpoint sends an AddEndpoint request along with the opened TAP file descriptor.
-func (c *Client) AddEndpoint(req *Request, tapFD int) error {
+// AddEndpoint sends an AddEndpoint request along with the opened TAP file descriptors:
+// one for each queue, the first of which an older plaidd keeps and closes the rest.
+func (c *Client) AddEndpoint(req *Request, tapFDs ...int) error {
 	req.Action = ActionAddEndpoint
-	resp, err := c.Send(req, tapFD)
+	resp, err := c.Send(req, tapFDs...)
 	if err != nil {
 		return err
 	}
@@ -117,7 +118,7 @@ func (c *Client) RemoveEndpoint(podID, containerID string) error {
 		PodID:       podID,
 		ContainerID: containerID,
 	}
-	resp, err := c.Send(req, -1)
+	resp, err := c.Send(req)
 	if err != nil {
 		return err
 	}
@@ -130,7 +131,7 @@ func (c *Client) RemoveEndpoint(podID, containerID string) error {
 // AddRoute sends an AddRoute request.
 func (c *Client) AddRoute(req *Request) error {
 	req.Action = ActionAddRoute
-	resp, err := c.Send(req, -1)
+	resp, err := c.Send(req)
 	if err != nil {
 		return err
 	}
@@ -146,7 +147,7 @@ func (c *Client) RemoveRoute(subnet string) error {
 		Action: ActionRemoveRoute,
 		Subnet: subnet,
 	}
-	resp, err := c.Send(req, -1)
+	resp, err := c.Send(req)
 	if err != nil {
 		return err
 	}
@@ -161,13 +162,13 @@ func (c *Client) GetStatus() (*Response, error) {
 	req := &Request{
 		Action: ActionGetStatus,
 	}
-	return c.Send(req, -1)
+	return c.Send(req)
 }
 
 // AddFilterRule sends an AddFilterRule request.
 func (c *Client) AddFilterRule(req *Request) error {
 	req.Action = ActionAddFilterRule
-	resp, err := c.Send(req, -1)
+	resp, err := c.Send(req)
 	if err != nil {
 		return err
 	}
@@ -183,7 +184,7 @@ func (c *Client) RemoveFilterRule(ruleID string) error {
 		Action: ActionRemoveFilterRule,
 		RuleID: ruleID,
 	}
-	resp, err := c.Send(req, -1)
+	resp, err := c.Send(req)
 	if err != nil {
 		return err
 	}
@@ -198,7 +199,7 @@ func (c *Client) ListFilterRules() ([]string, error) {
 	req := &Request{
 		Action: ActionListFilterRules,
 	}
-	resp, err := c.Send(req, -1)
+	resp, err := c.Send(req)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +211,7 @@ func (c *Client) ListFilterRules() ([]string, error) {
 
 // SetServices replaces the Service engine's table.
 func (c *Client) SetServices(entries []ServiceEntry) error {
-	resp, err := c.Send(&Request{Action: ActionSetServices, Services: entries}, -1)
+	resp, err := c.Send(&Request{Action: ActionSetServices, Services: entries})
 	if err != nil {
 		return err
 	}
@@ -222,7 +223,7 @@ func (c *Client) SetServices(entries []ServiceEntry) error {
 
 // ListServices returns the Service engine's table with the flows of each entry.
 func (c *Client) ListServices() (*Response, error) {
-	resp, err := c.Send(&Request{Action: ActionListServices}, -1)
+	resp, err := c.Send(&Request{Action: ActionListServices})
 	if err != nil {
 		return nil, err
 	}

@@ -27,7 +27,7 @@ const (
 // cuts again into the datagrams that were put in, one frame each, as VXLAN says. The
 // datagrams on the wire are the same as with one send each, and leave in the same order.
 // A run is also for one send socket (frames of different flows leave from different
-// ports, see flowSocket): a frame for another socket ends it, as one for another node
+// ports, see packet.FlowIndex): a frame for another socket ends it, as one for another node
 // does. A TxBatch is used by one goroutine at a time.
 //
 // A TCP super-frame does not go through the batch: SendSuper sends it whole, after what
@@ -96,7 +96,7 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 	}
 
 	size := packet.VXLANHeaderLen + packet.EthernetHeaderLen + len(frame.Payload)
-	sock := flowSocket(frame.EtherType, frame.Payload, len(socks.tx))
+	sock := packet.FlowIndex(frame.EtherType, frame.Payload, len(socks.tx))
 	if tb.n > 0 && !tb.joins(remoteAddr, sock, size) {
 		tb.sendRun()
 	}
@@ -274,7 +274,7 @@ func (tb *TxBatch) SendSuper(h packet.VnetHeader, frame *packet.EthernetFrame, d
 	if len(route.VtepMAC) == 6 {
 		frame.DstMAC = route.VtepMAC
 	}
-	sock := flowSocket(frame.EtherType, frame.Payload, len(socks.tx))
+	sock := packet.FlowIndex(frame.EtherType, frame.Payload, len(socks.tx))
 	ts := socks.tx[sock]
 	if len(frame.DstMAC) != 6 || len(frame.SrcMAC) != 6 || ts.rc == nil {
 		return false, nil

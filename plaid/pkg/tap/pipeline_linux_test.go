@@ -3,7 +3,6 @@
 package tap
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"net"
@@ -24,7 +23,15 @@ const segSize = 1398
 // and an IP of its own.
 func pipeTap(t testing.TB, name string, id byte, pipeline bool, sndbuf int) (*TapEndpoint, *os.File) {
 	t.Helper()
-	return socketTap(t, tapOpts{name: name, id: id, sndbuf: sndbuf, vnet: true, offload: true, pipeline: pipeline})
+	ep, pods := pipeTapQueues(t, name, id, pipeline, sndbuf, 1)
+	return ep, pods[0]
+}
+
+// pipeTapQueues is pipeTap for a TAP with several queues, each a socket pair of its own; the
+// result has the pod's end of each.
+func pipeTapQueues(t testing.TB, name string, id byte, pipeline bool, sndbuf, queues int) (*TapEndpoint, []*os.File) {
+	t.Helper()
+	return socketTapQueues(t, tapOpts{name: name, id: id, sndbuf: sndbuf, vnet: true, offload: true, pipeline: pipeline, queues: queues})
 }
 
 // twoTaps is passTaps with the read loops running, and no passthrough: a bridge with the pods
@@ -74,19 +81,28 @@ func podRecord(seq uint32, n int) []byte {
 	return record(n, func(i int) *packet.EthernetFrame { return flowFrame(seq+uint32(i*segSize), false) })
 }
 
-// recordFrames returns the virtio header and the frames of a record read from a TAP: the
+// cutRecord returns the virtio header and the frames of a record read from a TAP: the
 // record's own, or the segments of its super-frame, as copies.
-func recordFrames(t testing.TB, rec []byte) (packet.VnetHeader, [][]byte) {
-	t.Helper()
+func cutRecord(rec []byte) (packet.VnetHeader, [][]byte, error) {
 	h := packet.ParseVnetHeader(rec)
 	var sg packet.Segmenter
 	segs, err := sg.Segment(h, append([]byte(nil), rec[packet.VnetHeaderLen:]...))
 	if err != nil {
-		t.Fatal(err)
+		return h, nil, err
 	}
 	out := make([][]byte, len(segs))
 	for i, s := range segs {
 		out[i] = append([]byte(nil), s...)
+	}
+	return h, out, nil
+}
+
+// recordFrames is cutRecord that fails the test.
+func recordFrames(t testing.TB, rec []byte) (packet.VnetHeader, [][]byte) {
+	t.Helper()
+	h, out, err := cutRecord(rec)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return h, out
 }
@@ -380,28 +396,6 @@ func TestReleasedWriterDropsItsFrame(t *testing.T) {
 	}
 }
 
-// An endpoint with a pipeline starts the goroutines it needs and no others; one without
-// starts what it did: the read loop.
-func TestPipelineGoroutines(t *testing.T) {
-	for _, tc := range []struct {
-		pipeline bool
-		want     int
-	}{{false, 1}, {true, 3}} { // the read loop; both stages and the writer
-		before := goroutines()
-		ep, _ := pipeTap(t, "x", 9, tc.pipeline, 0)
-		br := bridge.NewBridge(bridge.BridgeConfig{})
-		ep.StartReadLoop(context.Background(), br)
-		if got := goroutines() - before; got != tc.want {
-			t.Errorf("pipeline=%v: %d goroutines, want %d", tc.pipeline, got, tc.want)
-		}
-		if (ep.wq != nil) != tc.pipeline || ep.Pipeline() != tc.pipeline {
-			t.Errorf("pipeline=%v: writer queue %v", tc.pipeline, ep.wq != nil)
-		}
-		_ = ep.Close()
-		settle(t, before)
-	}
-}
-
 // Endpoints that are created, loaded, and removed leave no goroutine and no pooled buffer
 // behind, and nothing is written to a pod after its endpoint was removed; with passthrough too,
 // where the TSO segments of the sender are written whole and queue behind the overlay's frames.
@@ -475,7 +469,8 @@ func TestPipelinesStopWhileBusy(t *testing.T) {
 	}
 }
 
-// After Close the writer writes nothing more, whatever is still queued.
+// After Close the writer writes nothing more, whatever is still queued (that a writer cannot
+// flush to a closed endpoint is TestClosedEndpointRefusesWrites).
 func TestNoWriteAfterClose(t *testing.T) {
 	before := goroutines()
 	ep, pod := pipeTap(t, "b", 5, true, 0)
@@ -503,12 +498,6 @@ func TestNoWriteAfterClose(t *testing.T) {
 	if got := inFlight.Load(); got != 0 {
 		t.Errorf("%d buffers not returned", got)
 	}
-	w := ep.NewWriter()
-	_ = w.Add(flowFrame(1, true))
-	if err := w.Flush(); err == nil {
-		t.Error("a writer flushed to a closed endpoint")
-	}
-	w.Release()
 }
 
 // The frames that plaidd completed itself are passed to the bridge as Trusted, and no

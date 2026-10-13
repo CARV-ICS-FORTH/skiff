@@ -19,12 +19,12 @@ type testAPIHandler struct {
 	endpoints map[string]*api.Request
 }
 
-func (h *testAPIHandler) HandleAddEndpoint(req *api.Request, tapFD int) error {
+func (h *testAPIHandler) HandleAddEndpoint(req *api.Request, tapFDs []int) error {
 	h.mu.Lock()
 	h.endpoints[req.PodID] = req
 	h.mu.Unlock()
-	if tapFD >= 0 {
-		_ = os.NewFile(uintptr(tapFD), "tap").Close()
+	for _, fd := range tapFDs {
+		_ = os.NewFile(uintptr(fd), "tap").Close()
 	}
 	return nil
 }

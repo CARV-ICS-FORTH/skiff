@@ -24,6 +24,7 @@ type tapOpts struct {
 	id            byte             // the pod is 10.244.1.id with the MAC 02:00:00:00:00:id; 0x10 if 0
 	ip            net.IP           // instead of 10.244.1.id
 	mac           net.HardwareAddr // instead of 02:00:00:00:00:id
+	queues        int              // the TAP's queues, each a socket pair of its own; 1 if 0
 	sndbuf        int              // the TAP end's send buffer, 4 MiB if 0: a small one makes writes to the pod wait for it to read
 	vnet, offload bool             // the TAP claims a virtio header, and offloads
 	pipeline      bool             // the endpoint has a pipeline
@@ -35,10 +36,14 @@ type tapOpts struct {
 // for a TAP in the poller.
 func socketTap(t testing.TB, o tapOpts) (*TapEndpoint, *os.File) {
 	t.Helper()
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_SEQPACKET|syscall.SOCK_CLOEXEC, 0)
-	if err != nil {
-		t.Skipf("no socket pair: %v", err)
-	}
+	ep, pods := socketTapQueues(t, o)
+	return ep, pods[0]
+}
+
+// socketTapQueues is socketTap for a TAP with o.queues queues; the result has the pod's end of
+// each.
+func socketTapQueues(t testing.TB, o tapOpts) (*TapEndpoint, []*os.File) {
+	t.Helper()
 	if o.name == "" {
 		o.name = "tap"
 	}
@@ -51,26 +56,39 @@ func socketTap(t testing.TB, o tapOpts) (*TapEndpoint, *os.File) {
 	if o.mac == nil {
 		o.mac = net.HardwareAddr{2, 0, 0, 0, 0, o.id}
 	}
-	for i, fd := range fds {
-		_ = syscall.SetNonblock(fd, true)
-		size := 4 << 20
-		if i == 0 && o.sndbuf > 0 {
-			size = o.sndbuf
-		}
-		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, size)
+	if o.queues == 0 {
+		o.queues = 1
 	}
-	a, b := os.NewFile(uintptr(fds[0]), o.name), os.NewFile(uintptr(fds[1]), o.name+"-pod")
-	t.Cleanup(func() { a.Close(); b.Close() })
-	ep := NewTapEndpoint(o.name, o.name, o.ip, o.mac, a, false)
+	var taps, pods []*os.File
+	for q := 0; q < o.queues; q++ {
+		fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_SEQPACKET|syscall.SOCK_CLOEXEC, 0)
+		if err != nil {
+			t.Skipf("no socket pair: %v", err)
+		}
+		for i, fd := range fds {
+			_ = syscall.SetNonblock(fd, true)
+			size := 4 << 20
+			if i == 0 && o.sndbuf > 0 {
+				size = o.sndbuf
+			}
+			_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, size)
+		}
+		a, b := os.NewFile(uintptr(fds[0]), o.name), os.NewFile(uintptr(fds[1]), o.name+"-pod")
+		t.Cleanup(func() { a.Close(); b.Close() })
+		taps, pods = append(taps, a), append(pods, b)
+	}
+	ep := NewTapEndpointQueues(o.name, o.name, o.ip, o.mac, taps, false)
 	if o.vnet {
-		ep.vw = newVnetWriter(a)
+		for i, q := range ep.queues {
+			q.vw = newVnetWriter(taps[i])
+		}
 		ep.vnet = true
 		ep.offload = o.offload
 	}
 	if o.pipeline {
 		ep.SetPipeline()
 	}
-	return ep, b
+	return ep, pods
 }
 
 // sumFrame makes the checksums of the IPv4 packet ip (no options) right after a test has

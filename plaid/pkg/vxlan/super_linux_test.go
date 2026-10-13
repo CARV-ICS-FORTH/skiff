@@ -66,7 +66,7 @@ func TestSendSuperPutsTheChunksOnTheWire(t *testing.T) {
 					d := packet.VXLANHeaderLen + packet.EthernetHeaderLen + mtu
 					wire := append([]byte(nil), frame...)
 					copy(wire[0:6], fixtureVTEP)
-					sock := flowSocket(binary.BigEndian.Uint16(frame[12:]), frame[14:], len(f.oe.socks.Load().tx))
+					sock := packet.FlowIndex(binary.BigEndian.Uint16(frame[12:]), frame[14:], len(f.oe.socks.Load().tx))
 					want := refChunks(packet.VXLANFlagSuperOK, 7, ids[sock], h, wire, d)
 					before := f.oe.Stats()
 
@@ -103,7 +103,7 @@ func TestSendSuperPutsTheChunksOnTheWire(t *testing.T) {
 		// The chunks of a flow come from the socket that its plain frames use.
 		h, frame := tsoFrame(false, 3000, 1450, 1)
 		ef := ethernet(frame)
-		want := f.oe.socks.Load().tx[flowSocket(ef.EtherType, ef.Payload, len(f.oe.socks.Load().tx))].conn.LocalAddr().(*net.UDPAddr).Port
+		want := f.oe.socks.Load().tx[packet.FlowIndex(ef.EtherType, ef.Payload, len(f.oe.socks.Load().tx))].conn.LocalAddr().(*net.UDPAddr).Port
 		if sent, _ := f.send(h, frame); !sent {
 			t.Fatal("not sent")
 		}

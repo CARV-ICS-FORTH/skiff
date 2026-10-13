@@ -27,6 +27,14 @@ func CreateAndConfigureTap(cfg TapConfig) (*os.File, error) {
 	return nil, errNoTap
 }
 
+// CreateAndConfigureTapQueues is a stub on non-Linux platforms.
+func CreateAndConfigureTapQueues(cfg TapConfig, queues int) ([]*os.File, error) {
+	return nil, errNoTap
+}
+
+// FileFromFD makes a file of a descriptor.
+func FileFromFD(fd int, name string) *os.File { return os.NewFile(uintptr(fd), name) }
+
 // There are no TAPs with virtio headers here.
 func hasVnetHdr(*os.File) bool { return false }
 

@@ -153,7 +153,7 @@ type Stats struct {
 //
 // It receives on several sockets in one SO_REUSEPORT group, each served by its own reader
 // and worker (an rxLane), and sends from sockets of its own bound to ports of their own,
-// chosen by the flow of each frame (see flowSocket). The kernel puts a datagram on the
+// chosen by the flow of each frame (see packet.FlowIndex). The kernel puts a datagram on the
 // receive socket by a hash of its addresses and ports, so a flow, which leaves one source
 // port, stays on one lane and keeps its order, while different flows share the cores.
 type OverlayEngine struct {
