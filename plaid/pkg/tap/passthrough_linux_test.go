@@ -107,7 +107,8 @@ func delta(after, before OffloadStats) OffloadStats {
 		ReadDropped: after.ReadDropped - before.ReadDropped, WriteSuperFrames: after.WriteSuperFrames - before.WriteSuperFrames,
 		WriteSegments: after.WriteSegments - before.WriteSegments, PassedSuperFrames: after.PassedSuperFrames - before.PassedSuperFrames,
 		PassedBytes: after.PassedBytes - before.PassedBytes, JoinedForUplink: after.JoinedForUplink - before.JoinedForUplink,
-		UplinkSuperFrames: after.UplinkSuperFrames - before.UplinkSuperFrames, Fragmented: after.Fragmented - before.Fragmented,
+		UplinkSuperFrames: after.UplinkSuperFrames - before.UplinkSuperFrames, MSSRaised: after.MSSRaised - before.MSSRaised,
+		MSSLowered: after.MSSLowered - before.MSSLowered, Fragmented: after.Fragmented - before.Fragmented,
 		Fragments: after.Fragments - before.Fragments, OversizeDropped: after.OversizeDropped - before.OversizeDropped,
 	}
 }

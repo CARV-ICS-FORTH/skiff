@@ -934,6 +934,7 @@ func (d *PlaidDaemon) tapOffload() *api.TapOffloadStatus {
 	st.WriteSuperFrames, st.WriteSegments = c.WriteSuperFrames, c.WriteSegments
 	st.PassedSuperFrames, st.PassedBytes = c.PassedSuperFrames, c.PassedBytes
 	st.JoinedForUplink, st.UplinkSuperFrames = c.JoinedForUplink, c.UplinkSuperFrames
+	st.MSSRaised, st.MSSLowered = c.MSSRaised, c.MSSLowered
 	st.Fragmented, st.Fragments, st.OversizeDropped = c.Fragmented, c.Fragments, c.OversizeDropped
 	return st
 }

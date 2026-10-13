@@ -4,7 +4,6 @@ package tap
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"net"
 	"os"
@@ -19,7 +18,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"plaid/pkg/bridge"
-	"plaid/pkg/packet"
 )
 
 // netns is a network namespace of its own, in which work is run on a thread that stays
@@ -74,15 +72,17 @@ func ipCmds(cmds ...[]string) error {
 }
 
 // A streamResult is what one end of a stream saw: the bytes received and those that were
-// not the expected ones, and the segment size that TCP of its socket reports.
+// not the expected ones, and the segment sizes that TCP of its socket reports: what it
+// sends (set by the handshake, from the peer's MSS and its own MTU, less the options) and
+// what it estimates it receives.
 type streamResult struct {
-	total, bad int
-	mss        uint32
-	err        error
+	total, bad     int
+	sndMSS, rcvMSS uint32
+	err            error
 }
 
 func (r streamResult) String() string {
-	return fmt.Sprintf("%d bytes, %d wrong, mss %d", r.total, r.bad, r.mss)
+	return fmt.Sprintf("%d bytes, %d wrong, mss %d sent, %d received", r.total, r.bad, r.sndMSS, r.rcvMSS)
 }
 
 // listener makes a listening socket on port; the caller is in the namespace it is for.
@@ -164,7 +164,7 @@ func runStream(t testing.TB, what string, receive, send func() streamResult, sta
 }
 
 // serve accepts a connection on the listening socket lfd, checks the stream it receives
-// (the bytes of pattern), answers "done" and reports. mss is the receiver's estimate of
+// (the bytes of pattern), answers "done" and reports. rcvMSS is the receiver's estimate of
 // the segment size it was sent, which is that of the packets as they arrived.
 func serve(lfd int) streamResult {
 	conn, _, err := syscall.Accept(lfd)
@@ -187,14 +187,14 @@ func serve(lfd int) streamResult {
 		r.total += n
 	}
 	if info, err := unix.GetsockoptTCPInfo(conn, unix.IPPROTO_TCP, unix.TCP_INFO); err == nil {
-		r.mss = info.Rcv_mss
+		r.rcvMSS, r.sndMSS = info.Rcv_mss, info.Snd_mss
 	}
 	_, _ = syscall.Write(conn, []byte("done"))
 	return r
 }
 
 // send connects the socket fd to addr:port from the namespace it was made in and sends
-// podBytes of pattern. mss is the sender's segment size once it is done.
+// podBytes of pattern. sndMSS is the sender's segment size once it is done.
 func send(fd int, addr string, port int) streamResult {
 	defer syscall.Close(fd)
 	if err := syscall.Connect(fd, &syscall.SockaddrInet4{Port: port, Addr: [4]byte(net.ParseIP(addr).To4())}); err != nil {
@@ -217,7 +217,7 @@ func send(fd int, addr string, port int) streamResult {
 		r.total += len(buf)
 	}
 	if info, err := unix.GetsockoptTCPInfo(fd, unix.IPPROTO_TCP, unix.TCP_INFO); err == nil {
-		r.mss = info.Snd_mss
+		r.sndMSS = info.Snd_mss
 	}
 	_ = syscall.Shutdown(fd, syscall.SHUT_WR)
 	reply := make([]byte, 4)
@@ -225,38 +225,6 @@ func send(fd int, addr string, port int) streamResult {
 		r.err = fmt.Errorf("the receiver did not confirm: %q", reply[:n])
 	}
 	return r
-}
-
-// widenMSS gives a SYN-ACK from a pod the MSS option of the bubble's link, so that the
-// stack that receives it sends packets as large as that link takes, which is what
-// slirp4netns does with a pod's MSS whatever it is: it sends packets of its own MTU. A
-// Linux stack would otherwise stay within the pod's MSS and the bubble would never see a
-// packet above the pod MTU. The checksum is made again.
-func widenMSS(mss int) bridge.FilterHandler {
-	return func(f *packet.EthernetFrame, src bridge.Endpoint) bool {
-		ipk := f.Payload
-		if f.EtherType != packet.EtherTypeIPv4 || len(ipk) < 40 || ipk[9] != packet.IPProtocolTCP || ipk[20+13] != packet.TCPSyn|packet.TCPAck {
-			return true
-		}
-		tcp := ipk[20:]
-		for opts := tcp[20 : int(tcp[12]>>4)*4]; len(opts) >= 4; {
-			if opts[0] == 2 && opts[1] == 4 {
-				binary.BigEndian.PutUint16(opts[2:], uint16(mss))
-				binary.BigEndian.PutUint16(tcp[16:], 0)
-				ph := append(append([]byte(nil), ipk[12:20]...), 0, packet.IPProtocolTCP, byte(len(tcp)>>8), byte(len(tcp)))
-				binary.BigEndian.PutUint16(tcp[16:], packet.Checksum16(append(ph, tcp...)))
-				break
-			}
-			if opts[0] <= 1 {
-				opts = opts[1:]
-			} else if int(opts[1]) < 2 || int(opts[1]) > len(opts) {
-				break
-			} else {
-				opts = opts[opts[1]:]
-			}
-		}
-		return true
-	}
 }
 
 // TestUplinkMTUWithRealKernels is the whole path with real kernels at both ends and in the
@@ -270,7 +238,11 @@ func widenMSS(mss int) bridge.FilterHandler {
 // TSO segments reached the bubble as single packets (the outside's stack estimates the
 // segments it receives at more than the pod MTU), and the large packets of the outside,
 // which the pod's MSS does not limit as slirp4netns's are not, were made TSO segments
-// and cut for the pod.
+// and cut for the pod. The handshakes are what makes it so, as slirp4netns's are not
+// limited by the pod's MSS either: plaidd raises the MSS that the pod announces to the
+// bubble's to the uplink's, and lowers the one it announces to the pod to that of an MTU
+// of 1500; each side's stack reports (TCP_INFO) the segment size it sends, less the 12
+// bytes of the timestamp option if it uses it.
 func TestUplinkMTUWithRealKernels(t *testing.T) {
 	if mode := os.Getenv("PLAID_UPLINK_CHILD"); mode != "" {
 		podMTU, _ := strconv.Atoi(mode)
@@ -346,7 +318,6 @@ func uplinkScenario(t *testing.T, podMTU int) {
 	bubble.SetUplinkMTU(podMTU, uplinkMTU)
 	bubble.SetPassthrough()
 	br.SetBubbleEndpoint(bubble)
-	br.SetFilterHandler(widenMSS(uplinkMTU - 40))
 	must("add the pod", br.AddEndpoint(podEP))
 	podEP.StartReadLoop(context.Background(), br)
 	bubble.StartReadLoop(context.Background(), br)
@@ -354,17 +325,28 @@ func uplinkScenario(t *testing.T, podMTU int) {
 	defer bubble.Close()
 
 	state := func() string { return fmt.Sprintf("counters %+v", Offloads()) }
+	// The segment size a stack sends is the MSS its peer announced, as far as its own MTU
+	// allows, less the options of every segment.
+	checkMSS := func(who string, got uint32, announced int) {
+		t.Helper()
+		if int(got) > announced || int(got) < announced-12 {
+			t.Errorf("%s sends segments of %d bytes, want %d (less the timestamp option)", who, got, announced)
+		}
+	}
+	bubbleMSS, podSideMSS := uplinkMTU-40, min(podMTU-40, 1460)
 
 	// Outside to pod. The outside's stack sends packets of the size the pod's SYN-ACK
-	// seems to allow.
+	// seems to allow: plaidd has made it the uplink's.
 	before := Offloads()
 	sent, got := runStream(t, fmt.Sprintf("outside to pod (pod MTU %d)", podMTU),
 		func() streamResult { return serve(pod.lfd) },
 		func() streamResult { return send(outsideClient, "10.99.0.3", podPort) }, state)
 	d := delta(Offloads(), before)
 	t.Logf("counters %+v", d)
-	if sent.mss <= uint32(podMTU) {
-		t.Errorf("the outside sent segments of %d bytes: not above the pod MTU, so nothing was tested", sent.mss)
+	checkMSS("the outside", sent.sndMSS, bubbleMSS)
+	checkMSS("the pod", got.sndMSS, podSideMSS)
+	if d.MSSRaised != 1 || d.MSSLowered != 1 {
+		t.Errorf("MSS of %d handshakes raised, %d lowered: want one each: %+v", d.MSSRaised, d.MSSLowered, d)
 	}
 	if d.UplinkSuperFrames < podBytes/uplinkMTU/2 || d.OversizeDropped != 0 || d.ReadDropped != 0 {
 		t.Errorf("large TCP frames from the bubble were not made TSO segments, or frames were dropped: %+v", d)
@@ -377,8 +359,18 @@ func uplinkScenario(t *testing.T, podMTU int) {
 		func() streamResult { return send(pod.cfd, "192.0.2.2", podPort+1) }, state)
 	d = delta(Offloads(), before)
 	t.Logf("counters %+v", d)
-	if got.mss <= uint32(podMTU) {
-		t.Errorf("the outside received segments of %d bytes, not above the pod MTU", got.mss)
+	checkMSS("the pod", sent.sndMSS, podSideMSS)
+	// The outside only answers "done" here, to a pod whose window is 64 KB, and a stack
+	// sends no more than half the largest window it has seen: so what its segment size
+	// can show is that it is above what the pod announced (which is within the pod MTU).
+	if got.sndMSS <= uint32(podMTU) {
+		t.Errorf("the outside sends segments of %d bytes: the pod's MSS was not raised", got.sndMSS)
+	}
+	if d.MSSRaised != 1 || d.MSSLowered != 1 {
+		t.Errorf("MSS of %d handshakes raised, %d lowered: want one each: %+v", d.MSSRaised, d.MSSLowered, d)
+	}
+	if got.rcvMSS <= uint32(podMTU) {
+		t.Errorf("the outside received segments of %d bytes, not above the pod MTU", got.rcvMSS)
 	}
 	if d.JoinedForUplink < podBytes/uplinkMTU/2 || d.OversizeDropped != 0 || d.ReadDropped != 0 {
 		t.Errorf("the pod's TSO segments were not joined for the bubble, or frames were dropped: %+v", d)

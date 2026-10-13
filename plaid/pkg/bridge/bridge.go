@@ -321,6 +321,7 @@ func (x *Batch) processFrame(srcEP Endpoint, raw []byte, trusted bool) error {
 		return fmt.Errorf("failed to parse ethernet frame: %w", err)
 	}
 	frame.Trusted = trusted
+	x.src = srcEP
 
 	// A super-frame that would only be looked at is not filtered or learnt from.
 	if !x.sup.dry {
@@ -732,6 +733,7 @@ func (b *Bridge) InjectFrame(frame *packet.EthernetFrame) error {
 // where the routing would do anything else with it, it leaves the frame alone.
 func (x *Batch) InjectFrame(frame *packet.EthernetFrame) error {
 	b := x.b
+	x.src = nil
 	if b.gatewayMode == "tap" {
 		if frame.EtherType != packet.EtherTypeIPv4 {
 			return nil

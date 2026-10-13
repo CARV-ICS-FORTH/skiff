@@ -75,8 +75,8 @@ func main() {
 				o.Enabled, o.Endpoints, o.ReadSuperFrames, o.ReadSegments, o.ReadDropped, o.WriteSuperFrames, o.WriteSegments,
 				o.PassedSuperFrames, o.PassedBytes)
 			if status.UplinkMTU > status.MTU {
-				fmt.Printf("TAP uplink:   joined %d pod super-frames into packets for the bubble; made %d large TCP frames from it super-frames; fragmented %d packets into %d fragments; dropped %d above the pod MTU\n",
-					o.JoinedForUplink, o.UplinkSuperFrames, o.Fragmented, o.Fragments, o.OversizeDropped)
+				fmt.Printf("TAP uplink:   joined %d pod super-frames into packets for the bubble; made %d large TCP frames from it super-frames; raised the MSS of %d handshakes to it, lowered it in %d to pods; fragmented %d packets into %d fragments; dropped %d above the pod MTU\n",
+					o.JoinedForUplink, o.UplinkSuperFrames, o.MSSRaised, o.MSSLowered, o.Fragmented, o.Fragments, o.OversizeDropped)
 			}
 		}
 		if p := status.TapPipeline; p != nil {

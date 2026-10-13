@@ -35,6 +35,15 @@ func (c *Coalescer) Pending() bool { return c.n > 0 }
 
 func (c *Coalescer) frame() []byte { return c.pb.B[VnetHeaderLen : VnetHeaderLen+c.n] }
 
+// Held is the pending frame as Start copied it, which the caller may change in place
+// (its headers, not its length) until it is taken; it is empty if there is none.
+func (c *Coalescer) Held() []byte {
+	if c.n == 0 {
+		return nil
+	}
+	return c.frame()
+}
+
 // Start makes f the pending frame. There must be none.
 func (c *Coalescer) Start(f *EthernetFrame) error {
 	c.n, c.nseg, c.open = 0, 1, false

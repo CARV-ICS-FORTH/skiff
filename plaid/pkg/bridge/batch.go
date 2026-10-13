@@ -31,6 +31,15 @@ type SuperWriter interface {
 	AddSuper(h packet.VnetHeader, frame *packet.EthernetFrame) error
 }
 
+// SourceWriter is a FrameWriter that wants to know where a frame came from, such as a TAP
+// that treats a frame from the bubble differently.
+type SourceWriter interface {
+	FrameWriter
+	// AddFrom is Add for a frame that entered the bridge at src, or from the overlay if
+	// src is nil.
+	AddFrom(src Endpoint, frame *packet.EthernetFrame) error
+}
+
 // BufferSuperWriter is a SuperWriter that can take the buffer a super-frame lies in and
 // write it later, from there, without a copy: what a TAP with a writer goroutine does with
 // a frame that nothing else is waiting for.
@@ -83,6 +92,7 @@ type SuperOverlayBatch interface {
 // A Batch is used by one goroutine at a time.
 type Batch struct {
 	b       *Bridge
+	src     Endpoint // where the frame being routed came in: nil if from the overlay
 	overlay OverlayBatch
 	writers []batchWriter
 	sup     superFrame
@@ -128,7 +138,7 @@ func (b *Bridge) NewBatch() *Batch {
 // Release returns the batch for reuse. What was not flushed is dropped.
 func (x *Batch) Release() {
 	x.drop()
-	x.b = nil
+	x.b, x.src = nil, nil
 	x.sup = superFrame{}
 	batchPool.Put(x)
 }
@@ -168,12 +178,20 @@ func (x *Batch) deliver(ep Endpoint, frame *packet.EthernetFrame, raw []byte) er
 		return x.deliverSuper(ep, frame)
 	}
 	if w := x.writer(ep); w != nil {
-		return w.Add(frame)
+		return x.add(w, frame)
 	}
 	if raw != nil {
 		return ep.Write(raw)
 	}
 	return writeFrame(ep, frame)
+}
+
+// add hands frame to w, with the endpoint it came in at if w wants it.
+func (x *Batch) add(w FrameWriter, frame *packet.EthernetFrame) error {
+	if sw, ok := w.(SourceWriter); ok {
+		return sw.AddFrom(x.src, frame)
+	}
+	return w.Add(frame)
 }
 
 // writer returns the batch's writer for ep, or nil if ep takes frames one at a time.

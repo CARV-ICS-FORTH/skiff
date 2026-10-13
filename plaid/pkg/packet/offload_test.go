@@ -46,6 +46,7 @@ type spec struct {
 	payload    []byte
 	ipOpts     []byte // IPv4 options
 	dstMAC     byte
+	addr       byte // not 0: the addresses are made from it (see addrs)
 	badCsum    bool
 	fragOffset uint16
 }
@@ -57,10 +58,26 @@ func addrs(v6 bool) (src, dst []byte) {
 	return []byte{10, 244, 1, 4}, []byte{10, 244, 2, 5}
 }
 
+// addrs returns the source and destination addresses of s: the default ones, or, if s.addr
+// is set, others that depend on it.
+func (s spec) addrs() (src, dst []byte) {
+	if s.addr == 0 {
+		return addrs(s.v6)
+	}
+	if s.v6 {
+		a := make([]byte, 32)
+		for i := range a {
+			a[i] = s.addr + byte(8+i)
+		}
+		return a[:16], a[16:]
+	}
+	return []byte{10, 244, s.addr, 4}, []byte{10, 244, 7, s.addr}
+}
+
 // build returns the Ethernet frame for s with its IP and TCP checksums complete, as a
 // peer's stack would send it.
 func build(s spec) []byte {
-	src, dst := addrs(s.v6)
+	src, dst := s.addrs()
 	tcpLen := 20 + len(s.opts) + len(s.payload)
 	f := []byte{2, 0, 0, 0, 0, s.dstMAC, 2, 0, 0, 0, 0, 1, 8, 0}
 	if s.v6 {
@@ -95,7 +112,7 @@ func build(s spec) []byte {
 // pseudo-header.
 func kernelSuper(s spec, mss int) (packet.VnetHeader, []byte) {
 	f := build(s)
-	src, dst := addrs(s.v6)
+	src, dst := s.addrs()
 	l3 := 14
 	ihl := 40
 	if !s.v6 {

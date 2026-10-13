@@ -20,8 +20,10 @@ import (
 // together (NewWriter) into one segment for the pod. A TAP without a virtio header is read and
 // written as plain frames. With SetPipeline the reading and processing, and the writing, are
 // split between goroutines; with SetPassthrough a TSO segment that the bridge would deliver as
-// it is to another TAP with offloads, or to the Service engine, is not cut. The bubble's TAP can
-// have an MTU above the pods' (SetUplinkMTU). A super-frame that the overlay put together is
+// it is to another TAP with offloads, to a node that takes it over the overlay, or to the
+// Service engine, is not cut. The bubble's TAP can have an MTU above the pods' (SetUplinkMTU),
+// and the MSS of the TCP handshakes that cross it is changed (setMSS) for what slirp4netns
+// is cheapest to feed. A super-frame that the overlay put together is
 // queued for the writer in its own buffer (AddSuperBuffer). The README (Offloads) describes
 // the whole.
 type TapEndpoint struct {
@@ -100,6 +102,8 @@ type OffloadStats struct {
 	PassedBytes       uint64 // the bytes of their frames
 	JoinedForUplink   uint64 // pods' TSO segments written to the bubble as one packet
 	UplinkSuperFrames uint64 // large TCP frames from the bubble made TSO segments
+	MSSRaised         uint64 // handshakes written to the bubble with their MSS raised to the uplink's
+	MSSLowered        uint64 // handshakes from the bubble written to pods with their MSS lowered
 	Fragmented        uint64 // packets from the bubble fragmented to the pod MTU
 	Fragments         uint64 // the fragments they were cut into
 	OversizeDropped   uint64 // packets from the bubble above the pod MTU that were dropped
@@ -116,9 +120,9 @@ type PipelineStats struct {
 }
 
 var stats struct {
-	readSuper, readSegments, readDropped, writeSuper, writeSegments, passSuper, passBytes atomic.Uint64
-	joinUplink, uplinkSuper, fragmented, fragments, oversizeDropped                       atomic.Uint64
-	readInline, readQueued, readQueueFull, writeInline, writeQueued, writeQueueFull       atomic.Uint64
+	readSuper, readSegments, readDropped, writeSuper, writeSegments, passSuper, passBytes  atomic.Uint64
+	joinUplink, uplinkSuper, fragmented, fragments, oversizeDropped, mssRaised, mssLowered atomic.Uint64
+	readInline, readQueued, readQueueFull, writeInline, writeQueued, writeQueueFull        atomic.Uint64
 }
 
 // Pipeline returns the counters of the TAP pipelines.
@@ -141,6 +145,8 @@ func Offloads() OffloadStats {
 		PassedBytes:       stats.passBytes.Load(),
 		JoinedForUplink:   stats.joinUplink.Load(),
 		UplinkSuperFrames: stats.uplinkSuper.Load(),
+		MSSRaised:         stats.mssRaised.Load(),
+		MSSLowered:        stats.mssLowered.Load(),
 		Fragmented:        stats.fragmented.Load(),
 		Fragments:         stats.fragments.Load(),
 		OversizeDropped:   stats.oversizeDropped.Load(),
@@ -230,11 +236,53 @@ func (t *TapEndpoint) Write(frame []byte) error {
 		return err
 	}
 
+	// The caller's frame may go to other endpoints as well (a flood): it is not changed.
+	if t.uplinkMTU > 0 {
+		if c, ok := packet.RaiseSYNMSSCopy(frame, t.uplinkMTU); ok {
+			stats.mssRaised.Add(1)
+			frame = c
+		}
+	}
 	if t.vw != nil {
 		return t.vw.write(frame)
 	}
 	_, err := t.file.Write(frame)
 	return err
+}
+
+// podSYNMTU is the MTU whose MSS (1460, or 1440 for IPv6) a pod with offloads is told its
+// peer in the bubble takes. slirp4netns has no TCP window scaling (a window of 64 KB), and
+// a pod that sends segments of its own large MTU puts many single segments into it besides
+// its TSO segments; at 1460 the pod sends the same bytes as TSO segments, which are joined
+// into one packet each for the bubble.
+const podSYNMTU = 1500
+
+// setMSS changes the MSS of a TCP handshake in frame, which is about to be written to this
+// TAP and is this writer's own copy, if it should be told another one; src is where the
+// frame came in, nil if it is not known. The MSS the two ends announce to each other is
+// not what crosses a wire, as plaidd joins and cuts the segments, so it can choose it:
+//
+// The bubble is told that the pod takes segments of the uplink MTU, whoever the handshake
+// is from, so that its stack sends large packets, which become TSO segments of the pod's
+// MSS (fitPodMTU): nothing larger than the pod MTU reaches a pod.
+//
+// A pod with offloads is told no more than podSYNMTU allows if the handshake is from the
+// bubble. A pod without offloads is not (it would send that many more packets), nor is one
+// on another node (the overlay carries the pods' segments as they are, and never gets here).
+//
+// The checksum is complete on every path here: a segment whose sum the pod left to us is
+// completed when it is read, and a TSO segment, whose sum is partial, is never a handshake.
+func (t *TapEndpoint) setMSS(frame []byte, src bridge.Endpoint) {
+	switch {
+	case t.uplinkMTU > 0:
+		if packet.RaiseSYNMSS(frame, t.uplinkMTU) {
+			stats.mssRaised.Add(1)
+		}
+	case t.offload:
+		if b, ok := src.(*TapEndpoint); ok && b.uplinkMTU > 0 && packet.LowerSYNMSS(frame, podSYNMTU) {
+			stats.mssLowered.Add(1)
+		}
+	}
 }
 
 // ReadFrames waits for the pod to send and returns the Ethernet frames of what it sent:

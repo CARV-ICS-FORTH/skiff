@@ -270,3 +270,47 @@ func TestProcessFramesDeliversInOrder(t *testing.T) {
 		}
 	}
 }
+
+// sourceEndpoint is a batchEndpoint whose writer is a SourceWriter: it records the endpoint
+// each frame came in at.
+type sourceEndpoint struct {
+	*batchEndpoint
+	from []Endpoint
+}
+
+func (e *sourceEndpoint) NewWriter() FrameWriter {
+	return &sourceWriter{recordingWriter{e: e.batchEndpoint}, e}
+}
+
+type sourceWriter struct {
+	recordingWriter
+	e *sourceEndpoint
+}
+
+func (w *sourceWriter) Add(f *packet.EthernetFrame) error {
+	w.e.from = append(w.e.from, nil)
+	return w.recordingWriter.Add(f)
+}
+
+func (w *sourceWriter) AddFrom(src Endpoint, f *packet.EthernetFrame) error {
+	w.e.from = append(w.e.from, src)
+	return w.recordingWriter.Add(f)
+}
+
+// A writer that wants the source of a frame is given the endpoint a frame was read from,
+// and nil for one that came through the overlay (InjectFrame).
+func TestSourceWriterIsToldWhereAFrameCameIn(t *testing.T) {
+	b, pod1, _ := setupTestBridge()
+	pod3 := &sourceEndpoint{batchEndpoint: &batchEndpoint{mockEndpoint: newMockEndpoint("pod3", "tap3", "10.244.1.4", "02:00:00:00:00:04")}}
+	_ = b.AddEndpoint(pod3)
+	if err := b.ProcessFrames(pod1, [][]byte{unicast(pod1.MAC(), pod3.MAC(), 1)}); err != nil {
+		t.Fatal(err)
+	}
+	f := &packet.EthernetFrame{DstMAC: pod3.MAC(), SrcMAC: pod1.MAC(), EtherType: packet.EtherTypeIPv4, Payload: []byte{2, 2, 3, 4}}
+	if err := b.InjectFrame(f); err != nil {
+		t.Fatal(err)
+	}
+	if len(pod3.from) != 2 || pod3.from[0] != Endpoint(pod1) || pod3.from[1] != nil {
+		t.Errorf("sources %v, want pod1 and nil", pod3.from)
+	}
+}

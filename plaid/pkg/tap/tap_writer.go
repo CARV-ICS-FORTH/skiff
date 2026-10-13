@@ -30,7 +30,12 @@ func (t *TapEndpoint) NewWriter() bridge.FrameWriter {
 }
 
 // Add holds frame, after writing the frame held before it unless frame joins that.
-func (w *tapWriter) Add(frame *packet.EthernetFrame) error {
+func (w *tapWriter) Add(frame *packet.EthernetFrame) error { return w.AddFrom(nil, frame) }
+
+// AddFrom is Add for a frame that came in at src (see bridge.SourceWriter). A TCP
+// handshake has its MSS changed in the copy that is held, never in the caller's frame,
+// and never joins another frame: only ACKs do.
+func (w *tapWriter) AddFrom(src bridge.Endpoint, frame *packet.EthernetFrame) error {
 	if w.c.Merge(frame) {
 		return nil
 	}
@@ -38,6 +43,7 @@ func (w *tapWriter) Add(frame *packet.EthernetFrame) error {
 	if serr := w.c.Start(frame); err == nil {
 		err = serr
 	}
+	w.t.setMSS(w.c.Held(), src)
 	return err
 }
 

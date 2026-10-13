@@ -226,8 +226,10 @@ type TapPipelineStatus struct {
 // writes that joined several segments for a pod and the segments in them, and the TSO
 // segments that were written whole to another TAP instead of being cut, with their bytes.
 // With an uplink MTU above the pods': the pods' segments written to the bubble as one
-// packet, the large TCP frames from the bubble made segments, the packets from it
-// fragmented and the fragments, and those above the pod MTU that were dropped.
+// packet, the large TCP frames from the bubble made segments, the handshakes written to
+// the bubble with their MSS raised and those from it written to pods with it lowered, the
+// packets from it fragmented and the fragments, and those above the pod MTU that were
+// dropped.
 type TapOffloadStatus struct {
 	Enabled           bool   `json:"enabled"`
 	Endpoints         int    `json:"endpoints"`
@@ -240,6 +242,8 @@ type TapOffloadStatus struct {
 	PassedBytes       uint64 `json:"passed_bytes"`
 	JoinedForUplink   uint64 `json:"uplink_joined"`
 	UplinkSuperFrames uint64 `json:"uplink_super_frames"`
+	MSSRaised         uint64 `json:"uplink_mss_raised"`
+	MSSLowered        uint64 `json:"uplink_mss_lowered"`
 	Fragmented        uint64 `json:"fragmented"`
 	Fragments         uint64 `json:"fragments"`
 	OversizeDropped   uint64 `json:"oversize_dropped"`
