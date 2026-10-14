@@ -39,7 +39,8 @@ profile_required_cases() {
         T58-init-retry T59-files-failure-stops-pod \
         T60-pod-names-and-dns T61-termination-message T62-stop-signal T63-api-service \
         T64-crash-loop-backoff T65-restart-sees-new-config T66-volume-updates \
-        T67-statefulset T68-daemonset T69-job-retries T70-cronjob T71-kubectl-cp T72-file-modes T73-status-repaired
+        T67-statefulset T68-daemonset T69-job-retries T70-cronjob T71-kubectl-cp T72-file-modes T73-status-repaired \
+        T74-system-images
 }
 
 profile_is_required() {

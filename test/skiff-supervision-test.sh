@@ -28,9 +28,10 @@ mkdir -p "$HOME/.skiff"; echo "$*" >> "$HOME/.skiff/scancel-args"
 if [ -s "$HOME/.skiff/bubble-pid" ]; then kill -TERM "$(cat "$HOME/.skiff/bubble-pid")" 2>/dev/null || true; fi
 exit 0
 EOF
+# apptainer converts the image archive to the SIF (the bubbles are stand-ins and run nothing).
 cat > "$test_dir/bin/apptainer" <<'EOF'
 #!/usr/bin/env bash
-case "$*" in *docker://docker.io/chazapis/skiff:latest*) touch "$HOME/.skiff/published-image-used" ;; esac
+case "$1" in build) echo "$*" >> "$HOME/.skiff/conversions"; : > "$3" ;; esac
 exit 0
 EOF
 cat > "$test_dir/bin/srun" <<'EOF'
@@ -62,6 +63,8 @@ sleep 0.1
 exit "$TEST_CHILD_MODE"
 EOF
 cp "$script_dir/../scripts/skiff.sh" "$test_dir/repo/scripts/"
+# a release: the version beside the scripts' folder, and its image archive in each home (below)
+echo "9.9.9-test" > "$test_dir/repo/VERSION"
 chmod +x "$test_dir/bin/"* "$test_dir/fake-bubble"
 export FAKE_BUBBLE="$test_dir/fake-bubble"
 export PATH="$test_dir/bin:$PATH"
@@ -114,6 +117,7 @@ for mode in 7 0 early empty term termsteps; do
     [ "$mode" != 7 ] || unset SKIFF_DEV
     export TEST_EMPTY_NODES=0
     [ "$mode" != empty ] || export TEST_EMPTY_NODES=1
+    mkdir -p "$HOME/.skiff/images"; : > "$HOME/.skiff/images/skiff-9.9.9-test.tar"
     rc=0
     if [ "$mode" = term ] || [ "$mode" = termsteps ]; then
         bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/$mode.log" 2>&1 &
@@ -148,7 +152,10 @@ for mode in 7 0 early empty term termsteps; do
     if [ "$mode" != empty ] && [ "$mode" != early ]; then
         grep -q -- '--exclusive --cpus-per-task=8 bash' "$HOME/.skiff/step-args" || { echo "$mode: the bubble's step did not ask for the node's CPUs: $(cat "$HOME/.skiff/step-args" 2>&1)" >&2; exit 1; }
     fi
-    if [ "$mode" = 7 ] && [ ! -f "$HOME/.skiff/published-image-used" ]; then
-        echo "Default deployment did not select the published image" >&2; exit 1
+    # The job runs the release's image: the SIF of its version, made from the archive.
+    if [ "$mode" != empty ]; then
+        grep -qx "build --force $HOME/.skiff/images/skiff-9.9.9-test.sif docker-archive://$HOME/.skiff/images/skiff-9.9.9-test.tar" "$HOME/.skiff/conversions" \
+            && grep -q "^Image: $HOME/.skiff/images/skiff-9.9.9-test.sif\$" "$test_dir/$mode.log" \
+            || { echo "$mode: the job did not prepare the release's image: $(cat "$HOME/.skiff/conversions" 2>&1)" >&2; exit 1; }
     fi
 done

@@ -132,6 +132,8 @@ user=$(id -un)
 printf '#!/bin/sh\ncase "$1" in buildcfg) echo "LIBEXECDIR=${FAKE_LIBEXEC:-}" ;; *) echo "apptainer version ${FAKE_APPTAINER:-1.5.4}" ;; esac\n' > "$nodedir/tools/apptainer"
 printf '#!/bin/sh\necho "slirp4netns version ${FAKE_SLIRP:-1.2.1}"\necho "commit: abcdef"\n' > "$nodedir/tools/slirp4netns"
 for tool in socat ip newuidmap newgidmap; do printf '#!/bin/sh\n' > "$nodedir/tools/$tool"; done
+# curl, for the check of the registries: the HTTP status they answer (000: no answer)
+printf '#!/bin/sh\nprintf "%%s" "${FAKE_HTTP:-401}"\n' > "$nodedir/tools/curl"
 chmod +x "$nodedir/tools/"*
 chmod u+s "$nodedir/tools/newuidmap" "$nodedir/tools/newgidmap"   # (setuid root on a real host)
 # stat: the owner of the scratch directory and the kind of filesystem it is on.
@@ -162,6 +164,10 @@ node_check() { # node_check PATH_DIRS TMP_DIR [ROLE [VAR=value...]]: output and 
     env -i PATH="$path" SKIFF_TMP_DIR="$tmp" SKIFF_SYS_ROOT="$nodedir/sys" "$@" "$BASH" -c 'source "$1"; skiff_check_node "$2"' _ "$repo_dir/scripts/skiff.sh" "$role" 2>&1
 }
 GOOD="$nodedir/tools:$nodedir/base"
+# the home of the check command, where the Skiff image of the repository's version is
+checkhome="$nodedir/home"
+mkdir -p "$checkhome/.skiff/images"
+: > "$checkhome/.skiff/images/skiff-$(cat "$repo_dir/VERSION").sif"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
 expect "a node that has everything, and nothing to report" "$status:$out" "0:"
 [ -d "$nodedir/scratch" ] || { echo "FAIL the scratch directory was not created"; failures=$((failures + 1)); }
@@ -170,7 +176,7 @@ expect "a node without the host programs is refused" "$status" 1
 for tool in apptainer slirp4netns socat ip; do
     grep -q -- "required program(s) not found in PATH:.* $tool" <<< "$out" || { echo "FAIL the message does not name $tool: $out"; failures=$((failures + 1)); }
 done
-expect "and told how to get them from the image" "$(grep -c "skiff.sh tools" <<< "$out")" 1
+expect "and told how to get them from the image" "$(grep -c "skiff.sh download" <<< "$out")" 1
 mkdir "$nodedir/only-socat-missing"; for tool in apptainer slirp4netns ip; do ln -s "$nodedir/tools/$tool" "$nodedir/only-socat-missing/$tool"; done
 out=$(node_check "$nodedir/only-socat-missing:$nodedir/base" "$nodedir/scratch"); status=$?
 expect "only what is missing is named" "$status:$(grep -o 'PATH:.*(' <<< "$out")" "1:PATH: socat ("
@@ -273,10 +279,10 @@ mv "$nodedir/sys/etc/subgid" "$nodedir/sys/etc/subgid.away"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
 expect "a range for the user ids and none for the group ids is no range" "$status:$(grep -c 'WARNING: no subordinate' <<< "$out")" "0:1"
 mv "$nodedir/sys/etc/subgid.away" "$nodedir/sys/etc/subgid"
-out=$(env -i PATH="$GOOD" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" "$repo_dir/scripts/skiff.sh" check node 2>&1); status=$?
+out=$(env -i PATH="$GOOD" HOME="$checkhome" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" "$repo_dir/scripts/skiff.sh" check node 2>&1); status=$?
 expect "a node with a range says plainly that it is ready" "$status:$(grep -c ': ready for Skiff$' <<< "$out")" "0:1"
 mv "$nodedir/sys/etc/subuid" "$nodedir/sys/etc/subuid.away"
-out=$(env -i PATH="$GOOD" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" "$repo_dir/scripts/skiff.sh" check node 2>&1); status=$?
+out=$(env -i PATH="$GOOD" HOME="$checkhome" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" "$repo_dir/scripts/skiff.sh" check node 2>&1); status=$?
 expect "and without one that it is ready with the warning" "$status:$(grep -c ': ready for Skiff, with the warning above$' <<< "$out")" "0:1"
 mv "$nodedir/sys/etc/subuid.away" "$nodedir/sys/etc/subuid"
 
@@ -382,7 +388,7 @@ expect "the report says an extracted program takes the place of the system's" "$
 expect "and a program that replaces nothing is just placed" "$(grep -c "slirp4netns 1.2.1 ($nodedir/tools/slirp4netns)" <<< "$out")" 1
 
 # the command: `skiff.sh check`
-check_cmd() { env -i PATH="$GOOD" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$@" "$BASH" "$repo_dir/scripts/skiff.sh" check controller 2>&1; }
+check_cmd() { env -i PATH="$GOOD" HOME="$checkhome" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$@" "$BASH" "$repo_dir/scripts/skiff.sh" check controller 2>&1; }
 out=$(check_cmd); status=$?
 expect "the check command on a ready node says so" "$status:$(grep -c ': ready for Skiff' <<< "$out")" "0:1"
 expect "and says what the node is" "$(grep -c 'kernel .*cgroup' <<< "$out"):$(grep -c 'apptainer 1.5.4' <<< "$out"):$(grep -c 'scratch ' <<< "$out")" "1:1:1"
@@ -394,6 +400,22 @@ out=$(check_cmd SKIFF_POD_CIDR=10.0.0.0/33); status=$?
 expect "an invalid setting is part of the check" "$status:$(grep -c 'SKIFF_POD_CIDR' <<< "$out")" "1:1"
 out=$(env -i PATH="$GOOD" "$BASH" "$repo_dir/scripts/skiff.sh" check nonsense 2>&1); status=$?
 expect "an unknown role is a usage error" "$status" 2
+
+# the image and the registries (T75)
+out=$(check_cmd FAKE_HTTP=000); status=$?
+expect "a node that reaches no registry is not refused, and is warned, with what to run where" "$status:$(grep -c 'WARNING: this node cannot reach registry-1.docker.io and registry.k8s.io: images that are not in the cache cannot be pulled here' <<< "$out"):$(grep -c "bash skiff.sh download IMAGE...' for the images of your own pods" <<< "$out"):$(grep -c 'ready for Skiff, with the warning above' <<< "$out")" "0:1:1:1"
+mkdir "$nodedir/nocurl"; for f in "$nodedir/tools/"*; do [ "${f##*/}" = curl ] || ln -s "$f" "$nodedir/nocurl/${f##*/}"; done
+out=$(env -i PATH="$nodedir/nocurl:$nodedir/base" HOME="$checkhome" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" "$repo_dir/scripts/skiff.sh" check controller 2>&1); status=$?
+expect "without curl the check says it cannot tell" "$status:$(grep -c 'cannot tell whether this node reaches the image registries (there is no curl)' <<< "$out")" "0:1"
+mv "$checkhome/.skiff/images" "$checkhome/.skiff/images.away"
+out=$(check_cmd); status=$?
+expect "a release without its image is refused, and told to download it on the login node" "$status:$(grep -c "the Skiff image of version $(cat "$repo_dir/VERSION") is not in $checkhome/.skiff/images: run 'bash skiff.sh download' first, on a node that has Internet access (the login node)" <<< "$out"):$(grep -c 'NOT ready for Skiff' <<< "$out")" "1:1:1"
+out=$(check_cmd SKIFF_DEV=1); status=$?
+expect "and so is development without the uploaded image" "$status:$(grep -c "the development image is not in $checkhome/.skiff/images (neither skiff.sif nor skiff.tar): run 'make develop'" <<< "$out")" "1:1"
+mkdir -p "$checkhome/.skiff/images"; : > "$checkhome/.skiff/images/skiff.tar"
+out=$(check_cmd SKIFF_DEV=1); status=$?
+expect "development with the uploaded archive (the job converts it)" "$status:$(grep -c ': ready for Skiff$' <<< "$out")" "0:1"
+rm -rf "$checkhome/.skiff/images"; mv "$checkhome/.skiff/images.away" "$checkhome/.skiff/images"
 
 # skiff_listed under pipefail with a command that writes line by line (as `apptainer
 # instance list` does): the word is found every time, however many lines follow it.
@@ -465,13 +487,134 @@ out=$(run_tools "$work/junk.tar"); status=$?
 expect "tools: a file that is not an image archive is refused" "$status:$(grep -c 'not a docker image archive' <<< "$out")" "1:1"
 mkdir -p "$work/home2/.skiff/images"
 cp "$work/skiff.tar" "$work/home2/.skiff/images/skiff.tar"
-out=$(env -i PATH="$PATH" HOME="$work/home2" bash "$repo_dir/scripts/skiff.sh" tools 2>&1); status=$?
-expect "tools: without a path it takes the development deployment's archive" "$status:$([ -x "$work/home2/.skiff/tools/bin/kubectl" ] && echo yes)" "0:yes"
+out=$(env -i PATH="$PATH" HOME="$work/home2" SKIFF_DEV=1 bash "$repo_dir/scripts/skiff.sh" tools 2>&1); status=$?
+expect "tools: without a path, in development, it takes the uploaded archive" "$status:$([ -x "$work/home2/.skiff/tools/bin/kubectl" ] && echo yes)" "0:yes"
+mkdir -p "$work/home3/.skiff/images"
+cp "$work/skiff.tar" "$work/home3/.skiff/images/skiff-$(cat "$repo_dir/VERSION").tar"
+out=$(env -i PATH="$PATH" HOME="$work/home3" bash "$repo_dir/scripts/skiff.sh" tools 2>&1); status=$?
+expect "tools: without a path, in a release, it takes the archive of the release's version" "$status:$([ -x "$work/home3/.skiff/tools/bin/kubectl" ] && echo yes)" "0:yes"
+# a program moved out of the tree (an Apptainer the host cannot run) stays out
+mv "$work/home3/.skiff/tools/bin/apptainer" "$work/home3/apptainer.away"
+out=$(env -i PATH="$PATH" HOME="$work/home3" bash "$repo_dir/scripts/skiff.sh" tools 2>&1); status=$?
+expect "tools: the same archive again leaves a program that was moved out of the tree out" "$status:$(grep -c 'already' <<< "$out"):$([ -e "$work/home3/.skiff/tools/bin/apptainer" ] && echo back || echo out)" "0:1:out"
 # a new archive replaces the tools (and keeps no copy of the old ones)
 printf '#!/bin/sh\necho "apptainer version 10.0"\n' > "$work/layer1/opt/skiff/tools/bin/apptainer"
 tar -C "$work/layer1" -czf "$work/arc/blobs/sha256/aaa" .
 tar -C "$work/arc" -cf "$work/skiff2.tar" manifest.json blobs
 out=$(run_tools "$work/skiff2.tar")
 expect "tools: a new archive replaces the old tools" "$("$work/home/.skiff/tools/bin/apptainer" --version):$(ls -A "$work/home/.skiff" | tr '\n' ' ')" "apptainer version 10.0:tools "
+
+# --- skiff.sh download (T76) --------------------------------------------------------------
+# The registry's documents, as Docker Hub answers them (recorded: busybox 1.37.0, whose index
+# also lists attestations, as "unknown/unknown", and other platforms, with variants).
+reg_dir="$repo_dir/test/registry"
+out=$(bash -c 'source "$1"; skiff_index_digest "$2" amd64; skiff_index_digest "$2" arm64; skiff_index_digest "$2" mips' _ "$repo_dir/scripts/skiff.sh" "$reg_dir/busybox-1.37.0-index.json")
+expect "download: the manifest of each platform is found in a real index" "$(tr '\n' ' ' <<< "$out")" "sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4 sha256:d82c2ab94640ded77cf76514ce6a84870761105058a4a9e51b05a8a79be97a6c "
+out=$(bash -c 'source "$1"; skiff_manifest_blobs "$2"' _ "$repo_dir/scripts/skiff.sh" "$reg_dir/busybox-1.37.0-manifest-arm64.json")
+expect "download: the config and the layers of a real manifest, in order" "$(tr '\n' ' ' <<< "$out")" "sha256:ad4f11f7c85f87c0a6d6c0fe492ad53f9cdcff6e8c88b881360c70eff701c67b sha256:af820adcc158da1182aefa4259d1eb0a2e72416663faf00f6700f5415111974e "
+# Skifflet's cache names and pull references (the same examples as the Go test
+# Test_CacheNamesShared, so the script and Skifflet agree)
+digest=sha256:543c40fd093964bc9ab509d3e791f9989963021f1e9e4c9c7b6700b02bfb227b
+names() { bash -c 'source "$1"; shift; while [ $# -gt 0 ]; do skiff_cache_name "$1" "$2"; shift 2; done' _ "$repo_dir/scripts/skiff.sh" "$@" | tr '\n' ' '; }
+expect "download: the cache names are Skifflet's" "$(names registry.k8s.io/pause:3.10 amd64 rancher/mirrored-coredns-coredns:1.14.7 arm64 "localhost:5000/team/app:v1@$digest" amd64 nginx arm64)" \
+    "registry.k8s.io_pause_3.10_6f731803067f31e9_amd64.sif rancher_mirrored-coredns-coredns_1.14.7_2ff2bc0f32350611_arm64.sif localhost_5000_team_app_v1_sha256_543c40fd093964bc9ab509d3e791f9_533cb68c43dbbdf8_amd64.sif nginx_5be1ecc7935f1dd8_arm64.sif "
+refs=$(bash -c 'source "$1"; shift; for r in "$@"; do skiff_pull_reference "$r"; done' _ "$repo_dir/scripts/skiff.sh" "alpine:latest@$digest" "localhost:5000/team/app:v1@$digest" "localhost:5000/team/app@$digest" nginx:1.27 | tr '\n' ' ')
+expect "download: and so are the pull references" "$refs" "alpine@$digest localhost:5000/team/app@$digest localhost:5000/team/app@$digest nginx:1.27 "
+# The system images are those of the storage manifest and of Skifflet's pause default.
+sys_images=$(bash -c 'source "$1"; echo "$SKIFF_SYSTEM_IMAGES"' _ "$repo_dir/scripts/skiff.sh")
+for ref in $(sed -n 's/^ *image: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$repo_dir/images/skiff/storage.yaml") \
+           $(sed -n 's/.*"pause-image", "\([^"]*\)".*/\1/p' "$repo_dir/skifflet/cmd/skifflet/commands/root/flag.go"); do
+    grep -qxF "$ref" <<< "$sys_images" || { echo "FAIL $ref (storage manifest or Skifflet's pause default) is not among the system images of skiff.sh"; failures=$((failures + 1)); }
+done
+expect "download: there are five system images" "$(grep -c . <<< "$sys_images")" 5
+
+# A release package (its own VERSION) and a fake registry that serves an image made of the
+# tool archive's layers: curl answers from files, apptainer converts and pulls into files.
+pkg="$work/pkg"; mkdir -p "$pkg/scripts"; cp "$repo_dir/scripts/skiff.sh" "$pkg/scripts/"; echo "9.9.9-test" > "$pkg/VERSION"
+reg="$work/reg"; mkdir -p "$reg/manifests" "$reg/blobs"
+sha() { sha256sum "$1" | awk '{print $1}'; }
+printf '{"architecture":"any","os":"linux"}' > "$work/config.json"
+for f in "$work/config.json" "$work/arc/blobs/sha256/aaa" "$work/arc/blobs/sha256/bbb"; do cp "$f" "$reg/blobs/sha256:$(sha "$f")"; done
+printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%s","size":1},"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:%s","size":1},{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"sha256:%s","size":1}]}' \
+    "$(sha "$work/config.json")" "$(sha "$work/arc/blobs/sha256/aaa")" "$(sha "$work/arc/blobs/sha256/bbb")" > "$work/manifest.json"
+mdigest=sha256:$(sha "$work/manifest.json"); cp "$work/manifest.json" "$reg/manifests/$mdigest"
+case "$(uname -m)" in x86_64) host_arch=amd64 ;; *) host_arch=arm64 ;; esac
+printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"%s","size":1,"platform":{"architecture":"%s","os":"linux"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%064d","size":1,"platform":{"architecture":"s390x","os":"linux"}}]}' \
+    "$mdigest" "$host_arch" 0 > "$reg/manifests/9.9.9-test"
+printf '{"token":"t0k","access_token":"t0k"}' > "$reg/token"
+mkdir -p "$work/dlbin"
+cat > "$work/dlbin/curl" <<'EOF2'
+#!/usr/bin/env bash
+# The registry's answers from FAKE_REG; the token must come with every registry request.
+out="" url="" auth=""
+while [ $# -gt 0 ]; do
+    case "$1" in -o) out="$2"; shift ;; -H) case "$2" in Authorization:*) auth="$2" ;; esac; shift ;; -*) ;; *) url="$1" ;; esac
+    shift
+done
+echo "$url" >> "$FAKE_REG/requests"
+case "$url" in
+    https://auth.docker.io/token*) file="$FAKE_REG/token" ;;
+    https://registry-1.docker.io/v2/carvicsforth/skiff/*) [ "$auth" = "Authorization: Bearer t0k" ] || exit 22; file="$FAKE_REG/${url#https://registry-1.docker.io/v2/carvicsforth/skiff/}" ;;
+    *) exit 6 ;;
+esac
+[ -f "$file" ] || exit 22
+cp "$file" "$out"
+EOF2
+cat > "$work/dlbin/apptainer" <<'EOF2'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_REG/apptainer"
+case "$1" in
+    --version) echo "apptainer version 1.5.4" ;;
+    build) for a in "$@"; do case "$a" in docker-archive://*) tar -tf "${a#docker-archive://}" manifest.json >/dev/null || exit 1 ;; esac; done; echo sif > "$4" ;;
+    pull) echo "$6" > "$5" ;;
+esac
+EOF2
+chmod +x "$work/dlbin/"*
+mkdir -p "$work/dlbase"
+for command in bash sh tar gzip sha256sum awk sed tr grep mkdir mktemp mv rm cp cat uname env chmod ls; do ln -s "$(command -v "$command")" "$work/dlbase/$command"; done
+# (the fake tools in the archive run with /bin/sh; the extracted ones come first in PATH, so
+# the fake apptainer is put there over the archive's after the first extraction)
+run_download() { env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" "$@" bash "$pkg/scripts/skiff.sh" download 2>&1; }
+over_tools() { [ ! -d "$work/dlhome/.skiff/tools/bin" ] || cp "$work/dlbin/apptainer" "$work/dlhome/.skiff/tools/bin/apptainer"; }
+mkdir -p "$work/dlhome/.skiff/images"; : > "$work/dlhome/.skiff/images/skiff-9.9.8.sif"; : > "$work/dlhome/.skiff/images/skiff-9.9.8.tar"; : > "$work/dlhome/.skiff/images/skiff.tar"
+# the first run stops at the archive's own apptainer, which is not this fake: put it over and run again
+out=$(run_download); status=$?
+over_tools
+out=$(run_download); status=$?
+tarfile="$work/dlhome/.skiff/images/skiff-9.9.9-test.tar"
+expect "download: a release gets the image of its version, saved as an archive with its layers in order" "$status:$(tar -xOf "$tarfile" manifest.json 2>/dev/null)" \
+    "0:[{\"Config\":\"blobs/sha256/$(sha "$work/config.json")\",\"RepoTags\":[\"docker.io/carvicsforth/skiff:9.9.9-test\"],\"Layers\":[\"blobs/sha256/$(sha "$work/arc/blobs/sha256/aaa")\",\"blobs/sha256/$(sha "$work/arc/blobs/sha256/bbb")\"]}]"
+expect "download: the tools come out of it" "$([ -x "$work/dlhome/.skiff/tools/bin/kubectl" ] && echo yes)" yes
+expect "download: and the SIF is made from it" "$(cat "$work/dlhome/.skiff/images/skiff-9.9.9-test.sif" 2>/dev/null):$(grep -c "^build --force --disable-cache .*skiff-9.9.9-test.sif.tmp-[0-9]* docker-archive://$tarfile\$" "$reg/apptainer")" "sif:1"
+expect "download: the other version is removed, development's archive is not" "$(ls "$work/dlhome/.skiff/images" | tr '\n' ' ')" "skiff-9.9.9-test.sif skiff-9.9.9-test.tar skiff.tar "
+cached=$(ls "$work/dlhome/.skiff/.images" | tr '\n' ' ')
+expect "download: the system images go to Skifflet's cache, under its names" "$cached" "$(names rancher/local-path-provisioner:v0.0.32 "$host_arch" rancher/mirrored-coredns-coredns:1.14.7 "$host_arch" rancher/mirrored-library-busybox:1.37.0 "$host_arch" rancher/mirrored-metrics-server:v0.9.0 "$host_arch" registry.k8s.io/pause:3.10 "$host_arch")"
+expect "download: each pulled for this architecture" "$(grep -c "^pull --disable-cache --arch $host_arch .*\.tmp-[0-9]* docker://" "$reg/apptainer")" 5
+expect "download: and it says what comes next" "$(grep -c 'Check a compute node next: srun -N1 bash skiff.sh check' <<< "$out")" 1
+: > "$reg/apptainer"; : > "$reg/requests"
+out=$(run_download); status=$?
+expect "download: again, it fetches, converts and pulls nothing" "$status:$(grep -c . "$reg/requests"):$(grep -c '^build\|^pull' "$reg/apptainer"):$(grep -c 'in the cache already' <<< "$out")" "0:0:0:5"
+out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" bash "$pkg/scripts/skiff.sh" download docker.io/library/nginx:1.27 2>&1); status=$?
+expect "download: an image of the user's own goes to the cache, and nothing else is done" "$status:$([ -f "$work/dlhome/.skiff/.images/$(names docker.io/library/nginx:1.27 "$host_arch" | tr -d ' ')" ] && echo yes):$(grep -c '^pull' "$reg/apptainer"):$(grep -c '^build' "$reg/apptainer")" "0:yes:1:0"
+# failures: a blob that is not what its digest says, a version that is not published, no VERSION
+rm -rf "$work/dlhome2"; mkdir -p "$work/dlhome2"
+cp "$reg/blobs/sha256:$(sha "$work/arc/blobs/sha256/bbb")" "$work/bbb.good"; echo tampered >> "$reg/blobs/sha256:$(sha "$work/arc/blobs/sha256/bbb")"
+out=$(run_download HOME="$work/dlhome2"); status=$?
+expect "download: a blob that does not match its digest is refused and nothing is left" "$status:$(grep -c 'could not be fetched intact' <<< "$out"):$(ls -A "$work/dlhome2/.skiff/images" | tr '\n' ' ')" "1:1:"
+cp "$work/bbb.good" "$reg/blobs/sha256:$(sha "$work/arc/blobs/sha256/bbb")"
+echo "9.9.7" > "$pkg/VERSION"
+out=$(run_download HOME="$work/dlhome2"); status=$?
+expect "download: a version that is not published is named" "$status:$(grep -c 'there is no carvicsforth/skiff:9.9.7 on Docker Hub' <<< "$out")" "1:1"
+rm "$pkg/VERSION"
+out=$(run_download HOME="$work/dlhome2"); status=$?
+expect "download: a release without its VERSION file says where it belongs" "$status:$(grep -c "no Skiff version in $pkg/scripts/../VERSION" <<< "$out")" "1:1"
+out=$(run_download HOME="$work/dlhome2" SKIFF_DEV=1); status=$?
+expect "download: development without the uploaded archive says how to get it" "$status:$(grep -c "make develop' puts it there" <<< "$out")" "1:1"
+echo "9.9.9-test" > "$pkg/VERSION"
+# an Apptainer that cannot run here (an older C library) stops the download, with where to read
+printf '#!/bin/sh\necho "apptainer: version GLIBC_2.34 not found" >&2\nexit 1\n' > "$work/dlhome/.skiff/tools/bin/apptainer"
+rm "$work/dlhome/.skiff/images/skiff-9.9.9-test.sif"
+out=$(run_download); status=$?
+expect "download: an Apptainer that cannot run here is named, with the guide's section" "$status:$(grep -c 'does not run on this host .*GLIBC_2.34.*Hosts with an old C library' <<< "$out")" "1:1"
 
 [ "$failures" -eq 0 ] && echo "skiff-config: all checks passed" || { echo "skiff-config: $failures check(s) failed"; exit 1; }

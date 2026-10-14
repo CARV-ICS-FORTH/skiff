@@ -76,6 +76,35 @@ func Test_ParseImageName_CollisionResistance(t *testing.T) {
 	}
 }
 
+// The cache names and pull references of these images are also made by `skiff.sh download`,
+// which puts images in the cache from outside a cluster; test/skiff-config-test.sh checks the
+// script against the same examples, so the two cannot drift apart.
+func Test_CacheNamesShared(t *testing.T) {
+	const digest = "sha256:543c40fd093964bc9ab509d3e791f9989963021f1e9e4c9c7b6700b02bfb227b"
+	names := []struct{ image, arch, want string }{
+		{"registry.k8s.io/pause:3.10", "amd64", "/registry.k8s.io_pause_3.10_6f731803067f31e9_amd64.sif"},
+		{"rancher/mirrored-coredns-coredns:1.14.7", "arm64", "/rancher_mirrored-coredns-coredns_1.14.7_2ff2bc0f32350611_arm64.sif"},
+		{"localhost:5000/team/app:v1@" + digest, "amd64", "/localhost_5000_team_app_v1_sha256_543c40fd093964bc9ab509d3e791f9_533cb68c43dbbdf8_amd64.sif"},
+		{"nginx", "arm64", "/nginx_5be1ecc7935f1dd8_arm64.sif"},
+	}
+	for _, n := range names {
+		if got := image.ParseImageNameForArch(n.image, n.arch); got != n.want {
+			t.Errorf("ParseImageNameForArch(%q, %q) = %q, want %q", n.image, n.arch, got, n.want)
+		}
+	}
+	refs := []struct{ image, want string }{
+		{"alpine:latest@" + digest, "alpine@" + digest},
+		{"localhost:5000/team/app:v1@" + digest, "localhost:5000/team/app@" + digest},
+		{"localhost:5000/team/app@" + digest, "localhost:5000/team/app@" + digest},
+		{"nginx:1.27", "nginx:1.27"},
+	}
+	for _, r := range refs {
+		if got := image.FormatPullReference(r.image); got != r.want {
+			t.Errorf("FormatPullReference(%q) = %q, want %q", r.image, got, r.want)
+		}
+	}
+}
+
 func Test_CleanupTempFiles_PreservesRecentFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 

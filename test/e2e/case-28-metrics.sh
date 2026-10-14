@@ -2,7 +2,8 @@
 # Case 28: usage metrics (T37). The kubelet's resource metrics and summary are served from
 # what the node and the containers use, metrics-server (K3s's own, enabled in the bubble)
 # turns them into the metrics API, and `kubectl top` works: a container that burns CPU and
-# one that holds memory show it, and a pod that is deleted stops showing.
+# one that holds memory show it, and a pod that is deleted stops showing. The system pods run
+# the images skiff.sh download fetches (T74).
 set -euo pipefail
 
 E2E_CASE="28"
@@ -122,5 +123,25 @@ metrics_api() {
     e2e_wait_condition 120 "the deleted pod is gone from kubectl top" gone
 }
 e2e_subcase_run T37-metrics-api metrics_api
+
+# ---------------------------------------------------------------------------
+# T74-system-images: the system pods run the images `skiff.sh download` puts in Skifflet's
+# cache for nodes without Internet access (SKIFF_SYSTEM_IMAGES), so a K3s whose CoreDNS or
+# metrics-server is another version fails here and not at a site that cannot pull it.
+# ---------------------------------------------------------------------------
+system_images() {
+    local images image
+    images=$(e2e_kubectl get pods -n kube-system -o jsonpath='{range .items[*]}{range .spec.initContainers[*]}{.image}{"\n"}{end}{range .spec.containers[*]}{.image}{"\n"}{end}{end}' | sort -u)
+    e2e_assert_nonempty "the system pods are listed" "$images"
+    while read -r image; do
+        [ -n "$image" ] || continue
+        if grep -qxF "$image" <<< "$SKIFF_SYSTEM_IMAGES"; then
+            e2e_log "system image $image is among those skiff.sh download fetches"
+        else
+            e2e_fail "a system pod runs $image, which skiff.sh download does not fetch (SKIFF_SYSTEM_IMAGES)"
+        fi
+    done <<< "$images"
+}
+e2e_subcase_run T74-system-images system_images
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

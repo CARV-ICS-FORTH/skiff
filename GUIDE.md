@@ -7,6 +7,7 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 - [Requirements](#requirements)
 - [Without a subordinate id range](#without-a-subordinate-id-range)
 - [Running a cluster](#running-a-cluster)
+- [Running from the repository](#running-from-the-repository)
 - [Configuration](#configuration)
 - [Directories](#directories)
 - [Storage](#storage)
@@ -22,6 +23,7 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 - [Building](#building)
 - [Evaluating locally with Vagrant](#evaluating-locally-with-vagrant)
 - [Evaluating on a Slurm cluster](#evaluating-on-a-slurm-cluster)
+- [Releases](#releases)
 
 ---
 
@@ -30,7 +32,7 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 ## Requirements
 
 - **Slurm**, and whole nodes: `skiff.slurm` asks for exclusive nodes and all their memory (`--exclusive --mem=0`), because the fixed ports (the API server's TCP 6443 on the controller, the kubelet's TCP 10250 and the overlay's UDP 8472 on every node) and the node's scratch directory must be the job's alone. A job on shared nodes is refused when something is in the way.
-- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and `ip`** (iproute2). `ip` comes with the system. The other three do not have to be installed: `skiff.sh tools` takes them (and `kubectl`) out of the Skiff image archive into `~/.skiff/tools`, which `skiff.sh` and `skiff.slurm` then put first in `PATH` (they need glibc 2.34 or newer on the host: RHEL 9, Ubuntu 22.04 and later, Debian 12 and later; on an older host see [Hosts with an old C library](#hosts-with-an-old-c-library)). Or install them with the packages below.
+- On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and `ip`** (iproute2). `ip` comes with the system. The other three do not have to be installed: `skiff.sh download` takes them (and `kubectl`) out of the Skiff image into `~/.skiff/tools`, which `skiff.sh` and `skiff.slurm` then put first in `PATH` (they need glibc 2.34 or newer on the host: RHEL 9, Ubuntu 22.04 and later, Debian 12 and later; on an older host see [Hosts with an old C library](#hosts-with-an-old-c-library)). Or install them with the packages below.
 
   | | Debian / Ubuntu | RHEL family |
   |---|---|---|
@@ -51,37 +53,38 @@ Skiff was qualified with Apptainer 1.5.4 and slirp4netns 1.2.1 on Ubuntu 24.04 (
 
 ## Hosts with an old C library
 
-The Apptainer and socat that `skiff.sh tools` takes out of the image are dynamically linked and need glibc 2.34 or newer. On an older host (RHEL 8 and its derivatives have 2.28) they do not start: `version 'GLIBC_2.34' not found (required by …/apptainer)`, and the same for `socat`. Nothing else is affected: **slirp4netns and `kubectl` are static programs** and run anywhere, and the Apptainer inside the bubble runs on the image's own C library. So on such a host Skiff still provides everything (slirp4netns, `kubectl`, the image, the cluster itself) **except these two programs: you provide your own Apptainer and socat**, installed or compiled for that host, and tell Skiff to use them instead of the provided ones.
+The Apptainer and socat that `skiff.sh download` takes out of the image are dynamically linked and need glibc 2.34 or newer. On an older host (RHEL 8 and its derivatives have 2.28) they do not start: `version 'GLIBC_2.34' not found (required by …/apptainer)`, and the same for `socat`. Nothing else is affected: **slirp4netns and `kubectl` are static programs** and run anywhere, and the Apptainer inside the bubble runs on the image's own C library. So on such a host Skiff still provides everything (slirp4netns, `kubectl`, the image, the cluster itself) **except these two programs: you provide your own Apptainer and socat**, installed or compiled for that host, and tell Skiff to use them instead of the provided ones.
 
 **1. Get an Apptainer and a socat that run on the host.**
 
 - **Apptainer**: the site's own installation or module if it has one (the node check accepts any version and warns about one older than the 1.5.4 Skiff was qualified with; a site's 1.4.2 ran a cluster), the distribution's package (EPEL on the RHEL family), or a build from source in your home, with the options the Skiff image uses: `./mconfig --without-suid --without-network --prefix=$HOME/.local/apptainer && make -C builddir && make -C builddir install` (Apptainer's own installation instructions list what the build needs, a recent Go and `libseccomp` among them; it needs `squashfs-tools`, `mksquashfs` and `unsquashfs`, to build and unpack images). **Build or install it dynamically linked, against the host's own C library, and not statically**: a static Apptainer cannot look up a user that the site keeps in a directory service (SSSD, LDAP, NIS), which is how most clusters provide accounts, and stops at start with `Couldn't determine user account information: user: unknown userid …`.
 - **socat**: the distribution's package, or a build from source with the options the image uses: `./configure --disable-openssl --disable-readline --disable-libwrap --disable-fips && make`; copy `socat` to a directory on your `PATH`, for example `~/bin`. A static build (add `LDFLAGS=-static` to `configure`) is fine: Skiff uses socat only with addresses and sockets, not names. Any recent socat works; the relays ran with a 1.7.3.0 build.
 
-**2. Take the tools out of the image, and move the two that cannot run out of the way.** `skiff.sh` and `skiff.slurm` put `~/.skiff/tools/bin` first in `PATH`, so as long as the provided `apptainer` and `socat` are there they are the ones found. `skiff.sh tools` reports an error for both when it prints the versions: expected on this host.
+**2. Take the tools out of the image, and move the two that cannot run out of the way.** `skiff.sh` and `skiff.slurm` put `~/.skiff/tools/bin` first in `PATH`, so as long as the provided `apptainer` and `socat` are there they are the ones found. On this host `skiff.sh download` takes the tools out, reports an error for both when it prints their versions, and stops where it needs Apptainer, naming this section: expected.
 
 ```bash
-bash ~/skiff/scripts/skiff.sh tools
+cd ~/skiff-<version>/scripts
+bash skiff.sh download
 mkdir -p ~/.skiff/tools/unusable
 mv ~/.skiff/tools/bin/apptainer ~/.skiff/tools/bin/socat ~/.skiff/tools/unusable/
 ```
 
-Everything else stays: `slirp4netns` and `kubectl` in `~/.skiff/tools/bin` are the provided ones. When `skiff.sh tools` runs again (it replaces the whole tree when the image changes, and when `apptainer` is missing from it), repeat the `mv`.
+Everything else stays: `slirp4netns` and `kubectl` in `~/.skiff/tools/bin` are the provided ones. The tools are taken out again only for another image (another release): repeat the `mv` then.
 
-**3. Put your two programs in the `PATH` of the job.** The cluster is started by the job's steps, which inherit the environment you submit from, so it is enough that the programs are found there, on a path every node sees (the shared home, or the site's shared software tree):
+**3. Put your two programs in `PATH`, finish the download and submit.** The cluster is started by the job's steps, which inherit the environment you submit from, so it is enough that the programs are found there, on a path every node sees (the shared home, or the site's shared software tree). `skiff.sh download` uses the same Apptainer to convert the Skiff image and to fetch the images of the system pods:
 
 ```bash
 export PATH=/shared/path/to/apptainer/bin:$HOME/bin:$PATH    # your Apptainer and your socat
-cd ~/skiff/scripts
+bash skiff.sh download
 sbatch --nodes=2 skiff.slurm
 ```
 
-(Or `module load` the site's Apptainer before `sbatch`: it sets the same variable.)
+(Or `module load` the site's Apptainer before them: it sets the same variable.)
 
-**4. Check which program is which**, on a compute node: the check prints the path of each tool, and the line for `slirp4netns` says it is the one from `~/.skiff/tools`.
+**4. Check which program is which**, on a compute node, before you submit: the check prints the path of each tool, and the line for `slirp4netns` says it is the one from `~/.skiff/tools`.
 
 ```bash
-srun -N1 bash ~/skiff/scripts/skiff.sh check
+srun -N1 bash skiff.sh check
 ```
 
 ## Without a subordinate id range
@@ -99,28 +102,38 @@ Such a pod fails at that step with `Invalid argument` or `Operation not permitte
 
 ## Running a cluster
 
+**Fetch what the cluster needs first**, on the login node (or any node with Internet access), from the scripts' folder of the release: the Skiff image of the release's version (from Docker Hub, `carvicsforth/skiff:<version>`), the tools out of it, its SIF and the images of the cluster's system pods, all in `~/.skiff`. What is there already is not fetched again; another release removes the image of the one before.
+
+```bash
+cd ~/skiff-<version>/scripts
+bash skiff.sh download
+```
+
 **Check a node before you submit.** The job runs this check on every allocated node before anything starts, all problems at once, each with what to do about it; you can run it yourself on a compute node:
 
 ```bash
-srun -N1 bash ~/skiff/scripts/skiff.sh check
+srun -N1 bash skiff.sh check
 ```
 
-Submit the job (the published image is used by default; `--nodes` is the size of the cluster):
+Submit the job from the same folder (`--nodes` is the size of the cluster):
 
 ```bash
-cd ~/skiff/scripts
 sbatch --nodes=2 skiff.slurm
 ```
 
-After startup creates the cluster credentials (the job's output says when, and how to connect), configure and use `kubectl`. If you took the tools out of the Skiff image, `kubectl` is the one in `~/.skiff/tools/bin` (Kubernetes 1.36, the cluster's version): run it by its path or put the directory first in your `PATH`:
+After startup creates the cluster credentials (the job's output says when, and how to connect), configure and use `kubectl`, the one in `~/.skiff/tools/bin` (Kubernetes 1.36, the cluster's version): run it by its path or put the directory first in your `PATH`:
 
 ```bash
 export KUBECONFIG=${HOME}/.skiff/kubeconfig
-export PATH=${HOME}/.skiff/tools/bin:${PATH}    # only if you ran skiff.sh tools
+export PATH=${HOME}/.skiff/tools/bin:${PATH}
 kubectl get nodes
 ```
 
-If the site already provides Apptainer, slirp4netns, socat and `kubectl`, you do not need `skiff.sh tools`: without it nothing changes and the system's programs are used. If you run it anyway, the extracted ones come first in `PATH` and the check says which system program each one replaces; remove `~/.skiff/tools` to go back (this matters for Apptainer on Ubuntu 24.04 and later: the system package comes with the AppArmor profile that lets it create user namespaces, a copy in your home does not).
+The programs `skiff.sh download` takes out of the image come first in `PATH`, also when the site provides its own, and the check says which system program each one replaces. To use the system's programs instead, remove `~/.skiff/tools` after the download (this matters for Apptainer on Ubuntu 24.04 and later: the system package comes with the AppArmor profile that lets it create user namespaces, a copy in your home does not).
+
+## Running from the repository
+
+The repository's scripts are the release's: clone it to the shared home and follow the same steps from `~/skiff/scripts`. They run the image of the version in the repository's `VERSION` file, which `skiff.sh download` fetches from Docker Hub, so they match it only on the commit tagged with that version (a release between them, `0.1.0-ff69203`, has its version only in its package: see [Releases](#releases)). On any other commit, build the image of that commit and run it as in development ([Evaluating on a Slurm cluster](#evaluating-on-a-slurm-cluster)), with `SKIFF_DEV=1`.
 
 ## Configuration
 
@@ -192,7 +205,7 @@ What to know:
 - `storageClassName: ""` asks for no provisioning, as in Kubernetes.
 - The requested size is **not a limit**: the shared filesystem decides, and nothing reserves or checks space.
 - To use data that already exists, give a pod a `hostPath` volume or create a PersistentVolume (`hostPath` or `local`) for a directory below `~/.skiff` (`/root/.skiff` in the cluster) or the scratch directory; those paths are the user's and are never removed by Skiff.
-- Pods placed with `nodeName` work too, because claims are bound without waiting for a pod. The first claim of a cluster pulls two small images (the provisioner and its helper) from Docker Hub onto the nodes that need them, as CoreDNS is pulled.
+- Pods placed with `nodeName` work too, because claims are bound without waiting for a pod. The provisioner and its helper run from two small images that `skiff.sh download` has put in the image cache, with those of CoreDNS and metrics-server.
 
 ## Containers
 
@@ -230,7 +243,15 @@ The container finds its GPU's device files in `/dev`, the node's driver librarie
 
 ## Images
 
-A pod's image is pulled by Apptainer from the registry it names (Docker Hub, `registry.k8s.io`, ... reachable from the compute nodes), converted once and cached on the shared home (`~/.skiff/.images`); `imagePullPolicy` is honored. An absolute path to a SIF file the cluster can see (below `/root/.skiff`) is used as it is, with no registry. Not supported: `imagePullSecrets` and private registries, registry mirrors, hosts without access to a registry (use SIF files). The unpacked image of a running container, and what it writes, are on the scratch directory (`SKIFF_TMP_DIR`): size it for the images you run. The cluster's own add-ons are pulled the same way, from Docker Hub, onto the nodes that run them: CoreDNS, metrics-server and, with the first claim, the storage provisioner and its helper; a site whose compute nodes cannot reach a registry cannot start a cluster until that is solved (pre-pulled images are not supported yet).
+A pod's image is pulled by Apptainer from the registry it names (Docker Hub, `registry.k8s.io`, ... reachable from the compute nodes), converted once and cached on the shared home (`~/.skiff/.images`); `imagePullPolicy` is honored. An absolute path to a SIF file the cluster can see (below `/root/.skiff`) is used as it is, with no registry. Not supported: `imagePullSecrets` and private registries, registry mirrors. The unpacked image of a running container, and what it writes, are on the scratch directory (`SKIFF_TMP_DIR`): size it for the images you run.
+
+**Compute nodes without Internet access.** The node check warns when a node reaches neither Docker Hub nor `registry.k8s.io`. The cluster still starts: `skiff.sh download` has put the images of its system pods (the pause container, CoreDNS, metrics-server, the storage provisioner and its helper) in the cache. The images of your own pods are put there the same way, on the login node:
+
+```bash
+bash skiff.sh download docker.io/library/nginx:1.29 ghcr.io/me/app:v2
+```
+
+The cache knows an image by the reference exactly as the pod spec writes it (`nginx`, `nginx:latest` and `docker.io/library/nginx:latest` are three entries), so give each as your pods name it. A pod whose image is in the cache starts without a registry, unless it asks for `imagePullPolicy: Always`.
 
 ## Stopping the cluster
 
@@ -305,7 +326,7 @@ Build the Skiff image with Docker (everything is built in containers, so any pla
 make image
 ```
 
-**Versions.** The one Skiff image is Debian bookworm (`images/skiff/Dockerfile`, with the base images and the Go release pinned by digest). It carries K3s v1.36.5+k3s1 (Kubernetes 1.36, checksummed) and Apptainer 1.5.4 built from source, with slirp4netns, socat and kubectl: the tools a host needs, in one relocatable tree that `skiff.sh tools` takes out of the image (everything in it needs glibc 2.34 at most, the C library of RHEL 9; the build checks it). Skifflet is built against Virtual Kubelet v1.14.0 and `client-go` v0.36 (the API server's own minor version; plaid uses the same Kubernetes libraries, see the `go.mod` files) built with Go 1.26.8. Change the K3s version only together with a run of the whole suite: Skifflet implements the kubelet's side of that API.
+**Versions.** The one Skiff image is Debian bookworm (`images/skiff/Dockerfile`, with the base images and the Go release pinned by digest). It carries K3s v1.36.5+k3s1 (Kubernetes 1.36, checksummed) and Apptainer 1.5.4 built from source, with slirp4netns, socat and kubectl: the tools a host needs, in one relocatable tree that `skiff.sh download` (with `skiff.sh tools`) takes out of the image (everything in it needs glibc 2.34 at most, the C library of RHEL 9; the build checks it). Skifflet is built against Virtual Kubelet v1.14.0 and `client-go` v0.36 (the API server's own minor version; plaid uses the same Kubernetes libraries, see the `go.mod` files) built with Go 1.26.8. Change the K3s version only together with a run of the whole suite: Skifflet implements the kubelet's side of that API.
 
 ## Evaluating locally with Vagrant
 
@@ -336,7 +357,7 @@ export KUBECONFIG=${HOME}/.skiff/kubeconfig
 kubectl get nodes
 ```
 
-Put the tools first in `PATH` for `kubectl` (`export PATH=$HOME/.skiff/tools/bin:$PATH`) and wait for startup to create the credentials before using it. Development jobs select the locally built image with `SKIFF_DEV=1`; ordinary jobs use the published image by default.
+Put the tools first in `PATH` for `kubectl` (`export PATH=$HOME/.skiff/tools/bin:$PATH`) and wait for startup to create the credentials before using it. Development jobs run the uploaded image (`~/.skiff/images/skiff.tar`, converted to `skiff.sif`) with `SKIFF_DEV=1`; without it, a job runs the release image of the version in `VERSION`, which `skiff.sh download` fetches.
 
 See [test/README.md](test/README.md) for the testing overview, fixture setup and manual test commands.
 
@@ -352,3 +373,7 @@ cd ~/skiff && SKIFF_DEV=1 bash test/e2e/run-all.sh --smoke --nodes 3   # a short
 ```
 
 The suite starts clusters of `--nodes N` nodes (default 2) and its cases use all of them. A check that needs a capability the account does not have (root) is reported as UNAVAILABLE with its reason, and a run in which nothing failed and some of those could not run ends as `PROFILE INCOMPLETE`, not as passed. See [test/README.md](test/README.md).
+
+## Releases
+
+`make publish` makes a release of the current commit, on a clean tree only. Its version is `VERSION` when the commit is tagged with it (`0.1.0` or `v0.1.0`), and otherwise `VERSION` and the first 7 hexadecimal digits of the commit (`0.1.0-ff69203`). It builds the image for `linux/amd64` and `linux/arm64` and pushes it to Docker Hub as `carvicsforth/skiff:<version>` alone (no `latest`, and no build metadata); a version that is published already is refused, so the image of a version never changes. Then it makes the package, `dist/skiff-<version>/` and `dist/skiff-<version>.tar.gz`: the README, the license, the scripts and a `VERSION` file with the version they run. The package is what users download (the README's first step); `dist/` is not part of the repository.

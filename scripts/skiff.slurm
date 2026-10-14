@@ -99,7 +99,8 @@ step_gpus() {
 }
 
 # What every allocated node needs (the host programs and their versions, user namespaces,
-# a subordinate id range (a warning when there is none), the GPUs the job has there, the fixed ports, a usable scratch directory of its own) is
+# a subordinate id range (a warning when there is none), the GPUs the job has there, the fixed ports, a usable scratch directory of its own,
+# the Skiff image on the shared home, and the registries (a warning when it reaches none)) is
 # checked on the nodes themselves, all of them and all problems at once, before anything
 # starts. `skiff.sh check` is the same check, which a user can run before submitting.
 echo "Checking the allocated nodes..."
@@ -134,33 +135,26 @@ fi
 echo "Preparing ~/.skiff for cluster startup..."
 rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock
 
-# Pre-process images. What Apptainer unpacks and converts goes to the scratch directory.
-echo "Pre-processing images..."
-IMAGE_DIR="$SKIFF_STATE_DIR/images"
-mkdir -p "$IMAGE_DIR" "$SKIFF_APPTAINER_TMP"
+# The image the bubbles run: the SIF of the mode (skiff.sh skiff_image_files), made from its
+# archive when it is missing or older than the archive (`skiff.sh download` makes it already;
+# in development `make develop` uploads a new archive). What Apptainer unpacks and converts
+# goes to the scratch directory.
+echo "Preparing the image..."
+skiff_image_files || exit 1
+mkdir -p "$SKIFF_IMAGES_DIR" "$SKIFF_APPTAINER_TMP"
 export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
-
-if [ "${SKIFF_DEV:-0}" = "1" ]; then
-    echo "Development mode: ensuring local .tar image is converted to .sif..."
-    IMAGE_TAR="$IMAGE_DIR/skiff.tar"
-    IMAGE_SIF="$IMAGE_DIR/skiff.sif"
-    if [ -f "$IMAGE_TAR" ]; then
-        if [ ! -f "$IMAGE_SIF" ] || [ "$IMAGE_TAR" -nt "$IMAGE_SIF" ]; then
-            echo "Converting $IMAGE_TAR to $IMAGE_SIF..."
-            if ! apptainer build --force "$IMAGE_SIF" "docker-archive://$IMAGE_TAR"; then
-                echo "ERROR: Failed to convert $IMAGE_TAR to $IMAGE_SIF!" >&2
-                exit 1
-            fi
-        fi
-    elif [ ! -f "$IMAGE_SIF" ]; then
-        echo "ERROR: Neither $IMAGE_TAR nor $IMAGE_SIF exists! Run 'make develop' first." >&2
+if [ -f "$SKIFF_IMAGE_TAR" ] && { [ ! -f "$SKIFF_IMAGE_SIF" ] || [ "$SKIFF_IMAGE_TAR" -nt "$SKIFF_IMAGE_SIF" ]; }; then
+    echo "Converting $SKIFF_IMAGE_TAR to $SKIFF_IMAGE_SIF..."
+    if ! apptainer build --force "$SKIFF_IMAGE_SIF" "docker-archive://$SKIFF_IMAGE_TAR"; then
+        echo "ERROR: Failed to convert $SKIFF_IMAGE_TAR to $SKIFF_IMAGE_SIF!" >&2
         exit 1
     fi
-else
-    echo "Production mode: pre-warming Apptainer cache..."
-    apptainer exec docker://docker.io/chazapis/skiff:latest /bin/true 2>/dev/null || true
-    apptainer exec docker://registry.k8s.io/pause:3.10 /bin/true 2>/dev/null || true
 fi
+if [ ! -f "$SKIFF_IMAGE_SIF" ]; then
+    echo "ERROR: Neither $SKIFF_IMAGE_TAR nor $SKIFF_IMAGE_SIF exists! Run 'skiff.sh download' (in development, 'make develop') first." >&2
+    exit 1
+fi
+echo "Image: $SKIFF_IMAGE_SIF"
 
 BG_PIDS=()
 BG_NODES=()

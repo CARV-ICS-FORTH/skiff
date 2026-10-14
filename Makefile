@@ -1,6 +1,6 @@
 # Makefile for Skiff project
 
-REGISTRY ?= docker.io/chazapis
+REGISTRY ?= docker.io/carvicsforth
 IMAGE ?= $(REGISTRY)/skiff
 
 # The platform the image is built for (linux/amd64 or linux/arm64); the host's by default.
@@ -11,7 +11,8 @@ SAVE_FLAG := $(if $(PLATFORM),--platform $(PLATFORM))
 
 BASE_VERSION ?= $(shell cat VERSION 2>/dev/null || echo "0.1.0")
 GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo "unknown")
-GIT_COMMIT_SHORT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+# A version between releases is VERSION and the first 7 hexadecimal digits of the commit.
+GIT_COMMIT_SHORT ?= $(or $(shell git rev-parse HEAD 2>/dev/null | cut -c1-7),unknown)
 GIT_TAG ?= $(shell git describe --tags --exact-match 2>/dev/null || echo "")
 
 ifeq ($(VERSION),)
@@ -30,7 +31,7 @@ BUILD_ARGS = --build-arg VERSION="$(VERSION)" --build-arg GIT_COMMIT="$(GIT_COMM
 
 export GOFLAGS ?= -buildvcs=false
 
-.PHONY: all build build-skifflet build-plaid vet test test-race clean builder image publish-image develop e2e-images fmt fmt-check check-shell
+.PHONY: all build build-skifflet build-plaid vet test test-race clean builder image publish develop e2e-images fmt fmt-check check-shell
 
 all: build
 
@@ -100,13 +101,28 @@ image:
 		-t $(IMAGE):latest \
 		-f images/skiff/Dockerfile .
 
-publish-image:
-	@echo "Building and pushing the multi-arch skiff release image (Version: $(VERSION))..."
-	docker buildx build --platform linux/amd64,linux/arm64 $(BUILD_ARGS) \
+# A release: the image of this commit for both platforms, pushed under its version alone (the
+# scripts of a release run the image of their own version; a version that is already published
+# is refused, so it never changes), without build metadata; then the package for users in
+# dist/skiff-<version>: the README, the license, the scripts and the version they run.
+DIST := dist/skiff-$(VERSION)
+
+publish:
+	@test -z "$$(git -c core.fsmonitor=false status --porcelain)" || { echo "publish: the tree has changes; a release is made of a commit" >&2; exit 1; }
+	@if docker buildx imagetools inspect $(IMAGE):$(VERSION) >/dev/null 2>&1; then echo "publish: $(IMAGE):$(VERSION) is published already" >&2; exit 1; fi
+	@echo "Building and pushing the multi-arch skiff image (Version: $(VERSION))..."
+	docker buildx build --platform linux/amd64,linux/arm64 --provenance=false $(BUILD_ARGS) \
 		-t $(IMAGE):$(VERSION) \
-		-t $(IMAGE):latest \
 		--push \
 		-f images/skiff/Dockerfile .
+	@echo "Making the package $(DIST).tar.gz..."
+	rm -rf $(DIST) $(DIST).tar.gz
+	mkdir -p $(DIST)/scripts
+	cp README.md LICENSE $(DIST)/
+	cp scripts/skiff.sh scripts/skiff.slurm $(DIST)/scripts/
+	echo "$(VERSION)" > $(DIST)/VERSION
+	tar -C dist -czf $(DIST).tar.gz skiff-$(VERSION)
+	@echo "Published $(IMAGE):$(VERSION); the package is $(DIST).tar.gz"
 
 # Build the image and the builder for local development, and deploy them with the scripts
 # to the Vagrant VMs. The VMs need no Apptainer, slirp4netns, socat or kubectl of their own:
@@ -140,7 +156,7 @@ develop: builder image
 	$(MAKE) -C test/vagrant sync
 
 	@echo "Extracting the tools from the image and converting it to a SIF on the controller VM..."
-	test/vagrant/transport.sh ssh controller 'bash ~/skiff/scripts/skiff.sh tools && PATH="$$HOME/.skiff/tools/bin:$$PATH" apptainer build --force ~/.skiff/images/skiff.sif docker-archive://$$HOME/.skiff/images/skiff.tar'
+	test/vagrant/transport.sh ssh controller 'bash ~/skiff/scripts/skiff.sh tools ~/.skiff/images/skiff.tar && PATH="$$HOME/.skiff/tools/bin:$$PATH" apptainer build --force ~/.skiff/images/skiff.sif docker-archive://$$HOME/.skiff/images/skiff.tar'
 
 	@echo "Development image and deployment manifest deployed successfully!"
 	@echo "Submit with SKIFF_DEV=1 to use the local image."

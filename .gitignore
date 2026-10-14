@@ -5,6 +5,7 @@ plaid/bin/
 *.out
 
 # Artifacts
+dist/
 *.sock
 /run/
 .vagrant/
