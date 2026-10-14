@@ -49,6 +49,12 @@ case "$*" in
         mkdir -p "$HOME/.skiff"; echo "$*" >> "$HOME/.skiff/step-args"
         exec "$FAKE_BUBBLE"
         ;;
+    *'apptainer instance stop --all'*)
+        # The clean-up's sweep after the bubbles stopped their own instances: Apptainer's answer.
+        echo 'Error for command "stop": no instance found' >&2
+        printf 'Usage:\n  apptainer [global options...] instance stop [stop options...] [instance]\n'
+        exit 1
+        ;;
     *) exit 0 ;;
 esac
 EOF
@@ -151,6 +157,10 @@ for mode in 7 0 early empty term termsteps; do
     # asks), because they are what the node advertises and the pods can use.
     if [ "$mode" != empty ] && [ "$mode" != early ]; then
         grep -q -- '--exclusive --cpus-per-task=8 bash' "$HOME/.skiff/step-args" || { echo "$mode: the bubble's step did not ask for the node's CPUs: $(cat "$HOME/.skiff/step-args" 2>&1)" >&2; exit 1; }
+    fi
+    # The clean-up's sweep finds nothing left to stop, and says nothing about it.
+    if grep -q 'instance stop \[stop options' "$test_dir/$mode.log"; then
+        echo "$mode: the clean-up printed Apptainer's usage text" >&2; exit 1
     fi
     # The job runs the release's image: the SIF of its version, made from the archive.
     if [ "$mode" != empty ]; then

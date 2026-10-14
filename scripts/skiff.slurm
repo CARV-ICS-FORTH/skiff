@@ -229,8 +229,11 @@ cleanup_slurm() {
     for pid in "${BG_PIDS[@]}"; do
         kill -KILL "$pid" 2>/dev/null || true
     done
+    # A last sweep for an instance a bubble that was killed left behind. Normally each bubble has
+    # stopped its own, and Apptainer then answers "no instance found" with its usage text on
+    # stdout: nothing of it belongs in the job's output.
     for node in "${NODES[@]}"; do
-        timeout --signal=KILL 15s srun --nodes=1 -w "$node" apptainer instance stop --all 2>/dev/null || true
+        timeout --signal=KILL 15s srun --nodes=1 -w "$node" apptainer instance stop --all >/dev/null 2>&1 || true
     done
     rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
     wait 2>/dev/null || true
