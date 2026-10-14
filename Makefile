@@ -121,7 +121,7 @@ publish:
 	cp README.md LICENSE $(DIST)/
 	cp scripts/skiff.sh scripts/skiff.slurm $(DIST)/scripts/
 	echo "$(VERSION)" > $(DIST)/VERSION
-	tar --no-xattrs -C dist -czf $(DIST).tar.gz skiff-$(VERSION)
+	COPYFILE_DISABLE=1 tar --no-xattrs -C dist -czf $(DIST).tar.gz skiff-$(VERSION)
 	@echo "Published $(IMAGE):$(VERSION); the package is $(DIST).tar.gz"
 
 # Build the image and the builder for local development, and deploy them with the scripts
