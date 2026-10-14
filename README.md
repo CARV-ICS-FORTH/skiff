@@ -35,7 +35,7 @@ A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, ea
    sbatch --nodes=2 skiff.slurm
    ```
 
-5. **Use** it. When the job's output (`skiff-cluster-<job ID>.out`) says the cluster is up, point `kubectl` at it:
+5. **Use** it. When the job's output (`skiff-cluster-<job ID>.out`) says how to connect, point `kubectl` at it:
 
    ```bash
    export KUBECONFIG=${HOME}/.skiff/kubeconfig
@@ -43,7 +43,7 @@ A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, ea
    kubectl get nodes
    ```
 
-   For a first try, a web server, a Service in front of it, and a client that reaches it by name:
+   For a first try, a web server, a Service in front of it, and a client that reaches it by name (the server takes a few seconds to listen once its pods are Ready, hence the retries):
 
    ```bash
    kubectl create deployment hello --image=nginxinc/nginx-unprivileged:1.29 --replicas=2
@@ -51,7 +51,7 @@ A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, ea
    kubectl run client --image=busybox:1.37 --restart=Never -- sleep 3600
    kubectl wait --for=condition=Ready pod -l app=hello --timeout=5m
    kubectl wait --for=condition=Ready pod/client --timeout=5m
-   kubectl exec client -- wget -qO- http://hello
+   kubectl exec client -- sh -c 'for i in $(seq 10); do wget -qO- -T 2 http://hello && break; sleep 2; done'
    kubectl get pods -o wide
    kubectl delete deployment,service hello && kubectl delete pod client
    ```
