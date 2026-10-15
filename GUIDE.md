@@ -7,6 +7,7 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 - [Requirements](#requirements)
 - [Without a subordinate id range](#without-a-subordinate-id-range)
 - [Running a cluster](#running-a-cluster)
+- [Without Slurm](#without-slurm)
 - [Running from the repository](#running-from-the-repository)
 - [Configuration](#configuration)
 - [Directories](#directories)
@@ -31,7 +32,7 @@ The [README](README.md) gets a cluster running. This guide has the rest: what a 
 
 ## Requirements
 
-- **Slurm**, and whole nodes: `skiff.slurm` asks for exclusive nodes and all their memory (`--exclusive --mem=0`), because the fixed ports (the API server's TCP 6443 on the controller, the kubelet's TCP 10250 and the overlay's UDP 8472 on every node) and the node's scratch directory must be the job's alone. A job on shared nodes is refused when something is in the way.
+- **Slurm**, and whole nodes (or a machine of your own without Slurm: see [Without Slurm](#without-slurm)): `skiff.slurm` asks for exclusive nodes and all their memory (`--exclusive --mem=0`), because the fixed ports (the API server's TCP 6443 on the controller, the kubelet's TCP 10250 and the overlay's UDP 8472 on every node) and the node's scratch directory must be the job's alone. A job on shared nodes is refused when something is in the way.
 - On every allocated node, in the user's `PATH`: **Apptainer, slirp4netns, socat and `ip`** (iproute2). `ip` comes with the system. The other three do not have to be installed: `skiff.sh download` takes them (and `kubectl`) out of the Skiff image into `~/.skiff/tools`, which `skiff.sh` and `skiff.slurm` then put first in `PATH` (they need glibc 2.34 or newer on the host: RHEL 9, Ubuntu 22.04 and later, Debian 12 and later; on an older host see [Hosts with an old C library](#hosts-with-an-old-c-library)). Or install them with the packages below.
 
   | | Debian / Ubuntu | RHEL family |
@@ -131,6 +132,37 @@ kubectl get nodes
 
 The programs `skiff.sh download` takes out of the image come first in `PATH`, also when the site provides its own, and the check says which system program each one replaces. To use the system's programs instead, remove `~/.skiff/tools` after the download (this matters for Apptainer on Ubuntu 24.04 and later: the system package comes with the AppArmor profile that lets it create user namespaces, a copy in your home does not).
 
+## Without Slurm
+
+On machines you log in to that have no Slurm (servers of your group, that someone else manages), Skiff starts the cluster by itself, on one machine or on several, and gives it what a Slurm job would: a job ID, its nodes, its lifetime in the background, a graceful stop and the record of why it ended. Fetch what it needs as above, then check the machine and start the cluster:
+
+```bash
+cd ~/skiff-<version>/scripts
+bash skiff.sh download
+bash skiff.sh check
+bash skiff.sh start
+```
+
+`start` checks the machine (as the job checks every node, all problems at once), starts the cluster in the background and returns once the checks have passed, with the job's ID and its output file, `skiff-cluster-<job ID>.out` in the current folder; a machine that cannot run Skiff is said at once. Connect as above when the output says so. Then:
+
+- `bash skiff.sh status`: the running cluster, its job, since when, where its supervisor runs and its output.
+- `bash skiff.sh stop`: ends it as `scancel --batch --signal=TERM` ends a Slurm job: the pods are stopped first, by their own termination sequence, then the cluster; it returns when the cluster is gone. Claims and their data are not deleted.
+- `bash skiff.sh run`: the same cluster in the foreground (what `start` runs in the background); Ctrl-C ends it.
+
+**On several machines**, name them: the first is the controller, and each is a node of the cluster, in that order (the machine you start it from need not be one of them; it runs the cluster's supervisor):
+
+```bash
+bash skiff.sh start host1 host2 host3
+```
+
+They must share your home (where `~/.skiff` is, at the same path), and reach one another with ssh as you, **without a password or a question**: your key authorized, and each machine's host key known to the others (`ssh host1 true` from each must just work). `start` tries each first and says which it cannot reach. Everything a node runs is started on it over ssh: its check, and its bubble, whose output goes to the job's output through the ssh and to `~/.skiff/launcher/` while the job runs. A machine that stops answering is noticed within a minute, and ends the cluster, as a node failure ends a Slurm job.
+
+The cluster has one node per machine (with no hosts, this one) and **assumes the machines are yours alone**, as a Slurm job's nodes are the job's: each node advertises all its machine's CPUs and memory (less where the site limits your processes with a cgroup: then that limit) and all its NVIDIA GPUs, and the fixed ports (TCP 6443 and 10250, UDP 8472) must be free, which the check says when they are not. Nothing keeps other users' processes away from the cluster's or the pods from theirs. The API server and the node ports of NodePort Services listen on the machines' addresses, for everyone who can reach them (the API needs the cluster's credentials); a machine cannot reach its own node ports (see [plaid/README.md](plaid/README.md)), only the other machines'.
+
+It runs until it is stopped, with no time limit, or until something fails: as with a Slurm job, a bubble or a daemon that ends takes the cluster with it, and the cause is recorded ([When a job ends unexpectedly](#when-a-job-ends-unexpectedly)). If its supervisor (the process `start` left in the background) is killed, or its machine is lost, the cluster notices within a minute, stops its pods and ends; `status` then says the supervisor is gone, and the next `start` clears what it left. There is one cluster per user, whichever way it was started: a running Slurm job of yours refuses `start`, and a running cluster of `start` refuses a Slurm job (they share `~/.skiff`).
+
+**Logging out.** Some sites stop every process of a user who logs out (systemd-logind's `KillUserProcesses`): the cluster goes with them, and `start` warns when the machine is set up so; stay logged in while you need the cluster, or ask the administrator to exclude you (`KillExcludeUsers`). Sites that stop long-running processes on their login machines stop the cluster as well: start it where long-running work is allowed.
+
 ## Running from the repository
 
 The repository's scripts are the release's: clone it to the shared home and follow the same steps from `~/skiff/scripts`. They run the image of the version in the repository's `VERSION` file, which `skiff.sh download` fetches from Docker Hub, so they match it only on the commit tagged with that version (a release between them, `0.1.0-ff69203`, has its version only in its package: see [Releases](#releases)). On any other commit, build the image of that commit and run it as in development ([Evaluating on a Slurm cluster](#evaluating-on-a-slurm-cluster)), with `SKIFF_DEV=1`.
@@ -159,7 +191,7 @@ Each bubble's log starts with the effective configuration.
 
 Skiff uses two locations, and nothing else on the host:
 
-- **`~/.skiff`** on the shared home is fixed, not a setting: the credentials (`kubeconfig`), images, caches and volume data every node must find at the same place. The bubbles run as root, so inside the cluster it is **`/root/.skiff`**; use that spelling in a `hostPath` or PersistentVolume (`~/.skiff/data` on the host is `/root/.skiff/data` for a pod).
+- **`~/.skiff`** on the shared home is fixed, not a setting: the credentials (`kubeconfig`), images, caches and volume data every node must find at the same place, the record of why each job ended (`job-results/`) and, without Slurm, the running cluster's record and its supervisor's heartbeat (`launcher/`). The bubbles run as root, so inside the cluster it is **`/root/.skiff`**; use that spelling in a `hostPath` or PersistentVolume (`~/.skiff/data` on the host is `/root/.skiff/data` for a pod).
 - **`SKIFF_TMP_DIR`** (default `/tmp/.skiff.<uid>`, your own: the node's `/tmp` outlives jobs, and a directory made by one user would refuse the next) is the node's scratch directory: pod runtime state, and where Apptainer unpacks and converts images. It must be node-local (it holds sockets and unpacked images, so a shared filesystem is refused), writable, and have room for the images you run: set it when `/tmp` is small or a RAM disk. It is checked on every node before anything starts, it is disposable, and the bubbles see it at the same path.
 
 To keep the data on other storage (a project filesystem instead of a small home), make `~/.skiff` a symlink to a directory that every node sees at the same path: the whole suite was run that way. A symlink inside `~/.skiff` would dangle in the bubble, which sees only what is bound into it.
@@ -255,7 +287,7 @@ The cache knows an image by the reference exactly as the pod spec writes it (`ng
 
 ## Stopping the cluster
 
-End the job with `scancel --batch --signal=TERM <job ID>` (Slurm itself does the same a minute before the time limit): every pod is stopped by its own termination sequence (its `preStop` hook, `SIGTERM`, its grace period, at most 20 s) and then the cluster goes. A plain `scancel` signals every process of the job at once and Slurm kills what is left after 30 s: the pods get `SIGTERM` at the same time as the daemons (a test pod's handler did finish its work), but their `preStop` hooks are not run first and nothing is ordered. Either way, the claims and the data of the job are not deleted.
+End the job with `scancel --batch --signal=TERM <job ID>` (Slurm itself does the same a minute before the time limit; without Slurm, `skiff.sh stop`): every pod is stopped by its own termination sequence (its `preStop` hook, `SIGTERM`, its grace period, at most 20 s) and then the cluster goes. A plain `scancel` signals every process of the job at once and Slurm kills what is left after 30 s: the pods get `SIGTERM` at the same time as the daemons (a test pod's handler did finish its work), but their `preStop` hooks are not run first and nothing is ordered. Either way, the claims and the data of the job are not deleted.
 
 ## When a job ends unexpectedly
 
@@ -276,8 +308,8 @@ skiff/
 ├── plaid/                   # Rootless networking tools
 ├── images/                  # Bubble and builder container definitions
 ├── scripts/                 # User-facing cluster deployment
-│   ├── skiff.sh             # Configuration, preflight and the per-node bubble
-│   └── skiff.slurm          # Slurm batch job
+│   ├── skiff.sh             # Configuration, preflight, the cluster of a job, the launcher without Slurm and the per-node bubble
+│   └── skiff.slurm          # Slurm batch job: the Slurm launcher
 ├── test/                    # Regressions, end-to-end tests and fixtures
 │   ├── e2e/                # Two-node acceptance suite
 │   └── vagrant/            # Development VMs and their test commands

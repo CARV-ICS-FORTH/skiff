@@ -16,7 +16,7 @@ NS=$(e2e_namespace 28)
 NODE_A=$(e2e_node_a)
 NODE_B=$(e2e_node_b)
 
-e2e_require_nodes 2
+e2e_require_nodes 1
 
 e2e_kubectl create namespace "$NS"
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --wait=false"

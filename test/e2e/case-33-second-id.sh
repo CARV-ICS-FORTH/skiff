@@ -18,7 +18,7 @@ source "$SCRIPT_DIR/lib/runtime.sh"
 NS=$(e2e_namespace 33)
 NODE_A=$(e2e_node_a)
 
-e2e_require_nodes 2
+e2e_require_nodes 1
 
 # The same question the node check asks, put to the node the pod will run on.
 has_range=$(runtime_ssh_node "$(runtime_node_ip "$NODE_A")" 'bash -c "source \$HOME/skiff/scripts/skiff.sh; if _skiff_has_id_range \$(id -un); then echo yes; else echo no; fi"' 2>/dev/null | tail -1 || true)

@@ -9,7 +9,7 @@ NS=$(e2e_namespace 03)
 # pairs of the cluster, however many nodes it has (two: four rounds; three: nine).
 mapfile -t NODES < <(e2e_all_nodes)
 
-e2e_require_nodes 2
+e2e_require_nodes 1
 e2e_kubectl create namespace $NS
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --timeout=60s"
 

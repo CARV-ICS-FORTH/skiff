@@ -21,8 +21,10 @@ IMAGE="rancher/mirrored-library-busybox:1.37.0"      # small; the storage provis
 CACHE_NAME="rancher_mirrored-library-busybox_1.37.0_"
 CACHE_DIR="${HOME}/.skiff/.images"
 
-e2e_require_nodes 2
+e2e_require_nodes 1
 mapfile -t NODES < <(e2e_all_nodes)
+# The race is between nodes: a cluster of one has none.
+e2e_two_nodes T42-concurrent-pull || exit 0
 
 # Can the nodes reach a registry? (Asked of the first node, which is where the others' network is.)
 registry_code=$(runtime_ssh_node "$(runtime_node_ip "${NODES[0]}")" "curl -s -m 8 -o /dev/null -w '%{http_code}' https://registry-1.docker.io/v2/" 2>/dev/null || true)

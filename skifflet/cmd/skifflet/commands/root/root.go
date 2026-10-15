@@ -166,8 +166,9 @@ func runRootCommand(ctx context.Context, c Opts) error {
 	 * Find the GPUs of the node
 	 *---------------------------------------------------*/
 	{
-		// Slurm's grant to the step the bubble runs in, as the bubble sees it. GPUs that were
-		// granted and cannot be used stop the node: the job asked for them.
+		// What the node gives the cluster (in a Slurm job, Slurm's grant to the step the bubble
+		// runs in), as the bubble sees it. GPUs that were granted and cannot be used stop the
+		// node: the job asked for them.
 		if err := gpu.Init(gpu.DefaultSources(), gpu.CDIDir); err != nil {
 			return fmt.Errorf("GPUs: %w", err)
 		}

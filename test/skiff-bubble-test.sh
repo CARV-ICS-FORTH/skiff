@@ -43,7 +43,7 @@ case "$*" in
             fail) echo "Error: cannot open the overlay socket" >&2; exit 1 ;;
             *) exec sleep 300 ;;
         esac ;;
-    "instance run"*) echo "$*" > "$FAKE_DIR/instance-run"; echo "${SLURM_MEM_PER_NODE-unset}" > "$FAKE_DIR/instance-mem"; exit 0 ;;
+    "instance run"*) echo "$*" > "$FAKE_DIR/instance-run"; exit 0 ;;
     "instance list"*)
         # The instance is one of many on the node (the user's others: 400 rows after it, more
         # than a pipe holds, so a reader that stops at the first match makes this die of
@@ -59,7 +59,7 @@ case "$*" in
         if [ -e "$FAKE_DIR/entrypoint-flap" ]; then rm -f "$FAKE_DIR/entrypoint-flap"; exit 1; fi
         [ -e "$FAKE_DIR/exec-fails" ] && exit 255
         exit 0 ;;
-    "instance stop"*) echo stop >> "$FAKE_DIR/instance-stop" ;;
+    "instance stop"*) echo stop >> "$FAKE_DIR/instance-stop"; printf 'Usage:\n  apptainer [global options...] instance stop [stop options...] [instance]\n' ;;
 esac
 exit 0
 STUB
@@ -184,15 +184,47 @@ grep -q -- "--bind $HOME/.skiff:/root/.skiff " "$FAKE_DIR/instance-run" || fail 
 if grep -q "/tmp/.skiff" "$FAKE_DIR/instance-run" "$FAKE_DIR/helper-args"; then fail "the default scratch directory is still used"; fi
 grep -q -- "--env SKIFF_SLIRP_API=/root/.skiff/slirp-bubble1.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told slirp4netns's API socket"
 
-# The memory of the node the bubble is told it has: what the job says, and for a job that asks
-# for all of it (--mem=0: none or 0 in the environment) what Slurm offers on the node.
-[ "$(cat "$FAKE_DIR/instance-mem")" = 1500 ] || fail "a job without a memory amount: the bubble was told $(cat "$FAKE_DIR/instance-mem"), want the node's RealMemory 1500"
+# The memory of the node the bubble is told it has (SKIFF_NODE_MEMORY, which Skifflet advertises):
+# without Slurm, no amount (the machine's, or the cgroup's); in a Slurm job, what the job says,
+# and for a job that asks for all of it (--mem=0: none or 0 in the environment) what Slurm
+# offers on the node.
+node_memory() { sed -n 's/.*--env SKIFF_NODE_MEMORY=\([0-9]*\) .*/\1/p' "$FAKE_DIR/instance-run"; }
+grep -q -- "--env SKIFF_NODE_MEMORY= " "$FAKE_DIR/instance-run" || fail "without Slurm the bubble was told an amount of memory: $(node_memory)"
 kill -TERM "$BUBBLE_PID"; wait_exit; released
-run_bubble controller FAKE_HELPER=ok SLURM_MEM_PER_NODE=0
-[ "$(cat "$FAKE_DIR/instance-mem")" = 1500 ] || fail "--mem=0: the bubble was told $(cat "$FAKE_DIR/instance-mem"), want 1500"
+run_bubble controller FAKE_HELPER=ok SLURM_JOB_ID=5
+[ "$(node_memory)" = 1500 ] || fail "a job without a memory amount: the bubble was told '$(node_memory)', want the node's RealMemory 1500"
 kill -TERM "$BUBBLE_PID"; wait_exit; released
-run_bubble controller FAKE_HELPER=ok SLURM_MEM_PER_NODE=4096
-[ "$(cat "$FAKE_DIR/instance-mem")" = 4096 ] || fail "a job's own amount was replaced: $(cat "$FAKE_DIR/instance-mem")"
+run_bubble controller FAKE_HELPER=ok SLURM_JOB_ID=5 SLURM_MEM_PER_NODE=0
+[ "$(node_memory)" = 1500 ] || fail "--mem=0: the bubble was told '$(node_memory)', want 1500"
+kill -TERM "$BUBBLE_PID"; wait_exit; released
+run_bubble controller FAKE_HELPER=ok SLURM_JOB_ID=5 SLURM_MEM_PER_NODE=4096
+[ "$(node_memory)" = 4096 ] || fail "a job's own amount was replaced: '$(node_memory)'"
+kill -TERM "$BUBBLE_PID"; wait_exit; released
+
+# A bubble of a job of the launcher (skiff.sh start) ends when its lease says stop, as on TERM:
+# its pods are stopped first.
+lease="$test_dir/job.lease"
+date +%s > "$lease"
+run_bubble controller FAKE_HELPER=ok SKIFF_LEASE="$lease"
+printf 'stop %s\n' "$(date +%s)" > "$lease"
+wait_exit
+[ "$EXIT_RC" -eq 143 ] || fail "a lease that says stop: exit $EXIT_RC, want 143"
+grep -q 'the job is ending (its supervisor said stop)' "$LOG" && grep -q 'Stopping the pods of bubble bubble1' "$LOG" || fail "a lease that says stop did not stop the pods first"
+[ ! -e "$HOME/.skiff/job-results/unknown.cause" ] || fail "a stop by the lease recorded a cause"
+released
+# ... and when its lease stops changing (its supervisor is gone), the same, with the cause.
+date +%s > "$lease"
+run_bubble controller FAKE_HELPER=ok SKIFF_LEASE="$lease" SKIFF_LEASE_EXPIRY=3
+wait_exit
+[ "$EXIT_RC" -eq 143 ] || fail "a lease that stopped changing: exit $EXIT_RC, want 143"
+grep -q 'Stopping the pods of bubble bubble1' "$LOG" || fail "a lease that stopped changing did not stop the pods first"
+grep -q "^observed: its lease $lease has not changed for [0-9]* s" "$HOME/.skiff/job-results/unknown.cause" || fail "no cause for a lease that stopped changing: $(cat "$HOME/.skiff/job-results/unknown.cause" 2>&1)"
+released
+# ... while one that is renewed keeps it running.
+date +%s > "$lease"
+run_bubble controller FAKE_HELPER=ok SKIFF_LEASE="$lease" SKIFF_LEASE_EXPIRY=3
+for i in 1 2 3 4 5; do sleep 1; echo "$i" > "$lease"; done
+kill -0 "$BUBBLE_PID" 2>/dev/null || fail "a bubble whose lease is renewed ended"
 kill -TERM "$BUBBLE_PID"; wait_exit; released
 run_bubble controller
 
@@ -212,6 +244,9 @@ grep -q 'Stopping the pods of bubble bubble1' "$LOG" || fail "the graceful stop 
 run_bubble controller SKIFF_JOB_INSTANCE=4711-0123abcd
 grep -q -- "--env SKIFF_JOB_INSTANCE=4711-0123abcd " "$FAKE_DIR/instance-run" || fail "the job instance name that skiff.slurm made was not passed on"
 kill -TERM "$BUBBLE_PID"; wait_exit; released
+# Stopping its instance, the bubble says nothing of what Apptainer answers (its usage text, when
+# the instance is gone already).
+if grep -q 'instance stop \[stop options' "$LOG"; then fail "the bubble's clean-up printed Apptainer's usage text"; fi
 # A worker forwards no API port.
 run_bubble node FAKE_HELPER=ok
 grep -q 'started successfully' "$LOG" || fail "the node bubble did not start"

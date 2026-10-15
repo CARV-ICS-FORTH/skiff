@@ -9,14 +9,16 @@ source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 09)
 NODE_A=$(e2e_node_a)
+# The worker (on a cluster of one, the controller's node: its bubble runs the same daemons).
 NODE_B=$(e2e_node_b)
+NODE_B=${NODE_B:-$NODE_A}
 
-e2e_require_nodes 2
+e2e_require_nodes 1
 
 TARGET_JOB="${SKIFF_JOB_ID:-}"
-[[ "$TARGET_JOB" =~ ^[0-9]+$ ]] || e2e_die "Case 09 requires the exact Slurm job ID before fault injection"
-JOB_NODES=$(scontrol show job "$TARGET_JOB" -o | sed -n 's/.* NodeList=\([^ ]*\).*/\1/p')
-[ -n "$JOB_NODES" ] || e2e_die "Cannot capture allocated nodes for job $TARGET_JOB"
+[[ "$TARGET_JOB" =~ ^[0-9]+$ ]] || e2e_die "Case 09 requires the exact job ID before fault injection"
+JOB_NODES=$(e2e_job_hosts "$TARGET_JOB" | tr '\n' ' ')
+[ -n "$JOB_NODES" ] || e2e_die "Cannot capture the nodes of job $TARGET_JOB"
 NODE_A_IP=$(runtime_node_ip "$NODE_A")
 NODE_B_IP=$(runtime_node_ip "$NODE_B")
 
@@ -79,7 +81,7 @@ VOLUME_DIR="${HOME}/.skiff${VOLUME_PATH#/root/.skiff}"
 
 E2E_RECOVERY_DEADLINE=${E2E_RECOVERY_DEADLINE:-60}
 
-# Each daemon class runs against a fresh Slurm job in the aggregate runner.
+# Each daemon class runs against a fresh job in the aggregate runner.
 DAEMON_CLASS="${E2E_DAEMON_CLASS:-skifflet}"
 case "$DAEMON_CLASS" in
     skifflet|plaidd|slirp)
@@ -104,17 +106,16 @@ esac
 e2e_log "Injecting $DAEMON_CLASS failure (PID ${TARGET_PID} on ${TARGET_NODE}, job ${TARGET_JOB})..."
 runtime_kill_process "$TARGET_NODE" "$TARGET_PID" KILL
 
-# The policy is fail-the-job: a daemon failure ends its bubble and the Slurm job
-# 1. Verify Slurm job failure or termination within bounded deadline
-e2e_wait_condition 60 "Slurm job terminated" \
-    "test -z \"\$(squeue -j $TARGET_JOB -h -o %i 2>/dev/null)\""
+# The policy is fail-the-job: a daemon failure ends its bubble and the job
+# 1. Verify job failure or termination within bounded deadline
+e2e_wait_condition 60 "job terminated" e2e_job_gone "$TARGET_JOB"
 result_path="${HOME}/.skiff/job-results/${TARGET_JOB}.exit"
 e2e_wait_condition 30 "authoritative batch exit result" "test -s '$result_path'"
 JOB_EXIT=$(cat "$result_path")
-[[ "$JOB_EXIT" =~ ^[0-9]+$ ]] && [ "$JOB_EXIT" -gt 0 ] || e2e_die "Slurm job $TARGET_JOB reported success or invalid exit result: '$JOB_EXIT'"
-e2e_pass "Slurm job $TARGET_JOB failed with exit code $JOB_EXIT on nodes $JOB_NODES"
+[[ "$JOB_EXIT" =~ ^[0-9]+$ ]] && [ "$JOB_EXIT" -gt 0 ] || e2e_die "job $TARGET_JOB reported success or invalid exit result: '$JOB_EXIT'"
+e2e_pass "job $TARGET_JOB failed with exit code $JOB_EXIT on nodes $JOB_NODES"
 # The failure is said: the job's output names what ended.
-JOB_OUTPUT=$(scontrol show job "$TARGET_JOB" -o | sed -n 's/.*StdOut=\([^ ]*\).*/\1/p')
+JOB_OUTPUT=$(e2e_job_output "$TARGET_JOB")
 e2e_assert_contains "the job output says what terminated" "$(cat "$JOB_OUTPUT" 2>/dev/null)" "terminated"
 case "$DAEMON_CLASS" in
     skifflet|plaidd|k3s) e2e_assert_contains "and which daemon it was" "$(cat "$JOB_OUTPUT" 2>/dev/null)" "FATAL: ${DAEMON_CLASS}" ;;
@@ -138,7 +139,7 @@ e2e_pass "Bubble processes and forwarded ports released on both allocated nodes"
 
 # 3. Verify node state reflects failure (node NotReady, Unknown, or cluster terminated)
 e2e_wait_condition "$E2E_RECOVERY_DEADLINE" "NODE_B Ready=False or NotReady or cluster terminated" \
-    "test -z \"\$(squeue -j ${SKIFF_JOB_ID:-0} -h -o %i 2>/dev/null)\" || e2e_kubectl get node $NODE_B -o jsonpath='{range .status.conditions[?(@.type==\"Ready\")]}{.status}{end}' 2>/dev/null | grep -E 'False|Unknown|^$'"
+    "e2e_job_gone ${SKIFF_JOB_ID:-0} || e2e_kubectl get node $NODE_B -o jsonpath='{range .status.conditions[?(@.type==\"Ready\")]}{.status}{end}' 2>/dev/null | grep -E 'False|Unknown|^$'"
 
 e2e_pass "Fail-the-job recovery semantics verified for daemon failure"
 # The API and its namespaces disappear with this deliberately destroyed job.

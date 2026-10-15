@@ -2,7 +2,7 @@
 
 Skiff allows HPC users to run their own private Kubernetes "mini Cloud" on a typical HPC cluster and issue commands using Kubernetes-native tools without requiring root privileges.
 
-A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, each node inside a rootless [Apptainer](https://apptainer.org/) container (a "bubble"). Pods run as unprivileged processes on those nodes, with the cluster network, Services, DNS, volumes and the job's NVIDIA GPUs Kubernetes users expect. When the job ends, the cluster is gone.
+A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, each node inside a rootless [Apptainer](https://apptainer.org/) container (a "bubble"). Pods run as unprivileged processes on those nodes, with the cluster network, Services, DNS, volumes and the job's NVIDIA GPUs Kubernetes users expect. When the job ends, the cluster is gone. Skiff can also run a cluster without Slurm ([see below](#without-slurm)).
 
 ## Get started
 
@@ -72,7 +72,20 @@ The check in step 3 and the job's output name what is missing. If something does
 
 The [Skiff Guide](https://github.com/CARV-ICS-FORTH/skiff/blob/main/GUIDE.md) has the rest:
 
-- **Using Skiff**: requirements, configuration, the directories Skiff uses, storage, containers, GPUs, images, what to do when a job ends unexpectedly, and running from the repository.
+- **Using Skiff**: requirements, running without Slurm, configuration, the directories Skiff uses, storage, containers, GPUs, images, what to do when a job ends unexpectedly, and running from the repository.
 - **Developing Skiff**: the architecture, building, testing it locally with Vagrant or on a Slurm cluster, and releases.
 
 The components have their own documents: [Skifflet](https://github.com/CARV-ICS-FORTH/skiff/blob/main/skifflet/README.md), [Plaid](https://github.com/CARV-ICS-FORTH/skiff/blob/main/plaid/README.md) and the [tests](https://github.com/CARV-ICS-FORTH/skiff/blob/main/test/README.md).
+
+## Without Slurm
+
+Skiff also runs where there is no Slurm, on machines you log in to: it then starts the cluster itself, on one machine or on several that share your home and reach one another with ssh keys. It is just as rootless: everything runs as you, an ordinary user, with nothing installed and no root privileges, as in a Slurm job. After steps 1 and 2, check each machine, then start the cluster in the background instead of submitting a job, and stop it when you are done:
+
+```bash
+bash skiff.sh check
+bash skiff.sh start                  # this machine; or: bash skiff.sh start host1 host2 (the first runs the controller)
+bash skiff.sh status
+bash skiff.sh stop
+```
+
+`start` says the job and its output file (`skiff-cluster-<job ID>.out` in the current folder); use the cluster as in step 5. The cluster assumes the machines are yours alone; the [guide](https://github.com/CARV-ICS-FORTH/skiff/blob/main/GUIDE.md#without-slurm) has the details.

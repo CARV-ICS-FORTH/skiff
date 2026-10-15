@@ -7,7 +7,7 @@ source "$(dirname "$0")/lib/runtime.sh"
 NS=$(e2e_namespace 05)
 NODE_A=$(e2e_node_a)
 
-e2e_require_nodes 2
+e2e_require_nodes 1
 e2e_kubectl create namespace $NS
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --timeout=60s"
 

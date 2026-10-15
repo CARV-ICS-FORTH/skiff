@@ -14,7 +14,9 @@ source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 23)
-e2e_require_nodes 2
+e2e_require_nodes 1
+# The clients of a node's ports are the other nodes' hosts (see above): a cluster of one has none.
+e2e_two_nodes T25-tcp-udp T25-slirp-state T25-changes T25-no-backends T25-drain T25-bind-collision T25-unsupported T25-reconcile T25-cleanup || exit 0
 mapfile -t NODES < <(e2e_all_nodes)
 NODE_A="${NODES[0]}"   # the backend's node
 NODE_B="${NODES[1]}"   # the node the changes and failures of the later subcases are made on

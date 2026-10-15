@@ -16,7 +16,7 @@ source "$SCRIPT_DIR/lib/runtime.sh"
 NS=$(e2e_namespace 35)
 NODE_A=$(e2e_node_a)
 
-e2e_require_nodes 2
+e2e_require_nodes 1
 
 e2e_kubectl create namespace "$NS"
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --wait=false"
@@ -133,16 +133,18 @@ spec:
 EOF2
 )
     local round out allocatable_mb
+    # (in MiB as df -m says it, rounded up: without Slurm the memory is the machine's, in KiB)
     allocatable_mb=$(e2e_kubectl get node "$NODE_A" -o jsonpath='{.status.allocatable.memory}' | python3 -c '
 import sys
 v = sys.stdin.read().strip()
-units = {"Ki": 1 / 1024, "Mi": 1, "Gi": 1024, "Ti": 1024 ** 2}
+units = {"Ki": 1024, "Mi": 1024 ** 2, "Gi": 1024 ** 3, "Ti": 1024 ** 4}
 for suffix, factor in units.items():
     if v.endswith(suffix):
-        print(int(int(v[:-2]) * factor))
+        b = int(v[:-2]) * factor
         break
 else:
-    print(int(v) // (1024 * 1024))')
+    b = int(v)
+print(-(-b // 1024 ** 2))')
     for round in 1 2; do
         echo "$manifest" | e2e_kubectl apply -f - > /dev/null
         e2e_wait_pod_phase "$NS" e2e35-unbounded Succeeded 120

@@ -5,7 +5,7 @@ source "$(dirname "$0")/lib/fixture.sh"
 source "$(dirname "$0")/lib/runtime.sh"
 
 NS=$(e2e_namespace 02)
-e2e_require_nodes 2
+e2e_require_nodes 1
 
 e2e_kubectl create namespace $NS
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --timeout=60s"

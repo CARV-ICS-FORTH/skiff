@@ -35,13 +35,12 @@ source "\$LIB_DIR/common.sh"
 source "\$LIB_DIR/fixture.sh"
 source "\$LIB_DIR/runtime.sh"
 
-# wait_clean NODELIST: every node of the list is clean of the job's resources. A list that is
-# empty, or names no host, is a failure: nothing would have been inspected.
+# wait_clean HOSTS: every host of the list is clean of the job's resources. A list that is
+# empty is a failure: nothing would have been inspected.
 wait_clean() {
-    local nodelist="\$1" max=300 elapsed=0 hosts host ok
-    hosts=\$(scontrol show hostnames "\$nodelist" 2>/dev/null || true)
+    local hosts="\$1" max=300 elapsed=0 host ok
     if [ -z "\$hosts" ]; then
-        e2e_fail "no node to inspect (node list '\${nodelist}')"
+        e2e_fail "no node to inspect"
         return 1
     fi
     while [ \$elapsed -lt \$max ]; do
@@ -58,12 +57,9 @@ wait_clean() {
         sleep 5
         elapsed=\$((elapsed+5))
     done
-    e2e_fail "the nodes \${nodelist} still hold resources of the job after \${max}s"
+    e2e_fail "the nodes \${hosts} still hold resources of the job after \${max}s"
     return 1
 }
-
-# job_nodelist JOB: the nodes of a job, while Slurm still has its record.
-job_nodelist() { scontrol show job "\$1" -o 2>/dev/null | tr ' ' '\n' | sed -n 's/^NodeList=//p' | sed -n 1p; }
 
 check_nodes_ready() {
     local cnt=\$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c "True" || true)
@@ -75,26 +71,17 @@ check_nodes_ready() {
 TARGET_JOB="\${SKIFF_JOB_ID:-${SKIFF_JOB_ID:-}}"
 if [ "\${NO_TEARDOWN:-0}" != "1" ]; then
     [[ "\$TARGET_JOB" =~ ^[0-9]+\$ ]] || e2e_die "the suite's job ID is unknown ('\${TARGET_JOB}'): nothing is cancelled"
-    JOB_NODELIST=\$(job_nodelist "\$TARGET_JOB")
-    e2e_log "Canceling job \$TARGET_JOB (nodes \${JOB_NODELIST:-unknown})"
-    scancel "\$TARGET_JOB"
-    wait_clean "\$JOB_NODELIST"
+    JOB_HOSTS=\$(e2e_job_hosts "\$TARGET_JOB" | tr '\n' ' ')
+    e2e_log "Canceling job \$TARGET_JOB (nodes \${JOB_HOSTS:-unknown})"
+    e2e_cancel "\$TARGET_JOB"
+    wait_clean "\$JOB_HOSTS"
 
-    REPO_ROOT="\${SKIFF_ARTIFACT_DIR:-\$(git rev-parse --show-toplevel 2>/dev/null || echo ".")}"
-    if [ ! -f "\${REPO_ROOT}/scripts/skiff.slurm" ]; then
-        for cand in "\$HOME/skiff" "\$(cd "\$(dirname "\$0")" && pwd)/../../.." "\$(cd "\$(dirname "\$0")" && pwd)/../.."; do
-            if [ -f "\$cand/scripts/skiff.slurm" ]; then
-                REPO_ROOT="\$cand"
-                break
-            fi
-        done
-    fi
-    e2e_log "Submitting second skiff.slurm from \${REPO_ROOT}"
-    NEW_JOB=\$(e2e_sbatch "\${REPO_ROOT}/scripts/skiff.slurm")
-    [[ "\$NEW_JOB" =~ ^[0-9]+\$ ]] || e2e_die "cannot submit the second job"
+    e2e_log "Starting a second cluster (\$E2E_LAUNCHER)"
+    NEW_JOB=\$(e2e_submit)
+    [[ "\$NEW_JOB" =~ ^[0-9]+\$ ]] || e2e_die "cannot start the second cluster"
 
     e2e_wait_condition 300 "$E2E_NODES nodes ready (2nd time)" check_nodes_ready
-    NEW_NODELIST=\$(job_nodelist "\$NEW_JOB")
+    NEW_HOSTS=\$(e2e_job_hosts "\$NEW_JOB" | tr '\n' ' ')
     # The second cluster runs a pod, not only nodes that say they are Ready.
     NS2="e2e-01-second-boot-\$NEW_JOB"
     e2e_kubectl create namespace "\$NS2" >/dev/null
@@ -110,9 +97,9 @@ POD
     e2e_wait_pod_phase "\$NS2" second-boot Succeeded 180
     e2e_assert_eq "the second cluster ran a pod" "\$(e2e_kubectl logs second-boot -n "\$NS2")" second-boot-ok
 
-    e2e_log "Canceling the second job \$NEW_JOB (nodes \${NEW_NODELIST:-unknown})"
-    scancel "\$NEW_JOB"
-    wait_clean "\$NEW_NODELIST"
+    e2e_log "Canceling the second job \$NEW_JOB (nodes \${NEW_HOSTS:-unknown})"
+    e2e_cancel "\$NEW_JOB"
+    wait_clean "\$NEW_HOSTS"
     [ "\${E2E_FAILED:-0}" -eq 0 ] || exit 1
     e2e_pass "Deferred teardown and second cluster boot verified"
 fi
@@ -121,20 +108,16 @@ EOF
 }
 
 if [ -z "${SKIFF_JOB_ID:-}" ]; then
-    REPO_ROOT="${SKIFF_ARTIFACT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || echo ".")}"
-    if [ ! -f "${REPO_ROOT}/scripts/skiff.slurm" ]; then
-        REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-    fi
-    e2e_log "Submitting skiff.slurm from ${REPO_ROOT}/scripts/skiff.slurm"
-    SKIFF_JOB_ID=$(e2e_sbatch "${REPO_ROOT}/scripts/skiff.slurm")
+    e2e_log "Starting a cluster ($E2E_LAUNCHER) with the scripts of $(_e2e_scripts)"
+    SKIFF_JOB_ID=$(e2e_submit)
     export SKIFF_JOB_ID
     printf '%s\n' "$SKIFF_JOB_ID" > "${E2E_LOGDIR}/job-id"
-    e2e_log "Submitted Skiff cluster job: ${SKIFF_JOB_ID}"
+    e2e_log "Started Skiff cluster job: ${SKIFF_JOB_ID}"
 fi
 write_teardown_script
 
 e2e_wait_condition 300 "$E2E_NODES nodes ready" check_nodes_ready
-e2e_require_nodes 2
+e2e_require_nodes 1
 
 # The documented quickstart: kubectl on a host outside the bubble, with the
 # credentials the job writes to the shared home. Check it from both hosts.
@@ -180,9 +163,15 @@ for node in $(e2e_all_nodes); do
     e2e_assert_ne "Node $node allocatable CPU non-zero" "$cpu" "0"
     e2e_assert_nonempty "Node $node allocatable memory" "$mem"
     e2e_assert_ne "Node $node allocatable memory non-zero" "$mem" "0"
-    allocation=$(scontrol show job "$SKIFF_JOB_ID" -o)
+    if [ "$E2E_LAUNCHER" = slurm ]; then
+        allocation=$(scontrol show job "$SKIFF_JOB_ID" -o)
+    else
+        # Without Slurm the job has the machine: its CPUs and memory are the limit.
+        ip=$(runtime_node_ip "$node")
+        allocation="NumNodes=1 NumCPUs=$(runtime_ssh_node "$ip" "nproc --all") MinMemoryNode=$(e2e_node_memory_kib "$node" "$ip")K"
+    fi
     # (A job that asks for --mem=0 has all of the node's memory: its limit is the node's.)
-    real_memory_mb=$(scontrol show node "$node" -o | sed -n 's/.*RealMemory=\([0-9]*\).*/\1/p')
+    real_memory_mb=$(( $(e2e_node_memory_kib "$node" "$(runtime_node_ip "$node")") / 1024 ))
     if python3 - "$allocation" "$cpu" "$mem" "$real_memory_mb" <<'PY'
 import decimal, re, sys
 job, cpu, mem, real_memory_mb = sys.argv[1:]
@@ -215,9 +204,9 @@ if not (0 < advertised_cpu <= cpu_limit and 0 < advertised_memory <= memory_limi
     raise SystemExit(f'allocatable exceeds allocation: cpu={advertised_cpu}/{cpu_limit}, memory={advertised_memory}/{memory_limit}')
 PY
     then
-        e2e_pass "Node $node allocatable CPU/memory bounded by Slurm allocation"
+        e2e_pass "Node $node allocatable CPU/memory bounded by the job's allocation"
     else
-        e2e_fail "Node $node advertises resources outside Slurm allocation"
+        e2e_fail "Node $node advertises resources outside the job's allocation"
     fi
 done
 

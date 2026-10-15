@@ -104,11 +104,11 @@ expect "what is below it follows" "$(derived SKIFF_APPTAINER_TMP SKIFF_TMP_DIR=/
 expect "the state directory is the home's ~/.skiff" "$(derived SKIFF_STATE_DIR HOME=/home/u)" /home/u/.skiff
 expect "and cannot be overridden" "$(derived SKIFF_STATE_DIR HOME=/home/u SKIFF_STATE_DIR=/elsewhere)" /home/u/.skiff
 expect "the volumes are below the state directory" "$(derived SKIFF_VOLUMES_DIR HOME=/home/u)" /home/u/.skiff/volumes
-id1=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
-id2=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
+id1=$(env -i PATH="$PATH" SKIFF_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
+id2=$(env -i PATH="$PATH" SKIFF_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
 [[ "$id1" =~ ^4711-[0-9a-f]{8}$ ]] && echo "PASS an instance name is the job ID and eight hexadecimal digits" || { echo "FAIL instance name '$id1'"; failures=$((failures + 1)); }
 [ "$id1" != "$id2" ] && echo "PASS a reused job ID gets another name" || { echo "FAIL the same job ID got the same name twice: $id1"; failures=$((failures + 1)); }
-expect "outside Slurm the job ID is 0" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh" | cut -d- -f1)" 0
+expect "outside a job the job ID is 0" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh" | cut -d- -f1)" 0
 expect "outer network of bubble 3" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_outer_network 3; echo "$SKIFF_OUTER_CIDR $SKIFF_OUTER_DNS $SKIFF_OUTER_ADDRESS"' _ "$repo_dir/scripts/skiff.sh")" "10.0.4.0 10.0.4.3 10.0.4.100"
 
 in_cidr() { env -i PATH="$PATH" bash -c 'source "$1"; skiff_ip_in_cidr "$2" "$3" && echo yes || echo no' _ "$repo_dir/scripts/skiff.sh" "$1" "$2"; }
@@ -215,38 +215,67 @@ fi
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
 expect "and a node with it is fine" "$status:$out" "0:"
 
-# GPUs: a step that Slurm gave GPUs (SLURM_STEP_GPUS) must be able to use them
+# GPUs: the ones the node gives the cluster must be usable: in a Slurm job, those Slurm gave the
+# step (SLURM_STEP_GPUS; SLURM_JOB_ID says it is a job); without Slurm, all the node's
 mkdir -p "$nodedir/gpu"
 printf '#!/bin/sh\n[ -z "${FAKE_NO_LDCONFIG:-}" ] || exit 1\necho "     libcuda.so.1 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libcuda.so.1"\n[ -n "${FAKE_NO_NVML:-}" ] || echo "     libnvidia-ml.so.1 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1"\n' > "$nodedir/gpu/ldconfig"
 chmod +x "$nodedir/gpu/ldconfig"
 GPUPATH="$GOOD:$nodedir/gpu"
 for f in nvidia0 nvidia1 nvidia2 nvidia3 nvidiactl nvidia-uvm; do : > "$nodedir/sys/dev/$f"; done
-out=$(node_check "$GPUPATH" "$nodedir/scratch"); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7); status=$?
 expect "a step without GPUs has nothing to check, whatever the node has" "$status:$out" "0:"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0-3 SLURM_JOB_GPUS=0-3); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0-3 SLURM_JOB_GPUS=0-3); status=$?
 expect "a step that was given all the GPUs of the node, and can use them, is fine" "$status:$out" "0:"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,1-3); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0,1-3); status=$?
 expect "and so is a list, with a range" "$status:$out" "0:"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,2-3); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0,2-3); status=$?
 expect "a step with some of the node's GPUs is not refused, and is warned, with how many and what to ask for" "$status:$(grep -c 'WARNING: Slurm gave this step 3 of the 4 GPUs of the node' <<< "$out"):$(grep -c 'Ask for all of them (--gpus-per-node=4)' <<< "$out")" "0:1:1"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=1); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=1); status=$?
 expect "so is a step with one of four" "$status:$(grep -c 'gave this step 1 of the 4 GPUs' <<< "$out")" "0:1"
 rm "$nodedir/sys/dev/nvidia2"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,2-3); status=$?
-expect "a GPU of the list that cannot be opened is refused, by its number" "$status:$(grep -c 'Slurm gave this step GPU 2 and /dev/nvidia2 cannot be opened' <<< "$out"):$(grep -c 'GPU 3' <<< "$out")" "1:1:0"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0,2-3); status=$?
+expect "a GPU of the list that cannot be opened is refused, by its number" "$status:$(grep -c 'GPU 2 is one that Slurm gave this step and /dev/nvidia2 cannot be opened' <<< "$out"):$(grep -c 'GPU 3' <<< "$out")" "1:1:0"
 : > "$nodedir/sys/dev/nvidia2"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=x); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=x); status=$?
 expect "a list that is not one is refused" "$status:$(grep -c 'is not a list of GPU indices' <<< "$out")" "1:1"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=3-1); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=3-1); status=$?
 expect "and so is a range that runs backwards" "$status:$(grep -c 'is not a list of GPU indices' <<< "$out")" "1:1"
 mv "$nodedir/sys/dev/nvidia-uvm" "$nodedir/sys/dev/nvidia-uvm.away"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0); status=$?
 expect "a node without nvidia-uvm is refused, with what it is" "$status:$(grep -c '/dev/nvidia-uvm, which every GPU container needs' <<< "$out")" "1:1"
 mv "$nodedir/sys/dev/nvidia-uvm.away" "$nodedir/sys/dev/nvidia-uvm"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0 FAKE_NO_NVML=1); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0 FAKE_NO_NVML=1); status=$?
 expect "a driver whose libraries are not in the library cache is refused, with what to ask for" "$status:$(grep -c 'libnvidia-ml.so.1 is not in the library cache' <<< "$out"):$(grep -c 'libcuda.so.1 is not in' <<< "$out")" "1:1:0"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0-3 FAKE_NO_LDCONFIG=1); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0-3 FAKE_NO_LDCONFIG=1); status=$?
 expect "a node where the cache cannot be read is not refused for it" "$status:$out" "0:"
+# Without Slurm the node gives the cluster all its GPUs: they are checked, all of them.
+out=$(node_check "$GPUPATH" "$nodedir/scratch"); status=$?
+expect "without Slurm, a node whose GPUs can all be used is fine" "$status:$out" "0:"
+mv "$nodedir/sys/dev/nvidia-uvm" "$nodedir/sys/dev/nvidia-uvm.away"
+out=$(node_check "$GPUPATH" "$nodedir/scratch"); status=$?
+expect "and one without nvidia-uvm is refused" "$status:$(grep -c '/dev/nvidia-uvm, which every GPU container needs' <<< "$out")" "1:1"
+mv "$nodedir/sys/dev/nvidia-uvm.away" "$nodedir/sys/dev/nvidia-uvm"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" FAKE_NO_NVML=1); status=$?
+expect "and so is one whose driver's libraries are not in the cache" "$status:$(grep -c 'libnvidia-ml.so.1 is not in the library cache' <<< "$out")" "1:1"
+
+# The node's grant (skiff_node_grant): CPUs, memory (MiB) and GPUs, from Slurm in a job step, and
+# without Slurm none by amount (the cgroup or the machine) and every GPU of the node.
+cat > "$nodedir/gpu/scontrol" <<'EOF2'
+#!/bin/sh
+echo "NodeName=$3 CPUTot=8 RealMemory=1500 State=ALLOCATED"
+EOF2
+chmod +x "$nodedir/gpu/scontrol"
+grant_of() { env -i PATH="$GPUPATH" SKIFF_SYS_ROOT="$nodedir/sys" "$@" "$BASH" -c 'source "$1"; skiff_node_grant; echo "$SKIFF_NODE_CPUS/$SKIFF_NODE_MEMORY/$SKIFF_NODE_GPUS"' _ "$repo_dir/scripts/skiff.sh" 2>&1; }
+expect "a Slurm step: its CPUs, its memory per node and its GPUs" "$(grant_of SLURM_JOB_ID=7 SLURM_CPUS_ON_NODE=8 SLURM_MEM_PER_NODE=4096 SLURM_STEP_GPUS=0-1)" "8/4096/0-1"
+expect "the CPUs per node of the job, and memory per CPU" "$(grant_of SLURM_JOB_ID=7 'SLURM_JOB_CPUS_PER_NODE=16(x2)' SLURM_MEM_PER_CPU=1000)" "16/16000/"
+expect "all the memory of the node (--mem=0) is what Slurm offers there" "$(grant_of SLURM_JOB_ID=7 SLURM_CPUS_ON_NODE=4 SLURM_MEM_PER_NODE=0)" "4/1500/"
+expect "a step without GPUs has none, whatever the node has" "$(grant_of SLURM_JOB_ID=7 SLURM_CPUS_ON_NODE=4 SLURM_MEM_PER_NODE=10)" "4/10/"
+: > "$nodedir/sys/dev/nvidia10"
+expect "without Slurm: no amounts, and every GPU of the node, in order" "$(grant_of)" "//0,1,2,3,10"
+rm -f "$nodedir/sys/dev/nvidia10"
+# (the checks below are of a node without GPUs)
+for f in nvidia0 nvidia1 nvidia2 nvidia3 nvidiactl nvidia-uvm; do rm -f "$nodedir/sys/dev/$f"; done
+expect "and a node without GPUs gives none" "$(grant_of)" "//"
 
 # skiff.slurm: the srun option that gives a step the GPUs the job has on a node (step_gpus). Slurm prints
 # GresUsed only for `scontrol -d show node`, so the stand-in prints it only for that.
@@ -440,7 +469,7 @@ expect "a failing command lists nothing" "$misses" absent
 out=$(env -i PATH="$PATH" bash -c 'source "$1"; declare -F skiff_bubble skiff_config_validate skiff_check_node >/dev/null && echo defined' _ "$repo_dir/scripts/skiff.sh" 2>&1)
 expect "sourcing defines the functions and prints nothing" "$out" defined
 out=$(env -i PATH="$PATH" bash "$repo_dir/scripts/skiff.sh" 2>&1); status=$?
-expect "executing without a command is a usage error" "$status:$(grep -c 'usage: skiff.sh bubble ID' <<< "$out")" "2:1"
+expect "executing without a command is a usage error" "$status:$(grep -c 'usage: skiff.sh start \[HOST...\] | stop | status | run' <<< "$out")" "2:1"
 out=$(env -i PATH="$PATH" bash "$repo_dir/scripts/skiff.sh" nonsense 2>&1); status=$?
 expect "executing an unknown command is a usage error" "$status" 2
 

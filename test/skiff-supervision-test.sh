@@ -49,7 +49,7 @@ case "$*" in
         mkdir -p "$HOME/.skiff"; echo "$*" >> "$HOME/.skiff/step-args"
         exec "$FAKE_BUBBLE"
         ;;
-    *'apptainer instance stop --all'*)
+    *'apptainer instance stop bubble'*)
         # The clean-up's sweep after the bubbles stopped their own instances: Apptainer's answer.
         echo 'Error for command "stop": no instance found' >&2
         printf 'Usage:\n  apptainer [global options...] instance stop [stop options...] [instance]\n'
@@ -113,6 +113,17 @@ rc=0
 SLURM_JOB_ID=8996 HOME="$test_dir/home-badtmp" SKIFF_TMP_DIR=relative/scratch bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/badtmp.log" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] && grep -q 'SKIFF_TMP_DIR.*absolute path' "$test_dir/badtmp.log" || { echo "bad scratch directory: exit $rc" >&2; cat "$test_dir/badtmp.log" >&2; exit 1; }
 
+# One cluster per user, whichever launcher: a cluster of skiff.sh start that is alive (its lease
+# is fresh; its supervisor on another host) refuses the job before any bubble starts.
+mkdir -p "$test_dir/home-launcher/.skiff/launcher" "$test_dir/home-launcher/.skiff/images"
+: > "$test_dir/home-launcher/.skiff/images/skiff-9.9.9-test.tar"
+printf 'job=1000\nhost=another-host\npid=1\nnodes=another-host\noutput=/x\nstarted=then\n' > "$test_dir/home-launcher/.skiff/launcher/cluster"
+date +%s > "$test_dir/home-launcher/.skiff/launcher/1000.lease"
+rc=0
+SLURM_JOB_ID=8995 HOME="$test_dir/home-launcher" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/launcher.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && grep -q 'Another Skiff cluster is already running (job 1000, started with skiff.sh start on another-host)' "$test_dir/launcher.log" || { echo "a running cluster of the launcher: exit $rc" >&2; cat "$test_dir/launcher.log" >&2; exit 1; }
+if grep -q 'Starting Controller' "$test_dir/launcher.log"; then echo "a running cluster of the launcher: a bubble was started" >&2; exit 1; fi
+
 job=9000
 for mode in 7 0 early empty term termsteps; do
     job=$((job + 1))
@@ -129,10 +140,10 @@ for mode in 7 0 early empty term termsteps; do
         bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/$mode.log" 2>&1 &
         supervisor_pid=$!
         for attempt in $(seq 1 50); do
-            if grep -q 'Supervising job steps' "$test_dir/$mode.log"; then break; fi
+            if grep -q 'Supervising the bubbles' "$test_dir/$mode.log"; then break; fi
             sleep 0.1
         done
-        grep -q 'Supervising job steps' "$test_dir/$mode.log" || { cat "$test_dir/$mode.log"; exit 1; }
+        grep -q 'Supervising the bubbles' "$test_dir/$mode.log" || { cat "$test_dir/$mode.log"; exit 1; }
         kill -TERM "$supervisor_pid"
         wait "$supervisor_pid" || rc=$?
         expected=143

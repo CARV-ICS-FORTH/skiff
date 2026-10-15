@@ -184,12 +184,143 @@ e2e_curl() {
 # ---------------------------------------------------------------------------
 _E2E_NODES=()
 
+# ---------------------------------------------------------------------------
+# The suite's clusters. E2E_LAUNCHER says how the suite starts them: `slurm` (the default),
+# Slurm jobs of skiff.slurm; `skiff`, clusters of Skiff's own launcher (skiff.sh start) on this
+# machine, which have one node, or on the hosts of E2E_HOSTS (space-separated; the first is the
+# controller). The helpers below are the only places that know which.
+# ---------------------------------------------------------------------------
+export E2E_LAUNCHER="${E2E_LAUNCHER:-slurm}"
 # The size of the clusters the suite starts (the nodes of the jobs it submits). The cases do not
-# assume it: they use the nodes the cluster they find has (e2e_all_nodes), at least two.
-export E2E_NODES="${E2E_NODES:-2}"
+# assume it: they use the nodes the cluster they find has (e2e_all_nodes); what needs a second
+# node is reported UNAVAILABLE on a cluster of one (e2e_two_nodes).
+export E2E_HOSTS="${E2E_HOSTS:-}"
+case "$E2E_LAUNCHER" in
+    slurm) export E2E_NODES="${E2E_NODES:-2}" ;;
+    skiff) E2E_NODES=$(wc -w <<< "$E2E_HOSTS" | tr -d ' '); [ "$E2E_NODES" -gt 0 ] || E2E_NODES=1; export E2E_NODES ;;
+    *) echo "E2E_LAUNCHER: '$E2E_LAUNCHER' is neither slurm nor skiff" >&2; exit 1 ;;
+esac
+# Where the launcher's clusters are started from: their output files go there.
+export E2E_LAUNCH_DIR="${E2E_LAUNCH_DIR:-$HOME}"
 
-# e2e_sbatch [ARGS...] SCRIPT: submit a job of the suite's size; prints the job ID.
-e2e_sbatch() { sbatch --parsable --nodes="$E2E_NODES" "$@" | cut -d';' -f1; }
+# _e2e_scripts: the deployed scripts (the candidate's): those of SKIFF_ARTIFACT_DIR, else of the
+# repository this library is in, else of ~/skiff.
+_e2e_scripts() {
+    local here
+    here=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." 2>/dev/null && pwd) || true
+    if [ -n "${SKIFF_ARTIFACT_DIR:-}" ]; then
+        echo "$SKIFF_ARTIFACT_DIR/scripts"
+    elif [ -n "$here" ] && [ -f "$here/scripts/skiff.slurm" ]; then
+        echo "$here/scripts"
+    else
+        echo "$HOME/skiff/scripts"
+    fi
+}
+
+# _e2e_launcher_job: the job of the launcher's running cluster, empty when there is none.
+_e2e_launcher_job() {
+    bash "$(_e2e_scripts)/skiff.sh" status 2>/dev/null | sed -n 's/^Skiff cluster job \([0-9]*\): running .*/\1/p'
+}
+
+# e2e_submit [VAR=VALUE...]: start a cluster of the suite's size, with those settings in its
+# environment; prints its job ID.
+e2e_submit() {
+    local scripts out
+    scripts=$(_e2e_scripts)
+    case "$E2E_LAUNCHER" in
+        slurm) env "$@" sbatch --parsable --nodes="$E2E_NODES" "$scripts/skiff.slurm" | cut -d';' -f1 ;;
+        skiff)
+            # (A job that ended as it started is a job too, with its ID, as a Slurm job that fails is.)
+            # shellcheck disable=SC2086 # (the hosts, one word each)
+            out=$(cd "$E2E_LAUNCH_DIR" && env "$@" bash "$scripts/skiff.sh" start $E2E_HOSTS 2>&1) || printf '%s\n' "$out" >&2
+            out=$(sed -n 's/.*Skiff cluster job \([0-9]*\) .*/\1/p' <<< "$out" | sed -n 1p)
+            [ -n "$out" ] && echo "$out" ;;
+    esac
+}
+
+# e2e_cancel JOB: end the job (Slurm: scancel, which signals all its processes at once; the
+# launcher: skiff.sh stop, its pods first). A job of the launcher that is not the running one
+# is gone already: nothing else is stopped.
+e2e_cancel() {
+    case "$E2E_LAUNCHER" in
+        slurm) scancel "$1" ;;
+        skiff) [ "$(_e2e_launcher_job)" != "$1" ] || bash "$(_e2e_scripts)/skiff.sh" stop > /dev/null ;;
+    esac
+}
+
+# e2e_end_job JOB: tell the job to end, as at its time limit, and return: its pods are stopped
+# first (Slurm: scancel --batch --signal=TERM; the launcher: skiff.sh stop, in the background).
+e2e_end_job() {
+    case "$E2E_LAUNCHER" in
+        slurm) scancel --batch --signal=TERM "$1" ;;
+        skiff) [ "$(_e2e_launcher_job)" != "$1" ] || { bash "$(_e2e_scripts)/skiff.sh" stop > /dev/null 2>&1 & } ;;
+    esac
+}
+
+# e2e_job_gone JOB: succeeds when the job no longer runs.
+e2e_job_gone() {
+    case "$E2E_LAUNCHER" in
+        slurm) [ -z "$(squeue -j "$1" -h -o %i 2>/dev/null)" ] ;;
+        skiff) [ "$(_e2e_launcher_job)" != "$1" ] ;;
+    esac
+}
+
+# e2e_job_output JOB: the job's output file.
+e2e_job_output() {
+    case "$E2E_LAUNCHER" in
+        slurm) scontrol show job "$1" -o 2>/dev/null | sed -n 's/.*StdOut=\([^ ]*\).*/\1/p' ;;
+        skiff) echo "$E2E_LAUNCH_DIR/skiff-cluster-$1.out" ;;
+    esac
+}
+
+# e2e_job_hosts JOB: the hosts of the job, one a line (Slurm: while it still has the job's record).
+e2e_job_hosts() {
+    local nodelist
+    case "$E2E_LAUNCHER" in
+        slurm)
+            nodelist=$(scontrol show job "$1" -o 2>/dev/null | tr ' ' '\n' | sed -n 's/^NodeList=//p' | sed -n 1p)
+            [ -z "$nodelist" ] || scontrol show hostnames "$nodelist" 2>/dev/null ;;
+        skiff) if [ -n "$E2E_HOSTS" ]; then printf '%s\n' $E2E_HOSTS; else hostname; fi ;;
+    esac
+}
+
+# e2e_job_record JOB: what the launcher knows of the job, for the evidence of a run.
+e2e_job_record() {
+    case "$E2E_LAUNCHER" in
+        slurm) scontrol show job "$1" ;;
+        skiff) bash "$(_e2e_scripts)/skiff.sh" status ;;
+    esac
+}
+
+# e2e_node_memory_kib NODE IP: the memory the node gives the cluster, in KiB: what Slurm offers on
+# it (RealMemory: the suite's jobs ask for all of a node's memory, --mem=0), or without Slurm the
+# machine's (MemTotal).
+e2e_node_memory_kib() {
+    case "$E2E_LAUNCHER" in
+        slurm) echo $(( $(scontrol show node "$1" -o | sed -n 's/.*RealMemory=\([0-9]*\).*/\1/p') * 1024 )) ;;
+        skiff) runtime_ssh_node "$2" "sed -n 's/^MemTotal: *\([0-9]*\) kB/\1/p' /proc/meminfo" ;;
+    esac
+}
+
+# e2e_node_gpus NODE IP: how many GPUs the job holds on the node: what Slurm says it uses there
+# (GresUsed=gpu:2(IDX:0-1), gpu:a100:4(IDX:0-3), gpu:0), or without Slurm all the node's.
+e2e_node_gpus() {
+    local used item count
+    case "$E2E_LAUNCHER" in
+        slurm)
+            used=$(scontrol -d show node "$1" -o 2>/dev/null | tr ' ' '\n' | sed -n 's/^GresUsed=//p') || return 1
+            for item in ${used//,/ }; do
+                case "$item" in
+                    gpu:*)
+                        count=${item%%(*}
+                        count=${count##*:}
+                        if [[ "$count" =~ ^[0-9]+$ ]]; then echo "$count"; return 0; fi ;;
+                esac
+            done
+            echo 0 ;;
+        skiff) runtime_ssh_node "$2" 'n=0; for f in /dev/nvidia[0-9]*; do [ -e "$f" ] && n=$((n + 1)); done; echo $n' ;;
+    esac
+}
 
 # e2e_all_nodes: the names of the cluster's nodes, one per line, in a fixed order.
 e2e_all_nodes() {
@@ -238,7 +369,20 @@ e2e_node_a() {
 
 e2e_node_b() {
     _e2e_load_nodes
-    echo "${_E2E_NODES[1]}"
+    echo "${_E2E_NODES[1]:-}"
+}
+
+# e2e_two_nodes ID...: succeeds when the cluster has two nodes or more. On a cluster of one (Skiff's
+# own launcher on one machine) what needs a second node cannot run: each subcase ID is reported
+# UNAVAILABLE with the reason, and it fails.
+e2e_two_nodes() {
+    local id
+    _e2e_load_nodes
+    [ "${#_E2E_NODES[@]}" -lt 2 ] || return 0
+    for id in "$@"; do
+        e2e_subcase_unavailable "$id" "it needs two nodes, and the cluster has one"
+    done
+    return 1
 }
 
 # ---------------------------------------------------------------------------

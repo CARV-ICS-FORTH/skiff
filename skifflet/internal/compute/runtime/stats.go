@@ -32,16 +32,14 @@ import (
 	"skifflet/internal/compute/gpu"
 )
 
-// TotalResources derives truthful capacity bounded by Slurm allocations, cgroups, and CPU affinity.
+// TotalResources derives truthful capacity bounded by what the node gives the cluster (the
+// bubble's script says it, from a Slurm job's allocation: NodeCPUsVariable,
+// NodeMemoryVariable), cgroups, and CPU affinity.
 func TotalResources() corev1.ResourceList {
 	cpuMillis := getEffectiveCPUMillis()
 	cpuQuantity := resource.NewMilliQuantity(cpuMillis, resource.DecimalSI)
 
-	cores := cpuMillis / 1000
-	if cores <= 0 {
-		cores = 1
-	}
-	memBytes := getEffectiveMemoryBytes(cores)
+	memBytes := getEffectiveMemoryBytes()
 	memQuantity := resource.NewQuantity(int64(memBytes), resource.BinarySI)
 
 	storagePath := "/"
@@ -62,7 +60,7 @@ func TotalResources() corev1.ResourceList {
 		corev1.ResourcePods:             podsQuantity,
 	}
 
-	// The GPUs Slurm granted to this node and Skifflet found usable (see gpu.Init).
+	// The GPUs granted to this node and Skifflet found usable (see gpu.Init).
 	if gpus := gpu.Count(); gpus > 0 {
 		res[corev1.ResourceName(gpu.ResourceName)] = *resource.NewQuantity(int64(gpus), resource.DecimalSI)
 	}
@@ -142,21 +140,21 @@ func resolveCgroupPath(controller, filename string) string {
 	return ""
 }
 
-func getEffectiveCPUMillis() int64 {
-	var slurmMilli int64
+// NodeCPUsVariable and NodeMemoryVariable say what the node gives the cluster by amount: a
+// number of CPUs and MiB of memory (skiff.sh, skiff_node_grant: in a Slurm job, what Slurm
+// gave the job on the node). Unset or empty, the cgroup's limit or the machine's.
+const (
+	NodeCPUsVariable   = "SKIFF_NODE_CPUS"
+	NodeMemoryVariable = "SKIFF_NODE_MEMORY"
+)
 
-	// 1. Check Slurm environment
-	if val := os.Getenv("SLURM_CPUS_ON_NODE"); val != "" {
+func getEffectiveCPUMillis() int64 {
+	var grantMilli int64
+
+	// 1. What the node gives the cluster
+	if val := os.Getenv(NodeCPUsVariable); val != "" {
 		if c, err := strconv.ParseInt(val, 10, 64); err == nil && c > 0 {
-			slurmMilli = c * 1000
-		}
-	}
-	if slurmMilli == 0 {
-		if val := os.Getenv("SLURM_JOB_CPUS_PER_NODE"); val != "" {
-			parts := strings.Split(val, "(")
-			if c, err := strconv.ParseInt(parts[0], 10, 64); err == nil && c > 0 {
-				slurmMilli = c * 1000
-			}
+			grantMilli = c * 1000
 		}
 	}
 
@@ -199,14 +197,14 @@ func getEffectiveCPUMillis() int64 {
 	}
 
 	// 3. Selection logic: if both present, take tighter bound (minimum)
-	if slurmMilli > 0 && cgroupMilli > 0 {
-		if cgroupMilli < slurmMilli {
+	if grantMilli > 0 && cgroupMilli > 0 {
+		if cgroupMilli < grantMilli {
 			return cgroupMilli
 		}
-		return slurmMilli
+		return grantMilli
 	}
-	if slurmMilli > 0 {
-		return slurmMilli
+	if grantMilli > 0 {
+		return grantMilli
 	}
 	if cgroupMilli > 0 {
 		return cgroupMilli
@@ -220,20 +218,13 @@ func getEffectiveCPUMillis() int64 {
 	return 1000
 }
 
-func getEffectiveMemoryBytes(cpuCount int64) uint64 {
-	var slurmBytes uint64
+func getEffectiveMemoryBytes() uint64 {
+	var grantBytes uint64
 
-	// 1. Check Slurm environment
-	if val := os.Getenv("SLURM_MEM_PER_NODE"); val != "" {
+	// 1. What the node gives the cluster
+	if val := os.Getenv(NodeMemoryVariable); val != "" {
 		if m, err := strconv.ParseUint(val, 10, 64); err == nil && m > 0 {
-			slurmBytes = m * 1024 * 1024 // Slurm reports in MB
-		}
-	}
-	if slurmBytes == 0 {
-		if val := os.Getenv("SLURM_MEM_PER_CPU"); val != "" {
-			if m, err := strconv.ParseUint(val, 10, 64); err == nil && m > 0 {
-				slurmBytes = m * uint64(cpuCount) * 1024 * 1024
-			}
+			grantBytes = m * 1024 * 1024 // MiB
 		}
 	}
 
@@ -261,14 +252,14 @@ func getEffectiveMemoryBytes(cpuCount int64) uint64 {
 	}
 
 	// 3. Selection logic: if both present, take tighter bound (minimum)
-	if slurmBytes > 0 && cgroupBytes > 0 {
-		if cgroupBytes < slurmBytes {
+	if grantBytes > 0 && cgroupBytes > 0 {
+		if cgroupBytes < grantBytes {
 			return cgroupBytes
 		}
-		return slurmBytes
+		return grantBytes
 	}
-	if slurmBytes > 0 {
-		return slurmBytes
+	if grantBytes > 0 {
+		return grantBytes
 	}
 	if cgroupBytes > 0 {
 		return cgroupBytes

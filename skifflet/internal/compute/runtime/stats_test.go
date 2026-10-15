@@ -34,7 +34,7 @@ func TestStats_AdvertisesTheGPUsOfTheInventory(t *testing.T) {
 	}
 
 	granted := gpu.Sources{
-		Env:  func(name string) string { return map[string]string{gpu.StepGPUsVariable: "0,1"}[name] },
+		Env:  func(name string) string { return map[string]string{gpu.NodeGPUsVariable: "0,1"}[name] },
 		Proc: filepath.Join(dir, "proc"), Dev: filepath.Join(dir, "dev"), Libs: filepath.Join(dir, "libs"), Bin: filepath.Join(dir, "bin"),
 		Open: func(string) error { return nil },
 	}
@@ -49,28 +49,24 @@ func TestStats_AdvertisesTheGPUsOfTheInventory(t *testing.T) {
 	}
 }
 
-func TestStats_EffectiveCPUAndMemory_Slurm(t *testing.T) {
-	origCPU := os.Getenv("SLURM_CPUS_ON_NODE")
-	origMem := os.Getenv("SLURM_MEM_PER_NODE")
-	defer func() {
-		os.Setenv("SLURM_CPUS_ON_NODE", origCPU)
-		os.Setenv("SLURM_MEM_PER_NODE", origMem)
-	}()
-
-	os.Setenv("SLURM_CPUS_ON_NODE", "4")
-	os.Setenv("SLURM_MEM_PER_NODE", "8192") // 8192 MB = 8 GiB
+func TestStats_EffectiveCPUAndMemory_Granted(t *testing.T) {
+	t.Setenv(NodeCPUsVariable, "4")
+	t.Setenv(NodeMemoryVariable, "8192") // MiB = 8 GiB
+	// Slurm's own variables are the bubble script's to read, not Skifflet's.
+	t.Setenv("SLURM_CPUS_ON_NODE", "64")
+	t.Setenv("SLURM_MEM_PER_NODE", "1")
 
 	total := TotalResources()
 
 	cpuVal := total.Cpu().MilliValue()
 	if cpuVal != 4000 {
-		t.Fatalf("expected 4000m CPU from Slurm, got %d", cpuVal)
+		t.Fatalf("expected 4000m CPU, the node's grant, got %d", cpuVal)
 	}
 
 	memVal := total.Memory().Value()
 	expectedMem := int64(8192) * 1024 * 1024
 	if memVal != expectedMem {
-		t.Fatalf("expected %d bytes memory from Slurm, got %d", expectedMem, memVal)
+		t.Fatalf("expected %d bytes memory, the node's grant, got %d", expectedMem, memVal)
 	}
 
 	allocatable := AllocatableResources(context.Background())
@@ -88,9 +84,7 @@ func TestStats_MockCgroup_FractionalCPU(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	origCPU := os.Getenv("SLURM_CPUS_ON_NODE")
-	defer os.Setenv("SLURM_CPUS_ON_NODE", origCPU)
-	os.Unsetenv("SLURM_CPUS_ON_NODE")
+	t.Setenv(NodeCPUsVariable, "")
 
 	// Read and verify the quota math directly
 	data, _ := os.ReadFile(cgroupCpuMax)
