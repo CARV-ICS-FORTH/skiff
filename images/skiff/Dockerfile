@@ -18,10 +18,11 @@ ARG BASE_IMAGE=debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e2
 # --- builder -----------------------------------------------------------------------
 # Go and a C compiler come with the Go image (the compiler is for the race detector, which
 # needs cgo; the Skiff binaries themselves are built with CGO_ENABLED=0). shellcheck is here
-# so that the scripts are checked by the same version everywhere, and cannot be skipped.
+# so that the scripts are checked by the same version everywhere, and cannot be skipped. ip
+# (iproute2) is for Plaid's tests that build TAPs, veth pairs and namespaces with real kernels.
 FROM ${GO_IMAGE} AS builder
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends shellcheck && \
+    apt-get install -y --no-install-recommends shellcheck iproute2 && \
     rm -rf /var/lib/apt/lists/*
 ENV GOPATH=/root/.go
 # The image's unprivileged user (ubuntu, 1000) runs the tests: some of them (directory modes,

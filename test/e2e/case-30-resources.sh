@@ -13,11 +13,8 @@ source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 30)
 NODE_A=$(e2e_node_a)
-NODE_B=$(e2e_node_b)
-IP_A=$(runtime_node_ip "$NODE_A")
-IP_B=$(runtime_node_ip "$NODE_B")
 
-e2e_require_nodes 2
+e2e_require_nodes 1
 
 e2e_kubectl create namespace "$NS"
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --wait=false"
@@ -27,14 +24,15 @@ e2e_cleanup_register "e2e_preserve_failure $NS"
 # T40-node-capacity: a node advertises what the job grants it: its CPUs (the job's step has all
 # of them: it was once given one CPU, and the node advertised one) and the memory Slurm offers
 # on it (RealMemory, which is what a job that asks for all of it, --mem=0, is granted: not
-# what the machine has, which Slurm is configured with less than), and room for pods.
+# what the machine has, which Slurm is configured with less than; without Slurm, the
+# machine's), and room for pods.
 # ---------------------------------------------------------------------------
 node_capacity() {
     local node ip cpus mem_kb advertised_cpu advertised_mem_kb
     for node in $(e2e_all_nodes); do
         ip=$(runtime_node_ip "$node")
         cpus=$(runtime_ssh_node "$ip" "nproc --all")
-        mem_kb=$(( $(scontrol show node "$node" -o | sed -n 's/.*RealMemory=\([0-9]*\).*/\1/p') * 1024 ))
+        mem_kb=$(e2e_node_memory_kib "$node" "$ip")
         advertised_cpu=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.cpu}')
         advertised_mem_kb=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.memory}' | python3 -c '
 import sys
@@ -47,7 +45,7 @@ for suffix, factor in units.items():
 else:
     print(int(v) // 1024)')
         e2e_assert_eq "$node advertises the CPUs it has" "$advertised_cpu" "$cpus"
-        e2e_assert_eq "$node advertises the memory Slurm offers on it (RealMemory)" "$advertised_mem_kb" "$mem_kb"
+        e2e_assert_eq "$node advertises the memory the job is given on it" "$advertised_mem_kb" "$mem_kb"
         e2e_assert_eq "$node allocates most of the CPUs it advertises (the rest is reserved)" "$(e2e_kubectl get node "$node" -o json | python3 -c '
 import json, sys
 from fractions import Fraction

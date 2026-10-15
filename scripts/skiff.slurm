@@ -20,6 +20,10 @@
 # The number of nodes allocated (N) determines the cluster size:
 # Node 0: Controller Bubble (ID 1)
 # Node 1..N-1: Node (Worker) Bubbles (ID 2..N)
+#
+# This is the Slurm launcher of a cluster: the job, its nodes and running on them through
+# srun. What the job does with its nodes is skiff_cluster in skiff.sh (which `skiff.sh start`
+# also runs, on a machine without Slurm).
 
 set -euo pipefail
 
@@ -34,68 +38,15 @@ if [ -z "$SKIFF_SCRIPT" ]; then
     exit 1
 fi
 
-# Whether the user chose the MTU: sourcing skiff.sh gives both settings a value, and a chosen
-# MTU stays as it is, while one that was not is taken from the interfaces (below).
-if [ -n "${SKIFF_UPLINK_MTU:-}" ] || [ -n "${SKIFF_POD_MTU:-}" ]; then SKIFF_MTU_SOURCE="set"; else SKIFF_MTU_SOURCE="default"; fi
-
 # The network configuration every part of the cluster must agree on. Its defaults
 # and the variables that override them are documented in skiff.sh; it is checked as a
-# whole here, before anything is started. (Sourced, skiff.sh only defines functions.)
+# whole there, before anything is started. (Sourced, skiff.sh only defines functions.)
 # shellcheck source=skiff.sh
 source "$SKIFF_SCRIPT"
 
-# SKIFF_STATE_DIR (~/.skiff) is fixed by skiff.sh.
-read -r -a NODES <<< "$(scontrol show hostnames "$SLURM_JOB_NODELIST" | tr '\n' ' ')"
-NUM_NODES=${#NODES[@]}
-
-JOB_RESULT_DIR="$SKIFF_STATE_DIR/job-results"
-mkdir -p "$JOB_RESULT_DIR"
-record_job_exit() {
-    local status="$1" tmp
-    tmp=$(mktemp "$JOB_RESULT_DIR/.${SLURM_JOB_ID:-unknown}.XXXXXX") || return
-    printf '%s\n' "$status" > "$tmp"
-    mv -f "$tmp" "$JOB_RESULT_DIR/${SLURM_JOB_ID:-unknown}.exit"
-}
-trap 'record_job_exit $?' EXIT
-# The cause of a shutdown (skiff_record_cause) belongs to this job only.
-rm -f "$JOB_RESULT_DIR/${SLURM_JOB_ID:-unknown}.cause"
-
-if [ "$NUM_NODES" -eq 0 ]; then
-    echo "This script must be run via sbatch/srun." >&2
-    exit 1
-fi
-
-CONTROLLER_NODE=${NODES[0]}
-# The controller's address, on the network SKIFF_NETWORK chooses (the workers find their own
-# address on the route to it, so this chooses the network for all). Only the line of the probe
-# is used: srun may add other output of its own or of the node's libraries.
-CONTROLLER_NET=$(srun --nodes=1 -w "$CONTROLLER_NODE" bash "$SKIFF_SCRIPT" network-probe | grep -E '^ip=[0-9.]+ dev=[^ ]+ mtu=[0-9]+ speed=[0-9]+$' | sed -n 1p || true)
-CONTROLLER_IP=$(skiff_probe_field "$CONTROLLER_NET" ip)
-if [ -z "$CONTROLLER_IP" ]; then
-    echo "ERROR: could not find the address of the controller node $CONTROLLER_NODE (SKIFF_NETWORK=$SKIFF_NETWORK); nothing was started." >&2
-    exit 1
-fi
-SKIFF_NET_DEV=$(skiff_probe_field "$CONTROLLER_NET" dev)
-SKIFF_NET_SPEED=$(skiff_probe_field "$CONTROLLER_NET" speed)
-# The uplink MTU, when the user did not choose it: the smallest MTU of the nodes' routes to the
-# controller. (The pod MTU follows from it in skiff_config_resolve, which runs below.)
-if [ "$SKIFF_MTU_SOURCE" = default ]; then
-    PROBES=$(srun --nodes="$NUM_NODES" --ntasks-per-node=1 bash "$SKIFF_SCRIPT" network-probe "$CONTROLLER_IP" || true)
-    if MTU=$(skiff_probe_mtu "$NUM_NODES" "$PROBES"); then
-        SKIFF_UPLINK_MTU=$MTU
-        SKIFF_MTU_SOURCE="from the interfaces"
-    fi
-fi
-
-echo "Cluster Setup:"
-echo "  Controller Node: $CONTROLLER_NODE ($CONTROLLER_IP)"
-echo "  Nodes: ${NODES[*]}"
-
-# The job's own volume directory (see skiff.sh); a cluster gets a new one every time.
-SKIFF_JOB_INSTANCE=$(skiff_new_instance_id)
-skiff_config_validate "$NUM_NODES" "$CONTROLLER_IP" || exit 1
-skiff_config_export
-skiff_config_print
+# The job and its nodes.
+SKIFF_JOB_ID=${SLURM_JOB_ID:-}
+read -r -a SKIFF_NODES <<< "$(scontrol show hostnames "${SLURM_JOB_NODELIST:-}" | tr '\n' ' ')"
 
 # step_gpus NODE: the srun option that gives a step the GPUs the job has on NODE (nothing when it
 # has none). The job has them by what was asked for (--gpus-per-node, --gres) or because it is
@@ -118,67 +69,6 @@ step_gpus() {
     done
 }
 
-# What every allocated node needs (the host programs and their versions, user namespaces,
-# a subordinate id range (a warning when there is none), the GPUs the job has there, the fixed ports, a usable scratch directory of its own,
-# the Skiff image on the shared home, and the registries (a warning when it reaches none)) is
-# checked on the nodes themselves, all of them and all problems at once, before anything
-# starts. `skiff.sh check` is the same check, which a user can run before submitting.
-echo "Checking the allocated nodes..."
-NODE_PROBLEMS=0
-for ((i=0; i<NUM_NODES; i++)); do
-    role=node
-    [ "$i" -eq 0 ] && role=controller
-    # shellcheck disable=SC2046 # (step_gpus is one option or nothing)
-    if ! srun --nodes=1 -w "${NODES[$i]}" $(step_gpus "${NODES[$i]}") bash "$SKIFF_SCRIPT" check "$role"; then
-        NODE_PROBLEMS=$((NODE_PROBLEMS + 1))
-    fi
-done
-if [ "$NODE_PROBLEMS" -gt 0 ]; then
-    echo "ERROR: $NODE_PROBLEMS node(s) cannot run Skiff; nothing was started." >&2
-    echo "Some of what Skiff requires only an administrator can provide: the messages above say what, and why; send them to your administrator." >&2
-    exit 1
-fi
-
-# --- Single-cluster contract: one Skiff job per user ---
-
-# Check if another Skiff Slurm job is already active for this user
-if command -v squeue >/dev/null 2>&1; then
-    ACTIVE_JOBS=$(squeue -u "$USER" --name=skiff-cluster --noheader -o "%i" | awk -v self="${SLURM_JOB_ID:-}" '$1 != self' || true)
-    if [ -n "$ACTIVE_JOBS" ]; then
-        echo "ERROR: Another Skiff cluster job is already running (Job IDs: $ACTIVE_JOBS)." >&2
-        echo "Only one active Skiff cluster job is allowed. Cancel it with 'scancel <job>' first." >&2
-        exit 1
-    fi
-fi
-
-# Safe cleanup of old cluster credentials (only after verifying no active job)
-echo "Preparing ~/.skiff for cluster startup..."
-rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock
-
-# The image the bubbles run: the SIF of the mode (skiff.sh skiff_image_files), made from its
-# archive when it is missing or older than the archive (`skiff.sh download` makes it already;
-# in development `make develop` uploads a new archive). What Apptainer unpacks and converts
-# goes to the scratch directory.
-echo "Preparing the image..."
-skiff_image_files || exit 1
-mkdir -p "$SKIFF_IMAGES_DIR" "$SKIFF_APPTAINER_TMP"
-export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
-if [ -f "$SKIFF_IMAGE_TAR" ] && { [ ! -f "$SKIFF_IMAGE_SIF" ] || [ "$SKIFF_IMAGE_TAR" -nt "$SKIFF_IMAGE_SIF" ]; }; then
-    echo "Converting $SKIFF_IMAGE_TAR to $SKIFF_IMAGE_SIF..."
-    if ! apptainer build --force "$SKIFF_IMAGE_SIF" "docker-archive://$SKIFF_IMAGE_TAR"; then
-        echo "ERROR: Failed to convert $SKIFF_IMAGE_TAR to $SKIFF_IMAGE_SIF!" >&2
-        exit 1
-    fi
-fi
-if [ ! -f "$SKIFF_IMAGE_SIF" ]; then
-    echo "ERROR: Neither $SKIFF_IMAGE_TAR nor $SKIFF_IMAGE_SIF exists! Run 'skiff.sh download' (in development, 'make develop') first." >&2
-    exit 1
-fi
-echo "Image: $SKIFF_IMAGE_SIF"
-
-BG_PIDS=()
-BG_NODES=()
-
 # node_cpus NODE: how many CPUs the node has, all of which the job has (its nodes are
 # exclusive). The step that runs a node's bubble must ask for them: a step gets one CPU
 # unless it says otherwise, and what the step has is what Skifflet advertises as the node's
@@ -195,157 +85,43 @@ step_cpus() {
     if [[ "$cpus" =~ ^[0-9]+$ ]]; then echo "--cpus-per-task=$cpus"; fi
 }
 
-SLURM_EXIT_CODE=0
-handle_term() {
-    SLURM_EXIT_CODE=143
-    skiff_record_cause "skiff.slurm (the job)" "received SIGTERM: the job was cancelled or reached its time limit"
-    exit $SLURM_EXIT_CODE
-}
-handle_int() {
-    SLURM_EXIT_CODE=130
-    skiff_record_cause "skiff.slurm (the job)" "received SIGINT"
-    exit $SLURM_EXIT_CODE
+# A step on a node, with the GPUs the job has there (the check on the node is about them).
+skiff_launch_run() {
+    local node="$1" seconds="$2"
+    shift 2
+    # shellcheck disable=SC2046 # (step_gpus is one option or nothing)
+    if [ "$seconds" -gt 0 ]; then
+        timeout --signal=KILL "${seconds}s" srun --nodes=1 -w "$node" $(step_gpus "$node") "$@"
+    else
+        srun --nodes=1 -w "$node" $(step_gpus "$node") "$@"
+    fi
 }
 
-cleanup_slurm() {
-    local original_status=$?
-    trap - EXIT INT TERM
-    if [ "$SLURM_EXIT_CODE" -eq 0 ] && [ "$original_status" -ne 0 ]; then
-        SLURM_EXIT_CODE=$original_status
-    fi
-    echo "Shutting down Skiff cluster (Job ID: ${SLURM_JOB_ID:-})..."
-    # Tell the bubbles to stop, as a signal to the tasks of their steps and not to srun: a SIGTERM
-    # to srun makes it cancel the step, which Slurm does with SIGKILL, and where processes are
-    # tracked by cgroup (the usual) that kills everything of the step, the bubbles' daemons too,
-    # before the pods have been stopped. A signal to the step's tasks (scancel --signal) leaves the
-    # step running while its bubble script drains the pods and stops its instance.
-    signalled=0
+# The step of a node's bubble: the node's CPUs and GPUs (what the pods can use).
+skiff_launch_bubble() {
+    # shellcheck disable=SC2046 # (step_cpus and step_gpus are one option or nothing)
+    exec srun --nodes=1 -w "$1" --exclusive $(step_cpus "$1") $(step_gpus "$1") bash "$SKIFF_SCRIPT" bubble "$2"
+}
+
+# Tell the bubbles to stop, as a signal to the tasks of their steps and not to srun: a SIGTERM
+# to srun makes it cancel the step, which Slurm does with SIGKILL, and where processes are
+# tracked by cgroup (the usual) that kills everything of the step, the bubbles' daemons too,
+# before the pods have been stopped. A signal to the step's tasks (scancel --signal) leaves the
+# step running while its bubble script drains the pods and stops its instance.
+skiff_launch_stop() {
+    local step signalled=1
     if [ -n "${SLURM_JOB_ID:-}" ] && command -v squeue >/dev/null 2>&1 && command -v scancel >/dev/null 2>&1; then
         for step in $(squeue -s -h -j "$SLURM_JOB_ID" -o %i 2>/dev/null | grep -vE '\.(batch|extern|interactive)$' || true); do
-            scancel --signal=TERM "$step" 2>/dev/null && signalled=1
+            scancel --signal=TERM "$step" 2>/dev/null && signalled=0
         done
     fi
-    if [ "$signalled" -eq 0 ]; then
-        for pid in "${BG_PIDS[@]}"; do
-            kill -TERM "$pid" 2>/dev/null || true
-        done
-    fi
-    # The bubbles stop their pods first (see bubble_drain in skiff.sh): about 30 s.
-    local wait_count=0
-    while [ $wait_count -lt 40 ]; do
-        local any_alive=0
-        for pid in "${BG_PIDS[@]}"; do
-            if kill -0 "$pid" 2>/dev/null; then
-                any_alive=1
-                break
-            fi
-        done
-        if [ $any_alive -eq 0 ]; then
-            break
-        fi
-        sleep 1
-        wait_count=$((wait_count + 1))
-    done
-    for pid in "${BG_PIDS[@]}"; do
-        kill -KILL "$pid" 2>/dev/null || true
-    done
-    # A last sweep for an instance a bubble that was killed left behind. Normally each bubble has
-    # stopped its own, and Apptainer then answers "no instance found" with its usage text on
-    # stdout: nothing of it belongs in the job's output.
-    for node in "${NODES[@]}"; do
-        timeout --signal=KILL 15s srun --nodes=1 -w "$node" apptainer instance stop --all >/dev/null 2>&1 || true
-    done
-    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
-    wait 2>/dev/null || true
-    echo "Cluster cleanup complete."
-    if [ -f "$JOB_RESULT_DIR/${SLURM_JOB_ID:-unknown}.cause" ]; then
-        echo "The cause of the shutdown is recorded in $JOB_RESULT_DIR/${SLURM_JOB_ID:-unknown}.cause"
-    fi
-    record_job_exit "${SLURM_EXIT_CODE:-1}"
-    exit "${SLURM_EXIT_CODE:-0}"
-}
-trap handle_term TERM
-trap handle_int INT
-trap cleanup_slurm EXIT
-
-fail_exited_step() {
-    local pid="$1" status
-    if wait "$pid" 2>/dev/null; then
-        status=1
-    else
-        status=$?
-    fi
-    echo "ERROR: A Skiff bubble process (PID $pid) terminated unexpectedly with exit code $status!" >&2
-    # The bubble's own script records what it saw first; this is the cause only when it
-    # could not (it was killed before it noticed anything).
-    local i node=""
-    for i in "${!BG_PIDS[@]}"; do [ "${BG_PIDS[$i]}" = "$pid" ] && node="${BG_NODES[$i]}"; done
-    skiff_record_cause "the job step of the bubble on ${node:-a node} (PID $pid)" "$(skiff_describe_status "$status")" "this is the first failure recorded; see the output above for the bubble's own account"
-    SLURM_EXIT_CODE="$status"
-    exit "$status"
+    return "$signalled"
 }
 
-# Start Controller Bubble
-echo "Starting Controller on $CONTROLLER_NODE..."
-(
-    export SKIFF_ROLE="controller"
-    export SKIFF_DEV=${SKIFF_DEV:-0}
-    export CONTROLLER_IP="$CONTROLLER_IP"
-    # shellcheck disable=SC2046 # (step_cpus and step_gpus are one option or nothing)
-    exec srun --nodes=1 -w "$CONTROLLER_NODE" --exclusive $(step_cpus "$CONTROLLER_NODE") $(step_gpus "$CONTROLLER_NODE") bash "$SKIFF_SCRIPT" bubble 1
-) &
-BG_PIDS+=($!)
-BG_NODES+=("$CONTROLLER_NODE")
+# (Slurm knows the job is running.)
+skiff_launch_checked() { :; }
 
-# Wait for Controller initialization (kubeconfig & server-ca)
-echo "Waiting for Controller initialization..."
-WAIT_TIME=0
-# (The startup waits here and in the entrypoint are fixed too: they only bound a start that
-# does not happen, and a start that needs longer is a node that is not working.)
-MAX_WAIT=300
-while [ ! -f "$SKIFF_STATE_DIR/kubeconfig" ] || [ ! -f "$SKIFF_STATE_DIR/tls/server-ca.crt" ]; do
-    kill -0 "${BG_PIDS[0]}" 2>/dev/null || fail_exited_step "${BG_PIDS[0]}"
-    if [ $WAIT_TIME -ge $MAX_WAIT ]; then
-        echo "ERROR: Controller failed to initialize within ${MAX_WAIT} seconds." >&2
-        exit 1
-    fi
-    sleep 1
-    WAIT_TIME=$((WAIT_TIME + 1))
-done
-echo "Controller ready after ${WAIT_TIME}s."
+# Slurm ends the job, and with it everything the job started.
+skiff_launch_end() { :; }
 
-# Start Node (Worker) Bubbles
-BUBBLE_ID=2
-for ((i=1; i<NUM_NODES; i++)); do
-    NODE=${NODES[$i]}
-    echo "Starting Node on $NODE (Bubble ID $BUBBLE_ID)..."
-    
-    (
-        export SKIFF_ROLE="node"
-        export SKIFF_DEV=${SKIFF_DEV:-0}
-        export CONTROLLER_IP="$CONTROLLER_IP"
-        # shellcheck disable=SC2046 # (step_cpus and step_gpus are one option or nothing)
-        exec srun --nodes=1 -w "$NODE" --exclusive $(step_cpus "$NODE") $(step_gpus "$NODE") bash "$SKIFF_SCRIPT" bubble "$BUBBLE_ID"
-    ) &
-    BG_PIDS+=($!)
-    BG_NODES+=("$NODE")
-    
-    ((BUBBLE_ID++))
-done
-
-# Active supervision of all background bubble processes
-echo "Cluster nodes started. Supervising job steps..."
-echo "Connect from the login node with:"
-echo "  export KUBECONFIG=$SKIFF_STATE_DIR/kubeconfig"
-if [ -x "$SKIFF_TOOLS_DIR/bin/kubectl" ]; then
-    echo "  export PATH=$SKIFF_TOOLS_DIR/bin:\$PATH     # kubectl is the one taken out of the Skiff image (or run $SKIFF_TOOLS_DIR/bin/kubectl)"
-fi
-echo "  kubectl get nodes"
-while true; do
-    for pid in "${BG_PIDS[@]}"; do
-        if ! kill -0 "$pid" 2>/dev/null; then
-            fail_exited_step "$pid"
-        fi
-    done
-    sleep 2
-done
+skiff_cluster

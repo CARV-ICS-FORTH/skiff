@@ -5,7 +5,12 @@
 #   ./test/e2e/run-all.sh [options]
 #
 # Options:
-#   --job-id SLURM_JOB_ID   Use an already-running Skiff job (skip E2E-01 startup)
+#   --job-id JOB_ID          Use an already-running Skiff job (skip E2E-01 startup)
+#   --launcher slurm|skiff   How the run starts its clusters: Slurm jobs of skiff.slurm (the
+#                            default), or Skiff's own launcher, skiff.sh start, on this machine
+#                            (clusters of one node: what needs two is UNAVAILABLE)
+#   --hosts H1,H2,...        With --launcher skiff: the hosts of its clusters (over ssh; the first
+#                            is the controller) instead of this machine
 #   --artifact-dir DIR       Path to candidate binaries/manifest (sets SKIFF_ARTIFACT_DIR)
 #   --registry HOST:PORT     Local registry for fixture images (sets FIXTURE_REGISTRY)
 #   --daemon-class CLASS    Target one daemon class with --case 09
@@ -45,6 +50,8 @@ while [ $# -gt 0 ]; do
         --no-teardown)     export NO_TEARDOWN=1; shift ;;
         --smoke)           SMOKE=1; shift ;;
         --nodes)           export E2E_NODES="$2"; shift 2 ;;
+        --launcher)        export E2E_LAUNCHER="$2"; shift 2 ;;
+        --hosts)           export E2E_HOSTS="${2//,/ }"; shift 2 ;;
         --network-only|--preflight-only) NETWORK_ONLY=1; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -299,15 +306,19 @@ run_smoke() {
     fi
     # (the nodes and the architecture, for the verdict; no profile is being checked)
     collect_candidate_evidence >> "${E2E_LOGDIR}/candidate.log" 2>&1 || true
-    e2e_require_nodes 2
+    e2e_require_nodes 1
     echo "--- SMOKE CASES -------------------------------------------------------"
     local n
     for n in $(profile_smoke_cases); do
         run_case_n "$n"
     done
-    e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
-    run_script "NET-3-tap-acceptance" "$NETWORK_DIR/test-tap-acceptance.sh"
-    e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
+    if [ "$(e2e_all_nodes | grep -c .)" -ge 2 ]; then
+        e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
+        run_script "NET-3-tap-acceptance" "$NETWORK_DIR/test-tap-acceptance.sh"
+        e2e_kubectl delete namespace tap-acceptance --ignore-not-found --timeout=60s >> "${E2E_LOGDIR}/NET-cleanup.log" 2>&1 || true
+    else
+        record_unavailable NET-3-tap-acceptance "it needs two nodes, and the cluster has one"
+    fi
     run_script "E2E-09-skifflet" env E2E_DAEMON_CLASS=skifflet "$E2E_DIR/case-09-daemon-recovery.sh"
 }
 
@@ -336,11 +347,10 @@ run_daemon_failure_matrix() {
             if [ "${RESULTS[E2E-09-${class}]:-FAIL}" != PASS ]; then
                 # A setup failure may occur before injection. Release this exact
                 # job before starting the next isolated failure scenario.
-                scancel "$prior_job" || return 1
+                e2e_cancel "$prior_job" || return 1
             fi
-            e2e_wait_condition 90 "prior Slurm job ${prior_job} stopped" \
-                "test -z \"\$(squeue -j ${prior_job} -h -o %i 2>/dev/null)\"" || return 1
-            SKIFF_JOB_ID=$(e2e_sbatch "${SKIFF_ARTIFACT_DIR:-$HOME/skiff}/scripts/skiff.slurm") || return 1
+            e2e_wait_condition 90 "prior job ${prior_job} stopped" e2e_job_gone "$prior_job" || return 1
+            SKIFF_JOB_ID=$(e2e_submit) || return 1
             export SKIFF_JOB_ID
             [[ "$SKIFF_JOB_ID" =~ ^[0-9]+$ ]] || return 1
             printf '%s\n' "$SKIFF_JOB_ID" >> "${E2E_LOGDIR}/matrix-job-ids"
@@ -392,9 +402,9 @@ ALT_NETWORK_SETTINGS=(SKIFF_POD_CIDR=10.0.64.0/18 SKIFF_SERVICE_CIDR=10.201.0.0/
 run_alternative_network() {
     [ -z "$ONLY_CASE" ] || return 0
     local prior="$SKIFF_JOB_ID" alt
-    scancel "$prior" || { record E2E-17-alt FAIL 0; return 0; }
-    e2e_wait_condition 90 "job ${prior} stopped" "test -z \"\$(squeue -j ${prior} -h -o %i 2>/dev/null)\"" || { record E2E-17-alt FAIL 0; return 0; }
-    alt=$(export "${ALT_NETWORK_SETTINGS[@]}"; e2e_sbatch "${SKIFF_ARTIFACT_DIR:-$HOME/skiff}/scripts/skiff.slurm")
+    e2e_cancel "$prior" || { record E2E-17-alt FAIL 0; return 0; }
+    e2e_wait_condition 90 "job ${prior} stopped" e2e_job_gone "$prior" || { record E2E-17-alt FAIL 0; return 0; }
+    alt=$(e2e_submit "${ALT_NETWORK_SETTINGS[@]}")
     if [[ "$alt" =~ ^[0-9]+$ ]]; then
         printf '%s\n' "$alt" >> "${E2E_LOGDIR}/matrix-job-ids"
         if e2e_wait_condition 300 "the cluster on the alternative settings" matrix_ready; then
@@ -402,12 +412,12 @@ run_alternative_network() {
         else
             record E2E-17-alt FAIL 0
         fi
-        scancel "$alt" || true
-        e2e_wait_condition 90 "job ${alt} stopped" "test -z \"\$(squeue -j ${alt} -h -o %i 2>/dev/null)\"" || true
+        e2e_cancel "$alt" || true
+        e2e_wait_condition 90 "job ${alt} stopped" e2e_job_gone "$alt" || true
     else
         record E2E-17-alt FAIL 0
     fi
-    SKIFF_JOB_ID=$(e2e_sbatch "${SKIFF_ARTIFACT_DIR:-$HOME/skiff}/scripts/skiff.slurm")
+    SKIFF_JOB_ID=$(e2e_submit)
     export SKIFF_JOB_ID
     printf '%s\n' "$SKIFF_JOB_ID" >> "${E2E_LOGDIR}/matrix-job-ids"
     e2e_wait_condition 300 "a fresh default cluster" matrix_ready || true
@@ -502,7 +512,7 @@ collect_candidate_evidence() {
     cp "$manifest" "${E2E_LOGDIR}/deployment-manifest.json"
     cp "${HOME}/.skiff/fixture.env" "${E2E_LOGDIR}/fixture.env" || return 1
     e2e_kubectl get nodes -o json > "${E2E_LOGDIR}/nodes.json" || return 1
-    scontrol show job "$SKIFF_JOB_ID" > "${E2E_LOGDIR}/slurm-job.txt" || return 1
+    e2e_job_record "$SKIFF_JOB_ID" > "${E2E_LOGDIR}/job-record.txt" || return 1
     : > "$nodes_file"
     for node in $(e2e_all_nodes); do
         ip=$(runtime_node_ip "$node") || return 1
@@ -524,7 +534,7 @@ if [ -n "$ONLY_CASE" ]; then
     if [ "$ONLY_CASE" = "01" ]; then
         run_startup_case
     else
-        e2e_require_nodes 2
+        e2e_require_nodes 1
         case "$ONLY_CASE" in
             02) run_case "02" "init-shared-net" ;;
             03) run_case "03" "direct-pod-net" ;;

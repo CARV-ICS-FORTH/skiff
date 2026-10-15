@@ -67,7 +67,7 @@ func fakeNode(t *testing.T, minors ...int) Sources {
 
 func granted(s Sources, list string) Sources {
 	s.Env = func(name string) string {
-		if name == StepGPUsVariable {
+		if name == NodeGPUsVariable {
 			return list
 		}
 		return ""
@@ -79,7 +79,7 @@ func TestDiscover_NoGrantIsNoGPUs(t *testing.T) {
 	for _, list := range []string{"", "  "} {
 		inv, err := Discover(granted(fakeNode(t, 0), list))
 		if err != nil || len(inv.Devices) != 0 {
-			t.Errorf("SLURM_STEP_GPUS=%q: %+v, %v; want an empty inventory", list, inv, err)
+			t.Errorf("SKIFF_NODE_GPUS=%q: %+v, %v; want an empty inventory", list, inv, err)
 		}
 	}
 }

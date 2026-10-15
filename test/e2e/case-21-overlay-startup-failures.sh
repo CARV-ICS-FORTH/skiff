@@ -26,12 +26,11 @@ WORKER_IP=""
 for node in "${NODES[@]}"; do [ "${IPS[$node]}" = "$CONTROLLER_IP" ] || WORKER_IP="${IPS[$node]}"; done
 ALL_IPS=(); for node in "${NODES[@]}"; do ALL_IPS+=("${IPS[$node]}"); done
 
-ARTIFACT_DIR="${SKIFF_ARTIFACT_DIR:-$HOME/skiff}"
 CURRENT_JOB="${SKIFF_JOB_ID:-}"
 [[ "$CURRENT_JOB" =~ ^[0-9]+$ ]] || e2e_die "case 21 needs the running job's ID (SKIFF_JOB_ID)"
 
-job_gone() { [ -z "$(squeue -j "$1" -h -o %i 2>/dev/null)" ]; }
-submit_job() { e2e_sbatch "${ARTIFACT_DIR}/scripts/skiff.slurm"; }
+job_gone() { e2e_job_gone "$1"; }
+submit_job() { e2e_submit "$@"; }
 all_released() {
     local ip
     for ip in "${ALL_IPS[@]}"; do runtime_host_resources_gone "$ip" || return 1; done
@@ -44,16 +43,14 @@ no_handoff_socket() {
 }
 helper_pids() { runtime_ssh_node "$CONTROLLER_IP" "pgrep -f '[p]laidctl overlay-socket' | tr '\n' ' '" || true; }
 helper_running() { [ -n "$(helper_pids | tr -d ' ')" ]; }
-job_output() {  # the job's standard output file
-    scontrol show job "$1" -o | sed -n 's/.*StdOut=\([^ ]*\).*/\1/p'
-}
+job_output() { e2e_job_output "$1"; }  # the job's standard output file
 cluster_ready() {
     local n
     n=$(e2e_kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | grep -c '^True$' || true)
     [ "$n" -ge "$E2E_NODES" ] && e2e_kubectl get pod -n kube-system -l k8s-app=kube-dns -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' 2>/dev/null | e2e_grep_q '^True$'
 }
 # Start from nothing: the running cluster goes away (it carries no state this case needs).
-scancel "$CURRENT_JOB"
+e2e_cancel "$CURRENT_JOB"
 e2e_wait_condition 90 "the running job stopped" job_gone "$CURRENT_JOB"
 e2e_wait_condition 90 "the nodes are released" all_released
 
@@ -68,7 +65,7 @@ cancel_during_startup() {
     e2e_wait_condition 120 "the overlay helper is running" helper_running
     e2e_assert_contains "the helper holds the overlay port on the controller host" \
         "$(runtime_ssh_node "$CONTROLLER_IP" "ss -H -lun 'sport = :8472'")" " ${CONTROLLER_IP}:8472 "
-    scancel "$job"
+    e2e_cancel "$job"
     e2e_wait_condition 90 "the cancelled job stopped" job_gone "$job"
     e2e_wait_condition 90 "ports, processes and instances are released" all_released
     e2e_wait_condition 30 "the handoff socket is gone" no_handoff_socket
@@ -137,7 +134,7 @@ e2e_subcase_run T22-port-taken port_taken
 # ---------------------------------------------------------------------------
 unusable_scratch() {
     local job result out
-    job=$(sbatch --parsable --export=ALL,SKIFF_TMP_DIR=/proc/skiff-scratch "${ARTIFACT_DIR}/scripts/skiff.slurm" | cut -d';' -f1)
+    job=$(submit_job SKIFF_TMP_DIR=/proc/skiff-scratch)
     e2e_wait_condition 120 "the job failed before starting" job_gone "$job"
     result="${HOME}/.skiff/job-results/${job}.exit"
     e2e_wait_condition 30 "the job's exit status is recorded" test -s "$result"

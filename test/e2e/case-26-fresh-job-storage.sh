@@ -17,7 +17,6 @@ mapfile -t NODES < <(e2e_all_nodes)
 declare -A IPS
 for node in "${NODES[@]}"; do IPS[$node]=$(runtime_node_ip "$node"); done
 ALL_IPS=(); for node in "${NODES[@]}"; do ALL_IPS+=("${IPS[$node]}"); done
-ARTIFACT_DIR="${SKIFF_ARTIFACT_DIR:-$HOME/skiff}"
 CURRENT_JOB="${SKIFF_JOB_ID:-}"
 [[ "$CURRENT_JOB" =~ ^[0-9]+$ ]] || e2e_die "case 26 needs the running job's ID (SKIFF_JOB_ID)"
 
@@ -25,7 +24,7 @@ CURRENT_JOB="${SKIFF_JOB_ID:-}"
 NS="e2e26-shared"
 CLAIM="results"
 
-job_gone() { [ -z "$(squeue -j "$1" -h -o %i 2>/dev/null)" ]; }
+job_gone() { e2e_job_gone "$1"; }
 all_released() {
     local ip
     for ip in "${ALL_IPS[@]}"; do runtime_host_resources_gone "$ip" || return 1; done
@@ -107,7 +106,7 @@ e2e_wait_condition 120 "both pods that handle their end are running" started_bot
 graceful_end() {
     local began now
     began=$(date +%s)
-    scancel --batch --signal=TERM "$CURRENT_JOB"
+    e2e_end_job "$CURRENT_JOB"
     e2e_wait_condition 90 "the job stopped" job_gone "$CURRENT_JOB"
     now=$(date +%s)
     for node in "${NODES[@]}"; do
@@ -140,7 +139,7 @@ fresh_job() {
     e2e_assert_eq "the data outlived the job" "$(cat "$OLD_DIR/file" 2>/dev/null || true)" from-the-first-job
     e2e_assert_contains "and is below a directory named after the job" "$OLD_JOB_DIR" "/volumes/${CURRENT_JOB}-"
 
-    job=$(e2e_sbatch "${ARTIFACT_DIR}/scripts/skiff.slurm")
+    job=$(e2e_submit)
     [[ "$job" =~ ^[0-9]+$ ]] || e2e_die "cannot submit a new job"
     printf '%s\n' "$job" > "${E2E_LOGDIR}/fresh-job-id"
     e2e_wait_condition 300 "the new cluster is ready" cluster_ready

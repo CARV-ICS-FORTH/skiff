@@ -23,6 +23,7 @@ python3 test/e2e/lib/candidate.py --self-test
 python3 test/e2e/images/fixture/app_test.py
 python3 test/e2e/lib/pty_client.py --self-test
 bash test/skiff-supervision-test.sh
+bash test/skiff-launcher-test.sh >/dev/null
 bash test/skiff-config-test.sh >/dev/null
 bash test/skiff-bubble-test.sh
 bash test/storage-manifest-test.sh

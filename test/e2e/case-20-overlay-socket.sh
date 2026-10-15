@@ -12,7 +12,7 @@ source "$SCRIPT_DIR/lib/fixture.sh"
 source "$SCRIPT_DIR/lib/runtime.sh"
 
 NS=$(e2e_namespace 20)
-e2e_require_nodes 2
+e2e_require_nodes 1
 mapfile -t NODES < <(e2e_all_nodes)
 declare -A IPS
 for node in "${NODES[@]}"; do IPS[$node]=$(runtime_node_ip "$node"); done
@@ -96,6 +96,8 @@ traffic() {
     done
     e2e_kubectl delete pod e2e20-server -n "$NS" --grace-period=2 --timeout=60s >/dev/null
 }
-e2e_subcase_run T21-traffic traffic
+if e2e_two_nodes T21-traffic; then
+    e2e_subcase_run T21-traffic traffic
+fi
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

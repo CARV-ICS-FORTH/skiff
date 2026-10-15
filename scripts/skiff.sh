@@ -1,29 +1,40 @@
 #!/bin/bash
-# Skiff on a node: the cluster configuration and the node's bubble, in one script.
+# Skiff: the cluster configuration, the cluster of a job and the node's bubble, in one script.
 #
-#   skiff.sh bubble ID    start and supervise the bubble of one node (skiff.slurm runs it
-#                         through srun, with SKIFF_ROLE and CONTROLLER_IP in the environment)
-#   skiff.sh check [ROLE] what a node needs and whether it has it (skiff.slurm runs it on
-#                         every allocated node; run it yourself on a compute node first,
-#                         for example `srun -N1 skiff.sh check`)
-#   skiff.sh download [IMAGE...]
+#   skiff.sh start [HOST...]
+#                         start a cluster without Slurm, in the background, on this machine
+#                         or on the hosts (the first is the controller; they share the home
+#                         and reach one another with ssh keys): the job's output goes to
+#                         skiff-cluster-<job>.out in the current directory (a Slurm job is
+#                         started with `sbatch skiff.slurm` instead)
+#   skiff.sh stop         stop it: its pods are stopped first, then the cluster
+#   skiff.sh status       the running cluster, if there is one
+#   skiff.sh run [HOST...] what `start` runs in the background: the job itself, in the foreground
+#   skiff.sh bubble ID    start and supervise the bubble of one node (the job runs it on each
+#                         node, with SKIFF_ROLE and CONTROLLER_IP in the environment)
+#   skiff.sh check [ROLE] what a node needs and whether it has it (the job runs it on every
+#                         node; run it yourself on a node first, for example
+#                         `srun -N1 skiff.sh check` on a Slurm cluster)
+#   skiff.sh download [--arch ARCH[,ARCH]] [IMAGE...]
 #                         put what a cluster needs on the shared home, from a node that
 #                         has Internet access (the login node): the Skiff image of this
 #                         version, the tools out of it and the images of the cluster's
-#                         system pods; with IMAGEs, those images instead (the user's own,
+#                         system pods, for this host's architecture, the nodes' (Slurm's)
+#                         and --arch's; with IMAGEs, those images instead (the user's own,
 #                         for compute nodes that cannot pull them)
 #   skiff.sh network-probe [CONTROLLER_IP]
-#                         what skiff.slurm asks of the nodes about their networks: without
+#                         what a cluster asks of its nodes about their networks: without
 #                         an argument (on the controller) the address, interface, MTU and
 #                         speed of the network chosen by SKIFF_NETWORK; with the controller's
 #                         address (on every node) the interface, MTU and kind of the route to it
 #   skiff.sh tools [TAR]  take the programs Skiff needs on a host (Apptainer, slirp4netns,
 #                         socat, kubectl) out of the Skiff image archive and put them in
-#                         ~/.skiff/tools, which every command here puts first in PATH: a
-#                         host that has none of them needs nothing installed (see below)
+#                         ~/.skiff/tools/<machine>, which every command here puts first in
+#                         PATH on a host of that machine: a host that has none of them needs
+#                         nothing installed (see below)
 #
-# Sourced (by skiff.slurm, which validates the configuration once before anything starts,
-# and by the tests), it defines the functions below and runs nothing. Every configuration
+# Sourced (by skiff.slurm, which runs a Slurm job's cluster with it, and by the tests), it
+# defines the functions below and runs nothing. Every configuration
 # value can be overridden in the environment (for example
 # `sbatch --export=ALL,SKIFF_POD_MTU=1400 skiff.slurm`); the defaults are the ones a
 # deployment gets without saying anything.
@@ -51,8 +62,10 @@
 : "${SKIFF_NETWORK:=auto}"
 # MTU of the link between the bubbles (the outer network of every bubble), and
 # of the pods' interfaces. The pod MTU defaults to what the link leaves after the
-# 50 bytes of VXLAN encapsulation the pod network adds. skiff.slurm takes the uplink MTU
-# from the interfaces (the smallest on the way to the controller) when neither is set.
+# 50 bytes of VXLAN encapsulation the pod network adds. A cluster takes the uplink MTU
+# from the interfaces (the smallest on the way to the controller) when neither is set:
+# whether the user set one is decided here, before the defaults give both a value.
+if [ -n "${SKIFF_UPLINK_MTU:-}" ] || [ -n "${SKIFF_POD_MTU:-}" ]; then SKIFF_MTU_SOURCE="set"; else SKIFF_MTU_SOURCE="default"; fi
 : "${SKIFF_UPLINK_MTU:=1500}"
 : "${SKIFF_POD_MTU:=}"
 # MTU of the bubble's link to slirp4netns (its tap0 and Plaid's plaid0). slirp4netns pays
@@ -79,10 +92,17 @@ SKIFF_STATE_DIR="$HOME/.skiff"
 
 # The programs Skiff needs on a host (Apptainer, slirp4netns, socat and kubectl, with what
 # Apptainer runs) can come from the Skiff image itself: `skiff.sh tools` takes them out of the
-# image archive into this directory, a tree that works from wherever it is put. Once it exists
-# it comes first in PATH for everything started from here (the job, its steps, the check), so a
-# host's own copies are not needed and not used.
-SKIFF_TOOLS_DIR="$SKIFF_STATE_DIR/tools"
+# image archive into a tree that works from wherever it is put. Once it exists it comes first in
+# PATH for everything started from here (the job, its steps, the check), so a host's own copies
+# are not needed and not used. The home is shared by hosts that may be of different
+# architectures (a login node and compute nodes), so there is a tree per architecture, named as
+# `uname -m` names the machine: a PATH line can say $HOME/.skiff/tools/$(uname -m)/bin on any
+# host. SKIFF_TOOLS_DIR is the one of the host this runs on.
+SKIFF_TOOLS_ROOT="$SKIFF_STATE_DIR/tools"
+# (macOS says arm64 where Linux says aarch64: the tests run there too.)
+SKIFF_MACHINE=$(uname -m 2>/dev/null) || SKIFF_MACHINE=unknown
+case "$SKIFF_MACHINE" in arm64) SKIFF_MACHINE=aarch64 ;; esac
+SKIFF_TOOLS_DIR="$SKIFF_TOOLS_ROOT/$SKIFF_MACHINE"
 skiff_use_tools() {
     if [ -d "$SKIFF_TOOLS_DIR/bin" ]; then
         case ":$PATH:" in *":$SKIFF_TOOLS_DIR/bin:"*) ;; *) PATH="$SKIFF_TOOLS_DIR/bin:$PATH"; export PATH ;; esac
@@ -93,25 +113,31 @@ skiff_use_tools
 
 # The Skiff image. A release (the default) runs the image of the version in the VERSION file
 # beside the scripts' folder, published on Docker Hub, which `skiff.sh download` saves as an
-# archive (the format of `docker save`) and converts to the SIF the bubbles run. Development
-# (SKIFF_DEV=1) runs the archive `make develop` uploads, converted the same way. The archive is
-# also where `skiff.sh tools` takes the tools from.
+# archive (the format of `docker save`) per architecture and converts to the SIFs the bubbles
+# run, each node its own architecture's. Development (SKIFF_DEV=1) runs the one archive `make
+# develop` uploads (one platform), converted the same way. The archive is also where
+# `skiff.sh tools` takes the tools from.
 case "${BASH_SOURCE[0]}" in */*) SKIFF_SCRIPT_DIR=${BASH_SOURCE[0]%/*} ;; *) SKIFF_SCRIPT_DIR=. ;; esac
 SKIFF_SCRIPT_DIR=$(cd "$SKIFF_SCRIPT_DIR" 2>/dev/null && pwd)
+# This script, by its full path: what a job runs on its nodes (the home is shared).
+SKIFF_SCRIPT="$SKIFF_SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 SKIFF_IMAGE_REPOSITORY="carvicsforth/skiff"
 SKIFF_IMAGES_DIR="$SKIFF_STATE_DIR/images"
 
-# skiff_image_files: the archive and the SIF of the mode (SKIFF_IMAGE_TAR, SKIFF_IMAGE_SIF) and,
-# for a release, its version (SKIFF_VERSION). Fails, saying why, when a release has no version.
+# skiff_image_files [ARCH]: the archive and the SIF of the mode (SKIFF_IMAGE_TAR, SKIFF_IMAGE_SIF)
+# and, for a release, its version (SKIFF_VERSION): those of ARCH (amd64 or arm64), by default this
+# host's. Fails, saying why, when a release has no version or the host an architecture Skiff does
+# not run on.
 skiff_image_files() {
-    local name=skiff file="$SKIFF_SCRIPT_DIR/../VERSION"
+    local name=skiff file="$SKIFF_SCRIPT_DIR/../VERSION" arch="${1:-}"
     if [ "${SKIFF_DEV:-0}" != 1 ]; then
         SKIFF_VERSION=$(sed -n 1p "$file" 2>/dev/null | tr -d '[:space:]') || true
         if ! [[ "$SKIFF_VERSION" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "no Skiff version in $file: it belongs beside the scripts' folder, as in the release package" >&2
             return 1
         fi
-        name="skiff-$SKIFF_VERSION"
+        if [ -z "$arch" ]; then arch=$(_skiff_arch) || return 1; fi
+        name="skiff-$SKIFF_VERSION-$arch"
     fi
     SKIFF_IMAGE_TAR="$SKIFF_IMAGES_DIR/$name.tar"
     SKIFF_IMAGE_SIF="$SKIFF_IMAGES_DIR/$name.sif"
@@ -373,11 +399,11 @@ skiff_pod_address() {
     _skiff_int2ip $(( _NET + $1 ))
 }
 
-# skiff_new_instance_id: the name of a job's volume directory: the Slurm job ID, which
+# skiff_new_instance_id: the name of a job's volume directory: the job ID (SKIFF_JOB_ID), which
 # helps to recognise leftovers, and eight random hexadecimal digits, because Slurm reuses
 # job IDs and a reused ID must not find the directory of the job that had it before.
 skiff_new_instance_id() {
-    echo "${SLURM_JOB_ID:-0}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+    echo "${SKIFF_JOB_ID:-0}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
 }
 
 # skiff_listed WORD: succeeds when the output of the command that follows lists WORD, for
@@ -416,7 +442,7 @@ skiff_record_cause() {
     [ -z "$detail" ] || block=$(printf '%s\ndetail:   %s' "$block" "$detail")
     printf 'Shutdown cause:\n%s\n' "$(sed 's/^/  /' <<< "$block")" >&2
     dir="$SKIFF_STATE_DIR/job-results"
-    file="$dir/${SLURM_JOB_ID:-unknown}.cause"
+    file="$dir/${SKIFF_JOB_ID:-unknown}.cause"
     mkdir -p "$dir" 2>/dev/null || return 0
     if ! (set -C; printf '%s\n' "$block" > "$file") 2>/dev/null; then
         printf '\nafter the first failure:\n%s\n' "$block" >> "$file" 2>/dev/null || true
@@ -498,6 +524,51 @@ _skiff_port_taken() {
         done < "$file"
     done
     return 1
+}
+
+# skiff_node_grant: what this node gives the cluster, in Skiff's own terms, for the check and for
+# Skifflet (which advertises it as the node's capacity): SKIFF_NODE_CPUS (a number of CPUs),
+# SKIFF_NODE_MEMORY (MiB) and SKIFF_NODE_GPUS (the indices of the GPUs, the numbers of their
+# device files /dev/nvidia<N>: 0,2-3). Empty means not granted by amount: Skifflet then takes the
+# cgroup's limit or, without one, the machine (and no GPUs).
+#
+# In a Slurm job step, Slurm says what the step has: its CPUs, its memory (per node, or per CPU;
+# a job that asked for all the memory of the node, --mem=0, has no amount in its environment and
+# is given what Slurm is configured to offer on the node, RealMemory, which is less than the
+# machine has), and the GPUs it was given (SLURM_STEP_GPUS; a step that was not given any has
+# none, whatever the job has). Without Slurm the user has the machine to themselves: all of it,
+# and every GPU it has.
+skiff_node_grant() {
+    SKIFF_NODE_CPUS="" SKIFF_NODE_MEMORY="" SKIFF_NODE_GPUS=""
+    if [ -n "${SLURM_JOB_ID:-}" ]; then
+        local count real
+        if [[ "${SLURM_CPUS_ON_NODE:-}" =~ ^[1-9][0-9]*$ ]]; then
+            SKIFF_NODE_CPUS=$SLURM_CPUS_ON_NODE
+        else
+            # 8(x2),4: the first node's count
+            count=${SLURM_JOB_CPUS_PER_NODE:-}
+            count=${count%%[(,]*}
+            if [[ "$count" =~ ^[1-9][0-9]*$ ]]; then SKIFF_NODE_CPUS=$count; fi
+        fi
+        if [[ "${SLURM_MEM_PER_NODE:-}" =~ ^[1-9][0-9]*$ ]]; then
+            SKIFF_NODE_MEMORY=$SLURM_MEM_PER_NODE
+        elif [[ "${SLURM_MEM_PER_CPU:-}" =~ ^[1-9][0-9]*$ ]] && [ -n "$SKIFF_NODE_CPUS" ]; then
+            SKIFF_NODE_MEMORY=$((SLURM_MEM_PER_CPU * SKIFF_NODE_CPUS))
+        elif command -v scontrol >/dev/null 2>&1; then
+            real=$(scontrol show node "${SLURMD_NODENAME:-$(hostname -s)}" -o 2>/dev/null) || true
+            if [[ " $real " =~ \ RealMemory=([1-9][0-9]*)\  ]]; then SKIFF_NODE_MEMORY=${BASH_REMATCH[1]}; fi
+        fi
+        SKIFF_NODE_GPUS=${SLURM_STEP_GPUS:-}
+    else
+        # (indexed by their numbers, which an array gives back in order)
+        local file minor minors=()
+        for file in "$(_skiff_sys /dev)"/nvidia[0-9]*; do
+            minor=${file##*/nvidia}
+            [ -e "$file" ] && [[ "$minor" =~ ^[0-9]+$ ]] && minors[10#$minor]=$((10#$minor))
+        done
+        if [ "${#minors[@]}" -gt 0 ]; then SKIFF_NODE_GPUS=$(IFS=,; echo "${minors[*]}"); fi
+    fi
+    export SKIFF_NODE_CPUS SKIFF_NODE_MEMORY SKIFF_NODE_GPUS
 }
 
 # skiff_check_node [controller|node]: what a node needs before a bubble can start on it,
@@ -626,24 +697,27 @@ skiff_check_node() {
         errors=$((errors + 1))
     fi
 
-    # The GPUs. Slurm gives a step its GPUs by index in SLURM_STEP_GPUS (the numbers of their
-    # device files, /dev/nvidia<N>); a step that was not given any has none, whatever the job
-    # has (skiff.slurm passes the job's GPUs to the steps it starts). The GPUs a step was
-    # given must be usable: the cluster's pods run on them, and a cluster that advertises
-    # GPUs it cannot use is worse than one without. A node without GPUs has nothing to check.
-    if [ -n "${SLURM_STEP_GPUS:-}" ]; then
-        local gpu_part gpu_lo gpu_hi gpu_n gpu_file gpu_missing="" gpu_given=0 gpu_node_total=0
-        for gpu_part in ${SLURM_STEP_GPUS//,/ }; do
+    # The GPUs the node gives the cluster (skiff_node_grant: in a Slurm job, the ones Slurm gave
+    # the step, by index, the numbers of their device files /dev/nvidia<N>; a step that was not
+    # given any has none, whatever the job has, and skiff.slurm passes the job's GPUs to the
+    # steps it starts; without Slurm, all the node's). They must be usable: the cluster's pods
+    # run on them, and a cluster that advertises GPUs it cannot use is worse than one without.
+    # A node without GPUs has nothing to check.
+    skiff_node_grant
+    if [ -n "$SKIFF_NODE_GPUS" ]; then
+        local gpu_part gpu_lo gpu_hi gpu_n gpu_file gpu_missing="" gpu_given=0 gpu_node_total=0 gpu_whose="of this node"
+        [ -z "${SLURM_JOB_ID:-}" ] || gpu_whose="that Slurm gave this step"
+        for gpu_part in ${SKIFF_NODE_GPUS//,/ }; do
             gpu_lo=${gpu_part%%-*}; gpu_hi=${gpu_part##*-}
             if ! [[ "$gpu_lo" =~ ^[0-9]+$ && "$gpu_hi" =~ ^[0-9]+$ ]] || [ "$gpu_lo" -gt "$gpu_hi" ]; then
-                echo "$host: SLURM_STEP_GPUS=$SLURM_STEP_GPUS is not a list of GPU indices" >&2
+                echo "$host: $SKIFF_NODE_GPUS, the GPUs $gpu_whose, is not a list of GPU indices" >&2
                 errors=$((errors + 1)); gpu_missing=-; break
             fi
             for ((gpu_n = gpu_lo; gpu_n <= gpu_hi; gpu_n++)); do
                 gpu_given=$((gpu_given + 1))
                 gpu_file=$(_skiff_sys "/dev/nvidia$gpu_n")
                 if ! { : < "$gpu_file"; } 2>/dev/null; then
-                    echo "$host: Slurm gave this step GPU $gpu_n and ${gpu_file#"${SKIFF_SYS_ROOT:-}"} cannot be opened by $(id -un) (it does not exist, or a device cgroup of the job denies it); the NVIDIA driver is not usable here" >&2
+                    echo "$host: GPU $gpu_n is one $gpu_whose and ${gpu_file#"${SKIFF_SYS_ROOT:-}"} cannot be opened by $(id -un) (it does not exist, or a device cgroup of the job denies it); the NVIDIA driver is not usable here" >&2
                     errors=$((errors + 1)); gpu_missing=$gpu_missing$gpu_n
                 fi
             done
@@ -757,10 +831,12 @@ skiff_node_report() {
     done
     fstype=$(stat -f -c %T "$SKIFF_TMP_DIR" 2>/dev/null || true)
     echo "$(hostname): scratch $SKIFF_TMP_DIR${fstype:+ ($fstype)}"
-    if [ -n "${SLURM_STEP_GPUS:-}" ]; then
-        local driver
+    skiff_node_grant
+    if [ -n "$SKIFF_NODE_GPUS" ]; then
+        local driver whose="the node's"
+        [ -z "${SLURM_JOB_ID:-}" ] || whose="the step's"
         driver=$(sed -n 's/.*Kernel Module  *\([^ ]*\).*/\1/p' "$(_skiff_sys /proc/driver/nvidia/version)" 2>/dev/null | sed -n 1p) || true
-        echo "$(hostname): GPUs $SLURM_STEP_GPUS (the step's)${driver:+, NVIDIA driver $driver}"
+        echo "$(hostname): GPUs $SKIFF_NODE_GPUS ($whose)${driver:+, NVIDIA driver $driver}"
     fi
 }
 
@@ -786,7 +862,7 @@ skiff_check_images() {
         if [ "${SKIFF_DEV:-0}" = 1 ]; then
             echo "$host: the development image is not in $SKIFF_IMAGES_DIR (neither ${SKIFF_IMAGE_SIF##*/} nor ${SKIFF_IMAGE_TAR##*/}): run 'make develop'" >&2
         else
-            echo "$host: the Skiff image of version $SKIFF_VERSION is not in $SKIFF_IMAGES_DIR: run 'bash skiff.sh download' first, on a node that has Internet access (the login node)" >&2
+            echo "$host: the Skiff image of version $SKIFF_VERSION for this node's architecture ($(_skiff_arch)) is not in $SKIFF_IMAGES_DIR: run 'bash skiff.sh download' first, on a node that has Internet access (the login node); if that node is of another architecture and Slurm does not report this one, 'bash skiff.sh download --arch $(_skiff_arch)'" >&2
         fi
         errors=1
     fi
@@ -903,8 +979,8 @@ skiff_probe_field() {
     done
 }
 
-# skiff_network_probe [CONTROLLER_IP]: the command `skiff.sh network-probe`, which skiff.slurm
-# runs through srun. Without an address (on the controller) it chooses this host's address
+# skiff_network_probe [CONTROLLER_IP]: the command `skiff.sh network-probe`, which the cluster
+# (skiff_cluster) runs on its nodes through its launcher. Without an address (on the controller) it chooses this host's address
 # as SKIFF_NETWORK says and prints `ip=ADDRESS dev=INTERFACE mtu=MTU speed=MBPS`. With the
 # controller's address (on every node) it prints `dev=INTERFACE mtu=MTU onlink=yes|no` for
 # the route to it: onlink=no when the route goes through a gateway.
@@ -1091,7 +1167,9 @@ bubble_cleanup() {
         kill "$SLIRP_PID" 2>/dev/null || true
         wait "$SLIRP_PID" 2>/dev/null || true
     fi
-    apptainer instance stop "$NAME" 2>/dev/null || true
+    # (When the instance is gone already, Apptainer answers "no instance found" with its usage
+    # text on stdout, which does not belong in the job's output.)
+    apptainer instance stop "$NAME" >/dev/null 2>&1 || true
     rm -f "$SLIRP_SOCK" "$OVERLAY_HANDOFF" 2>/dev/null || true
     exit "${EXIT_CODE:-0}"
 }
@@ -1205,18 +1283,6 @@ skiff_bubble() {
         --bind "$HOST_IP_DETECTED" --port "$OVERLAY_PORT" --handoff "$OVERLAY_HANDOFF" --timeout 10m &
     OVERLAY_HELPER_PID=$!
 
-    # A job that asks for all of a node's memory (--mem=0) has no amount in its environment
-    # (SLURM_MEM_PER_NODE is 0 or absent), and Skifflet would advertise what the machine has,
-    # which Slurm does not grant (it is configured with less than the machine has). The grant of
-    # such a job is what Slurm is configured to offer on the node: RealMemory.
-    if ! [[ "${SLURM_MEM_PER_NODE:-0}" =~ ^[1-9][0-9]*$ ]] && command -v scontrol >/dev/null 2>&1; then
-        local real
-        real=$(scontrol show node "${SLURMD_NODENAME:-$(hostname -s)}" -o 2>/dev/null | tr ' ' '\n' | grep '^RealMemory=') || true
-        if [[ "${real#RealMemory=}" =~ ^[1-9][0-9]*$ ]]; then
-            export SLURM_MEM_PER_NODE="${real#RealMemory=}"
-        fi
-    fi
-
     # --ignore-fakeroot-command: without a range of subordinate ids Apptainer maps only the user's own
     # id, and on a host that has the fakeroot command (the fakeroot package; some sites install it) it
     # combines the two: it binds the host's fakeroot and libfakeroot.so into the bubble and sets
@@ -1224,11 +1290,13 @@ skiff_bubble() {
     # ("/libs/fakeroot already exists in layout", or no /bin/sh to inspect in the pause image), so no
     # pod's sandbox becomes ready. Skiff never wants the command: the root-mapped namespace is enough.
     #
-    # --nv: a step that was given GPUs (SLURM_STEP_GPUS; see skiff.slurm) has the NVIDIA driver's
-    # libraries and programs put in the bubble, which Skifflet gives to the containers of the
-    # pods that ask for GPUs (and only to them).
+    # --nv: a node that gives the cluster GPUs (skiff_node_grant) has
+    # the NVIDIA driver's libraries and programs put in the bubble, which Skifflet gives to the
+    # containers of the pods that ask for GPUs (and only to them). What the node gives is
+    # Skifflet's too (SKIFF_NODE_*): it advertises it as the node's capacity.
     local nv=()
-    if [ -n "${SLURM_STEP_GPUS:-}" ]; then nv=(--nv); fi
+    skiff_node_grant
+    if [ -n "$SKIFF_NODE_GPUS" ]; then nv=(--nv); fi
     apptainer instance run \
     	--fakeroot \
     	--ignore-fakeroot-command \
@@ -1264,6 +1332,9 @@ skiff_bubble() {
     	--env SKIFF_SLIRP_MTU="$SKIFF_SLIRP_MTU" \
     	--env SKIFF_TMP_DIR="$SKIFF_TMP_DIR" \
     	--env SKIFF_JOB_INSTANCE="$SKIFF_JOB_INSTANCE" \
+    	--env SKIFF_NODE_CPUS="$SKIFF_NODE_CPUS" \
+    	--env SKIFF_NODE_MEMORY="$SKIFF_NODE_MEMORY" \
+    	--env SKIFF_NODE_GPUS="$SKIFF_NODE_GPUS" \
     	"$BUBBLE_IMAGE" \
     	"$NAME"
 
@@ -1327,8 +1398,31 @@ skiff_bubble() {
     # death. The entrypoint inside is judged by pgrep's own answer (no match), twice in a
     # row; a failed or hung `apptainer exec` proves nothing. With the 2 s interval a real
     # death is noticed within about three intervals.
-    local gone=0 missing=0 listed alive rc
+    #
+    # A job of Skiff's own launcher (skiff.sh start) tells its bubbles to stop through its lease
+    # (SKIFF_LEASE, see skiff_launcher_lease): `stop` ends the bubble as TERM does, its pods
+    # stopped first. A lease that has not changed for SKIFF_LEASE_EXPIRY seconds is a supervisor
+    # that is gone (killed, or its host lost), and the bubble ends the same way rather than run
+    # on with nobody to stop it. (A Slurm job's bubbles have no lease: Slurm signals them.)
+    local gone=0 missing=0 listed alive rc lease lease_seen="" lease_changed=$SECONDS
     while true; do
+        if [ -n "${SKIFF_LEASE:-}" ]; then
+            lease=$(cat "$SKIFF_LEASE" 2>/dev/null || true)
+            if [ "${lease%% *}" = stop ]; then
+                echo "Bubble $NAME: the job is ending (its supervisor said stop)"
+                EXIT_CODE=143
+                exit 143
+            fi
+            if [ -n "$lease" ] && [ "$lease" != "$lease_seen" ]; then
+                lease_seen=$lease
+                lease_changed=$SECONDS
+            elif [ $((SECONDS - lease_changed)) -ge "$SKIFF_LEASE_EXPIRY" ]; then
+                echo "ERROR: the job's supervisor has not renewed its lease ($SKIFF_LEASE) for $((SECONDS - lease_changed)) s: it is gone" >&2
+                skiff_record_cause "the supervisor of job ${SKIFF_JOB_ID:-unknown}, seen from bubble $NAME" "its lease $SKIFF_LEASE has not changed for $((SECONDS - lease_changed)) s (the supervisor was killed, or its host is lost)"
+                EXIT_CODE=143
+                exit 143
+            fi
+        fi
         if [[ -n ${OVERLAY_HELPER_PID:-} ]] && ! kill -0 "$OVERLAY_HELPER_PID" 2>/dev/null; then
             rc=0
             wait "$OVERLAY_HELPER_PID" || rc=$?
@@ -1381,7 +1475,7 @@ skiff_bubble() {
                     echo "ERROR: Bubble entrypoint process terminated in instance $NAME!" >&2
                     bubble_show_log
                     skiff_record_cause "bubble entrypoint (in instance $NAME)" "not running: pgrep found no entrypoint.sh on $missing checks in a row" "$(bubble_log_detail)"
-                    apptainer instance stop "$NAME" 2>/dev/null || true
+                    apptainer instance stop "$NAME" >/dev/null 2>&1 || true
                     EXIT_CODE=1
                     exit 1
                 fi
@@ -1413,16 +1507,644 @@ skiff_bubble() {
     done
 }
 
+# --- The cluster of a job ------------------------------------------------------------
+# skiff_cluster is what a job does with its nodes: check them, start the controller's bubble and
+# then the others', supervise them, and stop them all when one ends or the job is told to end,
+# recording why. It runs in the job's supervisor: the batch script of a Slurm job (skiff.slurm),
+# or `skiff.sh run` (which `skiff.sh start` runs in the background) on a machine without Slurm.
+# What it needs from them is the job's launcher:
+#
+#   SKIFF_JOB_ID                        the job (a number)
+#   SKIFF_NODES                         its nodes, in order (an array; the first is the controller)
+#   skiff_launch_run NODE SECS CMD...   run a command on a node and wait for it, for no more than
+#                                       SECS seconds (0: no limit)
+#   skiff_launch_bubble NODE ID         run the node's bubble (skiff.sh bubble ID) with the
+#                                       environment it is given; it ends when the bubble ends
+#   skiff_launch_checked                the nodes passed their checks: the bubbles start next
+#   skiff_launch_stop                   tell the bubbles to stop their pods and end; fails when it
+#                                       could not, and then their processes are sent TERM
+#   skiff_launch_end                    what the launcher does last, once the cluster is gone
+
+SKIFF_JOB_RESULTS_DIR="$SKIFF_STATE_DIR/job-results"
+
+# _skiff_record_job_exit STATUS: the job's exit status, in job-results/JOB.exit.
+_skiff_record_job_exit() {
+    local tmp
+    tmp=$(mktemp "$SKIFF_JOB_RESULTS_DIR/.${SKIFF_JOB_ID:-unknown}.XXXXXX") || return
+    printf '%s\n' "$1" > "$tmp"
+    mv -f "$tmp" "$SKIFF_JOB_RESULTS_DIR/${SKIFF_JOB_ID:-unknown}.exit"
+}
+
+# _skiff_one_cluster: one Skiff cluster per user, whichever launcher started it: another Slurm
+# job of the user's (where there is Slurm) or a running cluster of skiff.sh start refuses this one.
+_skiff_one_cluster() {
+    local active
+    if command -v squeue >/dev/null 2>&1; then
+        active=$(squeue -u "${USER:-$(id -un)}" --name=skiff-cluster --noheader -o "%i" 2>/dev/null | awk -v self="${SKIFF_JOB_ID:-}" '$1 != self' || true)
+        if [ -n "$active" ]; then
+            echo "ERROR: Another Skiff cluster job is already running (Job IDs: $active)." >&2
+            echo "Only one active Skiff cluster job is allowed. Cancel it with 'scancel <job>' first." >&2
+            return 1
+        fi
+    fi
+    if skiff_launcher_running && [ "$SKIFF_RUNNING_JOB" != "${SKIFF_JOB_ID:-}" ]; then
+        echo "ERROR: Another Skiff cluster is already running (job $SKIFF_RUNNING_JOB, started with skiff.sh start on $SKIFF_RUNNING_HOST)." >&2
+        echo "Only one active Skiff cluster is allowed. Stop it with 'skiff.sh stop' first." >&2
+        return 1
+    fi
+}
+
+_skiff_cluster_term() {
+    SKIFF_EXIT_CODE=143
+    skiff_record_cause "the supervisor of job ${SKIFF_JOB_ID:-unknown}" "received SIGTERM: the job was told to end (cancelled, stopped, or at its time limit)"
+    exit $SKIFF_EXIT_CODE
+}
+_skiff_cluster_int() {
+    SKIFF_EXIT_CODE=130
+    skiff_record_cause "the supervisor of job ${SKIFF_JOB_ID:-unknown}" "received SIGINT"
+    exit $SKIFF_EXIT_CODE
+}
+
+_skiff_cluster_cleanup() {
+    local original_status=$? wait_count=0 any_alive pid i
+    trap - EXIT INT TERM
+    if [ "$SKIFF_EXIT_CODE" -eq 0 ] && [ "$original_status" -ne 0 ]; then
+        SKIFF_EXIT_CODE=$original_status
+    fi
+    echo "Shutting down Skiff cluster (Job ID: ${SKIFF_JOB_ID:-})..."
+    # The bubbles are told to stop by the launcher (they stop their pods first, see bubble_drain:
+    # about 30 s); when it cannot tell them, their processes here are sent TERM.
+    if ! skiff_launch_stop; then
+        for pid in "${SKIFF_BG_PIDS[@]}"; do
+            kill -TERM "$pid" 2>/dev/null || true
+        done
+    fi
+    while [ $wait_count -lt 40 ]; do
+        any_alive=0
+        for pid in "${SKIFF_BG_PIDS[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                any_alive=1
+                break
+            fi
+        done
+        if [ $any_alive -eq 0 ]; then
+            break
+        fi
+        sleep 1
+        wait_count=$((wait_count + 1))
+    done
+    # What is still there is killed: the process group, where the launcher made the bubble one
+    # (what the bubble script started dies with it), otherwise the process.
+    for pid in "${SKIFF_BG_PIDS[@]}"; do
+        if [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$pid" ]; then
+            kill -KILL -- "-$pid" 2>/dev/null || true
+        else
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done
+    # A last sweep on each node: the process group of a bubble the launcher recorded (a bubble on
+    # another host, over ssh, which the kill above does not reach) and a bubble instance that a
+    # killed bubble left behind, by its name (the user may run other instances on the node).
+    # Normally each bubble has stopped its own, and Apptainer then answers "no instance found"
+    # with its usage text on stdout: nothing of it belongs in the job's output.
+    for i in "${!SKIFF_NODES[@]}"; do
+        skiff_launch_run "${SKIFF_NODES[$i]}" 15 bash -c 'f=$1/$2.bubble$3.pid; [ ! -s "$f" ] || kill -KILL -- "-$(cat "$f")" 2>/dev/null; apptainer instance stop "bubble$3"' _ "$SKIFF_LAUNCHER_DIR" "${SKIFF_JOB_ID:-unknown}" "$((i + 1))" >/dev/null 2>&1 || true
+    done
+    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
+    wait 2>/dev/null || true
+    echo "Cluster cleanup complete."
+    if [ -f "$SKIFF_JOB_RESULTS_DIR/${SKIFF_JOB_ID:-unknown}.cause" ]; then
+        echo "The cause of the shutdown is recorded in $SKIFF_JOB_RESULTS_DIR/${SKIFF_JOB_ID:-unknown}.cause"
+    fi
+    _skiff_record_job_exit "${SKIFF_EXIT_CODE:-1}"
+    skiff_launch_end
+    exit "${SKIFF_EXIT_CODE:-0}"
+}
+
+# _skiff_cluster_bubble_ended PID: a bubble's process ended while the cluster runs: the job ends.
+_skiff_cluster_bubble_ended() {
+    local pid="$1" status i node=""
+    if wait "$pid" 2>/dev/null; then
+        status=1
+    else
+        status=$?
+    fi
+    echo "ERROR: A Skiff bubble process (PID $pid) terminated unexpectedly with exit code $status!" >&2
+    # The bubble's own script records what it saw first; this is the cause only when it
+    # could not (it was killed before it noticed anything).
+    for i in "${!SKIFF_BG_PIDS[@]}"; do [ "${SKIFF_BG_PIDS[$i]}" = "$pid" ] && node="${SKIFF_BG_NODES[$i]}"; done
+    skiff_record_cause "the process of the bubble on ${node:-a node} (PID $pid)" "$(skiff_describe_status "$status")" "this is the first failure recorded; see the output above for the bubble's own account"
+    SKIFF_EXIT_CODE="$status"
+    exit "$status"
+}
+
+skiff_cluster() {
+    local num_nodes=${#SKIFF_NODES[@]} i role node problems=0 wait_time=0 max_wait bubble_id pid
+    mkdir -p "$SKIFF_JOB_RESULTS_DIR"
+    trap '_skiff_record_job_exit $?; skiff_launch_end' EXIT
+    # The cause of a shutdown (skiff_record_cause) belongs to this job only.
+    rm -f "$SKIFF_JOB_RESULTS_DIR/${SKIFF_JOB_ID:-unknown}.cause"
+    if [ "$num_nodes" -eq 0 ]; then
+        echo "The job has no nodes (skiff.slurm must be run via sbatch/srun)." >&2
+        exit 1
+    fi
+
+    # The controller's address, on the network SKIFF_NETWORK chooses (the workers find their own
+    # address on the route to it, so this chooses the network for all). Only the line of the probe
+    # is used: the launcher may add other output of its own or of the node's libraries.
+    local controller_node=${SKIFF_NODES[0]} controller_net probes="" mtu
+    controller_net=$(skiff_launch_run "$controller_node" 0 bash "$SKIFF_SCRIPT" network-probe | grep -E '^ip=[0-9.]+ dev=[^ ]+ mtu=[0-9]+ speed=[0-9]+$' | sed -n 1p || true)
+    CONTROLLER_IP=$(skiff_probe_field "$controller_net" ip)
+    if [ -z "$CONTROLLER_IP" ]; then
+        echo "ERROR: could not find the address of the controller node $controller_node (SKIFF_NETWORK=$SKIFF_NETWORK); nothing was started." >&2
+        exit 1
+    fi
+    SKIFF_NET_DEV=$(skiff_probe_field "$controller_net" dev)
+    SKIFF_NET_SPEED=$(skiff_probe_field "$controller_net" speed)
+    # The uplink MTU, when the user did not choose it: the smallest MTU of the nodes' routes to
+    # the controller. (The pod MTU follows from it in skiff_config_resolve, which runs below.)
+    if [ "$SKIFF_MTU_SOURCE" = default ]; then
+        for node in "${SKIFF_NODES[@]}"; do
+            probes+="$(skiff_launch_run "$node" 0 bash "$SKIFF_SCRIPT" network-probe "$CONTROLLER_IP" || true)"$'\n'
+        done
+        if mtu=$(skiff_probe_mtu "$num_nodes" "$probes"); then
+            SKIFF_UPLINK_MTU=$mtu
+            SKIFF_MTU_SOURCE="from the interfaces"
+        fi
+    fi
+
+    echo "Cluster Setup:"
+    echo "  Controller Node: $controller_node ($CONTROLLER_IP)"
+    echo "  Nodes: ${SKIFF_NODES[*]}"
+
+    # The job's own volume directory (see skiff_new_instance_id); a cluster gets a new one every time.
+    SKIFF_JOB_INSTANCE=$(skiff_new_instance_id)
+    skiff_config_validate "$num_nodes" "$CONTROLLER_IP" || exit 1
+    skiff_config_export
+    export SKIFF_JOB_ID
+    skiff_config_print
+
+    # What every node needs (the host programs and their versions, user namespaces, a subordinate
+    # id range (a warning when there is none), the GPUs it gives the cluster, the fixed ports, a
+    # usable scratch directory of its own, the Skiff image on the shared home, and the registries
+    # (a warning when it reaches none)) is checked on the nodes themselves, all of them and all
+    # problems at once, before anything starts. `skiff.sh check` is the same check, which a user
+    # can run before starting a cluster.
+    echo "Checking the nodes..."
+    for ((i=0; i<num_nodes; i++)); do
+        role=node
+        [ "$i" -eq 0 ] && role=controller
+        if ! skiff_launch_run "${SKIFF_NODES[$i]}" 0 bash "$SKIFF_SCRIPT" check "$role"; then
+            problems=$((problems + 1))
+        fi
+    done
+    if [ "$problems" -gt 0 ]; then
+        echo "ERROR: $problems node(s) cannot run Skiff; nothing was started." >&2
+        echo "Some of what Skiff requires only an administrator can provide: the messages above say what, and why; send them to your administrator." >&2
+        exit 1
+    fi
+
+    # --- Single-cluster contract: one Skiff cluster per user ---
+    _skiff_one_cluster || exit 1
+    skiff_launch_checked
+
+    # Safe cleanup of old cluster credentials (only after verifying no active cluster)
+    echo "Preparing ~/.skiff for cluster startup..."
+    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock
+
+    # The images the bubbles run: the SIFs of the mode, each node its architecture's
+    # (skiff_image_files), made from their archives when missing or older than the archive
+    # (`skiff.sh download` makes them already; in development `make develop` uploads a new
+    # archive). Each node's check has said that its architecture's is there. What Apptainer
+    # unpacks and converts goes to the scratch directory.
+    echo "Preparing the image..."
+    skiff_image_files || exit 1
+    mkdir -p "$SKIFF_IMAGES_DIR" "$SKIFF_APPTAINER_TMP"
+    export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
+    local archive sif archives sifs=0
+    if [ "${SKIFF_DEV:-0}" = 1 ]; then
+        archives=("$SKIFF_IMAGE_TAR")
+    else
+        archives=("$SKIFF_IMAGES_DIR/skiff-$SKIFF_VERSION"-amd64.tar "$SKIFF_IMAGES_DIR/skiff-$SKIFF_VERSION"-arm64.tar)
+    fi
+    for archive in "${archives[@]}"; do
+        sif="${archive%.tar}.sif"
+        if [ -f "$archive" ] && { [ ! -f "$sif" ] || [ "$archive" -nt "$sif" ]; }; then
+            echo "Converting $archive to $sif..."
+            if ! apptainer build --force "$sif" "docker-archive://$archive"; then
+                echo "ERROR: Failed to convert $archive to $sif!" >&2
+                exit 1
+            fi
+        fi
+        if [ -f "$sif" ]; then
+            echo "Image: $sif"
+            sifs=$((sifs + 1))
+        fi
+    done
+    if [ "$sifs" -eq 0 ]; then
+        echo "ERROR: Neither $SKIFF_IMAGE_TAR nor $SKIFF_IMAGE_SIF exists! Run 'skiff.sh download' (in development, 'make develop') first." >&2
+        exit 1
+    fi
+
+    SKIFF_BG_PIDS=()
+    SKIFF_BG_NODES=()
+    SKIFF_EXIT_CODE=0
+    trap _skiff_cluster_term TERM
+    trap _skiff_cluster_int INT
+    trap _skiff_cluster_cleanup EXIT
+
+    # Start Controller Bubble
+    echo "Starting Controller on $controller_node..."
+    (
+        export SKIFF_ROLE="controller"
+        export SKIFF_DEV=${SKIFF_DEV:-0}
+        export CONTROLLER_IP
+        skiff_launch_bubble "$controller_node" 1
+    ) &
+    SKIFF_BG_PIDS+=($!)
+    SKIFF_BG_NODES+=("$controller_node")
+
+    # Wait for Controller initialization (kubeconfig & server-ca)
+    echo "Waiting for Controller initialization..."
+    # (The startup waits here and in the entrypoint are fixed too: they only bound a start that
+    # does not happen, and a start that needs longer is a node that is not working.)
+    max_wait=300
+    while [ ! -f "$SKIFF_STATE_DIR/kubeconfig" ] || [ ! -f "$SKIFF_STATE_DIR/tls/server-ca.crt" ]; do
+        kill -0 "${SKIFF_BG_PIDS[0]}" 2>/dev/null || _skiff_cluster_bubble_ended "${SKIFF_BG_PIDS[0]}"
+        if [ $wait_time -ge $max_wait ]; then
+            echo "ERROR: Controller failed to initialize within ${max_wait} seconds." >&2
+            exit 1
+        fi
+        sleep 1
+        wait_time=$((wait_time + 1))
+    done
+    echo "Controller ready after ${wait_time}s."
+
+    # Start Node (Worker) Bubbles
+    bubble_id=2
+    for ((i=1; i<num_nodes; i++)); do
+        node=${SKIFF_NODES[$i]}
+        echo "Starting Node on $node (Bubble ID $bubble_id)..."
+        (
+            export SKIFF_ROLE="node"
+            export SKIFF_DEV=${SKIFF_DEV:-0}
+            export CONTROLLER_IP
+            skiff_launch_bubble "$node" "$bubble_id"
+        ) &
+        SKIFF_BG_PIDS+=($!)
+        SKIFF_BG_NODES+=("$node")
+        bubble_id=$((bubble_id + 1))
+    done
+
+    # Active supervision of all the bubbles' processes
+    echo "Cluster nodes started. Supervising the bubbles..."
+    echo "Connect from the login node with:"
+    echo "  export KUBECONFIG=$SKIFF_STATE_DIR/kubeconfig"
+    if [ -d "$SKIFF_TOOLS_ROOT" ]; then
+        echo "  export PATH=$SKIFF_TOOLS_ROOT/\$(uname -m)/bin:\$PATH     # kubectl is the one taken out of the Skiff image for that host's architecture"
+    fi
+    echo "  kubectl get nodes"
+    while true; do
+        for pid in "${SKIFF_BG_PIDS[@]}"; do
+            if ! kill -0 "$pid" 2>/dev/null; then
+                _skiff_cluster_bubble_ended "$pid"
+            fi
+        done
+        sleep 2
+    done
+}
+
+# --- Skiff's own launcher: a cluster without Slurm ----------------------------------------
+# `skiff.sh start` starts a cluster's supervisor (`skiff.sh run`) in the background, on this
+# machine, and gives the cluster what a Slurm job would: a job ID (the second it started: a
+# number, as Slurm's are, and never one of Slurm's, which end at 67,108,863), the node list, the
+# job's lifetime and its graceful stop (`skiff.sh stop`), and the one-cluster contract. Its state
+# is in $SKIFF_LAUNCHER_DIR:
+#   cluster      the running cluster's record (the job, the supervisor's host and PID, the nodes,
+#                the output file, the start; and once the nodes passed their checks, when), made
+#                with noclobber (of two starts, one wins) and removed by the supervisor when it ends
+#   JOB.lease    the supervisor's heartbeat: the time, written every SKIFF_LEASE_INTERVAL seconds
+#                while it lives, or `stop`. The bubbles read it (see skiff_bubble): `stop` ends
+#                them as TERM does, and a lease that has not changed for SKIFF_LEASE_EXPIRY
+#                seconds means a supervisor that is gone, which ends them too. It is written in
+#                place: on a shared home, opening a file revalidates it, while a renamed one can
+#                be read stale from the directory cache for a minute.
+# (The two intervals are settings only for the tests, which make them short.)
+SKIFF_LAUNCHER_DIR="$SKIFF_STATE_DIR/launcher"
+: "${SKIFF_LEASE_INTERVAL:=5}"
+: "${SKIFF_LEASE_EXPIRY:=60}"
+
+# _skiff_without_slurm: Slurm's variables are not this cluster's (a `skiff.sh start` from inside
+# an allocation must not give the cluster that allocation's grant: see skiff_node_grant).
+_skiff_without_slurm() {
+    local name
+    for name in $(compgen -e); do
+        case "$name" in SLURM_*|SBATCH_*|SRUN_*|SALLOC_*) unset "$name" ;; esac
+    done
+}
+
+# skiff_launcher_running: whether the launcher's cluster is running, by its record. Sets
+# SKIFF_RUNNING_JOB, _HOST, _PID, _NODES, _OUTPUT, _STARTED and _CHECKED from the record. Returns 0 when it
+# runs, 1 when there is no record, 2 when there is one but its supervisor is gone: on its own
+# host, its PID is not a running `skiff.sh run`; elsewhere, its lease is older than
+# SKIFF_LEASE_EXPIRY seconds by this host's clock (generous for the clocks a site keeps in time).
+skiff_launcher_running() {
+    local record="$SKIFF_LAUNCHER_DIR/cluster" key value lease stamp cmdline
+    SKIFF_RUNNING_JOB="" SKIFF_RUNNING_HOST="" SKIFF_RUNNING_PID="" SKIFF_RUNNING_NODES="" SKIFF_RUNNING_OUTPUT="" SKIFF_RUNNING_STARTED="" SKIFF_RUNNING_CHECKED=""
+    [ -f "$record" ] || return 1
+    while IFS='=' read -r key value; do
+        case "$key" in
+            job) SKIFF_RUNNING_JOB=$value ;;
+            host) SKIFF_RUNNING_HOST=$value ;;
+            pid) SKIFF_RUNNING_PID=$value ;;
+            nodes) SKIFF_RUNNING_NODES=$value ;;
+            output) SKIFF_RUNNING_OUTPUT=$value ;;
+            started) SKIFF_RUNNING_STARTED=$value ;;
+            checked) SKIFF_RUNNING_CHECKED=$value ;;
+        esac
+    done < "$record"
+    if [ "$SKIFF_RUNNING_HOST" = "$(hostname)" ]; then
+        [[ "$SKIFF_RUNNING_PID" =~ ^[0-9]+$ ]] || return 2
+        cmdline=$({ tr '\0' ' ' < "/proc/$SKIFF_RUNNING_PID/cmdline"; } 2>/dev/null || true)
+        [[ "$cmdline" == *skiff* && "$cmdline" == *" run"* ]] || return 2
+        return 0
+    fi
+    lease=$(cat "$SKIFF_LAUNCHER_DIR/$SKIFF_RUNNING_JOB.lease" 2>/dev/null || true)
+    # (read again once: a reader can meet the file between its truncation and its write)
+    [ -n "$lease" ] || { sleep 0.2; lease=$(cat "$SKIFF_LAUNCHER_DIR/$SKIFF_RUNNING_JOB.lease" 2>/dev/null || true); }
+    stamp=${lease##* }
+    [[ "$stamp" =~ ^[0-9]+$ ]] && [ $(($(date +%s) - stamp)) -lt "$SKIFF_LEASE_EXPIRY" ] && return 0
+    return 2
+}
+
+# _skiff_launcher_forget: remove the record (and lease) of a cluster whose supervisor is gone.
+_skiff_launcher_forget() {
+    echo "The supervisor of job $SKIFF_RUNNING_JOB (PID $SKIFF_RUNNING_PID on $SKIFF_RUNNING_HOST) is gone; its record is removed (its bubbles stop by themselves within ${SKIFF_LEASE_EXPIRY} s of its last heartbeat)." >&2
+    rm -f "$SKIFF_LAUNCHER_DIR/cluster" "$SKIFF_LAUNCHER_DIR/$SKIFF_RUNNING_JOB.lease"
+}
+
+# _skiff_lease_renew SUPERVISOR: the heartbeat, in the background, for as long as the supervisor
+# lives (a supervisor that is killed leaves no loop renewing its lease).
+_skiff_lease_renew() {
+    while kill -0 "$1" 2>/dev/null; do
+        date +%s > "$SKIFF_LEASE" 2>/dev/null || true
+        sleep "$SKIFF_LEASE_INTERVAL"
+    done
+}
+
+# _skiff_logout_warning: on a shared host the site may stop a user's processes when they log out
+# (systemd-logind's KillUserProcesses), the cluster's supervisor with them: setsid does not take a
+# process out of the session's scope. Said, not refused; logind tells it to any user.
+_skiff_logout_warning() {
+    local kill only exclude user
+    command -v busctl >/dev/null 2>&1 || return 0
+    user=$(id -un)
+    kill=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager KillUserProcesses 2>/dev/null) || return 0
+    [ "$kill" = "b true" ] || return 0
+    only=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager KillOnlyUsers 2>/dev/null) || true
+    exclude=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager KillExcludeUsers 2>/dev/null) || true
+    # (lists come as: as 2 "alice" "bob")
+    [[ "$exclude" == *"\"$user\""* ]] && return 0
+    [[ "$only" =~ ^as\ [1-9] && "$only" != *"\"$user\""* ]] && return 0
+    echo "WARNING: this host stops all your processes when you log out (systemd-logind's KillUserProcesses), and the cluster with them. Stay logged in while you need it, or ask your administrator to exclude you (KillExcludeUsers=$user in /etc/systemd/logind.conf)." >&2
+}
+
+# The ssh of the launcher's clusters on several hosts: without a password or a question (the
+# hosts must reach one another with keys), and a host that stops answering is noticed within a
+# minute (its ssh ends, which the supervisor sees as its bubble ending).
+SKIFF_SSH_OPTIONS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
+
+# _skiff_ssh HOST COMMAND...: run a command on a host, in the environment the cluster's commands
+# need there (the settings, the job, its lease, the role and the controller's address: what is
+# exported here and named SKIFF_*, and CONTROLLER_IP), from the home, which is shared.
+_skiff_ssh() {
+    local host="$1" name remote="env"
+    shift
+    for name in $(compgen -e); do
+        case "$name" in SKIFF_*|CONTROLLER_IP) remote="$remote $(printf '%q' "$name=${!name}")" ;; esac
+    done
+    remote="$remote$(printf ' %q' "$@")"
+    ssh "${SKIFF_SSH_OPTIONS[@]}" "$host" "$remote"
+}
+
+# _skiff_ssh_bubble_script ID: what runs a node's bubble on its host over ssh. The bubble is a
+# session of its own (its process group is recorded, for the clean-up) and writes its output to
+# a file on the shared home, which the ssh follows: a connection that drops does not take the
+# bubble with it (it is not writing to the connection), and the bubble then goes by its lease. The
+# ssh ends when the bubble ends, with its status. (One line: quoted for ssh, it then has nothing
+# but backslashes, which the user's login shell takes, whichever it is.)
+_skiff_ssh_bubble_script() {
+    local base="$SKIFF_LAUNCHER_DIR/$SKIFF_JOB_ID.bubble$1"
+    printf 'setsid bash %q bubble %s > %q 2>&1 < /dev/null & b=$!; echo $b > %q; tail -n +1 -f --pid=$b %q 2>/dev/null & s=0; wait $b || s=$?; sleep 1; exit $s' \
+        "$SKIFF_SCRIPT" "$1" "$base.out" "$base.pid" "$base.out"
+}
+
+# skiff_run [HOST...]: the command `skiff.sh run`: the job's supervisor, in the foreground (what
+# `skiff.sh start` runs in the background): it takes the cluster's place and runs skiff_cluster on
+# this machine, or with hosts on those (the first is the controller), over ssh.
+skiff_run() {
+    local status=0 record host out
+    _skiff_without_slurm
+    SKIFF_JOB_ID=${SKIFF_JOB_ID:-$(date +%s)}
+    if ! [[ "$SKIFF_JOB_ID" =~ ^[0-9]+$ ]]; then
+        echo "skiff.sh run: SKIFF_JOB_ID=$SKIFF_JOB_ID is not a job ID (a number)" >&2
+        return 2
+    fi
+    if [ "$#" -gt 0 ]; then
+        SKIFF_NODES=("$@")
+        if [ "$(printf '%s\n' "$@" | sort -u | grep -c .)" -ne "$#" ]; then
+            echo "skiff.sh run: a host is named twice: $*" >&2
+            return 2
+        fi
+        # Each host must take a command over ssh without a question, before anything is taken.
+        for host in "$@"; do
+            if ! out=$(ssh "${SKIFF_SSH_OPTIONS[@]}" "$host" true 2>&1); then
+                echo "ERROR: cannot run a command on $host over ssh without a password or a question${out:+ (ssh says: $out)}: the hosts of a cluster must reach one another with ssh keys, and know one another's host keys" >&2
+                return 1
+            fi
+        done
+    else
+        SKIFF_NODES=("$(hostname)")
+    fi
+    mkdir -p "$SKIFF_LAUNCHER_DIR"
+    skiff_launcher_running || status=$?
+    if [ "$status" -eq 0 ]; then
+        echo "ERROR: Another Skiff cluster is already running (job $SKIFF_RUNNING_JOB, started with skiff.sh start on $SKIFF_RUNNING_HOST). Stop it with 'skiff.sh stop' first." >&2
+        return 1
+    elif [ "$status" -eq 2 ]; then
+        _skiff_launcher_forget
+    fi
+    SKIFF_LEASE="$SKIFF_LAUNCHER_DIR/$SKIFF_JOB_ID.lease"
+    export SKIFF_LEASE SKIFF_LEASE_EXPIRY
+    date +%s > "$SKIFF_LEASE"
+    record=$(printf 'job=%s\nhost=%s\npid=%s\nnodes=%s\noutput=%s\nstarted=%s\n' "$SKIFF_JOB_ID" "$(hostname)" "$$" "${SKIFF_NODES[*]}" \
+        "$(readlink -f "/proc/$$/fd/1" 2>/dev/null || true)" "$(date +%Y-%m-%dT%H:%M:%S%z)")
+    if ! (set -C; printf '%s\n' "$record" > "$SKIFF_LAUNCHER_DIR/cluster") 2>/dev/null; then
+        echo "ERROR: Another Skiff cluster was started at the same time; this one stops." >&2
+        rm -f "$SKIFF_LEASE"
+        return 1
+    fi
+    _skiff_lease_renew "$$" &
+    SKIFF_LEASE_RENEWER=$!
+
+    if [ "$#" -gt 0 ]; then
+        skiff_launch_run() {
+            local node="$1" seconds="$2"
+            shift 2
+            if [ "$seconds" -gt 0 ]; then
+                # (_skiff_ssh is a function: timeout runs this script's own copy of it)
+                timeout --signal=KILL "${seconds}s" bash -c 'source "$1"; shift; _skiff_ssh "$@"' _ "$SKIFF_SCRIPT" "$node" "$@"
+            else
+                _skiff_ssh "$node" "$@"
+            fi
+        }
+        skiff_launch_bubble() {
+            _skiff_ssh "$1" bash -c "$(_skiff_ssh_bubble_script "$2")"
+            exit
+        }
+    else
+        skiff_launch_run() {
+            local seconds="$2"
+            shift 2
+            if [ "$seconds" -gt 0 ]; then timeout --signal=KILL "${seconds}s" "$@"; else "$@"; fi
+        }
+        # The bubble is a process group of its own (setsid), so that what its script started dies
+        # with it if it has to be killed.
+        skiff_launch_bubble() {
+            exec setsid bash "$SKIFF_SCRIPT" bubble "$2"
+        }
+    fi
+    skiff_launch_checked() {
+        printf 'checked=%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" >> "$SKIFF_LAUNCHER_DIR/cluster"
+    }
+    skiff_launch_stop() {
+        kill "$SKIFF_LEASE_RENEWER" 2>/dev/null || true
+        wait "$SKIFF_LEASE_RENEWER" 2>/dev/null || true
+        printf 'stop %s\n' "$(date +%s)" > "$SKIFF_LEASE"
+    }
+    skiff_launch_end() {
+        kill "$SKIFF_LEASE_RENEWER" 2>/dev/null || true
+        if skiff_launcher_running && [ "$SKIFF_RUNNING_JOB" = "$SKIFF_JOB_ID" ]; then
+            rm -f "$SKIFF_LAUNCHER_DIR/cluster"
+        fi
+        rm -f "$SKIFF_LEASE" "${SKIFF_LAUNCHER_DIR:?}/${SKIFF_JOB_ID:?}".bubble*.out "${SKIFF_LAUNCHER_DIR:?}/${SKIFF_JOB_ID:?}".bubble*.pid
+    }
+    echo "Skiff cluster job $SKIFF_JOB_ID on ${SKIFF_NODES[*]} (supervisor PID $$ on $(hostname))"
+    skiff_cluster
+}
+
+# skiff_start [HOST...]: the command `skiff.sh start`: a cluster on this machine (or on the hosts),
+# in the background. It
+# says the job and where its output goes once the nodes have passed their checks (what a node
+# lacks is said at once, not found in the output later), or that the job ended; it does not wait
+# for the cluster to be ready.
+skiff_start() {
+    local status=0 id output pid i
+    _skiff_without_slurm
+    skiff_launcher_running || status=$?
+    if [ "$status" -eq 0 ]; then
+        echo "A Skiff cluster is already running: job $SKIFF_RUNNING_JOB, on $SKIFF_RUNNING_HOST since $SKIFF_RUNNING_STARTED (output: $SKIFF_RUNNING_OUTPUT). Stop it first: bash skiff.sh stop" >&2
+        return 1
+    elif [ "$status" -eq 2 ]; then
+        _skiff_launcher_forget
+    fi
+    _skiff_logout_warning
+    id=$(date +%s)
+    output="$PWD/skiff-cluster-$id.out"
+    if ! : > "$output" 2>/dev/null; then
+        echo "skiff.sh start: cannot write the job's output to $output: run it from a directory of yours" >&2
+        return 1
+    fi
+    SKIFF_JOB_ID=$id setsid bash "$SKIFF_SCRIPT" run "$@" > "$output" 2>&1 < /dev/null &
+    pid=$!
+    for i in $(seq 1 3000); do
+        if skiff_launcher_running && [ "$SKIFF_RUNNING_JOB" = "$id" ] && { [ -n "$SKIFF_RUNNING_CHECKED" ] || [ "$i" -eq 3000 ]; }; then
+            echo "Started Skiff cluster job $id on $SKIFF_RUNNING_NODES (supervisor PID $SKIFF_RUNNING_PID on $SKIFF_RUNNING_HOST)."
+            [ -n "$SKIFF_RUNNING_CHECKED" ] || echo "It is still checking its nodes after 300 s: follow its output."
+            echo "Its output: $output"
+            echo "When it is ready (the output says so), connect with:"
+            echo "  export KUBECONFIG=$SKIFF_STATE_DIR/kubeconfig"
+            if [ -d "$SKIFF_TOOLS_ROOT" ]; then
+                echo "  export PATH=$SKIFF_TOOLS_ROOT/\$(uname -m)/bin:\$PATH"
+            fi
+            echo "  kubectl get nodes"
+            echo "Stop it with: bash $SKIFF_SCRIPT stop"
+            return 0
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    if [ -f "$SKIFF_JOB_RESULTS_DIR/$id.exit" ]; then
+        echo "ERROR: Skiff cluster job $id ended as it started (exit status $(cat "$SKIFF_JOB_RESULTS_DIR/$id.exit")); the end of its output ($output):" >&2
+    else
+        echo "ERROR: the cluster did not start; the end of its output ($output):" >&2
+    fi
+    tail -n 20 "$output" >&2
+    return 1
+}
+
+# skiff_stop: the command `skiff.sh stop`: the running cluster is told to end (TERM to its
+# supervisor, which has the bubbles stop their pods first, as `scancel --batch --signal=TERM` does
+# for a Slurm job); it waits until the cluster is gone.
+skiff_stop() {
+    local status=0 i job output
+    skiff_launcher_running || status=$?
+    case "$status" in
+        1) echo "No Skiff cluster of skiff.sh start is running (a Slurm job is stopped with scancel)."; return 0 ;;
+        2) _skiff_launcher_forget; return 0 ;;
+    esac
+    job=$SKIFF_RUNNING_JOB
+    output=$SKIFF_RUNNING_OUTPUT
+    echo "Stopping Skiff cluster job $job (its pods first)..."
+    if [ "$SKIFF_RUNNING_HOST" = "$(hostname)" ]; then
+        kill -TERM "$SKIFF_RUNNING_PID"
+    else
+        ssh -o BatchMode=yes "$SKIFF_RUNNING_HOST" kill -TERM "$SKIFF_RUNNING_PID"
+    fi
+    for i in $(seq 1 120); do
+        status=0
+        skiff_launcher_running || status=$?
+        if [ "$status" -ne 0 ] || [ "$SKIFF_RUNNING_JOB" != "$job" ]; then
+            echo "Stopped${output:+. Its output: $output}"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "ERROR: job $job is still stopping after 120 s${output:+; see its output, $output}" >&2
+    return 1
+}
+
+# skiff_status: the command `skiff.sh status`: the running cluster of skiff.sh start, if any
+# (succeeds only when there is one).
+skiff_status() {
+    local status=0
+    skiff_launcher_running || status=$?
+    case "$status" in
+        0)
+            echo "Skiff cluster job $SKIFF_RUNNING_JOB: running since $SKIFF_RUNNING_STARTED"
+            echo "  supervisor: PID $SKIFF_RUNNING_PID on $SKIFF_RUNNING_HOST"
+            echo "  nodes:      $SKIFF_RUNNING_NODES"
+            echo "  output:     $SKIFF_RUNNING_OUTPUT"
+            echo "  connect:    export KUBECONFIG=$SKIFF_STATE_DIR/kubeconfig"
+            ;;
+        1) echo "No Skiff cluster of skiff.sh start is running." ;;
+        2) echo "Skiff cluster job $SKIFF_RUNNING_JOB: its supervisor (PID $SKIFF_RUNNING_PID on $SKIFF_RUNNING_HOST) is gone; 'skiff.sh stop' removes its record." ;;
+    esac
+    return "$status"
+}
+
 # skiff_tools [ARCHIVE]: the command `skiff.sh tools`. Takes the programs Skiff needs on a
-# host out of the Skiff image archive (a `docker save` tar, by default the mode's: the one
-# `skiff.sh download` saves, in development the one `make develop` uploads) into ~/.skiff/tools.
+# host out of the Skiff image archive (a `docker save` tar, by default the mode's for this host:
+# the one `skiff.sh download` saves, in development the one `make develop` uploads) into the
+# tree of the archive's architecture, ~/.skiff/tools/<machine> (read from the image's config, so
+# the archive of another architecture fills its own tree, for the hosts of that architecture).
 # The archive is read with tar alone, so a host needs no container runtime, not even Apptainer,
 # to get Apptainer; the programs are the ones the image itself runs, built to need no more than
 # glibc 2.34. They are taken out again only when the archive changes: a program the user moved
 # out of the tree (an Apptainer that cannot run on a host with an older C library, see the
 # guide) stays out when `skiff.sh download` runs again.
 skiff_tools() {
-    local archive="${1:-}" work layers layer sum have
+    local archive="${1:-}" work manifest layers layer config arch machine dir sum have
     if [ -z "$archive" ]; then
         skiff_image_files || return 1
         archive=$SKIFF_IMAGE_TAR
@@ -1431,21 +2153,28 @@ skiff_tools() {
         echo "skiff.sh tools: $archive not found (give the path of the Skiff image archive: a 'docker save' tar; 'skiff.sh download' saves it)" >&2
         return 1
     fi
+    # The layers of the image, in order, and its config: the names in manifest.json (read to its end).
+    manifest=$(tar -xOf "$archive" manifest.json 2>/dev/null | tr -d ' \t\r\n') || true
+    layers=$(sed -n 's/.*"Layers":\[\([^]]*\)\].*/\1/p' <<< "$manifest" | tr ',' '\n' | tr -d '"')
+    config=$(sed -n 's/.*"Config":"\([^"]*\)".*/\1/p' <<< "$manifest")
+    if [ -z "$layers" ] || [ -z "$config" ]; then
+        echo "skiff.sh tools: $archive is not a docker image archive (no config and layers in its manifest.json)" >&2
+        return 1
+    fi
+    arch=$(tar -xOf "$archive" "$config" 2>/dev/null | tr -d ' \t\r\n' | sed -n 's/.*"architecture":"\([^"]*\)".*/\1/p') || true
+    if ! machine=$(_skiff_machine "$arch"); then
+        echo "skiff.sh tools: the image in $archive is for ${arch:-no architecture}; Skiff runs on amd64 and arm64" >&2
+        return 1
+    fi
+    dir="$SKIFF_TOOLS_ROOT/$machine"
     sum=$(sha256sum "$archive" | awk '{print $1}')
-    have=$(cat "$SKIFF_TOOLS_DIR/.source" 2>/dev/null || true)
+    have=$(cat "$dir/.source" 2>/dev/null || true)
     if [ "$have" = "$sum" ]; then
-        echo "The tools in $SKIFF_TOOLS_DIR are those of $archive already."
+        echo "The tools in $dir are those of $archive already."
         return 0
     fi
     mkdir -p "$SKIFF_STATE_DIR"
     work=$(mktemp -d "$SKIFF_STATE_DIR/.tools.XXXXXX") || return 1
-    # The layers of the image, in order: the names in manifest.json (read to its end).
-    layers=$(tar -xOf "$archive" manifest.json | tr -d '\n' | sed -e 's/.*"Layers":\[\([^]]*\)\].*/\1/' | tr ',' '\n' | tr -d '" ') || true
-    if [ -z "$layers" ]; then
-        echo "skiff.sh tools: $archive is not a docker image archive (no layers in its manifest.json)" >&2
-        rm -rf "$work"
-        return 1
-    fi
     # Each layer is a tar, gzip-compressed or not (gzip -f passes the latter through); the
     # tree is in one of them, named with a leading ./ or without (the other name is then
     # reported missing, which does not matter).
@@ -1458,11 +2187,22 @@ skiff_tools() {
         rm -rf "$work"
         return 1
     fi
-    rm -rf "$SKIFF_TOOLS_DIR.old"
-    [ ! -e "$SKIFF_TOOLS_DIR" ] || mv "$SKIFF_TOOLS_DIR" "$SKIFF_TOOLS_DIR.old"
-    mv "$work/opt/skiff/tools" "$SKIFF_TOOLS_DIR"
-    printf '%s\n' "$sum" > "$SKIFF_TOOLS_DIR/.source"
-    rm -rf "$work" "$SKIFF_TOOLS_DIR.old"
+    # The tree of earlier versions, one for every host (~/.skiff/tools/bin and its .source), goes
+    # when the first of an architecture takes its place.
+    if [ -f "$SKIFF_TOOLS_ROOT/.source" ]; then
+        rm -rf "$SKIFF_STATE_DIR/tools.shared-old"
+        mv "$SKIFF_TOOLS_ROOT" "$SKIFF_STATE_DIR/tools.shared-old"
+    fi
+    mkdir -p "$SKIFF_TOOLS_ROOT"
+    rm -rf "$dir.old"
+    [ ! -e "$dir" ] || mv "$dir" "$dir.old"
+    mv "$work/opt/skiff/tools" "$dir"
+    printf '%s\n' "$sum" > "$dir/.source"
+    rm -rf "$work" "$dir.old" "$SKIFF_STATE_DIR/tools.shared-old"
+    if [ "$dir" != "$SKIFF_TOOLS_DIR" ]; then
+        echo "Tools for $machine hosts put in $dir (from $archive); they run on those hosts, not on this one ($SKIFF_MACHINE)."
+        return 0
+    fi
     skiff_use_tools
     echo "Tools put in $SKIFF_TOOLS_DIR (from $archive):"
     printf '  %-12s %s\n' apptainer "$("$SKIFF_TOOLS_DIR/bin/apptainer" --version 2>&1 | sed -n 1p)"
@@ -1473,13 +2213,44 @@ skiff_tools() {
 
 # --- skiff.sh download ------------------------------------------------------------------
 
-# _skiff_arch: the architecture of this host, as images name it.
-_skiff_arch() {
-    case "$(uname -m)" in
+# The architectures Skiff runs on have two names each: the images' (Docker's: amd64, arm64) and
+# the machine's (`uname -m`: x86_64, aarch64). Images and their files use the first, the trees of
+# tools the second (see SKIFF_TOOLS_DIR).
+# _skiff_docker_arch NAME: the images' name of an architecture given by either; fails for others.
+_skiff_docker_arch() {
+    case "$1" in
         x86_64|amd64) echo amd64 ;;
         aarch64|arm64) echo arm64 ;;
-        *) echo "skiff.sh download: this host is $(uname -m); Skiff runs on amd64 and arm64" >&2; return 1 ;;
+        *) return 1 ;;
     esac
+}
+# _skiff_machine NAME: the machine's name of an architecture given by either; fails for others.
+_skiff_machine() {
+    case "$1" in
+        x86_64|amd64) echo x86_64 ;;
+        aarch64|arm64) echo aarch64 ;;
+        *) return 1 ;;
+    esac
+}
+
+# _skiff_arch: the architecture of this host, as images name it.
+_skiff_arch() {
+    _skiff_docker_arch "$SKIFF_MACHINE" && return 0
+    echo "this host is $SKIFF_MACHINE; Skiff runs on amd64 (x86_64) and arm64 (aarch64)" >&2
+    return 1
+}
+
+# _skiff_slurm_archs: the architectures of Slurm's nodes, as images name them, one a line;
+# nothing where there is no Slurm or it does not answer. One Skiff does not run on is named and
+# left out.
+_skiff_slurm_archs() {
+    local out arch
+    command -v scontrol >/dev/null 2>&1 || return 0
+    out=$(scontrol show node -o 2>/dev/null) || return 0
+    for arch in $(sed -n 's/.*[[:space:]]Arch=\([^[:space:]]*\).*/\1/p' <<< "$out" | sort -u); do
+        _skiff_docker_arch "$arch" || echo "skiff.sh download: Slurm has nodes of architecture $arch, which Skiff does not run on: left out" >&2
+    done
+    return 0
 }
 
 # skiff_cache_name REFERENCE ARCH: the file of an image in Skifflet's cache, named as
@@ -1659,73 +2430,126 @@ _skiff_pull_image() {
     mv -f "$tmp" "$target"
 }
 
-# skiff_download [IMAGE...]: the command `skiff.sh download`, on a node that has Internet access
-# (the login node); everything goes to the shared home, where the compute nodes find it.
-# Without arguments: the Skiff image of this version (from Docker Hub; in development, the
-# archive `make develop` uploaded), the tools out of it, its SIF, and the images of the
-# cluster's system pods; the archives and SIFs of other versions are removed. With arguments:
-# those images, into the same cache (the images of the user's own pods, for compute nodes that
-# cannot pull them; each named exactly as the pod spec names it, which the cache name is made
-# of). What is there already is not fetched again.
+# skiff_download [--arch ARCH[,ARCH]] [IMAGE...]: the command `skiff.sh download`, on a node that
+# has Internet access (the login node); everything goes to the shared home, where the compute
+# nodes find it. It works for a set of architectures: this host's (its tools convert and pull
+# here, and give the user kubectl), every one Slurm reports for the nodes, and those --arch adds
+# (for nodes this host cannot see: started with the launcher, or a Slurm that does not say).
+# Without IMAGEs: for each architecture, the Skiff image of this version (from Docker Hub; in
+# development, the one archive `make develop` uploaded), the tools out of it, its SIF, and the
+# images of the cluster's system pods; the archives and SIFs of other versions are removed.
+# With IMAGEs: those images, for each architecture, into the same cache (the images of the
+# user's own pods, for compute nodes that cannot pull them; each named exactly as the pod spec
+# names it, which the cache name is made of). What is there already is not fetched again.
 skiff_download() {
-    local arch ref status=0 file
-    arch=$(_skiff_arch) || return 1
+    local host arch archs given="" slurm why ref status=0 file name
+    host=$(_skiff_arch) || return 1
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --arch) [ "$#" -ge 2 ] || { echo "usage: skiff.sh download [--arch ARCH[,ARCH]] [IMAGE...]" >&2; return 2; }; given="$given,$2"; shift 2 ;;
+            --arch=*) given="$given,${1#--arch=}"; shift ;;
+            --) shift; break ;;
+            -*) echo "usage: skiff.sh download [--arch ARCH[,ARCH]] [IMAGE...]" >&2; return 2 ;;
+            *) break ;;
+        esac
+    done
+    slurm=$(_skiff_slurm_archs | tr '\n' ' ')
+    archs=$host
+    for name in $slurm ${given//,/ }; do
+        if ! arch=$(_skiff_docker_arch "$name"); then
+            echo "skiff.sh download: --arch $name: Skiff runs on amd64 (x86_64) and arm64 (aarch64)" >&2
+            return 2
+        fi
+        case " $archs " in *" $arch "*) ;; *) archs="$archs $arch" ;; esac
+    done
+    why="this host: $host"
+    [ -z "$slurm" ] || why="$why; the nodes in Slurm: ${slurm% }"
+    [ -z "$given" ] || why="$why; --arch: ${given#,}"
+    echo "Architectures: $archs ($why)"
     skiff_config_resolve
     mkdir -p "$SKIFF_IMAGES_DIR" "$SKIFF_IMAGE_CACHE" "$SKIFF_APPTAINER_TMP" || return 1
     # What Apptainer unpacks and converts goes to the scratch directory.
     export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
     if [ "$#" -gt 0 ]; then
         _skiff_need_apptainer || return 1
-        echo "Images for Skifflet's cache ($arch):"
-        for ref in "$@"; do _skiff_pull_image "$ref" "$arch" || status=1; done
+        for arch in $archs; do
+            echo "Images for Skifflet's cache ($arch):"
+            for ref in "$@"; do _skiff_pull_image "$ref" "$arch" || status=1; done
+        done
         return "$status"
     fi
     skiff_image_files || return 1
-    if [ ! -f "$SKIFF_IMAGE_TAR" ]; then
-        if [ "${SKIFF_DEV:-0}" = 1 ]; then
+    if [ "${SKIFF_DEV:-0}" = 1 ]; then
+        if [ ! -f "$SKIFF_IMAGE_TAR" ]; then
             echo "skiff.sh download: $SKIFF_IMAGE_TAR not found: in development, 'make develop' puts it there" >&2
             return 1
         fi
-        echo "Downloading the Skiff image $SKIFF_IMAGE_REPOSITORY:$SKIFF_VERSION ($arch)..."
-        _skiff_fetch_image "$arch" || return 1
-    fi
-    skiff_tools "$SKIFF_IMAGE_TAR" || return 1
-    _skiff_need_apptainer || return 1
-    if [ ! -f "$SKIFF_IMAGE_SIF" ] || [ "$SKIFF_IMAGE_TAR" -nt "$SKIFF_IMAGE_SIF" ]; then
-        echo "Converting it to $SKIFF_IMAGE_SIF..."
-        if ! apptainer build --force --disable-cache "$SKIFF_IMAGE_SIF.tmp-$$" "docker-archive://$SKIFF_IMAGE_TAR"; then
-            rm -f "$SKIFF_IMAGE_SIF.tmp-$$"
-            echo "skiff.sh download: $SKIFF_IMAGE_TAR could not be converted" >&2
-            return 1
-        fi
-        mv -f "$SKIFF_IMAGE_SIF.tmp-$$" "$SKIFF_IMAGE_SIF"
-    fi
-    if [ "${SKIFF_DEV:-0}" != 1 ]; then
+        skiff_tools "$SKIFF_IMAGE_TAR" || return 1
+        _skiff_need_apptainer || return 1
+        _skiff_convert_image || return 1
+    else
+        for arch in $archs; do
+            skiff_image_files "$arch" || return 1
+            if [ ! -f "$SKIFF_IMAGE_TAR" ]; then
+                echo "Downloading the Skiff image $SKIFF_IMAGE_REPOSITORY:$SKIFF_VERSION ($arch)..."
+                _skiff_fetch_image "$arch" || return 1
+            fi
+            skiff_tools "$SKIFF_IMAGE_TAR" || return 1
+        done
+        _skiff_need_apptainer || return 1
+        for arch in $archs; do
+            skiff_image_files "$arch" || return 1
+            _skiff_convert_image || return 1
+        done
+        # Other versions go; this version's other architectures stay (an earlier --arch).
         for file in "$SKIFF_IMAGES_DIR"/skiff-*.tar "$SKIFF_IMAGES_DIR"/skiff-*.sif; do
-            [ -f "$file" ] && [ "$file" != "$SKIFF_IMAGE_TAR" ] && [ "$file" != "$SKIFF_IMAGE_SIF" ] || continue
+            [ -f "$file" ] || continue
+            name=${file##*/}
+            case "$name" in "skiff-$SKIFF_VERSION-amd64."*|"skiff-$SKIFF_VERSION-arm64."*) continue ;; esac
             echo "Removing $file (another version)"
             rm -f "$file"
         done
     fi
-    echo "The images of the cluster's system pods ($arch):"
-    while read -r ref; do
-        _skiff_pull_image "$ref" "$arch" || status=1
-    done <<< "$SKIFF_SYSTEM_IMAGES"
+    for arch in $archs; do
+        echo "The images of the cluster's system pods ($arch):"
+        while read -r ref; do
+            _skiff_pull_image "$ref" "$arch" || status=1
+        done <<< "$SKIFF_SYSTEM_IMAGES"
+    done
     if [ "$status" -eq 0 ]; then
-        echo "Everything a cluster needs is in $SKIFF_STATE_DIR. Check a compute node next: srun -N1 bash skiff.sh check"
+        echo "Everything a cluster needs ($archs) is in $SKIFF_STATE_DIR. Check a compute node next: srun -N1 bash skiff.sh check (without Slurm, this machine: bash skiff.sh check)"
     fi
     return "$status"
+}
+
+# _skiff_convert_image: SKIFF_IMAGE_TAR to SKIFF_IMAGE_SIF when the SIF is missing or older,
+# written aside and renamed. Apptainer builds the image of another architecture than its own.
+_skiff_convert_image() {
+    if [ -f "$SKIFF_IMAGE_SIF" ] && ! [ "$SKIFF_IMAGE_TAR" -nt "$SKIFF_IMAGE_SIF" ]; then
+        return 0
+    fi
+    echo "Converting it to $SKIFF_IMAGE_SIF..."
+    if ! apptainer build --force --disable-cache "$SKIFF_IMAGE_SIF.tmp-$$" "docker-archive://$SKIFF_IMAGE_TAR"; then
+        rm -f "$SKIFF_IMAGE_SIF.tmp-$$"
+        echo "skiff.sh download: $SKIFF_IMAGE_TAR could not be converted" >&2
+        return 1
+    fi
+    mv -f "$SKIFF_IMAGE_SIF.tmp-$$" "$SKIFF_IMAGE_SIF"
 }
 
 skiff_main() {
     set -euo pipefail
     case "${1:-}" in
+        start) shift; skiff_start "$@" ;;
+        stop) shift; skiff_stop "$@" ;;
+        status) shift; skiff_status "$@" ;;
+        run) shift; skiff_run "$@" ;;
         bubble) shift; skiff_bubble "$@" ;;
         check) shift; skiff_check "$@" ;;
         download) shift; skiff_download "$@" ;;
         network-probe) shift; skiff_network_probe "$@" ;;
         tools) shift; skiff_tools "$@" ;;
-        *) echo "usage: skiff.sh bubble ID | skiff.sh check [controller|node] | skiff.sh download [IMAGE...] | skiff.sh network-probe [CONTROLLER_IP] | skiff.sh tools [IMAGE-TAR]" >&2; exit 2 ;;
+        *) echo "usage: skiff.sh start [HOST...] | stop | status | run [HOST...] | check [controller|node] | download [--arch ARCH[,ARCH]] [IMAGE...] | network-probe [CONTROLLER_IP] | tools [IMAGE-TAR] | bubble ID" >&2; exit 2 ;;
     esac
 }
 

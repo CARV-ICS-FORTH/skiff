@@ -28,6 +28,48 @@ for scenario in "true:no" "e2e_fail injected:yes" "exit 5:yes"; do
     [ "$got" = "$want" ] || { cat "$tmp/preserve.log"; echo "failure snapshot for '$body': $got, expected $want" >&2; exit 1; }
 done
 
+# The suite's jobs through Skiff's own launcher (common.sh's helpers, the only places that know
+# it): started from E2E_LAUNCH_DIR with the hosts and the settings; the job read from what start
+# says, also of a job that ended at once; stopped only when it is the running one; its output and
+# its hosts. The scripts are a stand-in that says what start, status and stop say.
+mkdir -p "$tmp/art/scripts" "$tmp/launch"
+cat > "$tmp/art/scripts/skiff.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "$PWD ${FOO:-} $*" >> "$CALLS"
+case "$1" in
+    start)
+        if [ "${FAKE_START:-ok}" = ok ]; then echo "Started Skiff cluster job 1790000001 on ${2:-here} (supervisor PID 7 on here)."; exit 0; fi
+        echo "ERROR: Skiff cluster job 1790000002 ended as it started (exit status 1); the end of its output:" >&2; exit 1 ;;
+    status) [ -z "${FAKE_RUNNING:-}" ] || echo "Skiff cluster job $FAKE_RUNNING: running since then" ;;
+    stop) echo Stopped ;;
+esac
+EOF
+launcher() {  # launcher BODY [VAR=VALUE...]: BODY with the launcher's helpers, against the stand-in
+    local body="$1"
+    shift
+    env CALLS="$tmp/calls" SKIFF_ARTIFACT_DIR="$tmp/art" E2E_LAUNCHER=skiff E2E_LAUNCH_DIR="$tmp/launch" "$@" \
+        bash -c 'source "$1/common.sh"; eval "$2"' _ "$lib_dir" "$body" 2>"$tmp/launcher.err"
+}
+expect_eq() { [ "$2" = "$3" ] || { cat "$tmp/launcher.err" >&2; echo "$1: '$2', expected '$3'" >&2; exit 1; }; }
+rm -f "$tmp/calls"
+expect_eq "a cluster of the launcher on this machine has one node" "$(launcher 'echo $E2E_NODES')" 1
+expect_eq "with hosts, one per host" "$(launcher 'echo $E2E_NODES' E2E_HOSTS="h1 h2")" 2
+expect_eq "the job of a start" "$(launcher 'e2e_submit FOO=bar' E2E_HOSTS="h1 h2")" 1790000001
+expect_eq "started from the launch directory, with the settings and the hosts" "$(cat "$tmp/calls")" "$tmp/launch bar start h1 h2"
+expect_eq "the job of a start that ended at once" "$(launcher 'e2e_submit' FAKE_START=fail)" 1790000002
+expect_eq "a running job is not gone" "$(launcher 'e2e_job_gone 1790000001 && echo gone || echo running' FAKE_RUNNING=1790000001)" running
+expect_eq "another job is" "$(launcher 'e2e_job_gone 1790000001 && echo gone || echo running' FAKE_RUNNING=1790000005)" gone
+rm -f "$tmp/calls"
+launcher 'e2e_cancel 1790000001' FAKE_RUNNING=1790000005
+expect_eq "a job that is not the running one is not stopped (another job is never a guess)" "$(grep -c ' stop$' "$tmp/calls")" 0
+launcher 'e2e_cancel 1790000001' FAKE_RUNNING=1790000001
+expect_eq "the running one is" "$(grep -c ' stop$' "$tmp/calls")" 1
+expect_eq "its output is in the launch directory" "$(launcher 'e2e_job_output 1790000001')" "$tmp/launch/skiff-cluster-1790000001.out"
+expect_eq "its hosts are the run's" "$(launcher 'e2e_job_hosts 1790000001 | tr "\n" " "' E2E_HOSTS="h1 h2")" "h1 h2 "
+expect_eq "without, this machine" "$(launcher 'e2e_job_hosts 1790000001')" "$(hostname)"
+rc=0; launcher 'true' E2E_LAUNCHER=other || rc=$?
+expect_eq "a launcher that is neither is refused" "$rc" 1
+
 cat > "$tmp/observer.sh" <<'EOF'
 #!/usr/bin/env bash
 sleep 3

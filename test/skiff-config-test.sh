@@ -122,11 +122,11 @@ expect "what is below it follows" "$(derived SKIFF_APPTAINER_TMP SKIFF_TMP_DIR=/
 expect "the state directory is the home's ~/.skiff" "$(derived SKIFF_STATE_DIR HOME=/home/u)" /home/u/.skiff
 expect "and cannot be overridden" "$(derived SKIFF_STATE_DIR HOME=/home/u SKIFF_STATE_DIR=/elsewhere)" /home/u/.skiff
 expect "the volumes are below the state directory" "$(derived SKIFF_VOLUMES_DIR HOME=/home/u)" /home/u/.skiff/volumes
-id1=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
-id2=$(env -i PATH="$PATH" SLURM_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
+id1=$(env -i PATH="$PATH" SKIFF_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
+id2=$(env -i PATH="$PATH" SKIFF_JOB_ID=4711 bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh")
 [[ "$id1" =~ ^4711-[0-9a-f]{8}$ ]] && echo "PASS an instance name is the job ID and eight hexadecimal digits" || { echo "FAIL instance name '$id1'"; failures=$((failures + 1)); }
 [ "$id1" != "$id2" ] && echo "PASS a reused job ID gets another name" || { echo "FAIL the same job ID got the same name twice: $id1"; failures=$((failures + 1)); }
-expect "outside Slurm the job ID is 0" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh" | cut -d- -f1)" 0
+expect "outside a job the job ID is 0" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_new_instance_id' _ "$repo_dir/scripts/skiff.sh" | cut -d- -f1)" 0
 expect "outer network of bubble 3" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_outer_network 3; echo "$SKIFF_OUTER_CIDR $SKIFF_OUTER_DNS $SKIFF_OUTER_ADDRESS"' _ "$repo_dir/scripts/skiff.sh")" "10.0.4.0 10.0.4.3 10.0.4.100"
 
 in_cidr() { env -i PATH="$PATH" bash -c 'source "$1"; skiff_ip_in_cidr "$2" "$3" && echo yes || echo no' _ "$repo_dir/scripts/skiff.sh" "$1" "$2"; }
@@ -297,10 +297,16 @@ node_check() { # node_check PATH_DIRS TMP_DIR [ROLE [VAR=value...]]: output and 
     env -i PATH="$path" SKIFF_TMP_DIR="$tmp" SKIFF_SYS_ROOT="$nodedir/sys" "$@" "$BASH" -c 'source "$1"; skiff_check_node "$2"' _ "$repo_dir/scripts/skiff.sh" "$role" 2>&1
 }
 GOOD="$nodedir/tools:$nodedir/base"
-# the home of the check command, where the Skiff image of the repository's version is
+# this host's architecture, by both its names, and the other one Skiff runs on
+case "$(uname -m)" in
+    x86_64) host_machine=x86_64 host_arch=amd64 other_arch=arm64 other_machine=aarch64 ;;
+    *) host_machine=aarch64 host_arch=arm64 other_arch=amd64 other_machine=x86_64 ;;
+esac
+# the home of the check command, where the Skiff image of the repository's version for this
+# host's architecture is
 checkhome="$nodedir/home"
 mkdir -p "$checkhome/.skiff/images"
-: > "$checkhome/.skiff/images/skiff-$(cat "$repo_dir/VERSION").sif"
+: > "$checkhome/.skiff/images/skiff-$(cat "$repo_dir/VERSION")-$host_arch.sif"
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
 expect "a node that has everything, and nothing to report" "$status:$out" "0:"
 [ -d "$nodedir/scratch" ] || { echo "FAIL the scratch directory was not created"; failures=$((failures + 1)); }
@@ -348,38 +354,67 @@ fi
 out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
 expect "and a node with it is fine" "$status:$out" "0:"
 
-# GPUs: a step that Slurm gave GPUs (SLURM_STEP_GPUS) must be able to use them
+# GPUs: the ones the node gives the cluster must be usable: in a Slurm job, those Slurm gave the
+# step (SLURM_STEP_GPUS; SLURM_JOB_ID says it is a job); without Slurm, all the node's
 mkdir -p "$nodedir/gpu"
 printf '#!/bin/sh\n[ -z "${FAKE_NO_LDCONFIG:-}" ] || exit 1\necho "     libcuda.so.1 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libcuda.so.1"\n[ -n "${FAKE_NO_NVML:-}" ] || echo "     libnvidia-ml.so.1 (libc6,x86-64) => /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1"\n' > "$nodedir/gpu/ldconfig"
 chmod +x "$nodedir/gpu/ldconfig"
 GPUPATH="$GOOD:$nodedir/gpu"
 for f in nvidia0 nvidia1 nvidia2 nvidia3 nvidiactl nvidia-uvm; do : > "$nodedir/sys/dev/$f"; done
-out=$(node_check "$GPUPATH" "$nodedir/scratch"); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7); status=$?
 expect "a step without GPUs has nothing to check, whatever the node has" "$status:$out" "0:"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0-3 SLURM_JOB_GPUS=0-3); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0-3 SLURM_JOB_GPUS=0-3); status=$?
 expect "a step that was given all the GPUs of the node, and can use them, is fine" "$status:$out" "0:"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,1-3); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0,1-3); status=$?
 expect "and so is a list, with a range" "$status:$out" "0:"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,2-3); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0,2-3); status=$?
 expect "a step with some of the node's GPUs is not refused, and is warned, with how many and what to ask for" "$status:$(grep -c 'WARNING: Slurm gave this step 3 of the 4 GPUs of the node' <<< "$out"):$(grep -c 'Ask for all of them (--gpus-per-node=4)' <<< "$out")" "0:1:1"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=1); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=1); status=$?
 expect "so is a step with one of four" "$status:$(grep -c 'gave this step 1 of the 4 GPUs' <<< "$out")" "0:1"
 rm "$nodedir/sys/dev/nvidia2"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0,2-3); status=$?
-expect "a GPU of the list that cannot be opened is refused, by its number" "$status:$(grep -c 'Slurm gave this step GPU 2 and /dev/nvidia2 cannot be opened' <<< "$out"):$(grep -c 'GPU 3' <<< "$out")" "1:1:0"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0,2-3); status=$?
+expect "a GPU of the list that cannot be opened is refused, by its number" "$status:$(grep -c 'GPU 2 is one that Slurm gave this step and /dev/nvidia2 cannot be opened' <<< "$out"):$(grep -c 'GPU 3' <<< "$out")" "1:1:0"
 : > "$nodedir/sys/dev/nvidia2"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=x); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=x); status=$?
 expect "a list that is not one is refused" "$status:$(grep -c 'is not a list of GPU indices' <<< "$out")" "1:1"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=3-1); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=3-1); status=$?
 expect "and so is a range that runs backwards" "$status:$(grep -c 'is not a list of GPU indices' <<< "$out")" "1:1"
 mv "$nodedir/sys/dev/nvidia-uvm" "$nodedir/sys/dev/nvidia-uvm.away"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0); status=$?
 expect "a node without nvidia-uvm is refused, with what it is" "$status:$(grep -c '/dev/nvidia-uvm, which every GPU container needs' <<< "$out")" "1:1"
 mv "$nodedir/sys/dev/nvidia-uvm.away" "$nodedir/sys/dev/nvidia-uvm"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0 FAKE_NO_NVML=1); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0 FAKE_NO_NVML=1); status=$?
 expect "a driver whose libraries are not in the library cache is refused, with what to ask for" "$status:$(grep -c 'libnvidia-ml.so.1 is not in the library cache' <<< "$out"):$(grep -c 'libcuda.so.1 is not in' <<< "$out")" "1:1:0"
-out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_STEP_GPUS=0-3 FAKE_NO_LDCONFIG=1); status=$?
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" SLURM_JOB_ID=7 SLURM_STEP_GPUS=0-3 FAKE_NO_LDCONFIG=1); status=$?
 expect "a node where the cache cannot be read is not refused for it" "$status:$out" "0:"
+# Without Slurm the node gives the cluster all its GPUs: they are checked, all of them.
+out=$(node_check "$GPUPATH" "$nodedir/scratch"); status=$?
+expect "without Slurm, a node whose GPUs can all be used is fine" "$status:$out" "0:"
+mv "$nodedir/sys/dev/nvidia-uvm" "$nodedir/sys/dev/nvidia-uvm.away"
+out=$(node_check "$GPUPATH" "$nodedir/scratch"); status=$?
+expect "and one without nvidia-uvm is refused" "$status:$(grep -c '/dev/nvidia-uvm, which every GPU container needs' <<< "$out")" "1:1"
+mv "$nodedir/sys/dev/nvidia-uvm.away" "$nodedir/sys/dev/nvidia-uvm"
+out=$(node_check "$GPUPATH" "$nodedir/scratch" "" FAKE_NO_NVML=1); status=$?
+expect "and so is one whose driver's libraries are not in the cache" "$status:$(grep -c 'libnvidia-ml.so.1 is not in the library cache' <<< "$out")" "1:1"
+
+# The node's grant (skiff_node_grant): CPUs, memory (MiB) and GPUs, from Slurm in a job step, and
+# without Slurm none by amount (the cgroup or the machine) and every GPU of the node.
+cat > "$nodedir/gpu/scontrol" <<'EOF2'
+#!/bin/sh
+echo "NodeName=$3 CPUTot=8 RealMemory=1500 State=ALLOCATED"
+EOF2
+chmod +x "$nodedir/gpu/scontrol"
+grant_of() { env -i PATH="$GPUPATH" SKIFF_SYS_ROOT="$nodedir/sys" "$@" "$BASH" -c 'source "$1"; skiff_node_grant; echo "$SKIFF_NODE_CPUS/$SKIFF_NODE_MEMORY/$SKIFF_NODE_GPUS"' _ "$repo_dir/scripts/skiff.sh" 2>&1; }
+expect "a Slurm step: its CPUs, its memory per node and its GPUs" "$(grant_of SLURM_JOB_ID=7 SLURM_CPUS_ON_NODE=8 SLURM_MEM_PER_NODE=4096 SLURM_STEP_GPUS=0-1)" "8/4096/0-1"
+expect "the CPUs per node of the job, and memory per CPU" "$(grant_of SLURM_JOB_ID=7 'SLURM_JOB_CPUS_PER_NODE=16(x2)' SLURM_MEM_PER_CPU=1000)" "16/16000/"
+expect "all the memory of the node (--mem=0) is what Slurm offers there" "$(grant_of SLURM_JOB_ID=7 SLURM_CPUS_ON_NODE=4 SLURM_MEM_PER_NODE=0)" "4/1500/"
+expect "a step without GPUs has none, whatever the node has" "$(grant_of SLURM_JOB_ID=7 SLURM_CPUS_ON_NODE=4 SLURM_MEM_PER_NODE=10)" "4/10/"
+: > "$nodedir/sys/dev/nvidia10"
+expect "without Slurm: no amounts, and every GPU of the node, in order" "$(grant_of)" "//0,1,2,3,10"
+rm -f "$nodedir/sys/dev/nvidia10"
+# (the checks below are of a node without GPUs)
+for f in nvidia0 nvidia1 nvidia2 nvidia3 nvidiactl nvidia-uvm; do rm -f "$nodedir/sys/dev/$f"; done
+expect "and a node without GPUs gives none" "$(grant_of)" "//"
 
 # skiff.slurm: the srun option that gives a step the GPUs the job has on a node (step_gpus). Slurm prints
 # GresUsed only for `scontrol -d show node`, so the stand-in prints it only for that.
@@ -514,10 +549,10 @@ out=$(node_check "$nodedir/base" "$nodedir/a-file/scratch"); status=$?
 expect "every problem of a node is reported at once" "$status:$(grep -c . <<< "$out")" "1:2"
 
 # where the programs come from: the ones taken out of the image come first and say what they replace
-mkdir -p "$nodedir/h/.skiff/tools/bin"
-printf '#!/bin/sh\necho "apptainer version 9.9.9"\n' > "$nodedir/h/.skiff/tools/bin/apptainer"; chmod +x "$nodedir/h/.skiff/tools/bin/apptainer"
+mkdir -p "$nodedir/h/.skiff/tools/$host_machine/bin"
+printf '#!/bin/sh\necho "apptainer version 9.9.9"\n' > "$nodedir/h/.skiff/tools/$host_machine/bin/apptainer"; chmod +x "$nodedir/h/.skiff/tools/$host_machine/bin/apptainer"
 out=$(env -i PATH="$GOOD" HOME="$nodedir/h" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" -c 'source "$1"; skiff_node_report' _ "$repo_dir/scripts/skiff.sh" 2>&1)
-expect "the report says an extracted program takes the place of the system's" "$(grep -c "apptainer 9.9.9 ($nodedir/h/.skiff/tools/bin/apptainer, instead of the system's $nodedir/tools/apptainer; remove $nodedir/h/.skiff/tools to use that)" <<< "$out")" 1
+expect "the report says an extracted program takes the place of the system's" "$(grep -c "apptainer 9.9.9 ($nodedir/h/.skiff/tools/$host_machine/bin/apptainer, instead of the system's $nodedir/tools/apptainer; remove $nodedir/h/.skiff/tools/$host_machine to use that)" <<< "$out")" 1
 expect "and a program that replaces nothing is just placed" "$(grep -c "slirp4netns 1.2.1 ($nodedir/tools/slirp4netns)" <<< "$out")" 1
 
 # the command: `skiff.sh check`
@@ -542,7 +577,11 @@ out=$(env -i PATH="$nodedir/nocurl:$nodedir/base" HOME="$checkhome" SKIFF_TMP_DI
 expect "without curl the check says it cannot tell" "$status:$(grep -c 'cannot tell whether this node reaches the image registries (there is no curl)' <<< "$out")" "0:1"
 mv "$checkhome/.skiff/images" "$checkhome/.skiff/images.away"
 out=$(check_cmd); status=$?
-expect "a release without its image is refused, and told to download it on the login node" "$status:$(grep -c "the Skiff image of version $(cat "$repo_dir/VERSION") is not in $checkhome/.skiff/images: run 'bash skiff.sh download' first, on a node that has Internet access (the login node)" <<< "$out"):$(grep -c 'NOT ready for Skiff' <<< "$out")" "1:1:1"
+expect "a release without its image is refused, and told to download it on the login node, with --arch for this node" "$status:$(grep -c "the Skiff image of version $(cat "$repo_dir/VERSION") for this node's architecture ($host_arch) is not in $checkhome/.skiff/images: run 'bash skiff.sh download' first, on a node that has Internet access (the login node); if that node is of another architecture and Slurm does not report this one, 'bash skiff.sh download --arch $host_arch'" <<< "$out"):$(grep -c 'NOT ready for Skiff' <<< "$out")" "1:1:1"
+mkdir -p "$checkhome/.skiff/images"; : > "$checkhome/.skiff/images/skiff-$(cat "$repo_dir/VERSION")-$other_arch.sif"
+out=$(check_cmd); status=$?
+expect "and so is one that has only the other architecture's" "$status:$(grep -c "for this node's architecture ($host_arch) is not in" <<< "$out")" "1:1"
+rm -rf "$checkhome/.skiff/images"
 out=$(check_cmd SKIFF_DEV=1); status=$?
 expect "and so is development without the uploaded image" "$status:$(grep -c "the development image is not in $checkhome/.skiff/images (neither skiff.sif nor skiff.tar): run 'make develop'" <<< "$out")" "1:1"
 mkdir -p "$checkhome/.skiff/images"; : > "$checkhome/.skiff/images/skiff.tar"
@@ -573,46 +612,64 @@ expect "a failing command lists nothing" "$misses" absent
 out=$(env -i PATH="$PATH" bash -c 'source "$1"; declare -F skiff_bubble skiff_config_validate skiff_check_node >/dev/null && echo defined' _ "$repo_dir/scripts/skiff.sh" 2>&1)
 expect "sourcing defines the functions and prints nothing" "$out" defined
 out=$(env -i PATH="$PATH" bash "$repo_dir/scripts/skiff.sh" 2>&1); status=$?
-expect "executing without a command is a usage error" "$status:$(grep -c 'usage: skiff.sh bubble ID' <<< "$out")" "2:1"
+expect "executing without a command is a usage error" "$status:$(grep -c 'usage: skiff.sh start \[HOST...\] | stop | status | run' <<< "$out")" "2:1"
 out=$(env -i PATH="$PATH" bash "$repo_dir/scripts/skiff.sh" nonsense 2>&1); status=$?
 expect "executing an unknown command is a usage error" "$status" 2
 
 # --- skiff.sh tools: the programs out of the image archive --------------------------------
 # A docker-archive stand-in: two layers (the first gzip-compressed with the tools, the second
-# plain, without), a manifest that names them, and tools that only say who they are.
+# plain, without), a config that says the architecture, a manifest that names them, and tools
+# that only say who they are. archive DIR ARCH LAYER...: such an archive.
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/layer1/opt/skiff/tools/bin" "$work/layer1/opt/skiff/tools/lib" "$work/layer2/etc" "$work/arc/blobs/sha256"
+mkdir -p "$work/layer1/opt/skiff/tools/bin" "$work/layer1/opt/skiff/tools/lib" "$work/layer2/etc" "$work/blobs"
 for tool in apptainer slirp4netns socat kubectl; do
     printf '#!/bin/sh\necho "%s version 9.9"\necho "second line"\n' "$tool" > "$work/layer1/opt/skiff/tools/bin/$tool"
     chmod 0755 "$work/layer1/opt/skiff/tools/bin/$tool"
 done
 echo data > "$work/layer1/opt/skiff/tools/lib/libx.so"
 echo hello > "$work/layer2/etc/hello"
-tar -C "$work/layer1" -czf "$work/arc/blobs/sha256/aaa" .
-tar -C "$work/layer2" -cf "$work/arc/blobs/sha256/bbb" .
-printf '[{"Config":"blobs/sha256/ccc","RepoTags":["x:latest"],"Layers":["blobs/sha256/aaa","blobs/sha256/bbb"]}]' > "$work/arc/manifest.json"
-tar -C "$work/arc" -cf "$work/skiff.tar" manifest.json blobs
-# an archive that has layers and no tools
-mkdir -p "$work/arc2/blobs/sha256"
-cp "$work/arc/blobs/sha256/bbb" "$work/arc2/blobs/sha256/bbb"
-printf '[{"Config":"blobs/sha256/ccc","RepoTags":["x:latest"],"Layers":["blobs/sha256/bbb"]}]' > "$work/arc2/manifest.json"
-tar -C "$work/arc2" -cf "$work/other.tar" manifest.json blobs
+tar -C "$work/layer1" -czf "$work/blobs/aaa" .
+tar -C "$work/layer2" -cf "$work/blobs/bbb" .
+archive() {
+    local out="$1" arch="$2" layer layers="" dir
+    shift 2
+    dir=$(mktemp -d "$work/arc.XXXXXX"); mkdir -p "$dir/blobs/sha256"
+    if [ -n "$arch" ]; then printf '{"architecture":"%s","os":"linux"}' "$arch"; else printf '{"os":"linux"}'; fi > "$dir/blobs/sha256/ccc"
+    for layer in "$@"; do cp "$work/blobs/$layer" "$dir/blobs/sha256/$layer"; layers="${layers:+$layers,}\"blobs/sha256/$layer\""; done
+    printf '[{"Config":"blobs/sha256/ccc","RepoTags":["x:latest"],"Layers":[%s]}]' "$layers" > "$dir/manifest.json"
+    tar -C "$dir" -cf "$out" manifest.json blobs
+    rm -rf "$dir"
+}
+archive "$work/skiff.tar" "$host_arch" aaa bbb
+archive "$work/other.tar" "$host_arch" bbb
+archive "$work/foreign.tar" "$other_arch" aaa bbb
+archive "$work/noarch.tar" "" aaa bbb
+archive "$work/mips.tar" mips aaa bbb
 mkdir -p "$work/home"
 run_tools() { env -i PATH="$PATH" HOME="$work/home" bash "$repo_dir/scripts/skiff.sh" tools "$@" 2>&1; }
+tools="$work/home/.skiff/tools/$host_machine"
 
 out=$(run_tools "$work/skiff.tar"); status=$?
-expect "tools: the tools come out of the archive" "$status:$([ -x "$work/home/.skiff/tools/bin/socat" ] && echo yes):$([ -f "$work/home/.skiff/tools/lib/libx.so" ] && echo yes)" "0:yes:yes"
+expect "tools: the tools come out of the archive, into the tree of its architecture" "$status:$([ -x "$tools/bin/socat" ] && echo yes):$([ -f "$tools/lib/libx.so" ] && echo yes)" "0:yes:yes"
 expect "tools: it says what it put there" "$(grep -c 'apptainer .*version 9.9' <<< "$out")" 1
-expect "tools: it leaves nothing but the tools" "$(ls -A "$work/home/.skiff" | tr '\n' ' ')" "tools "
+expect "tools: it leaves nothing but the tools" "$(ls -A "$work/home/.skiff" | tr '\n' ' '):$(ls -A "$work/home/.skiff/tools" | tr '\n' ' ')" "tools :$host_machine "
 out=$(run_tools "$work/skiff.tar")
 expect "tools: the same archive again changes nothing" "$(grep -c 'already' <<< "$out")" 1
 out=$(env -i PATH=/usr/bin:/bin HOME="$work/home" bash -c 'source "$1"; command -v apptainer' _ "$repo_dir/scripts/skiff.sh" 2>&1)
-expect "tools: once there, they come first in PATH" "$out" "$work/home/.skiff/tools/bin/apptainer"
+expect "tools: once there, this host's come first in PATH" "$out" "$tools/bin/apptainer"
 out=$(env -i PATH=/usr/bin:/bin HOME="$work/nohome" bash -c 'source "$1"; echo "$PATH"' _ "$repo_dir/scripts/skiff.sh" 2>&1)
 expect "tools: without them PATH is untouched" "$out" "/usr/bin:/bin"
+out=$(run_tools "$work/foreign.tar"); status=$?
+expect "tools: an archive of the other architecture fills its own tree, without running its programs" "$status:$([ -x "$work/home/.skiff/tools/$other_machine/bin/socat" ] && echo yes):$(grep -c "Tools for $other_machine hosts put in $work/home/.skiff/tools/$other_machine (from $work/foreign.tar); they run on those hosts, not on this one ($host_machine)" <<< "$out"):$(grep -c 'version 9.9' <<< "$out")" "0:yes:1:0"
+out=$(env -i PATH=/usr/bin:/bin HOME="$work/home" bash -c 'source "$1"; command -v apptainer' _ "$repo_dir/scripts/skiff.sh" 2>&1)
+expect "tools: and this host's still come first" "$out" "$tools/bin/apptainer"
 out=$(run_tools "$work/other.tar"); status=$?
-expect "tools: an archive without tools is refused and the tools stay" "$status:$(grep -c 'no tools in' <<< "$out"):$([ -x "$work/home/.skiff/tools/bin/socat" ] && echo yes)" "1:1:yes"
+expect "tools: an archive without tools is refused and the tools stay" "$status:$(grep -c 'no tools in' <<< "$out"):$([ -x "$tools/bin/socat" ] && echo yes)" "1:1:yes"
+out=$(run_tools "$work/noarch.tar"); status=$?
+expect "tools: an archive whose image names no architecture is refused" "$status:$(grep -c 'is for no architecture; Skiff runs on amd64 and arm64' <<< "$out")" "1:1"
+out=$(run_tools "$work/mips.tar"); status=$?
+expect "tools: and so is one for an architecture Skiff does not run on" "$status:$(grep -c 'is for mips; Skiff runs on amd64 and arm64' <<< "$out")" "1:1"
 out=$(run_tools "$work/Makefile-not-there"); status=$?
 expect "tools: a missing archive is refused" "$status:$(grep -c 'not found' <<< "$out")" "1:1"
 echo "not an archive" > "$work/junk.tar"
@@ -621,21 +678,25 @@ expect "tools: a file that is not an image archive is refused" "$status:$(grep -
 mkdir -p "$work/home2/.skiff/images"
 cp "$work/skiff.tar" "$work/home2/.skiff/images/skiff.tar"
 out=$(env -i PATH="$PATH" HOME="$work/home2" SKIFF_DEV=1 bash "$repo_dir/scripts/skiff.sh" tools 2>&1); status=$?
-expect "tools: without a path, in development, it takes the uploaded archive" "$status:$([ -x "$work/home2/.skiff/tools/bin/kubectl" ] && echo yes)" "0:yes"
+expect "tools: without a path, in development, it takes the uploaded archive" "$status:$([ -x "$work/home2/.skiff/tools/$host_machine/bin/kubectl" ] && echo yes)" "0:yes"
 mkdir -p "$work/home3/.skiff/images"
-cp "$work/skiff.tar" "$work/home3/.skiff/images/skiff-$(cat "$repo_dir/VERSION").tar"
+cp "$work/skiff.tar" "$work/home3/.skiff/images/skiff-$(cat "$repo_dir/VERSION")-$host_arch.tar"
 out=$(env -i PATH="$PATH" HOME="$work/home3" bash "$repo_dir/scripts/skiff.sh" tools 2>&1); status=$?
-expect "tools: without a path, in a release, it takes the archive of the release's version" "$status:$([ -x "$work/home3/.skiff/tools/bin/kubectl" ] && echo yes)" "0:yes"
+expect "tools: without a path, in a release, it takes the archive of the release's version for this host" "$status:$([ -x "$work/home3/.skiff/tools/$host_machine/bin/kubectl" ] && echo yes)" "0:yes"
 # a program moved out of the tree (an Apptainer the host cannot run) stays out
-mv "$work/home3/.skiff/tools/bin/apptainer" "$work/home3/apptainer.away"
+mv "$work/home3/.skiff/tools/$host_machine/bin/apptainer" "$work/home3/apptainer.away"
 out=$(env -i PATH="$PATH" HOME="$work/home3" bash "$repo_dir/scripts/skiff.sh" tools 2>&1); status=$?
-expect "tools: the same archive again leaves a program that was moved out of the tree out" "$status:$(grep -c 'already' <<< "$out"):$([ -e "$work/home3/.skiff/tools/bin/apptainer" ] && echo back || echo out)" "0:1:out"
+expect "tools: the same archive again leaves a program that was moved out of the tree out" "$status:$(grep -c 'already' <<< "$out"):$([ -e "$work/home3/.skiff/tools/$host_machine/bin/apptainer" ] && echo back || echo out)" "0:1:out"
+# the tree of earlier versions, one for every host, goes when the first of an architecture comes
+mkdir -p "$work/home4/.skiff/tools/bin"; : > "$work/home4/.skiff/tools/bin/apptainer"; echo old > "$work/home4/.skiff/tools/.source"
+out=$(env -i PATH="$PATH" HOME="$work/home4" bash "$repo_dir/scripts/skiff.sh" tools "$work/skiff.tar" 2>&1); status=$?
+expect "tools: the shared tree of earlier versions is replaced by this architecture's" "$status:$(ls -A "$work/home4/.skiff/tools" | tr '\n' ' '):$(ls -A "$work/home4/.skiff" | tr '\n' ' ')" "0:$host_machine :tools "
 # a new archive replaces the tools (and keeps no copy of the old ones)
 printf '#!/bin/sh\necho "apptainer version 10.0"\n' > "$work/layer1/opt/skiff/tools/bin/apptainer"
-tar -C "$work/layer1" -czf "$work/arc/blobs/sha256/aaa" .
-tar -C "$work/arc" -cf "$work/skiff2.tar" manifest.json blobs
+tar -C "$work/layer1" -czf "$work/blobs/aaa" .
+archive "$work/skiff2.tar" "$host_arch" aaa bbb
 out=$(run_tools "$work/skiff2.tar")
-expect "tools: a new archive replaces the old tools" "$("$work/home/.skiff/tools/bin/apptainer" --version):$(ls -A "$work/home/.skiff" | tr '\n' ' ')" "apptainer version 10.0:tools "
+expect "tools: a new archive replaces the old tools" "$("$tools/bin/apptainer" --version):$(ls -A "$work/home/.skiff" | tr '\n' ' ')" "apptainer version 10.0:tools "
 
 # --- skiff.sh download (T76) --------------------------------------------------------------
 # The registry's documents, as Docker Hub answers them (recorded: busybox 1.37.0, whose index
@@ -661,21 +722,42 @@ for ref in $(sed -n 's/^ *image: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$repo_dir/im
 done
 expect "download: there are five system images" "$(grep -c . <<< "$sys_images")" 5
 
-# A release package (its own VERSION) and a fake registry that serves an image made of the
-# tool archive's layers: curl answers from files, apptainer converts and pulls into files.
+# A release package (its own VERSION) and a fake registry that serves the image for amd64 and
+# arm64 (the same layers, a config of each architecture; an image of the download's own
+# apptainer, so the extracted one is the fake that records what it is asked), with an entry
+# for a third platform: curl answers from files, apptainer converts and pulls into files, and
+# scontrol, when asked to, reports the architectures of Slurm's nodes.
 pkg="$work/pkg"; mkdir -p "$pkg/scripts"; cp "$repo_dir/scripts/skiff.sh" "$pkg/scripts/"; echo "9.9.9-test" > "$pkg/VERSION"
 reg="$work/reg"; mkdir -p "$reg/manifests" "$reg/blobs"
 sha() { sha256sum "$1" | awk '{print $1}'; }
-printf '{"architecture":"any","os":"linux"}' > "$work/config.json"
-for f in "$work/config.json" "$work/arc/blobs/sha256/aaa" "$work/arc/blobs/sha256/bbb"; do cp "$f" "$reg/blobs/sha256:$(sha "$f")"; done
-printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%s","size":1},"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:%s","size":1},{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"sha256:%s","size":1}]}' \
-    "$(sha "$work/config.json")" "$(sha "$work/arc/blobs/sha256/aaa")" "$(sha "$work/arc/blobs/sha256/bbb")" > "$work/manifest.json"
-mdigest=sha256:$(sha "$work/manifest.json"); cp "$work/manifest.json" "$reg/manifests/$mdigest"
-case "$(uname -m)" in x86_64) host_arch=amd64 ;; *) host_arch=arm64 ;; esac
-printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"%s","size":1,"platform":{"architecture":"%s","os":"linux"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%064d","size":1,"platform":{"architecture":"s390x","os":"linux"}}]}' \
-    "$mdigest" "$host_arch" 0 > "$reg/manifests/9.9.9-test"
+mkdir -p "$work/dlbin" "$work/dllayer/opt/skiff/tools/bin"
+cat > "$work/dlbin/apptainer" <<'EOF2'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_REG/apptainer"
+case "$1" in
+    --version) echo "apptainer version 1.5.4" ;;
+    build) for a in "$@"; do case "$a" in docker-archive://*) tar -tf "${a#docker-archive://}" manifest.json >/dev/null || exit 1 ;; esac; done; echo sif > "$4" ;;
+    pull) echo "$6" > "$5" ;;
+esac
+EOF2
+chmod +x "$work/dlbin/apptainer"
+cp "$work/dlbin/apptainer" "$work/dllayer/opt/skiff/tools/bin/apptainer"
+for tool in slirp4netns socat kubectl; do cp "$work/layer1/opt/skiff/tools/bin/$tool" "$work/dllayer/opt/skiff/tools/bin/"; done
+tar -C "$work/dllayer" -czf "$work/dllayer.tar.gz" .
+cp "$work/dllayer.tar.gz" "$reg/blobs/sha256:$(sha "$work/dllayer.tar.gz")"
+cp "$work/blobs/bbb" "$reg/blobs/sha256:$(sha "$work/blobs/bbb")"
+entries=""
+for arch in amd64 arm64; do
+    printf '{"architecture":"%s","os":"linux"}' "$arch" > "$work/config-$arch.json"
+    cp "$work/config-$arch.json" "$reg/blobs/sha256:$(sha "$work/config-$arch.json")"
+    printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:%s","size":1},"layers":[{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:%s","size":1},{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"sha256:%s","size":1}]}' \
+        "$(sha "$work/config-$arch.json")" "$(sha "$work/dllayer.tar.gz")" "$(sha "$work/blobs/bbb")" > "$work/manifest-$arch.json"
+    cp "$work/manifest-$arch.json" "$reg/manifests/sha256:$(sha "$work/manifest-$arch.json")"
+    entries="$entries{\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"digest\":\"sha256:$(sha "$work/manifest-$arch.json")\",\"size\":1,\"platform\":{\"architecture\":\"$arch\",\"os\":\"linux\"}},"
+done
+printf '{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[%s{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:%064d","size":1,"platform":{"architecture":"s390x","os":"linux"}}]}' \
+    "$entries" 0 > "$reg/manifests/9.9.9-test"
 printf '{"token":"t0k","access_token":"t0k"}' > "$reg/token"
-mkdir -p "$work/dlbin"
 cat > "$work/dlbin/curl" <<'EOF2'
 #!/usr/bin/env bash
 # The registry's answers from FAKE_REG; the token must come with every registry request.
@@ -693,35 +775,37 @@ esac
 [ -f "$file" ] || exit 22
 cp "$file" "$out"
 EOF2
-cat > "$work/dlbin/apptainer" <<'EOF2'
+mkdir -p "$work/slurmbin"
+cat > "$work/slurmbin/scontrol" <<'EOF2'
 #!/usr/bin/env bash
-echo "$*" >> "$FAKE_REG/apptainer"
-case "$1" in
-    --version) echo "apptainer version 1.5.4" ;;
-    build) for a in "$@"; do case "$a" in docker-archive://*) tar -tf "${a#docker-archive://}" manifest.json >/dev/null || exit 1 ;; esac; done; echo sif > "$4" ;;
-    pull) echo "$6" > "$5" ;;
-esac
+# Slurm's nodes, one of each architecture of FAKE_NODE_ARCHS; without it, Slurm does not answer.
+[ -n "${FAKE_NODE_ARCHS:-}" ] || exit 1
+n=0
+for arch in $FAKE_NODE_ARCHS; do n=$((n + 1)); echo "NodeName=n$n Arch=$arch CoresPerSocket=4 CPUAlloc=0 CPUTot=8"; done
 EOF2
-chmod +x "$work/dlbin/"*
+chmod +x "$work/dlbin/"* "$work/slurmbin/scontrol"
 mkdir -p "$work/dlbase"
-for command in bash sh tar gzip sha256sum awk sed tr grep mkdir mktemp mv rm cp cat uname env chmod ls; do ln -s "$(command -v "$command")" "$work/dlbase/$command"; done
-# (the fake tools in the archive run with /bin/sh; the extracted ones come first in PATH, so
-# the fake apptainer is put there over the archive's after the first extraction)
+for command in bash sh tar gzip sha256sum awk sed tr grep sort mkdir mktemp mv rm cp cat uname env chmod ls; do ln -s "$(command -v "$command")" "$work/dlbase/$command"; done
 run_download() { env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" "$@" bash "$pkg/scripts/skiff.sh" download 2>&1; }
-over_tools() { [ ! -d "$work/dlhome/.skiff/tools/bin" ] || cp "$work/dlbin/apptainer" "$work/dlhome/.skiff/tools/bin/apptainer"; }
-mkdir -p "$work/dlhome/.skiff/images"; : > "$work/dlhome/.skiff/images/skiff-9.9.8.sif"; : > "$work/dlhome/.skiff/images/skiff-9.9.8.tar"; : > "$work/dlhome/.skiff/images/skiff.tar"
-# the first run stops at the archive's own apptainer, which is not this fake: put it over and run again
+# listing DIR: its entries in C order, on one line; sorted WORD...: the same of words
+listing() { ls "$1" | LC_ALL=C sort | tr '\n' ' '; }
+sorted() { printf '%s\n' "$@" | LC_ALL=C sort | tr '\n' ' '; }
+images_of() { listing "$1/.skiff/images"; }
+# system ARCH...: the cache names of the system images for these architectures, as ls lists them
+system() { local a r; for a in "$@"; do for r in rancher/local-path-provisioner:v0.0.32 rancher/mirrored-coredns-coredns:1.14.7 rancher/mirrored-library-busybox:1.37.0 rancher/mirrored-metrics-server:v0.9.0 registry.k8s.io/pause:3.10; do names "$r" "$a"; echo; done; done | tr -s ' \n' '\n\n' | grep . | LC_ALL=C sort | tr '\n' ' '; }
+
+# This host's architecture only (no Slurm, no --arch).
+mkdir -p "$work/dlhome/.skiff/images"
+for f in skiff-9.9.8.sif skiff-9.9.8.tar skiff-9.9.8-amd64.tar skiff.tar; do : > "$work/dlhome/.skiff/images/$f"; done
 out=$(run_download); status=$?
-over_tools
-out=$(run_download); status=$?
-tarfile="$work/dlhome/.skiff/images/skiff-9.9.9-test.tar"
-expect "download: a release gets the image of its version, saved as an archive with its layers in order" "$status:$(tar -xOf "$tarfile" manifest.json 2>/dev/null)" \
-    "0:[{\"Config\":\"blobs/sha256/$(sha "$work/config.json")\",\"RepoTags\":[\"docker.io/carvicsforth/skiff:9.9.9-test\"],\"Layers\":[\"blobs/sha256/$(sha "$work/arc/blobs/sha256/aaa")\",\"blobs/sha256/$(sha "$work/arc/blobs/sha256/bbb")\"]}]"
-expect "download: the tools come out of it" "$([ -x "$work/dlhome/.skiff/tools/bin/kubectl" ] && echo yes)" yes
-expect "download: and the SIF is made from it" "$(cat "$work/dlhome/.skiff/images/skiff-9.9.9-test.sif" 2>/dev/null):$(grep -c "^build --force --disable-cache .*skiff-9.9.9-test.sif.tmp-[0-9]* docker-archive://$tarfile\$" "$reg/apptainer")" "sif:1"
-expect "download: the other version is removed, development's archive is not" "$(ls "$work/dlhome/.skiff/images" | tr '\n' ' ')" "skiff-9.9.9-test.sif skiff-9.9.9-test.tar skiff.tar "
-cached=$(ls "$work/dlhome/.skiff/.images" | tr '\n' ' ')
-expect "download: the system images go to Skifflet's cache, under its names" "$cached" "$(names rancher/local-path-provisioner:v0.0.32 "$host_arch" rancher/mirrored-coredns-coredns:1.14.7 "$host_arch" rancher/mirrored-library-busybox:1.37.0 "$host_arch" rancher/mirrored-metrics-server:v0.9.0 "$host_arch" registry.k8s.io/pause:3.10 "$host_arch")"
+tarfile="$work/dlhome/.skiff/images/skiff-9.9.9-test-$host_arch.tar"
+expect "download: it says which architectures and why" "$(grep -c "^Architectures: $host_arch (this host: $host_arch)\$" <<< "$out")" 1
+expect "download: a release gets the image of its version for this host, saved as an archive with its layers in order" "$status:$(tar -xOf "$tarfile" manifest.json 2>/dev/null)" \
+    "0:[{\"Config\":\"blobs/sha256/$(sha "$work/config-$host_arch.json")\",\"RepoTags\":[\"docker.io/carvicsforth/skiff:9.9.9-test\"],\"Layers\":[\"blobs/sha256/$(sha "$work/dllayer.tar.gz")\",\"blobs/sha256/$(sha "$work/blobs/bbb")\"]}]"
+expect "download: the tools come out of it, into this host's tree" "$([ -x "$work/dlhome/.skiff/tools/$host_machine/bin/kubectl" ] && echo yes):$(ls "$work/dlhome/.skiff/tools" | tr '\n' ' ')" "yes:$host_machine "
+expect "download: and the SIF is made from it" "$(cat "$work/dlhome/.skiff/images/skiff-9.9.9-test-$host_arch.sif" 2>/dev/null):$(grep -c "^build --force --disable-cache .*skiff-9.9.9-test-$host_arch.sif.tmp-[0-9]* docker-archive://$tarfile\$" "$reg/apptainer")" "sif:1"
+expect "download: the other versions are removed, development's archive is not" "$(images_of "$work/dlhome")" "skiff-9.9.9-test-$host_arch.sif skiff-9.9.9-test-$host_arch.tar skiff.tar "
+expect "download: the system images go to Skifflet's cache, under its names" "$(listing "$work/dlhome/.skiff/.images")" "$(system "$host_arch")"
 expect "download: each pulled for this architecture" "$(grep -c "^pull --disable-cache --arch $host_arch .*\.tmp-[0-9]* docker://" "$reg/apptainer")" 5
 expect "download: and it says what comes next" "$(grep -c 'Check a compute node next: srun -N1 bash skiff.sh check' <<< "$out")" 1
 : > "$reg/apptainer"; : > "$reg/requests"
@@ -729,12 +813,39 @@ out=$(run_download); status=$?
 expect "download: again, it fetches, converts and pulls nothing" "$status:$(grep -c . "$reg/requests"):$(grep -c '^build\|^pull' "$reg/apptainer"):$(grep -c 'in the cache already' <<< "$out")" "0:0:0:5"
 out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" bash "$pkg/scripts/skiff.sh" download docker.io/library/nginx:1.27 2>&1); status=$?
 expect "download: an image of the user's own goes to the cache, and nothing else is done" "$status:$([ -f "$work/dlhome/.skiff/.images/$(names docker.io/library/nginx:1.27 "$host_arch" | tr -d ' ')" ] && echo yes):$(grep -c '^pull' "$reg/apptainer"):$(grep -c '^build' "$reg/apptainer")" "0:yes:1:0"
+
+# Slurm's nodes of the other architecture (and of one Skiff does not run on): both.
+: > "$reg/apptainer"; : > "$reg/requests"
+out=$(run_download PATH="$work/slurmbin:$work/dlbin:$work/dlbase" FAKE_NODE_ARCHS="$other_machine $other_machine ppc64le"); status=$?
+expect "download: with Slurm's nodes of another architecture it prepares both, and says why" "$status:$(grep -c "^Architectures: $host_arch $other_arch (this host: $host_arch; the nodes in Slurm: $other_arch)\$" <<< "$out"):$(grep -c 'Slurm has nodes of architecture ppc64le, which Skiff does not run on: left out' <<< "$out")" "0:1:1"
+expect "download: the other architecture's image, its SIF, beside this host's" "$(images_of "$work/dlhome")" "$(sorted skiff-9.9.9-test-$host_arch.sif skiff-9.9.9-test-$host_arch.tar skiff-9.9.9-test-$other_arch.sif skiff-9.9.9-test-$other_arch.tar skiff.tar)"
+expect "download: its tools in its own tree, not run here" "$([ -x "$work/dlhome/.skiff/tools/$other_machine/bin/kubectl" ] && echo yes):$(listing "$work/dlhome/.skiff/tools"):$(grep -c "Tools for $other_machine hosts put in" <<< "$out")" "yes:$(sorted "$host_machine" "$other_machine"):1"
+expect "download: its image converted by this host's apptainer" "$(grep -c "^build --force --disable-cache .*skiff-9.9.9-test-$other_arch.sif.tmp-[0-9]* docker-archive://" "$reg/apptainer"):$(grep -c "^build" "$reg/apptainer")" "1:1"
+expect "download: and the system images for both, under their names" "$(cd "$work/dlhome/.skiff/.images" && printf '%s\n' *.sif | grep -v nginx | LC_ALL=C sort | tr '\n' ' '):$(grep -c "^pull --disable-cache --arch $other_arch " "$reg/apptainer")" "$(system "$host_arch" "$other_arch"):5"
+expect "download: only the other architecture is fetched" "$(grep -c "/manifests/sha256:$(sha "$work/manifest-$other_arch.json")" "$reg/requests"):$(grep -c "/manifests/sha256:$(sha "$work/manifest-$host_arch.json")" "$reg/requests")" "1:0"
+: > "$reg/apptainer"
+out=$(run_download); status=$?
+expect "download: a later run without Slurm keeps this version's other architecture" "$status:$(images_of "$work/dlhome"):$(grep -c '^build\|^pull' "$reg/apptainer")" "0:$(sorted skiff-9.9.9-test-$host_arch.sif skiff-9.9.9-test-$host_arch.tar skiff-9.9.9-test-$other_arch.sif skiff-9.9.9-test-$other_arch.tar skiff.tar):0"
+
+# --arch, by either name, on a home that has nothing yet; an architecture Skiff does not run on.
+for spelling in "--arch $other_machine" "--arch=$other_arch" "--arch $host_arch,$other_arch"; do
+    rm -rf "$work/dlhome5"; mkdir -p "$work/dlhome5"
+    # shellcheck disable=SC2086 # (the option and its value are two words, or one)
+    out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome5" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" bash "$pkg/scripts/skiff.sh" download $spelling 2>&1); status=$?
+    expect "download: $spelling prepares both architectures" "$status:$(images_of "$work/dlhome5"):$(listing "$work/dlhome5/.skiff/.images")" "0:$(sorted skiff-9.9.9-test-$host_arch.sif skiff-9.9.9-test-$host_arch.tar skiff-9.9.9-test-$other_arch.sif skiff-9.9.9-test-$other_arch.tar):$(system "$host_arch" "$other_arch")"
+done
+out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome5" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" bash "$pkg/scripts/skiff.sh" download --arch mips 2>&1); status=$?
+expect "download: an architecture Skiff does not run on is refused" "$status:$(grep -c -- '--arch mips: Skiff runs on amd64 (x86_64) and arm64 (aarch64)' <<< "$out")" "2:1"
+: > "$reg/apptainer"
+out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome5" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" bash "$pkg/scripts/skiff.sh" download --arch "$other_arch" docker.io/library/nginx:1.27 2>&1); status=$?
+expect "download: --arch with an image of the user's own pulls it for both architectures" "$status:$(grep -c "^pull --disable-cache --arch $host_arch .* docker://docker.io/library/nginx:1.27" "$reg/apptainer"):$(grep -c "^pull --disable-cache --arch $other_arch .* docker://docker.io/library/nginx:1.27" "$reg/apptainer"):$(grep -c '^build' "$reg/apptainer")" "0:1:1:0"
+
 # failures: a blob that is not what its digest says, a version that is not published, no VERSION
 rm -rf "$work/dlhome2"; mkdir -p "$work/dlhome2"
-cp "$reg/blobs/sha256:$(sha "$work/arc/blobs/sha256/bbb")" "$work/bbb.good"; echo tampered >> "$reg/blobs/sha256:$(sha "$work/arc/blobs/sha256/bbb")"
+cp "$reg/blobs/sha256:$(sha "$work/blobs/bbb")" "$work/bbb.good"; echo tampered >> "$reg/blobs/sha256:$(sha "$work/blobs/bbb")"
 out=$(run_download HOME="$work/dlhome2"); status=$?
 expect "download: a blob that does not match its digest is refused and nothing is left" "$status:$(grep -c 'could not be fetched intact' <<< "$out"):$(ls -A "$work/dlhome2/.skiff/images" | tr '\n' ' ')" "1:1:"
-cp "$work/bbb.good" "$reg/blobs/sha256:$(sha "$work/arc/blobs/sha256/bbb")"
+cp "$work/bbb.good" "$reg/blobs/sha256:$(sha "$work/blobs/bbb")"
 echo "9.9.7" > "$pkg/VERSION"
 out=$(run_download HOME="$work/dlhome2"); status=$?
 expect "download: a version that is not published is named" "$status:$(grep -c 'there is no carvicsforth/skiff:9.9.7 on Docker Hub' <<< "$out")" "1:1"
@@ -745,8 +856,8 @@ out=$(run_download HOME="$work/dlhome2" SKIFF_DEV=1); status=$?
 expect "download: development without the uploaded archive says how to get it" "$status:$(grep -c "make develop' puts it there" <<< "$out")" "1:1"
 echo "9.9.9-test" > "$pkg/VERSION"
 # an Apptainer that cannot run here (an older C library) stops the download, with where to read
-printf '#!/bin/sh\necho "apptainer: version GLIBC_2.34 not found" >&2\nexit 1\n' > "$work/dlhome/.skiff/tools/bin/apptainer"
-rm "$work/dlhome/.skiff/images/skiff-9.9.9-test.sif"
+printf '#!/bin/sh\necho "apptainer: version GLIBC_2.34 not found" >&2\nexit 1\n' > "$work/dlhome/.skiff/tools/$host_machine/bin/apptainer"
+rm "$work/dlhome/.skiff/images/skiff-9.9.9-test-$host_arch.sif"
 out=$(run_download); status=$?
 expect "download: an Apptainer that cannot run here is named, with the guide's section" "$status:$(grep -c 'does not run on this host .*GLIBC_2.34.*Hosts with an old C library' <<< "$out")" "1:1"
 

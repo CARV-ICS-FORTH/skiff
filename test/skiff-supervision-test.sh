@@ -59,7 +59,7 @@ case "$*" in
         mkdir -p "$HOME/.skiff"; echo "$*" >> "$HOME/.skiff/step-args"
         exec "$FAKE_BUBBLE"
         ;;
-    *'apptainer instance stop --all'*)
+    *'apptainer instance stop bubble'*)
         # The clean-up's sweep after the bubbles stopped their own instances: Apptainer's answer.
         echo 'Error for command "stop": no instance found' >&2
         printf 'Usage:\n  apptainer [global options...] instance stop [stop options...] [instance]\n'
@@ -82,6 +82,8 @@ EOF
 cp "$script_dir/../scripts/skiff.sh" "$test_dir/repo/scripts/"
 # a release: the version beside the scripts' folder, and its image archive in each home (below)
 echo "9.9.9-test" > "$test_dir/repo/VERSION"
+# the images' name of this host's architecture, and of the other one Skiff runs on
+case "$(uname -m)" in x86_64) arch=amd64 other=arm64 ;; *) arch=arm64 other=amd64 ;; esac
 chmod +x "$test_dir/bin/"* "$test_dir/fake-bubble"
 export FAKE_BUBBLE="$test_dir/fake-bubble"
 export PATH="$test_dir/bin:$PATH"
@@ -124,6 +126,17 @@ rc=0
 SLURM_JOB_ID=8996 HOME="$test_dir/home-badtmp" SKIFF_TMP_DIR=relative/scratch bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/badtmp.log" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] && grep -q 'SKIFF_TMP_DIR.*absolute path' "$test_dir/badtmp.log" || { echo "bad scratch directory: exit $rc" >&2; cat "$test_dir/badtmp.log" >&2; exit 1; }
 
+# One cluster per user, whichever launcher: a cluster of skiff.sh start that is alive (its lease
+# is fresh; its supervisor on another host) refuses the job before any bubble starts.
+mkdir -p "$test_dir/home-launcher/.skiff/launcher" "$test_dir/home-launcher/.skiff/images"
+: > "$test_dir/home-launcher/.skiff/images/skiff-9.9.9-test-$arch.tar"
+printf 'job=1000\nhost=another-host\npid=1\nnodes=another-host\noutput=/x\nstarted=then\n' > "$test_dir/home-launcher/.skiff/launcher/cluster"
+date +%s > "$test_dir/home-launcher/.skiff/launcher/1000.lease"
+rc=0
+SLURM_JOB_ID=8995 HOME="$test_dir/home-launcher" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/launcher.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && grep -q 'Another Skiff cluster is already running (job 1000, started with skiff.sh start on another-host)' "$test_dir/launcher.log" || { echo "a running cluster of the launcher: exit $rc" >&2; cat "$test_dir/launcher.log" >&2; exit 1; }
+if grep -q 'Starting Controller' "$test_dir/launcher.log"; then echo "a running cluster of the launcher: a bubble was started" >&2; exit 1; fi
+
 job=9000
 for mode in 7 0 early empty term termsteps; do
     job=$((job + 1))
@@ -134,16 +147,17 @@ for mode in 7 0 early empty term termsteps; do
     [ "$mode" != 7 ] || unset SKIFF_DEV
     export TEST_EMPTY_NODES=0
     [ "$mode" != empty ] || export TEST_EMPTY_NODES=1
-    mkdir -p "$HOME/.skiff/images"; : > "$HOME/.skiff/images/skiff-9.9.9-test.tar"
+    # the release's archive for each architecture (a cluster whose nodes are of either)
+    mkdir -p "$HOME/.skiff/images"; : > "$HOME/.skiff/images/skiff-9.9.9-test-$arch.tar"; : > "$HOME/.skiff/images/skiff-9.9.9-test-$other.tar"
     rc=0
     if [ "$mode" = term ] || [ "$mode" = termsteps ]; then
         bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/$mode.log" 2>&1 &
         supervisor_pid=$!
         for attempt in $(seq 1 50); do
-            if grep -q 'Supervising job steps' "$test_dir/$mode.log"; then break; fi
+            if grep -q 'Supervising the bubbles' "$test_dir/$mode.log"; then break; fi
             sleep 0.1
         done
-        grep -q 'Supervising job steps' "$test_dir/$mode.log" || { cat "$test_dir/$mode.log"; exit 1; }
+        grep -q 'Supervising the bubbles' "$test_dir/$mode.log" || { cat "$test_dir/$mode.log"; exit 1; }
         kill -TERM "$supervisor_pid"
         wait "$supervisor_pid" || rc=$?
         expected=143
@@ -173,11 +187,14 @@ for mode in 7 0 early empty term termsteps; do
     if grep -q 'instance stop \[stop options' "$test_dir/$mode.log"; then
         echo "$mode: the clean-up printed Apptainer's usage text" >&2; exit 1
     fi
-    # The job runs the release's image: the SIF of its version, made from the archive.
+    # The job runs the release's images: the SIF of its version for each architecture, made
+    # from its archive.
     if [ "$mode" != empty ]; then
-        grep -qx "build --force $HOME/.skiff/images/skiff-9.9.9-test.sif docker-archive://$HOME/.skiff/images/skiff-9.9.9-test.tar" "$HOME/.skiff/conversions" \
-            && grep -q "^Image: $HOME/.skiff/images/skiff-9.9.9-test.sif\$" "$test_dir/$mode.log" \
-            || { echo "$mode: the job did not prepare the release's image: $(cat "$HOME/.skiff/conversions" 2>&1)" >&2; exit 1; }
+        for a in "$arch" "$other"; do
+            grep -qx "build --force $HOME/.skiff/images/skiff-9.9.9-test-$a.sif docker-archive://$HOME/.skiff/images/skiff-9.9.9-test-$a.tar" "$HOME/.skiff/conversions" \
+                && grep -q "^Image: $HOME/.skiff/images/skiff-9.9.9-test-$a.sif\$" "$test_dir/$mode.log" \
+                || { echo "$mode: the job did not prepare the release's image for $a: $(cat "$HOME/.skiff/conversions" 2>&1)" >&2; exit 1; }
+        done
     fi
     # The network and the MTU come from the probes: the bubbles get the controller's address
     # and the nodes' smallest MTU (and the pod MTU that follows from it), the log says so.
@@ -196,7 +213,7 @@ mtu_run() { # mtu_run NAME VAR=value...: run a job that ends at once, leave its 
     shift
     job=$((job + 1))
     rc=0
-    mkdir -p "$test_dir/home-$name/.skiff/images"; : > "$test_dir/home-$name/.skiff/images/skiff-9.9.9-test.tar"
+    mkdir -p "$test_dir/home-$name/.skiff/images"; : > "$test_dir/home-$name/.skiff/images/skiff-9.9.9-test-$arch.tar"
     env SLURM_JOB_ID="$job" HOME="$test_dir/home-$name" TEST_CHILD_MODE=0 "$@" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/$name.log" 2>&1 || rc=$?
 }
 mtu_run uplink-set SKIFF_UPLINK_MTU=1600

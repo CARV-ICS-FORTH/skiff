@@ -6,9 +6,12 @@ source "$(dirname "$0")/lib/runtime.sh"
 
 NS=$(e2e_namespace 04)
 NODE_A=$(e2e_node_a)
-NODE_B=$(e2e_node_b)
+# The clients run on another node than the server's (on a cluster of one, on the same: what this
+# case is about is DNS, the Service and readiness, which do not depend on where the client is).
+CLIENT_NODE=$(e2e_node_b)
+CLIENT_NODE=${CLIENT_NODE:-$NODE_A}
 
-e2e_require_nodes 2
+e2e_require_nodes 1
 e2e_kubectl create namespace $NS
 e2e_cleanup_register "e2e_kubectl delete namespace $NS --ignore-not-found --timeout=60s"
 
@@ -48,7 +51,7 @@ metadata:
   name: e2e04-client
   namespace: $NS
 spec:
-  nodeName: $NODE_B
+  nodeName: $CLIENT_NODE
   restartPolicy: Never
   containers:
   - name: test
@@ -107,7 +110,7 @@ check_endpoint_ip() {
 }
 e2e_wait_condition 30 "Endpoint IP updated" check_endpoint_ip
 
-fixture_client_job $NS e2e04-client-job $NODE_B http://e2e04-svc.$NS.svc.${SKIFF_CLUSTER_DOMAIN}:8080/ | e2e_kubectl apply -f -
+fixture_client_job $NS e2e04-client-job $CLIENT_NODE http://e2e04-svc.$NS.svc.${SKIFF_CLUSTER_DOMAIN}:8080/ | e2e_kubectl apply -f -
 e2e_wait_job_complete $NS e2e04-client-job 60
 
 e2e_record_uid $NS e2e04-server-2

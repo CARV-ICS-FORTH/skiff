@@ -54,7 +54,7 @@ func nodeWithGPUs(t *testing.T, n int) {
 		touch(f)
 	}
 	s := gpu.Sources{
-		Env:  func(name string) string { return map[string]string{gpu.StepGPUsVariable: list}[name] },
+		Env:  func(name string) string { return map[string]string{gpu.NodeGPUsVariable: list}[name] },
 		Proc: filepath.Join(dir, "proc"), Dev: filepath.Join(dir, "dev"), Libs: filepath.Join(dir, "libs"), Bin: filepath.Join(dir, "bin"),
 		Open: func(string) error { return nil },
 	}

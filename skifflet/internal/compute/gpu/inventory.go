@@ -32,13 +32,13 @@ import (
 // ResourceName is the extended resource a pod asks GPUs with (resources.limits).
 const ResourceName = "nvidia.com/gpu"
 
-// StepGPUsVariable is where Slurm says which GPUs it gave the step the bubble runs in:
-// the indices of the node's GPUs, which are the minor numbers of their device files
-// (/dev/nvidia<N>). It is set only for a step that was given GPUs, which is the point: a
-// job that has GPUs and a step that was not given them (the job's own variable,
-// SLURM_JOB_GPUS, is set all the same) cannot use them, as the device cgroup keeps the
-// step out of them.
-const StepGPUsVariable = "SLURM_STEP_GPUS"
+// NodeGPUsVariable is where the bubble's script says which GPUs the node gives the cluster
+// (skiff.sh, skiff_node_grant): the indices of the node's GPUs, which are the minor numbers
+// of their device files (/dev/nvidia<N>). In a Slurm job they are the GPUs Slurm gave the
+// step the bubble runs in, and only those (a job that has GPUs and a step that was not given
+// them cannot use them, as the device cgroup keeps the step out of them); without Slurm,
+// all the node's.
+const NodeGPUsVariable = "SKIFF_NODE_GPUS"
 
 // Device is one GPU of the node.
 type Device struct {
@@ -111,27 +111,27 @@ var commonNodes = []string{"nvidiactl", "nvidia-uvm", "nvidia-uvm-tools", "nvidi
 // with --nv (its nvliblist.conf); the container gets those the node has.
 var driverPrograms = []string{"nvidia-smi", "nvidia-debugdump", "nvidia-persistenced", "nvidia-cuda-mps-control", "nvidia-cuda-mps-server"}
 
-// Discover finds the GPUs the step was given and what a container needs to use them. A
-// node whose step has none has an empty inventory and no error. A GPU Slurm granted and
+// Discover finds the GPUs the node gives the cluster and what a container needs to use
+// them. A node that gives none has an empty inventory and no error. A GPU granted and
 // the node cannot use (its device file cannot be opened, or the driver's libraries are
 // not in the bubble) is an error that names it: advertising a GPU a pod cannot use would
 // be a lie to the scheduler.
 func Discover(s Sources) (*Inventory, error) {
 	inv := &Inventory{libs: s.Libs}
-	granted := strings.TrimSpace(s.Env(StepGPUsVariable))
+	granted := strings.TrimSpace(s.Env(NodeGPUsVariable))
 	if granted == "" {
 		return inv, nil
 	}
 	minors, err := ParseIndices(granted)
 	if err != nil {
-		return nil, fmt.Errorf("%s=%q: %w", StepGPUsVariable, granted, err)
+		return nil, fmt.Errorf("%s=%q: %w", NodeGPUsVariable, granted, err)
 	}
 
 	info := readGPUInfo(s.Proc)
 	for _, minor := range minors {
 		node := filepath.Join(s.Dev, "nvidia"+strconv.Itoa(minor))
 		if err := s.Open(node); err != nil {
-			return nil, fmt.Errorf("GPU %d is granted to the step by Slurm and %s cannot be opened: %w", minor, node, err)
+			return nil, fmt.Errorf("GPU %d is granted to the node and %s cannot be opened: %w", minor, node, err)
 		}
 		d := info[minor]
 		d.Minor = minor
@@ -186,7 +186,7 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// ParseIndices reads a list of GPU indices as Slurm writes it: numbers separated by
+// ParseIndices reads a list of GPU indices as Slurm writes them: numbers separated by
 // commas, with ranges ("0,2-3").
 func ParseIndices(list string) ([]int, error) {
 	seen := map[int]bool{}
