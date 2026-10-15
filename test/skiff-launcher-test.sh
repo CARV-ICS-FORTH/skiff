@@ -50,7 +50,7 @@ unset SKIFF_DEV
 new_home() {
     export HOME="$test_dir/home-$1"
     mkdir -p "$HOME/.skiff/images"
-    : > "$HOME/.skiff/images/skiff-9.9.9-test.sif"
+    case "$(uname -m)" in x86_64) : > "$HOME/.skiff/images/skiff-9.9.9-test-amd64.sif" ;; *) : > "$HOME/.skiff/images/skiff-9.9.9-test-arm64.sif" ;; esac
 }
 record_job() { sed -n 's/^job=//p' "$HOME/.skiff/launcher/cluster" 2>/dev/null; }
 run_skiff() { (cd "$test_dir/work" && bash "$skiff" "$@"); }

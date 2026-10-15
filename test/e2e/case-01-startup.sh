@@ -131,7 +131,7 @@ host_sees_nodes_ready() {  # host_sees_nodes_ready [ADDRESS]: local when ADDRESS
     fi
     [ "$ready" = "$E2E_NODES" ]
 }
-command -v kubectl >/dev/null 2>&1 || e2e_die "kubectl is not in PATH on this host; take it out of the image with `skiff.sh tools` (make develop does) and put ~/.skiff/tools/bin first in PATH"
+command -v kubectl >/dev/null 2>&1 || e2e_die "kubectl is not in PATH on this host; take it out of the image with `skiff.sh tools` (make develop does) and put ~/.skiff/tools/$(uname -m)/bin first in PATH"
 e2e_wait_condition 60 "host-level kubectl on $(hostname) sees every node Ready" host_sees_nodes_ready
 for node in $(e2e_all_nodes); do
     e2e_wait_condition 60 "host-level kubectl on $node sees every node Ready" \

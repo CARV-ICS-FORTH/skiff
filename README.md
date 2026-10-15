@@ -19,7 +19,7 @@ A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, ea
    bash skiff.sh download
    ```
 
-   It gets the Skiff image of this release from Docker Hub (about 200 MB), takes the programs Skiff needs on a host out of it (Apptainer, slirp4netns, socat and `kubectl`, so nothing has to be installed), and puts the images of the cluster's system pods in its image cache. Everything goes to `~/.skiff`.
+   It gets the Skiff image of this release from Docker Hub (about 200 MB), takes the programs Skiff needs on a host out of it (Apptainer, slirp4netns, socat and `kubectl`, so nothing has to be installed), and puts the images of the cluster's system pods in its image cache. Everything goes to `~/.skiff`. If the compute nodes are of another architecture than the login node (x86_64 and arm64), it fetches for both: Slurm says which the nodes are, and `--arch` adds one it does not (`bash skiff.sh download --arch arm64`).
 
 3. **Check** that a compute node has what Skiff needs:
 
@@ -39,7 +39,7 @@ A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, ea
 
    ```bash
    export KUBECONFIG=${HOME}/.skiff/kubeconfig
-   export PATH=${HOME}/.skiff/tools/bin:${PATH}
+   export PATH=${HOME}/.skiff/tools/$(uname -m)/bin:${PATH}
    kubectl get nodes
    ```
 

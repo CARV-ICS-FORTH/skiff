@@ -156,7 +156,7 @@ develop: builder image
 	$(MAKE) -C test/vagrant sync
 
 	@echo "Extracting the tools from the image and converting it to a SIF on the controller VM..."
-	test/vagrant/transport.sh ssh controller 'bash ~/skiff/scripts/skiff.sh tools ~/.skiff/images/skiff.tar && PATH="$$HOME/.skiff/tools/bin:$$PATH" apptainer build --force ~/.skiff/images/skiff.sif docker-archive://$$HOME/.skiff/images/skiff.tar'
+	test/vagrant/transport.sh ssh controller 'bash ~/skiff/scripts/skiff.sh tools ~/.skiff/images/skiff.tar && PATH="$$HOME/.skiff/tools/$$(uname -m)/bin:$$PATH" apptainer build --force ~/.skiff/images/skiff.sif docker-archive://$$HOME/.skiff/images/skiff.tar'
 
 	@echo "Development image and deployment manifest deployed successfully!"
 	@echo "Submit with SKIFF_DEV=1 to use the local image."
@@ -185,7 +185,7 @@ e2e-images:
 
 	@echo "Converting fixture tar to SIF on controller VM..."
 	test/vagrant/transport.sh ssh controller \
-		'export PATH="$$HOME/.skiff/tools/bin:$$PATH"; apptainer build --force ~/.skiff/images/skiff-e2e-fixture.sif docker-archive://$$HOME/.skiff/images/skiff-e2e-fixture.tar && apptainer build --force ~/.skiff/images/skiff-e2e-fixture-user.sif docker-archive://$$HOME/.skiff/images/skiff-e2e-fixture-user.tar'
+		'export PATH="$$HOME/.skiff/tools/$$(uname -m)/bin:$$PATH"; apptainer build --force ~/.skiff/images/skiff-e2e-fixture.sif docker-archive://$$HOME/.skiff/images/skiff-e2e-fixture.tar && apptainer build --force ~/.skiff/images/skiff-e2e-fixture-user.sif docker-archive://$$HOME/.skiff/images/skiff-e2e-fixture-user.tar'
 
 	@echo "Writing fixture env file..."
 	@printf 'export FIXTURE_IMAGE_TAG="%s"\nexport FIXTURE_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture.sif"\nexport FIXTURE_USER_IMAGE="/var/lib/skiff/images/skiff-e2e-fixture-user.sif"\n' \

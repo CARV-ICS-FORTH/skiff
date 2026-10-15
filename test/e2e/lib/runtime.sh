@@ -22,7 +22,7 @@ runtime_ssh_node() {
         -o ConnectTimeout=10 \
         -o ServerAliveInterval=3 \
         -o ServerAliveCountMax=2 \
-        "${_E2E_SSH_USER}@${node}" "export PATH=\"\$HOME/.skiff/tools/bin:\$PATH\"; $*"
+        "${_E2E_SSH_USER}@${node}" "export PATH=\"\$HOME/.skiff/tools/\$(uname -m)/bin:\$PATH\"; $*"
 }
 
 # After the bubble exits, require successful host observations of every daemon

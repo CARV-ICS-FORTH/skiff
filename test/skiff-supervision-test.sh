@@ -71,6 +71,8 @@ EOF
 cp "$script_dir/../scripts/skiff.sh" "$test_dir/repo/scripts/"
 # a release: the version beside the scripts' folder, and its image archive in each home (below)
 echo "9.9.9-test" > "$test_dir/repo/VERSION"
+# the images' name of this host's architecture, and of the other one Skiff runs on
+case "$(uname -m)" in x86_64) arch=amd64 other=arm64 ;; *) arch=arm64 other=amd64 ;; esac
 chmod +x "$test_dir/bin/"* "$test_dir/fake-bubble"
 export FAKE_BUBBLE="$test_dir/fake-bubble"
 export PATH="$test_dir/bin:$PATH"
@@ -116,7 +118,7 @@ SLURM_JOB_ID=8996 HOME="$test_dir/home-badtmp" SKIFF_TMP_DIR=relative/scratch ba
 # One cluster per user, whichever launcher: a cluster of skiff.sh start that is alive (its lease
 # is fresh; its supervisor on another host) refuses the job before any bubble starts.
 mkdir -p "$test_dir/home-launcher/.skiff/launcher" "$test_dir/home-launcher/.skiff/images"
-: > "$test_dir/home-launcher/.skiff/images/skiff-9.9.9-test.tar"
+: > "$test_dir/home-launcher/.skiff/images/skiff-9.9.9-test-$arch.tar"
 printf 'job=1000\nhost=another-host\npid=1\nnodes=another-host\noutput=/x\nstarted=then\n' > "$test_dir/home-launcher/.skiff/launcher/cluster"
 date +%s > "$test_dir/home-launcher/.skiff/launcher/1000.lease"
 rc=0
@@ -134,7 +136,8 @@ for mode in 7 0 early empty term termsteps; do
     [ "$mode" != 7 ] || unset SKIFF_DEV
     export TEST_EMPTY_NODES=0
     [ "$mode" != empty ] || export TEST_EMPTY_NODES=1
-    mkdir -p "$HOME/.skiff/images"; : > "$HOME/.skiff/images/skiff-9.9.9-test.tar"
+    # the release's archive for each architecture (a cluster whose nodes are of either)
+    mkdir -p "$HOME/.skiff/images"; : > "$HOME/.skiff/images/skiff-9.9.9-test-$arch.tar"; : > "$HOME/.skiff/images/skiff-9.9.9-test-$other.tar"
     rc=0
     if [ "$mode" = term ] || [ "$mode" = termsteps ]; then
         bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/$mode.log" 2>&1 &
@@ -173,10 +176,13 @@ for mode in 7 0 early empty term termsteps; do
     if grep -q 'instance stop \[stop options' "$test_dir/$mode.log"; then
         echo "$mode: the clean-up printed Apptainer's usage text" >&2; exit 1
     fi
-    # The job runs the release's image: the SIF of its version, made from the archive.
+    # The job runs the release's images: the SIF of its version for each architecture, made
+    # from its archive.
     if [ "$mode" != empty ]; then
-        grep -qx "build --force $HOME/.skiff/images/skiff-9.9.9-test.sif docker-archive://$HOME/.skiff/images/skiff-9.9.9-test.tar" "$HOME/.skiff/conversions" \
-            && grep -q "^Image: $HOME/.skiff/images/skiff-9.9.9-test.sif\$" "$test_dir/$mode.log" \
-            || { echo "$mode: the job did not prepare the release's image: $(cat "$HOME/.skiff/conversions" 2>&1)" >&2; exit 1; }
+        for a in "$arch" "$other"; do
+            grep -qx "build --force $HOME/.skiff/images/skiff-9.9.9-test-$a.sif docker-archive://$HOME/.skiff/images/skiff-9.9.9-test-$a.tar" "$HOME/.skiff/conversions" \
+                && grep -q "^Image: $HOME/.skiff/images/skiff-9.9.9-test-$a.sif\$" "$test_dir/$mode.log" \
+                || { echo "$mode: the job did not prepare the release's image for $a: $(cat "$HOME/.skiff/conversions" 2>&1)" >&2; exit 1; }
+        done
     fi
 done

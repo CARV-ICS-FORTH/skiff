@@ -15,16 +15,18 @@
 #   skiff.sh check [ROLE] what a node needs and whether it has it (the job runs it on every
 #                         node; run it yourself on a node first, for example
 #                         `srun -N1 skiff.sh check` on a Slurm cluster)
-#   skiff.sh download [IMAGE...]
+#   skiff.sh download [--arch ARCH[,ARCH]] [IMAGE...]
 #                         put what a cluster needs on the shared home, from a node that
 #                         has Internet access (the login node): the Skiff image of this
 #                         version, the tools out of it and the images of the cluster's
-#                         system pods; with IMAGEs, those images instead (the user's own,
+#                         system pods, for this host's architecture, the nodes' (Slurm's)
+#                         and --arch's; with IMAGEs, those images instead (the user's own,
 #                         for compute nodes that cannot pull them)
 #   skiff.sh tools [TAR]  take the programs Skiff needs on a host (Apptainer, slirp4netns,
 #                         socat, kubectl) out of the Skiff image archive and put them in
-#                         ~/.skiff/tools, which every command here puts first in PATH: a
-#                         host that has none of them needs nothing installed (see below)
+#                         ~/.skiff/tools/<machine>, which every command here puts first in
+#                         PATH on a host of that machine: a host that has none of them needs
+#                         nothing installed (see below)
 #
 # Sourced (by skiff.slurm, which runs a Slurm job's cluster with it, and by the tests), it
 # defines the functions below and runs nothing. Every configuration
@@ -71,10 +73,17 @@ SKIFF_STATE_DIR="$HOME/.skiff"
 
 # The programs Skiff needs on a host (Apptainer, slirp4netns, socat and kubectl, with what
 # Apptainer runs) can come from the Skiff image itself: `skiff.sh tools` takes them out of the
-# image archive into this directory, a tree that works from wherever it is put. Once it exists
-# it comes first in PATH for everything started from here (the job, its steps, the check), so a
-# host's own copies are not needed and not used.
-SKIFF_TOOLS_DIR="$SKIFF_STATE_DIR/tools"
+# image archive into a tree that works from wherever it is put. Once it exists it comes first in
+# PATH for everything started from here (the job, its steps, the check), so a host's own copies
+# are not needed and not used. The home is shared by hosts that may be of different
+# architectures (a login node and compute nodes), so there is a tree per architecture, named as
+# `uname -m` names the machine: a PATH line can say $HOME/.skiff/tools/$(uname -m)/bin on any
+# host. SKIFF_TOOLS_DIR is the one of the host this runs on.
+SKIFF_TOOLS_ROOT="$SKIFF_STATE_DIR/tools"
+# (macOS says arm64 where Linux says aarch64: the tests run there too.)
+SKIFF_MACHINE=$(uname -m 2>/dev/null) || SKIFF_MACHINE=unknown
+case "$SKIFF_MACHINE" in arm64) SKIFF_MACHINE=aarch64 ;; esac
+SKIFF_TOOLS_DIR="$SKIFF_TOOLS_ROOT/$SKIFF_MACHINE"
 skiff_use_tools() {
     if [ -d "$SKIFF_TOOLS_DIR/bin" ]; then
         case ":$PATH:" in *":$SKIFF_TOOLS_DIR/bin:"*) ;; *) PATH="$SKIFF_TOOLS_DIR/bin:$PATH"; export PATH ;; esac
@@ -85,9 +94,10 @@ skiff_use_tools
 
 # The Skiff image. A release (the default) runs the image of the version in the VERSION file
 # beside the scripts' folder, published on Docker Hub, which `skiff.sh download` saves as an
-# archive (the format of `docker save`) and converts to the SIF the bubbles run. Development
-# (SKIFF_DEV=1) runs the archive `make develop` uploads, converted the same way. The archive is
-# also where `skiff.sh tools` takes the tools from.
+# archive (the format of `docker save`) per architecture and converts to the SIFs the bubbles
+# run, each node its own architecture's. Development (SKIFF_DEV=1) runs the one archive `make
+# develop` uploads (one platform), converted the same way. The archive is also where
+# `skiff.sh tools` takes the tools from.
 case "${BASH_SOURCE[0]}" in */*) SKIFF_SCRIPT_DIR=${BASH_SOURCE[0]%/*} ;; *) SKIFF_SCRIPT_DIR=. ;; esac
 SKIFF_SCRIPT_DIR=$(cd "$SKIFF_SCRIPT_DIR" 2>/dev/null && pwd)
 # This script, by its full path: what a job runs on its nodes (the home is shared).
@@ -95,17 +105,20 @@ SKIFF_SCRIPT="$SKIFF_SCRIPT_DIR/${BASH_SOURCE[0]##*/}"
 SKIFF_IMAGE_REPOSITORY="carvicsforth/skiff"
 SKIFF_IMAGES_DIR="$SKIFF_STATE_DIR/images"
 
-# skiff_image_files: the archive and the SIF of the mode (SKIFF_IMAGE_TAR, SKIFF_IMAGE_SIF) and,
-# for a release, its version (SKIFF_VERSION). Fails, saying why, when a release has no version.
+# skiff_image_files [ARCH]: the archive and the SIF of the mode (SKIFF_IMAGE_TAR, SKIFF_IMAGE_SIF)
+# and, for a release, its version (SKIFF_VERSION): those of ARCH (amd64 or arm64), by default this
+# host's. Fails, saying why, when a release has no version or the host an architecture Skiff does
+# not run on.
 skiff_image_files() {
-    local name=skiff file="$SKIFF_SCRIPT_DIR/../VERSION"
+    local name=skiff file="$SKIFF_SCRIPT_DIR/../VERSION" arch="${1:-}"
     if [ "${SKIFF_DEV:-0}" != 1 ]; then
         SKIFF_VERSION=$(sed -n 1p "$file" 2>/dev/null | tr -d '[:space:]') || true
         if ! [[ "$SKIFF_VERSION" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
             echo "no Skiff version in $file: it belongs beside the scripts' folder, as in the release package" >&2
             return 1
         fi
-        name="skiff-$SKIFF_VERSION"
+        if [ -z "$arch" ]; then arch=$(_skiff_arch) || return 1; fi
+        name="skiff-$SKIFF_VERSION-$arch"
     fi
     SKIFF_IMAGE_TAR="$SKIFF_IMAGES_DIR/$name.tar"
     SKIFF_IMAGE_SIF="$SKIFF_IMAGES_DIR/$name.sif"
@@ -807,7 +820,7 @@ skiff_check_images() {
         if [ "${SKIFF_DEV:-0}" = 1 ]; then
             echo "$host: the development image is not in $SKIFF_IMAGES_DIR (neither ${SKIFF_IMAGE_SIF##*/} nor ${SKIFF_IMAGE_TAR##*/}): run 'make develop'" >&2
         else
-            echo "$host: the Skiff image of version $SKIFF_VERSION is not in $SKIFF_IMAGES_DIR: run 'bash skiff.sh download' first, on a node that has Internet access (the login node)" >&2
+            echo "$host: the Skiff image of version $SKIFF_VERSION for this node's architecture ($(_skiff_arch)) is not in $SKIFF_IMAGES_DIR: run 'bash skiff.sh download' first, on a node that has Internet access (the login node); if that node is of another architecture and Slurm does not report this one, 'bash skiff.sh download --arch $(_skiff_arch)'" >&2
         fi
         errors=1
     fi
@@ -1479,26 +1492,39 @@ skiff_cluster() {
     echo "Preparing ~/.skiff for cluster startup..."
     rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock
 
-    # The image the bubbles run: the SIF of the mode (skiff_image_files), made from its archive
-    # when it is missing or older than the archive (`skiff.sh download` makes it already; in
-    # development `make develop` uploads a new archive). What Apptainer unpacks and converts goes
-    # to the scratch directory.
+    # The images the bubbles run: the SIFs of the mode, each node its architecture's
+    # (skiff_image_files), made from their archives when missing or older than the archive
+    # (`skiff.sh download` makes them already; in development `make develop` uploads a new
+    # archive). Each node's check has said that its architecture's is there. What Apptainer
+    # unpacks and converts goes to the scratch directory.
     echo "Preparing the image..."
     skiff_image_files || exit 1
     mkdir -p "$SKIFF_IMAGES_DIR" "$SKIFF_APPTAINER_TMP"
     export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
-    if [ -f "$SKIFF_IMAGE_TAR" ] && { [ ! -f "$SKIFF_IMAGE_SIF" ] || [ "$SKIFF_IMAGE_TAR" -nt "$SKIFF_IMAGE_SIF" ]; }; then
-        echo "Converting $SKIFF_IMAGE_TAR to $SKIFF_IMAGE_SIF..."
-        if ! apptainer build --force "$SKIFF_IMAGE_SIF" "docker-archive://$SKIFF_IMAGE_TAR"; then
-            echo "ERROR: Failed to convert $SKIFF_IMAGE_TAR to $SKIFF_IMAGE_SIF!" >&2
-            exit 1
-        fi
+    local archive sif archives sifs=0
+    if [ "${SKIFF_DEV:-0}" = 1 ]; then
+        archives=("$SKIFF_IMAGE_TAR")
+    else
+        archives=("$SKIFF_IMAGES_DIR/skiff-$SKIFF_VERSION"-amd64.tar "$SKIFF_IMAGES_DIR/skiff-$SKIFF_VERSION"-arm64.tar)
     fi
-    if [ ! -f "$SKIFF_IMAGE_SIF" ]; then
+    for archive in "${archives[@]}"; do
+        sif="${archive%.tar}.sif"
+        if [ -f "$archive" ] && { [ ! -f "$sif" ] || [ "$archive" -nt "$sif" ]; }; then
+            echo "Converting $archive to $sif..."
+            if ! apptainer build --force "$sif" "docker-archive://$archive"; then
+                echo "ERROR: Failed to convert $archive to $sif!" >&2
+                exit 1
+            fi
+        fi
+        if [ -f "$sif" ]; then
+            echo "Image: $sif"
+            sifs=$((sifs + 1))
+        fi
+    done
+    if [ "$sifs" -eq 0 ]; then
         echo "ERROR: Neither $SKIFF_IMAGE_TAR nor $SKIFF_IMAGE_SIF exists! Run 'skiff.sh download' (in development, 'make develop') first." >&2
         exit 1
     fi
-    echo "Image: $SKIFF_IMAGE_SIF"
 
     SKIFF_BG_PIDS=()
     SKIFF_BG_NODES=()
@@ -1554,8 +1580,8 @@ skiff_cluster() {
     echo "Cluster nodes started. Supervising the bubbles..."
     echo "Connect from the login node with:"
     echo "  export KUBECONFIG=$SKIFF_STATE_DIR/kubeconfig"
-    if [ -x "$SKIFF_TOOLS_DIR/bin/kubectl" ]; then
-        echo "  export PATH=$SKIFF_TOOLS_DIR/bin:\$PATH     # kubectl is the one taken out of the Skiff image (or run $SKIFF_TOOLS_DIR/bin/kubectl)"
+    if [ -d "$SKIFF_TOOLS_ROOT" ]; then
+        echo "  export PATH=$SKIFF_TOOLS_ROOT/\$(uname -m)/bin:\$PATH     # kubectl is the one taken out of the Skiff image for that host's architecture"
     fi
     echo "  kubectl get nodes"
     while true; do
@@ -1818,8 +1844,8 @@ skiff_start() {
             echo "Its output: $output"
             echo "When it is ready (the output says so), connect with:"
             echo "  export KUBECONFIG=$SKIFF_STATE_DIR/kubeconfig"
-            if [ -x "$SKIFF_TOOLS_DIR/bin/kubectl" ]; then
-                echo "  export PATH=$SKIFF_TOOLS_DIR/bin:\$PATH"
+            if [ -d "$SKIFF_TOOLS_ROOT" ]; then
+                echo "  export PATH=$SKIFF_TOOLS_ROOT/\$(uname -m)/bin:\$PATH"
             fi
             echo "  kubectl get nodes"
             echo "Stop it with: bash $SKIFF_SCRIPT stop"
@@ -1888,15 +1914,17 @@ skiff_status() {
 }
 
 # skiff_tools [ARCHIVE]: the command `skiff.sh tools`. Takes the programs Skiff needs on a
-# host out of the Skiff image archive (a `docker save` tar, by default the mode's: the one
-# `skiff.sh download` saves, in development the one `make develop` uploads) into ~/.skiff/tools.
+# host out of the Skiff image archive (a `docker save` tar, by default the mode's for this host:
+# the one `skiff.sh download` saves, in development the one `make develop` uploads) into the
+# tree of the archive's architecture, ~/.skiff/tools/<machine> (read from the image's config, so
+# the archive of another architecture fills its own tree, for the hosts of that architecture).
 # The archive is read with tar alone, so a host needs no container runtime, not even Apptainer,
 # to get Apptainer; the programs are the ones the image itself runs, built to need no more than
 # glibc 2.34. They are taken out again only when the archive changes: a program the user moved
 # out of the tree (an Apptainer that cannot run on a host with an older C library, see the
 # guide) stays out when `skiff.sh download` runs again.
 skiff_tools() {
-    local archive="${1:-}" work layers layer sum have
+    local archive="${1:-}" work manifest layers layer config arch machine dir sum have
     if [ -z "$archive" ]; then
         skiff_image_files || return 1
         archive=$SKIFF_IMAGE_TAR
@@ -1905,21 +1933,28 @@ skiff_tools() {
         echo "skiff.sh tools: $archive not found (give the path of the Skiff image archive: a 'docker save' tar; 'skiff.sh download' saves it)" >&2
         return 1
     fi
+    # The layers of the image, in order, and its config: the names in manifest.json (read to its end).
+    manifest=$(tar -xOf "$archive" manifest.json 2>/dev/null | tr -d ' \t\r\n') || true
+    layers=$(sed -n 's/.*"Layers":\[\([^]]*\)\].*/\1/p' <<< "$manifest" | tr ',' '\n' | tr -d '"')
+    config=$(sed -n 's/.*"Config":"\([^"]*\)".*/\1/p' <<< "$manifest")
+    if [ -z "$layers" ] || [ -z "$config" ]; then
+        echo "skiff.sh tools: $archive is not a docker image archive (no config and layers in its manifest.json)" >&2
+        return 1
+    fi
+    arch=$(tar -xOf "$archive" "$config" 2>/dev/null | tr -d ' \t\r\n' | sed -n 's/.*"architecture":"\([^"]*\)".*/\1/p') || true
+    if ! machine=$(_skiff_machine "$arch"); then
+        echo "skiff.sh tools: the image in $archive is for ${arch:-no architecture}; Skiff runs on amd64 and arm64" >&2
+        return 1
+    fi
+    dir="$SKIFF_TOOLS_ROOT/$machine"
     sum=$(sha256sum "$archive" | awk '{print $1}')
-    have=$(cat "$SKIFF_TOOLS_DIR/.source" 2>/dev/null || true)
+    have=$(cat "$dir/.source" 2>/dev/null || true)
     if [ "$have" = "$sum" ]; then
-        echo "The tools in $SKIFF_TOOLS_DIR are those of $archive already."
+        echo "The tools in $dir are those of $archive already."
         return 0
     fi
     mkdir -p "$SKIFF_STATE_DIR"
     work=$(mktemp -d "$SKIFF_STATE_DIR/.tools.XXXXXX") || return 1
-    # The layers of the image, in order: the names in manifest.json (read to its end).
-    layers=$(tar -xOf "$archive" manifest.json | tr -d '\n' | sed -e 's/.*"Layers":\[\([^]]*\)\].*/\1/' | tr ',' '\n' | tr -d '" ') || true
-    if [ -z "$layers" ]; then
-        echo "skiff.sh tools: $archive is not a docker image archive (no layers in its manifest.json)" >&2
-        rm -rf "$work"
-        return 1
-    fi
     # Each layer is a tar, gzip-compressed or not (gzip -f passes the latter through); the
     # tree is in one of them, named with a leading ./ or without (the other name is then
     # reported missing, which does not matter).
@@ -1932,11 +1967,22 @@ skiff_tools() {
         rm -rf "$work"
         return 1
     fi
-    rm -rf "$SKIFF_TOOLS_DIR.old"
-    [ ! -e "$SKIFF_TOOLS_DIR" ] || mv "$SKIFF_TOOLS_DIR" "$SKIFF_TOOLS_DIR.old"
-    mv "$work/opt/skiff/tools" "$SKIFF_TOOLS_DIR"
-    printf '%s\n' "$sum" > "$SKIFF_TOOLS_DIR/.source"
-    rm -rf "$work" "$SKIFF_TOOLS_DIR.old"
+    # The tree of earlier versions, one for every host (~/.skiff/tools/bin and its .source), goes
+    # when the first of an architecture takes its place.
+    if [ -f "$SKIFF_TOOLS_ROOT/.source" ]; then
+        rm -rf "$SKIFF_STATE_DIR/tools.shared-old"
+        mv "$SKIFF_TOOLS_ROOT" "$SKIFF_STATE_DIR/tools.shared-old"
+    fi
+    mkdir -p "$SKIFF_TOOLS_ROOT"
+    rm -rf "$dir.old"
+    [ ! -e "$dir" ] || mv "$dir" "$dir.old"
+    mv "$work/opt/skiff/tools" "$dir"
+    printf '%s\n' "$sum" > "$dir/.source"
+    rm -rf "$work" "$dir.old" "$SKIFF_STATE_DIR/tools.shared-old"
+    if [ "$dir" != "$SKIFF_TOOLS_DIR" ]; then
+        echo "Tools for $machine hosts put in $dir (from $archive); they run on those hosts, not on this one ($SKIFF_MACHINE)."
+        return 0
+    fi
     skiff_use_tools
     echo "Tools put in $SKIFF_TOOLS_DIR (from $archive):"
     printf '  %-12s %s\n' apptainer "$("$SKIFF_TOOLS_DIR/bin/apptainer" --version 2>&1 | sed -n 1p)"
@@ -1947,13 +1993,44 @@ skiff_tools() {
 
 # --- skiff.sh download ------------------------------------------------------------------
 
-# _skiff_arch: the architecture of this host, as images name it.
-_skiff_arch() {
-    case "$(uname -m)" in
+# The architectures Skiff runs on have two names each: the images' (Docker's: amd64, arm64) and
+# the machine's (`uname -m`: x86_64, aarch64). Images and their files use the first, the trees of
+# tools the second (see SKIFF_TOOLS_DIR).
+# _skiff_docker_arch NAME: the images' name of an architecture given by either; fails for others.
+_skiff_docker_arch() {
+    case "$1" in
         x86_64|amd64) echo amd64 ;;
         aarch64|arm64) echo arm64 ;;
-        *) echo "skiff.sh download: this host is $(uname -m); Skiff runs on amd64 and arm64" >&2; return 1 ;;
+        *) return 1 ;;
     esac
+}
+# _skiff_machine NAME: the machine's name of an architecture given by either; fails for others.
+_skiff_machine() {
+    case "$1" in
+        x86_64|amd64) echo x86_64 ;;
+        aarch64|arm64) echo aarch64 ;;
+        *) return 1 ;;
+    esac
+}
+
+# _skiff_arch: the architecture of this host, as images name it.
+_skiff_arch() {
+    _skiff_docker_arch "$SKIFF_MACHINE" && return 0
+    echo "this host is $SKIFF_MACHINE; Skiff runs on amd64 (x86_64) and arm64 (aarch64)" >&2
+    return 1
+}
+
+# _skiff_slurm_archs: the architectures of Slurm's nodes, as images name them, one a line;
+# nothing where there is no Slurm or it does not answer. One Skiff does not run on is named and
+# left out.
+_skiff_slurm_archs() {
+    local out arch
+    command -v scontrol >/dev/null 2>&1 || return 0
+    out=$(scontrol show node -o 2>/dev/null) || return 0
+    for arch in $(sed -n 's/.*[[:space:]]Arch=\([^[:space:]]*\).*/\1/p' <<< "$out" | sort -u); do
+        _skiff_docker_arch "$arch" || echo "skiff.sh download: Slurm has nodes of architecture $arch, which Skiff does not run on: left out" >&2
+    done
+    return 0
 }
 
 # skiff_cache_name REFERENCE ARCH: the file of an image in Skifflet's cache, named as
@@ -2133,62 +2210,111 @@ _skiff_pull_image() {
     mv -f "$tmp" "$target"
 }
 
-# skiff_download [IMAGE...]: the command `skiff.sh download`, on a node that has Internet access
-# (the login node); everything goes to the shared home, where the compute nodes find it.
-# Without arguments: the Skiff image of this version (from Docker Hub; in development, the
-# archive `make develop` uploaded), the tools out of it, its SIF, and the images of the
-# cluster's system pods; the archives and SIFs of other versions are removed. With arguments:
-# those images, into the same cache (the images of the user's own pods, for compute nodes that
-# cannot pull them; each named exactly as the pod spec names it, which the cache name is made
-# of). What is there already is not fetched again.
+# skiff_download [--arch ARCH[,ARCH]] [IMAGE...]: the command `skiff.sh download`, on a node that
+# has Internet access (the login node); everything goes to the shared home, where the compute
+# nodes find it. It works for a set of architectures: this host's (its tools convert and pull
+# here, and give the user kubectl), every one Slurm reports for the nodes, and those --arch adds
+# (for nodes this host cannot see: started with the launcher, or a Slurm that does not say).
+# Without IMAGEs: for each architecture, the Skiff image of this version (from Docker Hub; in
+# development, the one archive `make develop` uploaded), the tools out of it, its SIF, and the
+# images of the cluster's system pods; the archives and SIFs of other versions are removed.
+# With IMAGEs: those images, for each architecture, into the same cache (the images of the
+# user's own pods, for compute nodes that cannot pull them; each named exactly as the pod spec
+# names it, which the cache name is made of). What is there already is not fetched again.
 skiff_download() {
-    local arch ref status=0 file
-    arch=$(_skiff_arch) || return 1
+    local host arch archs given="" slurm why ref status=0 file name
+    host=$(_skiff_arch) || return 1
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --arch) [ "$#" -ge 2 ] || { echo "usage: skiff.sh download [--arch ARCH[,ARCH]] [IMAGE...]" >&2; return 2; }; given="$given,$2"; shift 2 ;;
+            --arch=*) given="$given,${1#--arch=}"; shift ;;
+            --) shift; break ;;
+            -*) echo "usage: skiff.sh download [--arch ARCH[,ARCH]] [IMAGE...]" >&2; return 2 ;;
+            *) break ;;
+        esac
+    done
+    slurm=$(_skiff_slurm_archs | tr '\n' ' ')
+    archs=$host
+    for name in $slurm ${given//,/ }; do
+        if ! arch=$(_skiff_docker_arch "$name"); then
+            echo "skiff.sh download: --arch $name: Skiff runs on amd64 (x86_64) and arm64 (aarch64)" >&2
+            return 2
+        fi
+        case " $archs " in *" $arch "*) ;; *) archs="$archs $arch" ;; esac
+    done
+    why="this host: $host"
+    [ -z "$slurm" ] || why="$why; the nodes in Slurm: ${slurm% }"
+    [ -z "$given" ] || why="$why; --arch: ${given#,}"
+    echo "Architectures: $archs ($why)"
     skiff_config_resolve
     mkdir -p "$SKIFF_IMAGES_DIR" "$SKIFF_IMAGE_CACHE" "$SKIFF_APPTAINER_TMP" || return 1
     # What Apptainer unpacks and converts goes to the scratch directory.
     export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
     if [ "$#" -gt 0 ]; then
         _skiff_need_apptainer || return 1
-        echo "Images for Skifflet's cache ($arch):"
-        for ref in "$@"; do _skiff_pull_image "$ref" "$arch" || status=1; done
+        for arch in $archs; do
+            echo "Images for Skifflet's cache ($arch):"
+            for ref in "$@"; do _skiff_pull_image "$ref" "$arch" || status=1; done
+        done
         return "$status"
     fi
     skiff_image_files || return 1
-    if [ ! -f "$SKIFF_IMAGE_TAR" ]; then
-        if [ "${SKIFF_DEV:-0}" = 1 ]; then
+    if [ "${SKIFF_DEV:-0}" = 1 ]; then
+        if [ ! -f "$SKIFF_IMAGE_TAR" ]; then
             echo "skiff.sh download: $SKIFF_IMAGE_TAR not found: in development, 'make develop' puts it there" >&2
             return 1
         fi
-        echo "Downloading the Skiff image $SKIFF_IMAGE_REPOSITORY:$SKIFF_VERSION ($arch)..."
-        _skiff_fetch_image "$arch" || return 1
-    fi
-    skiff_tools "$SKIFF_IMAGE_TAR" || return 1
-    _skiff_need_apptainer || return 1
-    if [ ! -f "$SKIFF_IMAGE_SIF" ] || [ "$SKIFF_IMAGE_TAR" -nt "$SKIFF_IMAGE_SIF" ]; then
-        echo "Converting it to $SKIFF_IMAGE_SIF..."
-        if ! apptainer build --force --disable-cache "$SKIFF_IMAGE_SIF.tmp-$$" "docker-archive://$SKIFF_IMAGE_TAR"; then
-            rm -f "$SKIFF_IMAGE_SIF.tmp-$$"
-            echo "skiff.sh download: $SKIFF_IMAGE_TAR could not be converted" >&2
-            return 1
-        fi
-        mv -f "$SKIFF_IMAGE_SIF.tmp-$$" "$SKIFF_IMAGE_SIF"
-    fi
-    if [ "${SKIFF_DEV:-0}" != 1 ]; then
+        skiff_tools "$SKIFF_IMAGE_TAR" || return 1
+        _skiff_need_apptainer || return 1
+        _skiff_convert_image || return 1
+    else
+        for arch in $archs; do
+            skiff_image_files "$arch" || return 1
+            if [ ! -f "$SKIFF_IMAGE_TAR" ]; then
+                echo "Downloading the Skiff image $SKIFF_IMAGE_REPOSITORY:$SKIFF_VERSION ($arch)..."
+                _skiff_fetch_image "$arch" || return 1
+            fi
+            skiff_tools "$SKIFF_IMAGE_TAR" || return 1
+        done
+        _skiff_need_apptainer || return 1
+        for arch in $archs; do
+            skiff_image_files "$arch" || return 1
+            _skiff_convert_image || return 1
+        done
+        # Other versions go; this version's other architectures stay (an earlier --arch).
         for file in "$SKIFF_IMAGES_DIR"/skiff-*.tar "$SKIFF_IMAGES_DIR"/skiff-*.sif; do
-            [ -f "$file" ] && [ "$file" != "$SKIFF_IMAGE_TAR" ] && [ "$file" != "$SKIFF_IMAGE_SIF" ] || continue
+            [ -f "$file" ] || continue
+            name=${file##*/}
+            case "$name" in "skiff-$SKIFF_VERSION-amd64."*|"skiff-$SKIFF_VERSION-arm64."*) continue ;; esac
             echo "Removing $file (another version)"
             rm -f "$file"
         done
     fi
-    echo "The images of the cluster's system pods ($arch):"
-    while read -r ref; do
-        _skiff_pull_image "$ref" "$arch" || status=1
-    done <<< "$SKIFF_SYSTEM_IMAGES"
+    for arch in $archs; do
+        echo "The images of the cluster's system pods ($arch):"
+        while read -r ref; do
+            _skiff_pull_image "$ref" "$arch" || status=1
+        done <<< "$SKIFF_SYSTEM_IMAGES"
+    done
     if [ "$status" -eq 0 ]; then
-        echo "Everything a cluster needs is in $SKIFF_STATE_DIR. Check a compute node next: srun -N1 bash skiff.sh check (without Slurm, this machine: bash skiff.sh check)"
+        echo "Everything a cluster needs ($archs) is in $SKIFF_STATE_DIR. Check a compute node next: srun -N1 bash skiff.sh check (without Slurm, this machine: bash skiff.sh check)"
     fi
     return "$status"
+}
+
+# _skiff_convert_image: SKIFF_IMAGE_TAR to SKIFF_IMAGE_SIF when the SIF is missing or older,
+# written aside and renamed. Apptainer builds the image of another architecture than its own.
+_skiff_convert_image() {
+    if [ -f "$SKIFF_IMAGE_SIF" ] && ! [ "$SKIFF_IMAGE_TAR" -nt "$SKIFF_IMAGE_SIF" ]; then
+        return 0
+    fi
+    echo "Converting it to $SKIFF_IMAGE_SIF..."
+    if ! apptainer build --force --disable-cache "$SKIFF_IMAGE_SIF.tmp-$$" "docker-archive://$SKIFF_IMAGE_TAR"; then
+        rm -f "$SKIFF_IMAGE_SIF.tmp-$$"
+        echo "skiff.sh download: $SKIFF_IMAGE_TAR could not be converted" >&2
+        return 1
+    fi
+    mv -f "$SKIFF_IMAGE_SIF.tmp-$$" "$SKIFF_IMAGE_SIF"
 }
 
 skiff_main() {
@@ -2202,7 +2328,7 @@ skiff_main() {
         check) shift; skiff_check "$@" ;;
         download) shift; skiff_download "$@" ;;
         tools) shift; skiff_tools "$@" ;;
-        *) echo "usage: skiff.sh start [HOST...] | stop | status | run [HOST...] | check [controller|node] | download [IMAGE...] | tools [IMAGE-TAR] | bubble ID" >&2; exit 2 ;;
+        *) echo "usage: skiff.sh start [HOST...] | stop | status | run [HOST...] | check [controller|node] | download [--arch ARCH[,ARCH]] [IMAGE...] | tools [IMAGE-TAR] | bubble ID" >&2; exit 2 ;;
     esac
 }
 

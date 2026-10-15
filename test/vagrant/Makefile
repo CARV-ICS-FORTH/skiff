@@ -6,7 +6,7 @@ sync:
 	bash sync.sh
 
 test:
-	./transport.sh ssh controller 'export PATH="$$HOME/.skiff/tools/bin:$$PATH"; bash $$HOME/skiff/test/regression.sh'
+	./transport.sh ssh controller 'export PATH="$$HOME/.skiff/tools/$$(uname -m)/bin:$$PATH"; bash $$HOME/skiff/test/regression.sh'
 
 e2e:
-	./transport.sh ssh controller 'export PATH="$$HOME/.skiff/tools/bin:$$PATH"; cd $$HOME/skiff && SKIFF_DEV=1 bash test/e2e/run-all.sh $(E2E_ARGS)'
+	./transport.sh ssh controller 'export PATH="$$HOME/.skiff/tools/$$(uname -m)/bin:$$PATH"; cd $$HOME/skiff && SKIFF_DEV=1 bash test/e2e/run-all.sh $(E2E_ARGS)'

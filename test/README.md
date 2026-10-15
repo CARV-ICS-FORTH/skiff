@@ -76,7 +76,7 @@ The same workflows deploy to any machine reached over ssh, with nothing installe
 ```bash
 SKIFF_SSH=me@login.example.org make develop e2e-images PLATFORM=linux/amd64
 ssh me@login.example.org
-export PATH=$HOME/.skiff/tools/bin:$PATH     # kubectl, from the image
+export PATH=$HOME/.skiff/tools/$(uname -m)/bin:$PATH     # kubectl, from the image
 cd ~/skiff && SKIFF_DEV=1 bash test/e2e/run-all.sh
 ```
 
