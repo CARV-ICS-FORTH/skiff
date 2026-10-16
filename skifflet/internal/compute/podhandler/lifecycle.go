@@ -87,6 +87,8 @@ type PodLifecycle struct {
 	counter map[string]int        // attempts started per container
 	live    map[*Attempt]struct{} // attempts whose process has not been waited for
 	ledger  *ResourceLedger
+	// devices gives back the devices (GPUs) the pod holds, once: see apply.
+	devices func()
 
 	notifyFn func(*corev1.Pod)
 	logger   logr.Logger
@@ -225,12 +227,31 @@ func (l *PodLifecycle) apply(recompute bool, fn func(pod *corev1.Pod) bool) bool
 	}
 	l.status = *pod.Status.DeepCopy()
 	snapshot := l.composeLocked()
+	// A pod that has ended, with no container process left, gives its devices back before its
+	// terminal phase is published, as the kubelet's device manager frees those of a pod that
+	// has terminated: the scheduler places the next pod on what that phase frees, and the rest
+	// of the clean-up (the sandbox among it) comes later. A pod failed while a container still
+	// runs keeps them until its containers have stopped (the ledger gives them back then).
+	var release func()
+	if phase := snapshot.Status.Phase; l.devices != nil && len(l.live) == 0 && (phase == corev1.PodSucceeded || phase == corev1.PodFailed) {
+		release, l.devices = l.devices, nil
+	}
 	l.mu.Unlock()
 
+	if release != nil {
+		release()
+	}
 	if l.notifyFn != nil {
 		l.notifyFn(snapshot)
 	}
 	return true
+}
+
+// holdDevices records how the pod gives back the devices it holds, for apply.
+func (l *PodLifecycle) holdDevices(release func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.devices = release
 }
 
 // Update changes the observed status through fn and publishes it.

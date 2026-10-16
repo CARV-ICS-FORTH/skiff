@@ -130,6 +130,77 @@ func TestReserveGPUs_AreGivenBackWithTheLiveResources(t *testing.T) {
 	}
 }
 
+// A pod whose containers have all ended gives its GPUs back before its terminal phase is
+// published: the scheduler places the next pod on what that phase frees, and the kubelet admits
+// it on the devices of a pod that has terminated (T52 found the gap on a node with two GPUs: the
+// next pod was refused, "Requested: 2, Available: 0"). A pod failed as a whole while a container
+// still runs keeps them until its containers have stopped.
+func TestReserveGPUs_AreFreeWhenAnEndedPodsPhaseIsPublished(t *testing.T) {
+	nodeWithGPUs(t, 2)
+	// waiting NAME...: the containers' statuses as a pod that has not started yet has them.
+	waiting := func(names ...string) []corev1.ContainerStatus {
+		var statuses []corev1.ContainerStatus
+		for _, n := range names {
+			statuses = append(statuses, corev1.ContainerStatus{Name: n, State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}})
+		}
+		return statuses
+	}
+	// atTerminal NOTIFY: a notify function that tries, at the first terminal phase it sees,
+	// to give both GPUs to another pod; *got is what that try found.
+	atTerminal := func(got *error, seen *corev1.PodPhase) func(*corev1.Pod) {
+		return func(p *corev1.Pod) {
+			if *seen != "" || (p.Status.Phase != corev1.PodSucceeded && p.Status.Phase != corev1.PodFailed) {
+				return
+			}
+			*seen = p.Status.Phase
+			if _, *got = gpu.Reserve("next-uid", 2); *got == nil {
+				gpu.Release("next-uid")
+			}
+		}
+	}
+
+	pod := &corev1.Pod{Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, Containers: []corev1.Container{gpuContainer("a", 1), gpuContainer("b", 1)}}}
+	pod.Name, pod.Namespace, pod.UID = "ended", "gpu-test", "ended-uid"
+	pod.Status = corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: waiting("a", "b")}
+	var got error
+	var seen corev1.PodPhase
+	owner := NewPodLifecycle(pod, endpoint.PodPath(t.TempDir()), atTerminal(&got, &seen))
+	if _, err := reserveGPUs(owner, pod); err != nil {
+		t.Fatal(err)
+	}
+	_, done := startLogged(t, owner, "a", "exit 0")
+	<-done
+	_, done = startLogged(t, owner, "b", "exit 0")
+	<-done
+	if seen != corev1.PodSucceeded || got != nil {
+		t.Fatalf("when %q was published the node could not give the pod's two GPUs to another: %v", seen, got)
+	}
+	owner.ReleaseLiveResources(0) // (and the clean-up after it gives back nothing twice)
+	if _, err := gpu.Reserve("next-uid", 2); err != nil {
+		t.Errorf("after the clean-up: %v", err)
+	}
+	gpu.Release("next-uid")
+
+	failed := &corev1.Pod{Spec: corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, Containers: []corev1.Container{gpuContainer("a", 2)}}}
+	failed.Name, failed.Namespace, failed.UID = "failed", "gpu-test", "failed-uid"
+	failed.Status = corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: waiting("a")}
+	got, seen = nil, ""
+	owner = NewPodLifecycle(failed, endpoint.PodPath(t.TempDir()), atTerminal(&got, &seen))
+	if _, err := reserveGPUs(owner, failed); err != nil {
+		t.Fatal(err)
+	}
+	startLogged(t, owner, "a", "sleep 30")
+	owner.Fail("Testing", "the pod fails as a whole while its container runs")
+	if seen != corev1.PodFailed || got == nil {
+		t.Fatalf("when %q was published with the container still running, its GPUs were given to another pod (%v)", seen, got)
+	}
+	owner.ReleaseLiveResources(0)
+	if _, err := gpu.Reserve("next-uid", 2); err != nil {
+		t.Errorf("after its container stopped: %v", err)
+	}
+	gpu.Release("next-uid")
+}
+
 func TestReserveGPUs_APodWithoutGPUsTakesNone(t *testing.T) {
 	nodeWithGPUs(t, 1)
 	pod := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{gpuContainer("cpu", 0)}}}

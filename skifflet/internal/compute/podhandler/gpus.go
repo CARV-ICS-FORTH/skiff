@@ -64,8 +64,9 @@ func planGPUs(pod *corev1.Pod) (total int, shares map[string]gpuShare) {
 	return max(total, apps), shares
 }
 
-// reserveGPUs takes the pod's GPUs from the node and gives them back when the pod's live
-// resources are released (it ends, or it never started). It returns the devices of each
+// reserveGPUs takes the pod's GPUs from the node and gives them back when the pod has ended
+// with no container process left, before its terminal phase is published (see apply), or when
+// its live resources are released (it is stopped, or it never started). It returns the devices of each
 // container, by name. A node that has fewer free than the pod needs refuses the pod as the
 // kubelet does ("UnexpectedAdmissionError"), which the scheduler's own count makes rare.
 func reserveGPUs(pl *PodLifecycle, pod *corev1.Pod) (map[string][]gpu.Device, error) {
@@ -78,6 +79,7 @@ func reserveGPUs(pl *PodLifecycle, pod *corev1.Pod) (map[string][]gpu.Device, er
 	if err != nil {
 		return nil, err
 	}
+	pl.holdDevices(func() { gpu.Release(owner) })
 	pl.Ledger().Register("GPUs", func() error { gpu.Release(owner); return nil })
 	byContainer := make(map[string][]gpu.Device, len(shares))
 	for name, s := range shares {
