@@ -1916,12 +1916,13 @@ SKIFF_SSH_OPTIONS=(-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=
 
 # _skiff_ssh HOST COMMAND...: run a command on a host, in the environment the cluster's commands
 # need there (the settings, the job, its lease, the role and the controller's address: what is
-# exported here and named SKIFF_*, and CONTROLLER_IP), from the home, which is shared.
+# exported here and named SKIFF_*, and CONTROLLER_IP; and PLAID_PPROF_SOCKET, which the bubble
+# passes to plaidd, as it does under Slurm), from the home, which is shared.
 _skiff_ssh() {
     local host="$1" name remote="env"
     shift
     for name in $(compgen -e); do
-        case "$name" in SKIFF_*|CONTROLLER_IP) remote="$remote $(printf '%q' "$name=${!name}")" ;; esac
+        case "$name" in SKIFF_*|CONTROLLER_IP|PLAID_PPROF_SOCKET) remote="$remote $(printf '%q' "$name=${!name}")" ;; esac
     done
     remote="$remote$(printf ' %q' "$@")"
     ssh "${SKIFF_SSH_OPTIONS[@]}" "$host" "$remote"

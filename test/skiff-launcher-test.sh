@@ -36,6 +36,7 @@ cat > "$test_dir/fake-bubble" <<EOF
 #!$real_bash
 mkdir -p "\$HOME/.skiff/tls"
 { echo "id=\$1 role=\$SKIFF_ROLE job=\$SKIFF_JOB_ID instance=\$SKIFF_JOB_INSTANCE lease=\${SKIFF_LEASE:-}"; echo "slurm=\$(compgen -e | grep -c '^SLURM_' || true)"; } >> "\$HOME/.skiff/bubble-env"
+echo "id=\$1 pprof=\${PLAID_PPROF_SOCKET:-} other=\${TEST_OTHER:-}" >> "\$HOME/.skiff/bubble-passed"
 touch "\$HOME/.skiff/kubeconfig" "\$HOME/.skiff/tls/server-ca.crt"
 echo "stand-in bubble \$1 is up"
 [ "\${TEST_BUBBLE:-run}" != early ] || exit 9
@@ -190,19 +191,20 @@ run_skiff stop > /dev/null 2>&1 || fail "stop (logout, off)"
 rm -f "$test_dir/bin/busctl"
 
 # --- hosts over ssh ----------------------------------------------------------------------------
-# ssh runs the command here, as the host would (they share the home); a host named unreachable
-# refuses, as ssh without a key does.
+# ssh runs the command here, as the host would (they share the home), with only the home and
+# PATH of the environment, as a login on the host has none of the caller's variables; a host
+# named unreachable refuses, as ssh without a key does.
 cat > "$test_dir/bin/ssh" <<EOF
 #!$real_bash
 while [ "\${1:-}" = -o ]; do shift 2; done
 host=\$1; shift
 echo "\$host" >> "\$HOME/.skiff/ssh-hosts"
 [ "\$host" != unreachable ] || { echo "\$host: Permission denied (publickey)." >&2; exit 255; }
-exec bash -c "\$*"
+exec env -i HOME="\$HOME" PATH="\$PATH" bash -c "\$*"
 EOF
 chmod +x "$test_dir/bin/ssh"
 new_home hosts
-out=$(run_skiff start h1 h2 2>&1) && rc=0 || rc=$?
+out=$(PLAID_PPROF_SOCKET=/scratch/plaidd-pprof.sock TEST_OTHER=kept-here run_skiff start h1 h2 2>&1) && rc=0 || rc=$?
 job=$(record_job)
 [ "$rc" -eq 0 ] && grep -q "^Started Skiff cluster job $job on h1 h2 (supervisor PID [0-9]* on $(hostname))" <<< "$out" && [ "$(sed -n 's/^nodes=//p' "$HOME/.skiff/launcher/cluster")" = "h1 h2" ] \
     && pass "start with hosts: the job's nodes are the hosts, in order" || fail "start with hosts: rc $rc: $out"
@@ -211,6 +213,8 @@ grep -Eq "^id=1 role=controller job=$job instance=$job-[0-9a-f]{8} lease=$HOME/.
     && grep -Eq "^id=2 role=node job=$job instance=$job-[0-9a-f]{8} lease=$HOME/.skiff/launcher/$job.lease\$" "$HOME/.skiff/bubble-env" \
     && pass "the first host runs the controller and the second a node, each told the job, its volume directory and its lease over ssh" || fail "the bubbles over ssh were given: $(cat "$HOME/.skiff/bubble-env" 2>&1)"
 grep -qx h1 "$HOME/.skiff/ssh-hosts" && grep -qx h2 "$HOME/.skiff/ssh-hosts" && pass "every command of the job ran on its host over ssh" || fail "ssh went to: $(sort -u "$HOME/.skiff/ssh-hosts" 2>&1 | tr '\n' ' ')"
+grep -qx 'id=1 pprof=/scratch/plaidd-pprof.sock other=' "$HOME/.skiff/bubble-passed" && grep -qx 'id=2 pprof=/scratch/plaidd-pprof.sock other=' "$HOME/.skiff/bubble-passed" \
+    && pass "plaidd's profiling socket reaches the bubbles over ssh, as under Slurm, and nothing else of the caller's" || fail "the bubbles over ssh were passed: $(cat "$HOME/.skiff/bubble-passed" 2>&1)"
 [ -s "$HOME/.skiff/launcher/$job.bubble2.pid" ] && pass "a bubble over ssh records its process group" || fail "no process group recorded for bubble 2: $(ls "$HOME/.skiff/launcher")"
 out=$(run_skiff stop 2>&1) || fail "stop (hosts): $out"
 [ "$(grep -c '^stopped-by-lease$' "$HOME/.skiff/bubble-events" 2>/dev/null)" = 2 ] && pass "stop ends both bubbles through the lease" || fail "the bubbles stopped: $(cat "$HOME/.skiff/bubble-events" 2>&1)"
