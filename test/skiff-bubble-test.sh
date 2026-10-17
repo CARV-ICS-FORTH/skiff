@@ -166,6 +166,9 @@ tcp 127.0.0.1 6443 $guest 6443"
 grep -q -- "--mtu=$SKIFF_SLIRP_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&2; fail "slirp4netns was not started at the MTU of its link"; }
 [ "$SKIFF_SLIRP_MTU" -gt "$SKIFF_POD_MTU" ] || fail "the test does not tell the slirp4netns link from the pod MTU"
 grep -q -- "--env SKIFF_SLIRP_MTU=$SKIFF_SLIRP_MTU " "$FAKE_DIR/instance-run" || fail "the bubble was not told the MTU of the slirp4netns link"
+# Plaid's overlay datagrams fill the link between the bubbles, whose MTU the entrypoint passes on as --overlay-mtu.
+[ "$SKIFF_UPLINK_MTU" -gt "$SKIFF_POD_MTU" ] || fail "the test does not tell the link between the bubbles from the pod MTU"
+grep -q -- "--env SKIFF_UPLINK_MTU=$SKIFF_UPLINK_MTU " "$FAKE_DIR/instance-run" || fail "the bubble was not told the MTU of the link between the bubbles"
 
 # The helper was started once, from the image, with the host address, the port and the
 # handoff socket in the scratch directory; the bubble was told where it is, got the
