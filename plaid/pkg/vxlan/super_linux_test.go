@@ -113,6 +113,117 @@ func TestSendSuperPutsTheChunksOnTheWire(t *testing.T) {
 	}
 }
 
+// With OverlayConfig.LinkMTU set, the chunks fill the link: datagrams of its MTU less the IP and
+// UDP headers, at most what one send takes, and never smaller than those of the frame's
+// segments, whatever the pod MTU is. They arrive, put together, as the frame that went in.
+func TestSendSuperFillsTheLinkMTU(t *testing.T) {
+	for _, c := range []struct{ podMTU, linkMTU, d int }{
+		{1450, 9000, 8972},   // the case it is for
+		{1450, 1500, 1472},   // as large as the segments' datagrams anyway
+		{8950, 9000, 8972},   // likewise
+		{8950, 1500, 8972},   // a link smaller than the segments' datagrams does not make them smaller
+		{1450, 65535, 65507}, // as much as one send takes
+	} {
+		f := newSuperFixture(t, "127.0.0.1", OverlayConfig{Offload: true, Super: true, LinkMTU: c.linkMTU})
+		f.announce()
+		if got := f.oe.Stats().LinkMTU; got != c.linkMTU {
+			t.Errorf("Stats().LinkMTU = %d, want %d", got, c.linkMTU)
+		}
+		ids := map[int]uint32{}
+		for _, n := range []int{1, 2000, 9000, 20000, 65400} {
+			name := fmt.Sprintf("pod MTU %d link MTU %d payload %d", c.podMTU, c.linkMTU, n)
+			h, frame := tsoFrame(false, n, c.podMTU, byte(n))
+			wire := append([]byte(nil), frame...)
+			copy(wire[0:6], fixtureVTEP)
+			sock := packet.FlowIndex(binary.BigEndian.Uint16(frame[12:]), frame[14:], len(f.oe.socks.Load().tx))
+			want := refChunks(packet.VXLANFlagSuperOK, 7, ids[sock], h, wire, c.d)
+			before := f.oe.Stats()
+
+			if sent, err := f.send(h, frame); !sent || err != nil {
+				t.Fatalf("%s: sent=%v, %v", name, sent, err)
+			}
+			got, _ := f.receiveFrom(t, 0, len(want))
+			for i := range want {
+				if !bytes.Equal(got[i], want[i]) {
+					t.Fatalf("%s: datagram %d of %d (%d bytes) is not what the format says (%d bytes)", name, i, len(want), len(got[i]), len(want[i]))
+				}
+			}
+			perSend := min(maxSegments, maxSegmentedBytes/c.d)
+			st := f.oe.Stats()
+			if int(st.SuperTxChunks-before.SuperTxChunks) != len(want) || int(st.TxSends-before.TxSends) != (len(want)+perSend-1)/perSend || st.TxErrors != 0 {
+				t.Errorf("%s: counters %+v, want %d datagrams in %d sends", name, st, len(want), (len(want)+perSend-1)/perSend)
+			}
+			l, sink := newTestLane(), &superSink{}
+			l.feed(sink, source(0), got...)
+			if len(sink.supers) != 1 || sink.supers[0].h != h || !bytes.Equal(sink.supers[0].frame, wire) {
+				t.Errorf("%s: the frame did not come out as it went in", name)
+			}
+			ids[sock]++
+		}
+	}
+}
+
+// If the first send of chunks of the link's size fails because they do not fit the route, the
+// frame goes again in chunks of the segments' size, and the engine keeps to that for good,
+// with UDP_SEGMENT and super-frames as they were. Any other failure is the existing ones'.
+func TestLinkMTUChunksFailedFallBackToTheSegmentSize(t *testing.T) {
+	h, frame := tsoFrame(false, 65000, 1450, 1)
+	wire := append([]byte(nil), frame...)
+	copy(wire[0:6], fixtureVTEP)
+	const segD = packet.VXLANHeaderLen + packet.EthernetHeaderLen + 1450
+
+	for _, err := range []error{syscall.EINVAL, syscall.EMSGSIZE} {
+		t.Run(err.Error(), func(t *testing.T) {
+			f := newSuperFixture(t, "127.0.0.1", OverlayConfig{Offload: true, Super: true, LinkMTU: 9000})
+			f.announce()
+			defer failSuperSends(err, 1)()
+			for id := uint32(1); id <= 2; id++ { // the failed send used the id 0, the retry is the first frame; the next goes the same way
+				want := refChunks(packet.VXLANFlagSuperOK, 7, id, h, wire, segD)
+				if sent, serr := f.send(h, frame); !sent || serr != nil {
+					t.Fatalf("frame %d: sent=%v, %v", id, sent, serr)
+				}
+				got, _ := f.receiveFrom(t, 0, len(want))
+				for i := range want {
+					if !bytes.Equal(got[i], want[i]) {
+						t.Fatalf("frame %d: datagram %d of %d is not a chunk of the segments' size", id, i, len(want))
+					}
+				}
+			}
+			st := f.oe.Stats()
+			if !st.SegmentOffload || st.LinkMTU != 0 || st.SuperTx != 2 || st.SuperTxFailed != 0 || st.TxErrors != 0 {
+				t.Errorf("%+v", st)
+			}
+			tb := f.oe.NewBatch()
+			defer tb.Release()
+			if !tb.AcceptsSuper(f.dst(0)) {
+				t.Error("super-frames are held back")
+			}
+		})
+	}
+	t.Run("another failure", func(t *testing.T) {
+		f := newSuperFixture(t, "127.0.0.1", OverlayConfig{Offload: true, Super: true, LinkMTU: 9000})
+		f.announce()
+		defer failSuperSends(syscall.ENOBUFS, 1)()
+		if sent, err := f.send(h, frame); sent || err != nil {
+			t.Fatalf("sent=%v, %v", sent, err)
+		}
+		if st := f.oe.Stats(); !st.SegmentOffload || st.LinkMTU != 9000 || st.SuperTxFailed != 1 {
+			t.Errorf("%+v", st)
+		}
+	})
+	t.Run("the retry fails too", func(t *testing.T) {
+		f := newSuperFixture(t, "127.0.0.1", OverlayConfig{Offload: true, Super: true, LinkMTU: 9000})
+		f.announce()
+		defer failSuperSends(syscall.EINVAL, 1, 2)()
+		if sent, err := f.send(h, frame); sent || err != nil {
+			t.Fatalf("sent=%v, %v", sent, err)
+		}
+		if st := f.oe.Stats(); st.SegmentOffload || st.LinkMTU != 0 || st.SuperTx != 0 || st.TxPackets != 0 { // UDP_SEGMENT is what failed
+			t.Errorf("%+v", st)
+		}
+	})
+}
+
 // What the chunks hold is not copied in user space: the engine's buffer holds the headers
 // of one send and the frame is read where it lies.
 func TestSendSuperDoesNotCopyTheFrame(t *testing.T) {

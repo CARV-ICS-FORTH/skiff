@@ -349,6 +349,10 @@ func superSummary(o *api.OverlaySuperStatus) string {
 	if o.Enabled {
 		state = "on"
 	}
-	return fmt.Sprintf("%s tx %d/%d chunks rx %d lost %d invalid %d evicted %d peers %d send failures %d",
-		state, o.Tx, o.TxChunks, o.Rx, o.Partial, o.Invalid, o.Evicted, o.Peers, o.TxFailed)
+	chunks := "of the segment size"
+	if o.LinkMTU > 0 {
+		chunks = fmt.Sprintf("of link MTU %d", o.LinkMTU)
+	}
+	return fmt.Sprintf("%s tx %d/%d chunks %s rx %d lost %d invalid %d evicted %d peers %d send failures %d",
+		state, o.Tx, o.TxChunks, chunks, o.Rx, o.Partial, o.Invalid, o.Evicted, o.Peers, o.TxFailed)
 }
