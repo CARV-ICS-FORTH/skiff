@@ -113,9 +113,13 @@ type rdmaTransport struct {
 	byQPN      map[uint32]*linkQP
 	dying      []*rdmaLink
 
-	closed    chan struct{}
-	closeOnce sync.Once
-	wg        sync.WaitGroup
+	closed     chan struct{}
+	closeOnce  sync.Once
+	wg         sync.WaitGroup // the lanes' goroutines and the ticker
+	eventsDone chan struct{}  // the events goroutine has returned
+	// postMu keeps the SRQs from being destroyed under a repost: a buffer may be released
+	// (and its slot posted again) by a TAP writer at any time, also while the transport closes.
+	postMu sync.RWMutex
 
 	txMsgs, txBytes, rxMsgs, rxBytes, txFull, txNoSlot, completionErrors, linksUp, linkFailures atomic.Uint64
 }
@@ -170,6 +174,7 @@ type linkQP struct {
 	psn  uint32
 	mu   sync.Mutex
 	fifo []int32
+	gone bool // destroyed: nothing is posted to it any more (under mu)
 }
 
 func unsafeSliceData(b []byte) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(b)) }
@@ -221,6 +226,7 @@ func startRDMA(oe *OverlayEngine, cfg RDMAConfig, rx []*rxLane) (*rdmaTransport,
 		oe: oe, dev: dev, port: cfg.Port, session: newSession(), attr: attr,
 		portActive: attr.State == rdma.PortActive, recvSlots: cfg.RecvSlots, maxInFlight: cfg.MaxInFlight,
 		peers: make(map[netip.Addr]*rdmaPeer), byQPN: make(map[uint32]*linkQP), closed: make(chan struct{}),
+		eventsDone: make(chan struct{}),
 	}
 	nl := len(rx)
 	t.sendBase = nl * cfg.RecvSlots
@@ -240,6 +246,7 @@ func startRDMA(oe *OverlayEngine, cfg RDMAConfig, rx []*rxLane) (*rdmaTransport,
 		t.sendFree <- int32(t.sendBase + i)
 	}
 	fail := func(err error) (*rdmaTransport, error) {
+		close(t.eventsDone) // never started
 		t.destroy()
 		return nil, err
 	}
@@ -274,7 +281,7 @@ func startRDMA(oe *OverlayEngine, cfg RDMAConfig, rx []*rxLane) (*rdmaTransport,
 		t.wg.Add(1)
 		go ln.run()
 	}
-	t.wg.Add(2)
+	t.wg.Add(1)
 	go t.events()
 	go t.tick()
 	return t, nil
@@ -294,9 +301,11 @@ func (t *rdmaTransport) recvWR(slot int32) rdma.RecvWR {
 
 // repost gives a receive slot back to its lane's SRQ.
 func (ln *rdmaLane) repost(slot int32) {
+	ln.t.postMu.RLock()
+	defer ln.t.postMu.RUnlock()
 	select {
 	case <-ln.t.closed:
-		return
+		return // the SRQ is going, or gone
 	default:
 	}
 	if n, err := ln.srq.Post(ln.t.mr, []rdma.RecvWR{ln.t.recvWR(slot)}); err == nil && n == 1 {
@@ -342,6 +351,10 @@ func (t *rdmaTransport) sendWhole(l *rdmaLink, sock int, vni uint32, h packet.Vn
 func (t *rdmaTransport) post(l *rdmaLink, sock int, imm uint32, parts ...[]byte) {
 	q := l.qps[sock%l.k]
 	q.mu.Lock()
+	if q.gone { // the link went down and its QPs with it since the caller looked
+		q.mu.Unlock()
+		return
+	}
 	if len(q.fifo) >= t.maxInFlight {
 		q.mu.Unlock()
 		t.txFull.Add(1)
@@ -597,16 +610,26 @@ func (t *rdmaTransport) destroyDying(now time.Time) {
 		}
 		for _, q := range l.qps {
 			delete(t.byQPN, q.qp.Num())
-			_ = q.qp.Close()
-			q.mu.Lock()
-			for _, s := range q.fifo { // sends that never completed: their slots are free now
-				t.sendFree <- s
-			}
-			q.fifo = nil
-			q.mu.Unlock()
+			q.destroy(t)
 		}
 	}
 	t.dying = keep
+}
+
+// destroy destroys the QP, under its lock, so that no post is under way or comes after,
+// and frees the send slots of sends that never completed.
+func (q *linkQP) destroy(t *rdmaTransport) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.gone {
+		return
+	}
+	q.gone = true
+	_ = q.qp.Close()
+	for _, s := range q.fifo {
+		t.sendFree <- s
+	}
+	q.fifo = nil
 }
 
 // --- the control datagrams --------------------------------------------------------------
@@ -842,7 +865,7 @@ func (t *rdmaTransport) offer(now time.Time) {
 
 // events follows the device's asynchronous events until the transport is closed.
 func (t *rdmaTransport) events() {
-	defer t.wg.Done()
+	defer close(t.eventsDone)
 	for {
 		ev, err := t.dev.NextEvent()
 		if err != nil {
@@ -904,7 +927,6 @@ func (t *rdmaTransport) allDown(change func(), why string) {
 // mapped (see startRDMA).
 func (t *rdmaTransport) close() {
 	t.closeOnce.Do(func() {
-		close(t.closed)
 		t.mu.Lock()
 		for _, p := range t.peers {
 			t.takeDown(p)
@@ -914,12 +936,20 @@ func (t *rdmaTransport) close() {
 	})
 }
 
-// destroy releases what startRDMA made, in the verbs' order.
+// destroy releases what startRDMA made, in the verbs' order: the QPs (which use the CQs and
+// the SRQs), the CQs (which ends the lanes' goroutines), the SRQs (once no repost is under way),
+// the registered region and, last, the device with its protection domain (which ends the
+// events goroutine).
 func (t *rdmaTransport) destroy() {
+	select {
+	case <-t.closed:
+	default:
+		close(t.closed)
+	}
 	t.mu.Lock()
 	for _, l := range t.dying {
 		for _, q := range l.qps {
-			_ = q.qp.Close()
+			q.destroy(t)
 		}
 	}
 	t.dying = nil
@@ -927,29 +957,34 @@ func (t *rdmaTransport) destroy() {
 	t.mu.Unlock()
 	for _, ln := range t.lanes {
 		if ln.cq != nil {
-			_ = ln.cq.Close() // ends the lane's goroutine
+			_ = ln.cq.Close()
 		}
 	}
-	// The events goroutine ends when the device is closed, the ticker on t.closed.
-	select {
-	case <-t.closed:
-	default:
-		close(t.closed)
-	}
-	done := make(chan struct{})
-	go func() { t.wg.Wait(); close(done) }()
-	_ = t.dev.Close()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-	}
+	waitGroup(&t.wg, 5*time.Second)
+	t.postMu.Lock() // no repost under way; later ones see t.closed
 	for _, ln := range t.lanes {
 		if ln.srq != nil {
 			_ = ln.srq.Close()
 		}
 	}
+	t.postMu.Unlock()
 	if t.mr != nil {
 		_ = t.mr.Close()
+	}
+	_ = t.dev.Close()
+	select {
+	case <-t.eventsDone:
+	case <-time.After(5 * time.Second):
+	}
+}
+
+// waitGroup waits for wg, for no longer than d.
+func waitGroup(wg *sync.WaitGroup, d time.Duration) {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(d):
 	}
 }
 

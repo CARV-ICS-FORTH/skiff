@@ -73,7 +73,12 @@ func newRDMANodes(t *testing.T, rdmaA, rdmaB *RDMAConfig) *rdmaNodes {
 	n.devA, n.devB = n.fabric.add("fa", 10), n.fabric.add("fb", 14)
 	old := openRDMA
 	openRDMA = n.fabric.open
-	t.Cleanup(func() { openRDMA = old })
+	t.Cleanup(func() { // after the engines' (cleanups run last first): everything is closed by now
+		openRDMA = old
+		for _, v := range n.fabric.checkOrder() {
+			t.Errorf("verbs order: %s", v)
+		}
+	})
 	start := func(ip string, rc *RDMAConfig, rec *rdmaRecorder) *OverlayEngine {
 		oe := NewOverlayEngine(OverlayConfig{BindAddress: ip, Port: 0, Sockets: 2, Offload: true, Super: true, RDMA: rc}, NewRouteTable(), rec)
 		if err := oe.Start(context.Background()); err != nil {
@@ -332,4 +337,47 @@ func TestRDMAInFlightCapDropsWithoutWaiting(t *testing.T) {
 	}
 	n.recB.releaseHeld()
 	waitFor(t, "what was in flight", func() bool { return n.recB.superCount() == 4+a.MaxInFlight })
+}
+
+// Closing an engine destroys the transport in the verbs' order (the fake reports any other,
+// see newRDMANodes) while traffic flows and a TAP writer still holds received buffers, which
+// it releases afterwards: their slots are not posted to the destroyed SRQ.
+func TestRDMACloseWithBuffersHeld(t *testing.T) {
+	n := newRDMANodes(t, smallRDMA("fa"), smallRDMA("fb"))
+	waitState(t, n.a, "up")
+	waitState(t, n.b, "up")
+	n.recB.mu.Lock()
+	n.recB.hold = true
+	n.recB.mu.Unlock()
+	h, raw := tsoFrame(false, 20000, 9000, 1)
+	tb := n.a.NewBatch()
+	for i := 0; i < 3; i++ {
+		frame, _ := packet.ParseEthernet(append([]byte(nil), raw...))
+		if sent, err := tb.SendSuper(h, frame, net.ParseIP("10.244.2.4")); !sent || err != nil {
+			t.Fatalf("SendSuper: %v %v", sent, err)
+		}
+	}
+	tb.Release()
+	waitFor(t, "B to hold 3 buffers", func() bool { return n.recB.superCount() == 3 })
+	stop := make(chan struct{})
+	go func() { // traffic while the engines close
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			tb := n.a.NewBatch() // errors are expected once the engine is closing
+			_ = tb.Send(flowFrame(0, 0), net.ParseIP("10.244.2.9"))
+			_ = tb.Flush()
+			tb.Release()
+		}
+	}()
+	n.b.Close()
+	n.a.Close()
+	close(stop)
+	n.recB.releaseHeld()
+	if v := n.fabric.checkOrder(); len(v) > 0 {
+		t.Errorf("verbs order: %v", v)
+	}
 }

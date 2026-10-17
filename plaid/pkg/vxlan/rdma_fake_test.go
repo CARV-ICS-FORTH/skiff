@@ -20,6 +20,20 @@ type fakeFabric struct {
 	devs map[string]*fakeDev
 	qps  map[uint32]*fakeQP
 	next uint32
+	// What a real device would not survive: an object used after it was destroyed, or
+	// destroyed while something made from it is alive (the order the verbs require).
+	violations []string
+}
+
+func (f *fakeFabric) violate(format string, a ...any) {
+	f.violations = append(f.violations, fmt.Sprintf(format, a...))
+}
+
+// checkOrder reports what the transport did that a real device would not have survived.
+func (f *fakeFabric) checkOrder() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.violations...)
 }
 
 func newFakeFabric() *fakeFabric {
@@ -28,7 +42,7 @@ func newFakeFabric() *fakeFabric {
 
 // add makes a device with an active port of the given LID.
 func (f *fakeFabric) add(name string, lid uint16) *fakeDev {
-	d := &fakeDev{f: f, name: name, events: make(chan rdma.Event, 8), closed: make(chan struct{}),
+	d := &fakeDev{f: f, name: name, live: map[any]string{}, events: make(chan rdma.Event, 8), closed: make(chan struct{}),
 		attr: rdma.PortAttr{State: rdma.PortActive, LinkLayer: rdma.LinkInfiniBand, LID: lid, MTU: 4096,
 			GIDPrefix: 0xfe80000000000000, RateGbps: 56}}
 	f.mu.Lock()
@@ -49,6 +63,8 @@ func (f *fakeFabric) open(p rdma.Port) (rdmaDevice, error) {
 
 type fakeDev struct {
 	f        *fakeFabric
+	live     map[any]string // the MRs, CQs, SRQs and QPs made and not yet destroyed
+	gone     bool
 	name     string
 	attr     rdma.PortAttr
 	events   chan rdma.Event
@@ -63,15 +79,54 @@ func (d *fakeDev) Attr() (rdma.PortAttr, error) {
 	return d.attr, nil
 }
 
+// made notes an object made from the device; destroyed, that it is gone, which is a
+// violation if something made from it is still alive (users: the QPs of a CQ or SRQ, and for
+// the device everything).
+func (d *fakeDev) made(o any, what string) {
+	d.f.mu.Lock()
+	defer d.f.mu.Unlock()
+	if d.gone {
+		d.f.violate("%s made on a closed device", what)
+	}
+	d.live[o] = what
+}
+
+func (d *fakeDev) destroyed(o any, users func(*fakeQP) bool) {
+	d.f.mu.Lock()
+	defer d.f.mu.Unlock()
+	what, ok := d.live[o]
+	if !ok {
+		d.f.violate("an object destroyed twice, or not made")
+		return
+	}
+	if d.gone {
+		d.f.violate("%s destroyed after its device was closed", what)
+	}
+	for _, q := range d.f.qps {
+		if users != nil && users(q) {
+			d.f.violate("%s destroyed while QP %d uses it", what, q.num)
+		}
+	}
+	delete(d.live, o)
+}
+
 func (d *fakeDev) Register(mem []byte) (rdmaMR, error) {
-	return &fakeMR{mem: mem, base: uintptr(unsafe.Pointer(unsafe.SliceData(mem)))}, nil
+	m := &fakeMR{dev: d, mem: mem, base: uintptr(unsafe.Pointer(unsafe.SliceData(mem)))}
+	d.made(m, "a memory region")
+	return m, nil
 }
 
 func (d *fakeDev) NewCQ(int) (rdmaCQ, error) {
-	return &fakeCQ{notify: make(chan struct{}, 1), closed: make(chan struct{})}, nil
+	c := &fakeCQ{dev: d, notify: make(chan struct{}, 1), closed: make(chan struct{})}
+	d.made(c, "a CQ")
+	return c, nil
 }
 
-func (d *fakeDev) NewSRQ(int) (rdmaSRQ, error) { return &fakeSRQ{f: d.f}, nil }
+func (d *fakeDev) NewSRQ(int) (rdmaSRQ, error) {
+	s := &fakeSRQ{f: d.f, dev: d}
+	d.made(s, "an SRQ")
+	return s, nil
+}
 
 func (d *fakeDev) NewQP(cq rdmaCQ, srq rdmaSRQ, _ int) (rdmaQP, error) {
 	d.f.mu.Lock()
@@ -79,6 +134,7 @@ func (d *fakeDev) NewQP(cq rdmaCQ, srq rdmaSRQ, _ int) (rdmaQP, error) {
 	q := &fakeQP{dev: d, num: d.f.next, cq: cq.(*fakeCQ), srq: srq.(*fakeSRQ)}
 	d.f.next++
 	d.f.qps[q.num] = q
+	d.live[q] = "a QP"
 	return q, nil
 }
 
@@ -92,7 +148,15 @@ func (d *fakeDev) NextEvent() (rdma.Event, error) {
 }
 
 func (d *fakeDev) Close() error {
-	d.once.Do(func() { close(d.closed) })
+	d.once.Do(func() {
+		d.f.mu.Lock()
+		for _, what := range d.live {
+			d.f.violate("the device closed while %s made from it is alive", what)
+		}
+		d.gone = true
+		d.f.mu.Unlock()
+		close(d.closed)
+	})
 	return nil
 }
 
@@ -116,11 +180,15 @@ func (d *fakeDev) failNextSend(st rdma.WCStatus) {
 }
 
 type fakeMR struct {
+	dev  *fakeDev
 	mem  []byte
 	base uintptr
 }
 
-func (m *fakeMR) Close() error { return nil }
+func (m *fakeMR) Close() error {
+	m.dev.destroyed(m, func(*fakeQP) bool { return false })
+	return nil
+}
 
 func (m *fakeMR) bytes(addr uintptr, n int) []byte {
 	off := int(addr - m.base)
@@ -128,6 +196,7 @@ func (m *fakeMR) bytes(addr uintptr, n int) []byte {
 }
 
 type fakeCQ struct {
+	dev    *fakeDev
 	mu     sync.Mutex
 	wcs    []rdma.WC
 	armed  bool
@@ -174,13 +243,18 @@ func (c *fakeCQ) Wait() error {
 }
 
 func (c *fakeCQ) Close() error {
-	c.once.Do(func() { close(c.closed) })
+	c.once.Do(func() {
+		c.dev.destroyed(c, func(q *fakeQP) bool { return q.cq == c })
+		close(c.closed)
+	})
 	return nil
 }
 
 // fakeSRQ holds posted receives, and the sends that wait for one.
 type fakeSRQ struct {
 	f       *fakeFabric
+	dev     *fakeDev
+	gone    bool
 	mr      *fakeMR
 	posted  []rdma.RecvWR
 	waiting []fakeSend
@@ -196,6 +270,10 @@ type fakeSend struct {
 func (s *fakeSRQ) Post(mr rdmaMR, wrs []rdma.RecvWR) (int, error) {
 	s.f.mu.Lock()
 	defer s.f.mu.Unlock()
+	if s.gone {
+		s.f.violate("receives posted to a destroyed SRQ")
+		return 0, errors.New("fake: SRQ destroyed")
+	}
 	s.mr = mr.(*fakeMR)
 	s.posted = append(s.posted, wrs...)
 	for len(s.waiting) > 0 && len(s.posted) > 0 {
@@ -206,7 +284,13 @@ func (s *fakeSRQ) Post(mr rdmaMR, wrs []rdma.RecvWR) (int, error) {
 	return len(wrs), nil
 }
 
-func (s *fakeSRQ) Close() error { return nil }
+func (s *fakeSRQ) Close() error {
+	s.dev.destroyed(s, func(q *fakeQP) bool { return q.srq == s })
+	s.f.mu.Lock()
+	s.gone = true
+	s.f.mu.Unlock()
+	return nil
+}
 
 // postedCount is how many receives the SRQ holds.
 func (s *fakeSRQ) postedCount() int {
@@ -244,6 +328,7 @@ func (q *fakeQP) Post(mr rdmaMR, wrs []rdma.SendWR) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if _, ok := f.qps[q.num]; !ok {
+		f.violate("sends posted to destroyed QP %d", q.num)
 		return 0, errors.New("fake: QP destroyed")
 	}
 	for _, wr := range wrs {
@@ -311,7 +396,11 @@ func (q *fakeQP) SetError() error {
 func (q *fakeQP) Close() error {
 	f := q.dev.f
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	if _, ok := f.qps[q.num]; !ok {
+		f.violate("QP %d destroyed twice", q.num)
+	}
 	delete(f.qps, q.num)
+	f.mu.Unlock()
+	q.dev.destroyed(q, nil)
 	return nil
 }
