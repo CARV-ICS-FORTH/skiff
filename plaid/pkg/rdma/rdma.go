@@ -213,12 +213,14 @@ var eventNames = map[EventType]string{
 
 func (t EventType) String() string { return eventNames[t] }
 
-// Event is an asynchronous event; Port is set for port events, QPN for QP events.
+// Event is an asynchronous event; Port is set for port events, QPN for QP events, SRQ (an
+// SRQ's ID) for SRQ events.
 type Event struct {
 	Type EventType
 	Raw  int // the verbs' event number
 	Port int
 	QPN  uint32
+	SRQ  uint64
 }
 
 // Map maps size bytes of anonymous memory outside Go's heap, for registering. Unmap

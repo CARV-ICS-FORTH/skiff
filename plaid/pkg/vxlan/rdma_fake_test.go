@@ -262,6 +262,7 @@ type fakeSRQ struct {
 	f       *fakeFabric
 	dev     *fakeDev
 	gone    bool
+	limit   int // armed: an event when fewer receives than this are posted (0: not armed)
 	mr      *fakeMR
 	posted  []rdma.RecvWR
 	waiting []fakeSend
@@ -289,6 +290,27 @@ func (s *fakeSRQ) Post(mr rdmaMR, wrs []rdma.RecvWR) (int, error) {
 		s.f.deliver(w)
 	}
 	return len(wrs), nil
+}
+
+func (s *fakeSRQ) Arm(limit int) error {
+	s.f.mu.Lock()
+	s.limit = limit
+	s.f.mu.Unlock()
+	return nil
+}
+
+func (s *fakeSRQ) ID() uint64 { return uint64(uintptr(unsafe.Pointer(s))) }
+
+// taken is a receive taken from the SRQ: the limit event if it is armed and crossed. The
+// caller holds f.mu.
+func (s *fakeSRQ) taken() {
+	if s.limit > 0 && len(s.posted) < s.limit {
+		s.limit = 0
+		select {
+		case s.dev.events <- rdma.Event{Type: rdma.EventSRQLimitReached, SRQ: s.ID()}:
+		default:
+		}
+	}
 }
 
 func (s *fakeSRQ) Close() error {
@@ -367,6 +389,7 @@ func (f *fakeFabric) deliver(s fakeSend) {
 	srq := s.to.srq
 	r := srq.posted[0]
 	srq.posted = srq.posted[1:]
+	srq.taken()
 	if len(s.data) > int(r.Len) {
 		s.to.err, s.from.err = true, true
 		s.to.cq.push(rdma.WC{ID: r.ID, Op: rdma.OpRecv, Status: rdma.WCLocLenErr, QPN: s.to.num})

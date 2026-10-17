@@ -78,9 +78,9 @@ func main() {
 			if r.Failed {
 				state = "failed (a fatal device error: RDMA ended)"
 			}
-			fmt.Printf("RDMA:         %s (LID %d, MTU %d, %d Gb/s, %s; %d MiB registered; receives posted per lane %v): tx %d messages, %d bytes, rx %d messages, %d bytes; dropped %d at the in-flight cap, %d for want of a slot; completion errors %d; links up %d, failed %d\n",
+			fmt.Printf("RDMA:         %s (LID %d, MTU %d, %d Gb/s, %s; %d MiB registered; receives posted per lane %v): tx %d messages, %d bytes, rx %d messages, %d bytes; %d waited for room, then dropped %d at the in-flight cap, %d for want of a slot; receives ran low %d times; completion errors %d; links up %d, failed %d\n",
 				r.Port, r.LID, r.MTU, r.RateGbps, state, r.PinnedBytes>>20, r.RecvPosted, r.TxMessages, r.TxBytes, r.RxMessages, r.RxBytes,
-				r.TxFull, r.TxNoSlot, r.CompletionErrors, r.LinksUp, r.LinkFailures)
+				r.TxWaits, r.TxFull, r.TxNoSlot, r.RxLow, r.CompletionErrors, r.LinksUp, r.LinkFailures)
 			for _, p := range r.Peers {
 				fmt.Printf("              %s: %s", p.Address, p.State)
 				if p.QPs > 0 {

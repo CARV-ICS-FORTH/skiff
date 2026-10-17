@@ -354,3 +354,35 @@ func TestRegisterLargeRegion(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An armed SRQ says once, by an asynchronous event with its ID, that fewer receives than its
+// limit are posted.
+func TestSRQLimitEvent(t *testing.T) {
+	c := openPort(t)
+	p := newPair(t, c, 4096, 4096, 8)
+	if err := p.srq.Arm(4); err != nil {
+		t.Fatal(err)
+	}
+	var wrs []SendWR
+	for i := 0; i < 6; i++ {
+		wrs = append(wrs, SendWR{ID: uint64(i), Addr: p.addr(i), Len: 64, Signaled: i == 5})
+	}
+	if _, err := p.a.Post(p.mr, wrs); err != nil {
+		t.Fatal(err)
+	}
+	collect(t, p.rcq, 6) // 2 receives left posted, below the limit of 4
+	got := make(chan Event, 1)
+	go func() {
+		if ev, err := c.NextEvent(); err == nil {
+			got <- ev
+		}
+	}()
+	select {
+	case ev := <-got:
+		if ev.Type != EventSRQLimitReached || ev.SRQ != p.srq.ID() {
+			t.Errorf("event %+v (%s), want the SRQ limit of SRQ %#x", ev, ev.Type, p.srq.ID())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no SRQ limit event")
+	}
+}

@@ -24,6 +24,8 @@ type (
 	}
 	rdmaSRQ interface {
 		Post(mr rdmaMR, wrs []rdma.RecvWR) (int, error)
+		Arm(limit int) error // one EventSRQLimitReached when fewer than limit are posted
+		ID() uint64          // the SRQ of an event
 		Close() error
 	}
 	rdmaQP interface {

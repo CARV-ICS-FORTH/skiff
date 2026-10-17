@@ -189,12 +189,22 @@ static int plaid_cq_event(struct ibv_comp_channel *ch) {
 }
 
 // plaid_async_event takes one asynchronous event and acks it: 0, or EAGAIN when there is none.
-static int plaid_async_event(struct ibv_context *c, int *type, int *port, uint32_t *qpn) {
+static int plaid_srq_arm(struct ibv_srq *srq, int limit) {
+	struct ibv_srq_attr a;
+	memset(&a, 0, sizeof a);
+	a.srq_limit = limit;
+	return ibv_modify_srq(srq, &a, IBV_SRQ_LIMIT);
+}
+
+static uint64_t plaid_srq_id(struct ibv_srq *srq) { return (uint64_t)(uintptr_t)srq; }
+
+static int plaid_async_event(struct ibv_context *c, int *type, int *port, uint32_t *qpn, uint64_t *srq) {
 	struct ibv_async_event e;
 	if (ibv_get_async_event(c, &e)) return errno ? errno : EIO;
 	*type = e.event_type;
 	*port = 0;
 	*qpn = 0;
+	*srq = 0;
 	switch (e.event_type) {
 	case IBV_EVENT_PORT_ACTIVE: case IBV_EVENT_PORT_ERR: case IBV_EVENT_LID_CHANGE: case IBV_EVENT_PKEY_CHANGE:
 	case IBV_EVENT_SM_CHANGE: case IBV_EVENT_CLIENT_REREGISTER: case IBV_EVENT_GID_CHANGE:
@@ -203,6 +213,9 @@ static int plaid_async_event(struct ibv_context *c, int *type, int *port, uint32
 	case IBV_EVENT_QP_FATAL: case IBV_EVENT_QP_REQ_ERR: case IBV_EVENT_QP_ACCESS_ERR: case IBV_EVENT_COMM_EST:
 	case IBV_EVENT_SQ_DRAINED: case IBV_EVENT_PATH_MIG: case IBV_EVENT_PATH_MIG_ERR: case IBV_EVENT_QP_LAST_WQE_REACHED:
 		*qpn = e.element.qp->qp_num;
+		break;
+	case IBV_EVENT_SRQ_LIMIT_REACHED: case IBV_EVENT_SRQ_ERR:
+		*srq = (uint64_t)(uintptr_t)e.element.srq;
 		break;
 	default:
 		break;
@@ -315,11 +328,12 @@ func mtuEnum(b int) C.int {
 func (c *Context) NextEvent() (Event, error) {
 	var t, port C.int
 	var qpn C.uint32_t
-	err := c.async.wait(func() C.int { return C.plaid_async_event(c.ctx, &t, &port, &qpn) })
+	var srq C.uint64_t
+	err := c.async.wait(func() C.int { return C.plaid_async_event(c.ctx, &t, &port, &qpn, &srq) })
 	if err != nil {
 		return Event{}, err
 	}
-	return Event{Type: eventType(int(t)), Raw: int(t), Port: int(port), QPN: uint32(qpn)}, nil
+	return Event{Type: eventType(int(t)), Raw: int(t), Port: int(port), QPN: uint32(qpn), SRQ: uint64(srq)}, nil
 }
 
 func eventType(t int) EventType {
@@ -533,6 +547,18 @@ func (s *SRQ) Post(mr *MR, wrs []RecvWR) (posted int, err error) {
 	}
 	return posted, nil
 }
+
+// Arm asks for one EventSRQLimitReached, with this SRQ's ID, when fewer than limit receives
+// are posted. It is disarmed by the event: arm again for the next.
+func (s *SRQ) Arm(limit int) error {
+	if r := C.plaid_srq_arm(s.srq, C.int(limit)); r != 0 {
+		return fmt.Errorf("arm a shared receive queue's limit: %w", syscall.Errno(r))
+	}
+	return nil
+}
+
+// ID tells the SRQ's events from others' (Event.SRQ).
+func (s *SRQ) ID() uint64 { return uint64(C.plaid_srq_id(s.srq)) }
 
 // Close destroys the queue; the QPs that use it must be destroyed first.
 func (s *SRQ) Close() error {

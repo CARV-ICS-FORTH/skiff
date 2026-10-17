@@ -33,6 +33,8 @@ func (q *CQ) Close() error           { return nil }
 type SRQ struct{}
 
 func (s *SRQ) Post(*MR, []RecvWR) (int, error) { return 0, ErrUnsupported }
+func (s *SRQ) Arm(int) error                   { return ErrUnsupported }
+func (s *SRQ) ID() uint64                      { return 0 }
 func (s *SRQ) Close() error                    { return nil }
 
 type QP struct{}

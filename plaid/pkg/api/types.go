@@ -209,8 +209,9 @@ type OverlaySuperStatus struct {
 // OverlayRDMAStatus reports the overlay's RDMA transport, when it has one: the port it is
 // offered on (its LID, IB MTU and rate, and whether it is active), whether a fatal device
 // error ended it, each peer's link (its state, why it is not up, its failures and the QPs it
-// uses), the messages and bytes sent and received, the sends dropped because a QP had its
-// most in flight or no send slot was free, the completions in error, the links that came up
+// uses), the messages and bytes sent and received, the sends that waited for room and those
+// dropped after waiting because a QP had its most in flight or no send slot was free, the
+// times a lane's receives ran low, the completions in error, the links that came up
 // and that failed, the receives posted on each lane and the registered (pinned) memory.
 type OverlayRDMAStatus struct {
 	Port             string           `json:"port"`
@@ -226,6 +227,8 @@ type OverlayRDMAStatus struct {
 	RxBytes          uint64           `json:"rx_bytes"`
 	TxFull           uint64           `json:"tx_full"`
 	TxNoSlot         uint64           `json:"tx_no_slot"`
+	TxWaits          uint64           `json:"tx_waits"`
+	RxLow            uint64           `json:"rx_low"`
 	CompletionErrors uint64           `json:"completion_errors"`
 	LinksUp          uint64           `json:"links_up"`
 	LinkFailures     uint64           `json:"link_failures"`
