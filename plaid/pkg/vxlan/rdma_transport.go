@@ -79,18 +79,7 @@ const (
 	immKindShift = 24
 	immRun       = 1 << immKindShift
 	immWhole     = 2 << immKindShift
-	immNop       = 3 << immKindShift // no content: completes the unsignaled sends before it (see flushTails)
 	immSizeMask  = 1<<immKindShift - 1
-
-	// rdmaSignalEvery: at most one send in this many is signaled (a completion is made for
-	// it), and no more than a quarter of the in-flight cap (see signalEvery); RC completes a
-	// QP's sends in order, so its completion frees the send slots of the ones before. The
-	// unsignaled tail of a burst is completed by a NOP when the lane goes idle.
-	rdmaSignalEvery = 8
-	// nopSlot is the fifo's mark of a NOP (it has no send slot); nopID its work request's ID,
-	// which a completion's int32(ID) makes nopSlot again.
-	nopSlot = -1
-	nopID   = 1<<32 - 1
 )
 
 // RDMAConfig asks the engine to offer the RDMA transport on a port.
@@ -128,7 +117,6 @@ type rdmaTransport struct {
 	sendBase    int        // the first send slot's index
 	sendFree    chan int32 // free send slots
 	maxInFlight int
-	signalEvery int // rdmaSignalEvery, or less for a small cap: what is delivered but not yet completed counts against the cap
 
 	mu         sync.RWMutex
 	attr       rdma.PortAttr // the port's, current
@@ -195,14 +183,13 @@ type rdmaLink struct {
 
 // linkQP is one QP of a link, with the send slots it has posted, in order.
 type linkQP struct {
-	link  *rdmaLink
-	lane  int
-	qp    rdmaQP
-	psn   uint32
-	mu    sync.Mutex
-	fifo  []int32 // the send slots posted and not yet completed, in order (nopSlot for a NOP)
-	unsig int     // sends posted since the last signaled one
-	gone  bool    // destroyed: nothing is posted to it any more (under mu)
+	link *rdmaLink
+	lane int
+	qp   rdmaQP
+	psn  uint32
+	mu   sync.Mutex
+	fifo []int32
+	gone bool // destroyed: nothing is posted to it any more (under mu)
 }
 
 func unsafeSliceData(b []byte) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(b)) }
@@ -253,8 +240,7 @@ func startRDMA(oe *OverlayEngine, cfg RDMAConfig, rx []*rxLane) (*rdmaTransport,
 	t := &rdmaTransport{
 		oe: oe, dev: dev, port: cfg.Port, session: newSession(), attr: attr,
 		portActive: attr.State == rdma.PortActive, recvSlots: cfg.RecvSlots, maxInFlight: cfg.MaxInFlight,
-		signalEvery: max(1, min(rdmaSignalEvery, cfg.MaxInFlight/4)),
-		peers:       make(map[netip.Addr]*rdmaPeer), byQPN: make(map[uint32]*linkQP), closed: make(chan struct{}),
+		peers: make(map[netip.Addr]*rdmaPeer), byQPN: make(map[uint32]*linkQP), closed: make(chan struct{}),
 		eventsDone: make(chan struct{}),
 	}
 	t.sendBase = len(rx) * cfg.RecvSlots
@@ -413,17 +399,9 @@ func (t *rdmaTransport) post(l *rdmaLink, sock int, imm uint32, parts ...[]byte)
 	for _, p := range parts {
 		n += copy(buf[n:], p)
 	}
-	// Signaled: every rdmaSignalEvery-th, and the first on a QP with nothing outstanding, whose
-	// completion wakes the lane, which completes the burst's unsignaled rest when it goes idle.
-	signaled := q.unsig >= t.signalEvery-1 || len(q.fifo) == 0
-	_, err := q.qp.Post(t.mr, []rdma.SendWR{{ID: uint64(slot), Addr: t.slotAddr(slot), Len: uint32(n), Imm: imm, Signaled: signaled}})
+	_, err := q.qp.Post(t.mr, []rdma.SendWR{{ID: uint64(slot), Addr: t.slotAddr(slot), Len: uint32(n), Imm: imm, Signaled: true}})
 	if err == nil {
 		q.fifo = append(q.fifo, slot)
-		if signaled {
-			q.unsig = 0
-		} else {
-			q.unsig++
-		}
 	}
 	q.mu.Unlock()
 	if err != nil {
@@ -435,48 +413,18 @@ func (t *rdmaTransport) post(l *rdmaLink, sock int, imm uint32, parts ...[]byte)
 	t.txBytes.Add(uint64(n))
 }
 
-// sendDone frees the send slots of q up to slot (or up to the first NOP for nopSlot), which RC
-// completed in order.
+// sendDone frees the send slots of q up to slot, which RC completed in order.
 func (q *linkQP) sendDone(t *rdmaTransport, slot int32) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for i, s := range q.fifo {
 		if s == slot {
 			for _, f := range q.fifo[:i+1] {
-				if f != nopSlot {
-					t.sendFree <- f
-				}
+				t.sendFree <- f
 			}
 			q.fifo = append(q.fifo[:0], q.fifo[i+1:]...)
 			return
 		}
-	}
-}
-
-// flushTails completes the unsignaled sends of the lane's QPs that a burst left behind: a
-// signaled NOP after them. The lane calls it when its CQ is idle, so that their send slots do
-// not wait for the QP's next burst.
-func (ln *rdmaLane) flushTails() {
-	t := ln.t
-	t.mu.RLock()
-	var qs []*linkQP
-	for _, q := range t.byQPN {
-		if q.lane == ln.i {
-			qs = append(qs, q)
-		}
-	}
-	t.mu.RUnlock()
-	for _, q := range qs {
-		q.mu.Lock()
-		if !q.gone && q.unsig > 0 && q.link.connected != 0 {
-			// A NOP has no content and no send slot; it takes one receive of the peer, which
-			// the peer posts again at once.
-			if _, err := q.qp.Post(t.mr, []rdma.SendWR{{ID: nopID, Addr: t.slotAddr(int32(t.sendBase)), Len: 0, Imm: immNop, Signaled: true}}); err == nil {
-				q.fifo = append(q.fifo, nopSlot)
-				q.unsig = 0
-			}
-		}
-		q.mu.Unlock()
 	}
 }
 
@@ -497,9 +445,6 @@ func (ln *rdmaLane) run() {
 			n, err = ln.spin(wcs)
 			if err != nil {
 				return
-			}
-			if n == 0 {
-				ln.flushTails() // the burst is over: complete what it left unsignaled
 			}
 		}
 		if n == 0 {
@@ -569,10 +514,6 @@ func (ln *rdmaLane) complete(wc *rdma.WC) {
 	}
 	if q == nil {
 		ln.repost(slot) // a QP already gone: nothing to tell where it came from
-		return
-	}
-	if wc.Imm&^immSizeMask == immNop { // no content (see flushTails)
-		ln.repost(slot)
 		return
 	}
 	t.rxMsgs.Add(1)
@@ -738,9 +679,7 @@ func (q *linkQP) destroy(t *rdmaTransport) {
 	q.gone = true
 	_ = q.qp.Close()
 	for _, s := range q.fifo {
-		if s != nopSlot {
-			t.sendFree <- s
-		}
+		t.sendFree <- s
 	}
 	q.fifo = nil
 }
