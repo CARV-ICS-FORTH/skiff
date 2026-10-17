@@ -17,12 +17,15 @@ ARG BASE_IMAGE=debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e2
 
 # --- builder -----------------------------------------------------------------------
 # Go and a C compiler come with the Go image (the compiler is for the race detector, which
-# needs cgo; the Skiff binaries themselves are built with CGO_ENABLED=0). shellcheck is here
-# so that the scripts are checked by the same version everywhere, and cannot be skipped. ip
-# (iproute2) is for Plaid's tests that build TAPs, veth pairs and namespaces with real kernels.
+# needs cgo, and for plaidd, the one Skiff binary built with cgo: see plaid/Makefile). The
+# development files of rdma-core (libibverbs, its mlx5 provider and libnl, with their static
+# libraries) are for plaidd's InfiniBand transport (plaid/pkg/rdma), which links them in, so
+# that nothing of rdma-core is needed at run time. shellcheck is here so that the scripts are
+# checked by the same version everywhere, and cannot be skipped. ip (iproute2) is for Plaid's
+# tests that build TAPs, veth pairs and namespaces with real kernels.
 FROM ${GO_IMAGE} AS builder
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends shellcheck iproute2 && \
+    apt-get install -y --no-install-recommends shellcheck iproute2 libibverbs-dev libnl-3-dev libnl-route-3-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV GOPATH=/root/.go
 # The image's unprivileged user (ubuntu, 1000) runs the tests: some of them (directory modes,
@@ -46,7 +49,8 @@ COPY skifflet/ skifflet/
 COPY plaid/ plaid/
 RUN --mount=type=cache,target=/root/.go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOARCH=${TARGETARCH} make -C skifflet build VERSION="${VERSION}" GIT_COMMIT="${GIT_COMMIT}" BUILD_TIME="${BUILD_TIME}" && \
-    CGO_ENABLED=0 GOARCH=${TARGETARCH} make -C plaid build VERSION="${VERSION}" GIT_COMMIT="${GIT_COMMIT}" BUILD_TIME="${BUILD_TIME}"
+    GOARCH=${TARGETARCH} make -C plaid build VERSION="${VERSION}" GIT_COMMIT="${GIT_COMMIT}" BUILD_TIME="${BUILD_TIME}" && \
+    if readelf -l plaid/bin/plaidd | grep -q 'program interpreter'; then echo "ERROR: plaidd is not static" >&2; exit 1; fi
 
 # --- the tools -----------------------------------------------------------------------
 # One relocatable tree: bin/ (apptainer, slirp4netns, socat, kubectl), libexec/apptainer/

@@ -25,12 +25,18 @@ LDFLAGS := -s -w -X plaid/pkg/version.Version=$(VERSION) \
 
 all: build
 
+# plaidd is built with cgo for its InfiniBand transport (pkg/rdma) and linked statically, with
+# rdma-core's libibverbs and mlx5 provider from the builder, so that it needs nothing of the
+# host's but the kernel: netgo and osusergo keep Go's own DNS resolver and user lookup, as
+# without cgo. The linker warns that getaddrinfo and getservbyname need the host's C library
+# in a static program: they are libnl's, which plaidd never calls. The other programs are
+# pure Go.
 build:
 	@mkdir -p $(BIN_DIR)
-	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidd ./cmd/plaidd
-	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaid ./cmd/plaid
-	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidctl ./cmd/plaidctl
-	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidtainer ./cmd/plaidtainer
+	CGO_ENABLED=1 go build -tags netgo,osusergo -ldflags "$(LDFLAGS) -linkmode external -extldflags -static" -o $(BIN_DIR)/plaidd ./cmd/plaidd
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaid ./cmd/plaid
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidctl ./cmd/plaidctl
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/plaidtainer ./cmd/plaidtainer
 
 vet:
 	go vet ./...
