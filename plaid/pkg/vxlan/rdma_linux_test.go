@@ -5,7 +5,6 @@ package vxlan
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -307,10 +306,9 @@ func TestRDMAPortDownAndUp(t *testing.T) {
 }
 
 // A receiver that holds its buffers runs out of posted receives (its lane says it ran low);
-// the sender's QP then holds MaxInFlight sends, and each further send waits for room, up to
-// rdmaWaitMax, and is then dropped, counted: the sender is held back briefly, never for long.
+// the sender's QP then holds MaxInFlight sends and drops the rest, counted, without waiting.
 // When the receiver lets the buffers go, what was in flight arrives.
-func TestRDMAInFlightCapWaitsThenDrops(t *testing.T) {
+func TestRDMAInFlightCapDropsWithoutWaiting(t *testing.T) {
 	a, b := smallRDMA("fa"), smallRDMA("fb")
 	b.RecvSlots = 4
 	n := newRDMANodes(t, a, b)
@@ -322,68 +320,23 @@ func TestRDMAInFlightCapWaitsThenDrops(t *testing.T) {
 	h, raw := tsoFrame(false, 30000, 9000, 1)
 	tb := n.a.NewBatch()
 	defer tb.Release()
-	const sends = 40
 	start := time.Now()
-	for i := 0; i < sends; i++ {
+	for i := 0; i < 40; i++ {
 		frame, _ := packet.ParseEthernet(append([]byte(nil), raw...))
 		if sent, err := tb.SendSuper(h, frame, net.ParseIP("10.244.2.4")); !sent || err != nil {
 			t.Fatalf("SendSuper %d: %v %v", i, sent, err)
 		}
 	}
-	if d, most := time.Since(start), time.Duration(sends)*rdmaWaitMax+500*time.Millisecond; d > most {
-		t.Errorf("%d sends took %v: more than the waits' bound (%v)", sends, d, most)
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("40 sends took %v: the sender waited for the receiver", d)
 	}
 	waitFor(t, "B to hold its 4 buffers", func() bool { return n.recB.superCount() == 4 })
-	st := n.a.Stats().RDMA
-	if st.TxWaits == 0 || st.TxFull == 0 || st.TxFull > st.TxWaits {
-		t.Errorf("waits %d, drops at the cap %d: the sends beyond the cap should wait, then drop", st.TxWaits, st.TxFull)
+	if st := n.a.Stats().RDMA; st.TxFull == 0 {
+		t.Errorf("no drop counted at the in-flight cap: %+v", st)
 	}
 	waitFor(t, "B's lane to say it ran low", func() bool { return n.b.Stats().RDMA.RxLow > 0 })
 	n.recB.releaseHeld()
 	waitFor(t, "what was in flight", func() bool { return n.recB.superCount() == 4+a.MaxInFlight })
-}
-
-// A receiver that is slow for less than the bound loses nothing: the sends that find the QP
-// full wait for room instead of being dropped, and all arrive once the receiver goes on.
-func TestRDMABriefStallIsWaitedOut(t *testing.T) {
-	a, b := smallRDMA("fa"), smallRDMA("fb")
-	b.RecvSlots = 4
-	n := newRDMANodes(t, a, b)
-	waitState(t, n.a, "up")
-	waitState(t, n.b, "up")
-	n.recB.mu.Lock()
-	n.recB.hold = true
-	n.recB.mu.Unlock()
-	h, raw := tsoFrame(false, 30000, 9000, 1)
-	const sends = 20 // B's 4 slots, A's 8 in flight, and 8 that have to wait
-	errs := make(chan error, 1)
-	go func() {
-		tb := n.a.NewBatch()
-		defer tb.Release()
-		for i := 0; i < sends; i++ {
-			frame, _ := packet.ParseEthernet(append([]byte(nil), raw...))
-			if sent, err := tb.SendSuper(h, frame, net.ParseIP("10.244.2.4")); !sent || err != nil {
-				errs <- fmt.Errorf("SendSuper %d: %v %v", i, sent, err)
-				return
-			}
-		}
-		errs <- nil
-	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for n.a.Stats().RDMA.TxWaits == 0 { // the sender is waiting for room: B goes on, well within the bound
-		if time.Now().After(deadline) {
-			t.Fatal("the sender never waited")
-		}
-		time.Sleep(50 * time.Microsecond)
-	}
-	n.recB.releaseHeld()
-	if err := <-errs; err != nil {
-		t.Fatal(err)
-	}
-	waitFor(t, "every super-frame at B", func() bool { return n.recB.superCount() == sends })
-	if st := n.a.Stats().RDMA; st.TxFull != 0 || st.TxNoSlot != 0 {
-		t.Errorf("waits %d, drops %d at the cap and %d for want of a slot: a brief stall should be waited out", st.TxWaits, st.TxFull, st.TxNoSlot)
-	}
 }
 
 // Closing an engine destroys the transport in the verbs' order (the fake reports any other,

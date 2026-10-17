@@ -1,6 +1,7 @@
 package vxlan
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
@@ -32,8 +33,10 @@ import (
 // Messages. One RDMA message holds what one UDP_SEGMENT send would: a run of VXLAN
 // datagrams of one size, the last possibly shorter (immediate data immRun and the size), or
 // a whole TCP super-frame, a VXLAN header with VXLANFlagWhole, the virtio header and the
-// frame (immWhole). The receiving lane hands a run to its worker as a read of its socket,
-// and a super-frame as one that was put together from chunks. A frame's flow picks the
+// frame (immWhole). The receiving lane's goroutine processes what completes itself, a run as
+// a read of a socket and a super-frame as one that was put together from chunks, into a
+// bridge batch of its own (handing each message to the UDP lane's worker instead cost a
+// goroutine's wake-up per message, which tie1's and tie2's profiles counted). A frame's flow picks the
 // send socket a run is for (packet.FlowIndex), and the send socket the QP, so that a flow
 // stays on one QP and in order, and the QP the receiving lane.
 //
@@ -41,12 +44,13 @@ import (
 // send slots. A message is copied into a send slot and posted; the slot comes back with the
 // send's completion. A received message is handed on in its slot, as an owned
 // packet.Buffer, whose release posts the slot to the SRQ again. A QP has at most
-// maxInFlight sends outstanding; a message that finds it full, or no send slot free, waits
-// for one, up to rdmaWaitMax, and is then dropped and counted. The wait is the back-pressure
-// of a UDP socket whose send buffer is full: while it lasts, the TAP's goroutine reads no
-// more of its pod, whose segments stay in the TAP's queue, where TCP Small Queues hold the
-// pod's flow back instead of the network losing it. The bound keeps a peer that stopped
-// taking from holding up the pod's other traffic for long.
+// maxInFlight sends outstanding; a message that finds it full, or no send slot free, is
+// dropped and counted, as a full socket buffer drops: the bridge never waits for a peer. (A
+// bounded wait instead, measured on tie1 and tie2, removed the drops and nearly all of
+// TCP's retransmissions, but took 10 to 20% of the throughput of several streams between
+// two pods: TCP no longer saw the loss that kept its queues short, and a TAP queue that
+// waited held up its other flows. The drops come from receivers that cannot keep up; the
+// SRQ's low-water count says when.)
 //
 // Failures. A send that its peer's HCA did not acknowledge for about 7 s (see
 // rdma.QPTimeout) fails its link, which is recoverable: the peer is on UDP at once, and a
@@ -66,10 +70,6 @@ const (
 	rdmaSetupWarn       = time.Minute
 	rdmaDyingMax        = 10 * time.Second // a failed link's QPs are destroyed once their sends are back, or after this
 	rdmaCQPeers         = 256
-	// rdmaWaitMax is how long a send waits for room on its QP, or for a send slot: about three
-	// times what a QP's maximum in flight (64 x 64 KiB) takes on a 56 Gb/s link, and three
-	// times the adapter's own wait before it retries a receiver that was not ready (0.64 ms).
-	rdmaWaitMax = 2 * time.Millisecond
 
 	immKindShift = 24
 	immRun       = 1 << immKindShift
@@ -102,6 +102,7 @@ func (s peerState) String() string {
 
 type rdmaTransport struct {
 	oe          *OverlayEngine
+	ctx         context.Context // the engine's: received messages are not processed once it is done
 	dev         rdmaDevice
 	port        rdma.Port
 	session     uint32
@@ -130,7 +131,7 @@ type rdmaTransport struct {
 	postMu sync.RWMutex
 
 	txMsgs, txBytes, rxMsgs, rxBytes, txFull, txNoSlot, completionErrors, linksUp, linkFailures atomic.Uint64
-	txWaits, rxLow                                                                              atomic.Uint64
+	rxLow                                                                                       atomic.Uint64
 }
 
 // rdmaLane is a receive lane: its CQ (sends and receives of the QPs of every peer on this
@@ -143,8 +144,12 @@ type rdmaLane struct {
 	bufs   []*packet.Buffer // one per receive slot, owned: its release posts the slot again
 	first  int              // the index of the lane's first receive slot
 	posted atomic.Int64
-	rx     *rxLane
 	armed  atomic.Bool // the SRQ's limit is armed (see rxLow)
+	// What the lane's goroutine processes with: the per-source state of a receive lane (the
+	// reassembler, the peers' marks), a lane of its own, apart from the UDP lanes', and the
+	// bridge batch it injects into.
+	proc *rxLane
+	sink FrameInjector
 }
 
 // rdmaPeer is a node the transport offers links to. Its fields are the transport's mu's,
@@ -184,16 +189,7 @@ type linkQP struct {
 	psn  uint32
 	mu   sync.Mutex
 	fifo []int32
-	gone bool          // destroyed: nothing is posted to it any more (under mu)
-	room chan struct{} // closed (and replaced) when sends complete or the QP goes: the waiters look again (under mu)
-}
-
-// signalRoom wakes every send waiting for room on q. The caller holds q.mu.
-func (q *linkQP) signalRoom() {
-	if q.room != nil {
-		close(q.room)
-		q.room = nil
-	}
+	gone bool // destroyed: nothing is posted to it any more (under mu)
 }
 
 func unsafeSliceData(b []byte) unsafe.Pointer { return unsafe.Pointer(unsafe.SliceData(b)) }
@@ -218,7 +214,7 @@ func newSession() uint32 {
 
 // startRDMA opens the port and sets the transport up for the engine's lanes. The caller
 // starts nothing on error: the overlay goes on over UDP.
-func startRDMA(oe *OverlayEngine, cfg RDMAConfig, rx []*rxLane) (*rdmaTransport, error) {
+func startRDMA(ctx context.Context, oe *OverlayEngine, cfg RDMAConfig, lanes int) (*rdmaTransport, error) {
 	if cfg.RecvSlots <= 0 {
 		cfg.RecvSlots = rdmaDefaultRecv
 	}
@@ -242,13 +238,12 @@ func startRDMA(oe *OverlayEngine, cfg RDMAConfig, rx []*rxLane) (*rdmaTransport,
 		return nil, fmt.Errorf("%s is %s, not InfiniBand", cfg.Port, attr.LinkLayer)
 	}
 	t := &rdmaTransport{
-		oe: oe, dev: dev, port: cfg.Port, session: newSession(), attr: attr,
+		oe: oe, ctx: ctx, dev: dev, port: cfg.Port, session: newSession(), attr: attr,
 		portActive: attr.State == rdma.PortActive, recvSlots: cfg.RecvSlots, maxInFlight: cfg.MaxInFlight,
 		peers: make(map[netip.Addr]*rdmaPeer), byQPN: make(map[uint32]*linkQP), closed: make(chan struct{}),
 		eventsDone: make(chan struct{}),
 	}
-	nl := len(rx)
-	t.sendBase = nl * cfg.RecvSlots
+	t.sendBase = lanes * cfg.RecvSlots
 	total := t.sendBase + cfg.SendSlots
 	// The region stays mapped for the process's life, even after Close: a TAP writer may still
 	// hold a received slot then, and it is the process's end anyway.
@@ -269,8 +264,8 @@ func startRDMA(oe *OverlayEngine, cfg RDMAConfig, rx []*rxLane) (*rdmaTransport,
 		t.destroy()
 		return nil, err
 	}
-	for i, l := range rx {
-		ln := &rdmaLane{t: t, i: i, first: i * cfg.RecvSlots, rx: l}
+	for i := 0; i < lanes; i++ {
+		ln := &rdmaLane{t: t, i: i, first: i * cfg.RecvSlots, proc: &rxLane{oe: oe}}
 		// A lane's CQ takes the completions of the receives and of the sends of every QP on it:
 		// up to RecvSlots receives, and maxInFlight sends of each peer's QP, for up to
 		// rdmaCQPeers peers before the lane's goroutine would have to fall behind to overrun it
@@ -377,62 +372,27 @@ func (t *rdmaTransport) sendWhole(l *rdmaLink, sock int, vni uint32, h packet.Vn
 	t.post(l, sock, immWhole, b, frame.Payload)
 }
 
-// post copies parts into a send slot and posts it on the link's QP for sock. It waits, up to
-// rdmaWaitMax in all, for a free send slot and for room on the QP (fewer than maxInFlight
-// sends outstanding), and drops the message, counted, when there is none by then. A QP that
-// cannot post fails its link.
+// post copies parts into a send slot and posts it on the link's QP for sock, unless the QP
+// has maxInFlight sends outstanding or no slot is free: then the message is dropped and
+// counted. A QP that cannot post fails its link.
 func (t *rdmaTransport) post(l *rdmaLink, sock int, imm uint32, parts ...[]byte) {
 	q := l.qps[sock%l.k]
-	var deadline time.Time // set when the send first has to wait
-	wait := func() time.Duration {
-		if deadline.IsZero() {
-			deadline = time.Now().Add(rdmaWaitMax)
-			t.txWaits.Add(1)
-		}
-		return time.Until(deadline)
+	q.mu.Lock()
+	if q.gone { // the link went down and its QPs with it since the caller looked
+		q.mu.Unlock()
+		return
+	}
+	if len(q.fifo) >= t.maxInFlight {
+		q.mu.Unlock()
+		t.txFull.Add(1)
+		return
 	}
 	var slot int32
 	select {
 	case slot = <-t.sendFree:
 	default:
-		timer := time.NewTimer(wait())
-		select {
-		case slot = <-t.sendFree:
-			timer.Stop()
-		case <-timer.C:
-			t.txNoSlot.Add(1)
-			return
-		case <-t.closed:
-			timer.Stop()
-			return
-		}
-	}
-	q.mu.Lock()
-	for !q.gone && len(q.fifo) >= t.maxInFlight {
-		left := wait()
-		if left <= 0 {
-			q.mu.Unlock()
-			t.sendFree <- slot
-			t.txFull.Add(1)
-			return
-		}
-		if q.room == nil {
-			q.room = make(chan struct{})
-		}
-		room := q.room
 		q.mu.Unlock()
-		timer := time.NewTimer(left)
-		select {
-		case <-room:
-		case <-timer.C:
-		case <-t.closed:
-		}
-		timer.Stop()
-		q.mu.Lock()
-	}
-	if q.gone { // the link went down and its QPs with it since the caller looked
-		q.mu.Unlock()
-		t.sendFree <- slot
+		t.txNoSlot.Add(1)
 		return
 	}
 	buf, n := t.slot(slot), 0
@@ -463,7 +423,6 @@ func (q *linkQP) sendDone(t *rdmaTransport, slot int32) {
 				t.sendFree <- f
 			}
 			q.fifo = append(q.fifo[:0], q.fifo[i+1:]...)
-			q.signalRoom()
 			return
 		}
 	}
@@ -475,6 +434,21 @@ func (q *linkQP) sendDone(t *rdmaTransport, slot int32) {
 // channel (through the netpoller) when there is nothing.
 func (ln *rdmaLane) run() {
 	defer ln.t.wg.Done()
+	defer ln.proc.ra.release()
+	ln.sink = ln.t.oe.injector
+	var batch InjectBatch
+	if bi, ok := ln.sink.(BatchInjector); ok {
+		batch = bi.NewBatch()
+		defer batch.Release()
+		ln.sink = batch
+	}
+	held := 0 // messages processed since the batch was flushed
+	flush := func() {
+		if batch != nil && held > 0 {
+			_ = batch.Flush()
+		}
+		held = 0
+	}
 	wcs := make([]rdma.WC, rdma.MaxBatch)
 	for {
 		n, err := ln.cq.Poll(wcs)
@@ -482,6 +456,7 @@ func (ln *rdmaLane) run() {
 			return
 		}
 		if n == 0 {
+			flush() // nothing more for now: deliver what the batch holds
 			if ln.cq.Arm() != nil {
 				return
 			}
@@ -496,12 +471,18 @@ func (ln *rdmaLane) run() {
 			}
 		}
 		for i := range wcs[:n] {
-			ln.complete(&wcs[i])
+			if ln.complete(&wcs[i]) {
+				held++
+			}
+		}
+		if held >= rxDrainMax {
+			flush()
 		}
 	}
 }
 
-func (ln *rdmaLane) complete(wc *rdma.WC) {
+// complete handles a completion; it reports whether a received message went to the batch.
+func (ln *rdmaLane) complete(wc *rdma.WC) bool {
 	t := ln.t
 	t.mu.RLock()
 	q := t.byQPN[wc.QPN]
@@ -514,11 +495,11 @@ func (ln *rdmaLane) complete(wc *rdma.WC) {
 		if wc.Status != rdma.WCSuccess && q != nil {
 			t.completionFailed(q, wc.Status)
 		}
-		return
+		return false
 	}
 	j := int(slot) - ln.first
 	if j < 0 || j >= len(ln.bufs) {
-		return // not this lane's: cannot be
+		return false // not this lane's: cannot be
 	}
 	ln.posted.Add(-1)
 	if wc.Status != rdma.WCSuccess {
@@ -526,11 +507,11 @@ func (ln *rdmaLane) complete(wc *rdma.WC) {
 		if q != nil {
 			t.completionFailed(q, wc.Status)
 		}
-		return
+		return false
 	}
 	if q == nil {
 		ln.repost(slot) // a QP already gone: nothing to tell where it came from
-		return
+		return false
 	}
 	t.rxMsgs.Add(1)
 	t.rxBytes.Add(uint64(wc.Len))
@@ -543,7 +524,7 @@ func (ln *rdmaLane) complete(wc *rdma.WC) {
 		seg := int(wc.Imm & immSizeMask)
 		if seg < packet.VXLANHeaderLen || len(data) == 0 {
 			ln.invalid(slot)
-			return
+			return false
 		}
 		buf.Hold(data)
 		r = rxRead{buf: buf, seg: seg, src: src}
@@ -551,21 +532,17 @@ func (ln *rdmaLane) complete(wc *rdma.WC) {
 		if len(data) < packet.VXLANHeaderLen+packet.VnetHeaderLen+packet.EthernetHeaderLen ||
 			data[0]&(packet.VXLANFlags|packet.VXLANFlagWhole) != packet.VXLANFlags|packet.VXLANFlagWhole {
 			ln.invalid(slot)
-			return
+			return false
 		}
 		buf.Hold(data[packet.VXLANHeaderLen:])
 		r = rxRead{buf: buf, src: src, whole: true}
 	default:
 		ln.invalid(slot)
-		return
+		return false
 	}
 	t.oe.rxReads.Add(1)
-	select {
-	case ln.rx.queue <- r:
-	default:
-		t.oe.rxQueueDrops.Add(uint64(r.datagrams()))
-		buf.Release() // posts the slot again
-	}
+	ln.proc.processRead(t.ctx, ln.sink, r) // releases the buffer, or hands it on with a whole super-frame
+	return true
 }
 
 func (ln *rdmaLane) invalid(slot int32) {
@@ -693,7 +670,6 @@ func (q *linkQP) destroy(t *rdmaTransport) {
 		return
 	}
 	q.gone = true
-	q.signalRoom()
 	_ = q.qp.Close()
 	for _, s := range q.fifo {
 		t.sendFree <- s
@@ -1082,13 +1058,12 @@ type RDMAStats struct {
 	PortActive bool
 	Failed     bool // a fatal device error ended RDMA
 	Peers      []RDMAPeer
-	// Messages and bytes sent and received; sends that waited for room (TxWaits), and of those
-	// the ones dropped because the QP still had its maximum in flight (TxFull) or no send
-	// slot came free (TxNoSlot); the times a lane's receives ran low (RxLow, at most one a
-	// second per lane); completions in error (but the flushes of links taken down); links that
+	// Messages and bytes sent and received; sends dropped because the QP had its maximum in
+	// flight (TxFull) or no send slot was free (TxNoSlot); the times a lane's receives ran low
+	// (RxLow, at most one a second per lane); completions in error (but the flushes of links taken down); links that
 	// came up and that failed.
 	TxMessages, TxBytes, RxMessages, RxBytes, TxFull, TxNoSlot, CompletionErrors, LinksUp, LinkFailures uint64
-	TxWaits, RxLow                                                                                      uint64
+	RxLow                                                                                               uint64
 	RecvPosted                                                                                          []int64 // per lane
 	PinnedBytes                                                                                         int
 }
@@ -1111,7 +1086,7 @@ func (t *rdmaTransport) stats() *RDMAStats {
 		TxMessages: t.txMsgs.Load(), TxBytes: t.txBytes.Load(), RxMessages: t.rxMsgs.Load(), RxBytes: t.rxBytes.Load(),
 		TxFull: t.txFull.Load(), TxNoSlot: t.txNoSlot.Load(), CompletionErrors: t.completionErrors.Load(),
 		LinksUp: t.linksUp.Load(), LinkFailures: t.linkFailures.Load(), PinnedBytes: len(t.mem),
-		TxWaits: t.txWaits.Load(), RxLow: t.rxLow.Load(),
+		RxLow: t.rxLow.Load(),
 	}
 	for _, ln := range t.lanes {
 		st.RecvPosted = append(st.RecvPosted, ln.posted.Load())

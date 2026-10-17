@@ -667,7 +667,7 @@ func overlayRDMA(st vxlan.Stats) *api.OverlayRDMAStatus {
 	s := &api.OverlayRDMAStatus{Port: r.Port, LID: r.LID, MTU: r.MTU, RateGbps: r.RateGbps, PortActive: r.PortActive,
 		Failed: r.Failed, TxMessages: r.TxMessages, TxBytes: r.TxBytes, RxMessages: r.RxMessages, RxBytes: r.RxBytes,
 		TxFull: r.TxFull, TxNoSlot: r.TxNoSlot, CompletionErrors: r.CompletionErrors, LinksUp: r.LinksUp,
-		LinkFailures: r.LinkFailures, RecvPosted: r.RecvPosted, PinnedBytes: r.PinnedBytes, TxWaits: r.TxWaits, RxLow: r.RxLow}
+		LinkFailures: r.LinkFailures, RecvPosted: r.RecvPosted, PinnedBytes: r.PinnedBytes, RxLow: r.RxLow}
 	for _, p := range r.Peers {
 		s.Peers = append(s.Peers, api.RDMAPeerStatus{Address: p.Address, State: p.State, Why: p.Why, Failures: p.Failures, QPs: p.QPs})
 	}

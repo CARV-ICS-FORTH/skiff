@@ -221,7 +221,7 @@ type txSock struct {
 type rxLane struct {
 	oe        *OverlayEngine
 	conn      *net.UDPConn
-	queue     chan rxRead   // the reads (and RDMA messages) for the lane's worker
+	queue     chan rxRead   // the reads for the lane's worker
 	delivered atomic.Uint64 // valid VXLAN packets handed to the bridge
 	drops     atomic.Uint64 // the socket's drop count at the last datagram read from it
 
@@ -351,14 +351,14 @@ func (oe *OverlayEngine) attach(ctx context.Context, rx, tx []*net.UDPConn, tran
 		// take seconds (on a /dev mounted nodev the open fails only after about 5), and the
 		// caller may be waiting to acknowledge the handoff of the sockets, which has a deadline.
 		oe.rdmaStarting.Store(true)
-		go oe.startRDMA(*oe.cfg.RDMA, s.rx)
+		go oe.startRDMA(ctx, *oe.cfg.RDMA, len(s.rx))
 	}
 }
 
 // startRDMA starts the RDMA transport, or says why it is not used.
-func (oe *OverlayEngine) startRDMA(cfg RDMAConfig, rx []*rxLane) {
+func (oe *OverlayEngine) startRDMA(ctx context.Context, cfg RDMAConfig, lanes int) {
 	defer oe.rdmaStarting.Store(false)
-	t, err := startRDMA(oe, cfg, rx)
+	t, err := startRDMA(ctx, oe, cfg, lanes)
 	if err != nil {
 		fmt.Printf("[plaidd/rdma] RDMA is not used (%v): the overlay is UDP only\n", err)
 		return
@@ -436,8 +436,9 @@ func (oe *OverlayEngine) stopped(ctx context.Context) bool {
 }
 
 // rxRead is one read from the socket: a datagram, or with UDP_GRO several of seg bytes
-// each (the last may be shorter) one after the other. An RDMA message is one too: a run of
-// datagrams, or (whole) a TCP super-frame, its virtio header first, as deliverSuper takes it.
+// each (the last may be shorter) one after the other. An RDMA message is one too (processed
+// by its RDMA lane): a run of datagrams, or (whole) a TCP super-frame, its virtio header
+// first, as deliverSuper takes it.
 type rxRead struct {
 	buf   *packet.Buffer
 	seg   int
