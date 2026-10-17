@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 	"unsafe"
 
 	"plaid/pkg/rdma"
@@ -20,6 +21,8 @@ type fakeFabric struct {
 	devs map[string]*fakeDev
 	qps  map[uint32]*fakeQP
 	next uint32
+	// openDelay is how long opening a device takes, as on a host where it is slow.
+	openDelay time.Duration
 	// What a real device would not survive: an object used after it was destroyed, or
 	// destroyed while something made from it is alive (the order the verbs require).
 	violations []string
@@ -52,6 +55,10 @@ func (f *fakeFabric) add(name string, lid uint16) *fakeDev {
 }
 
 func (f *fakeFabric) open(p rdma.Port) (rdmaDevice, error) {
+	f.mu.Lock()
+	delay := f.openDelay
+	f.mu.Unlock()
+	time.Sleep(delay)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	d := f.devs[p.Device]

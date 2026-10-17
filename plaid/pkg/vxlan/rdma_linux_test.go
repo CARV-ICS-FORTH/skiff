@@ -381,3 +381,40 @@ func TestRDMACloseWithBuffersHeld(t *testing.T) {
 		t.Errorf("verbs order: %v", v)
 	}
 }
+
+// A device that is slow to open does not hold up the engine's start (which may be answering
+// the handoff of its sockets, under a deadline): the transport starts afterwards, and a HELLO
+// that arrives meanwhile is not refused, so the link comes up as soon as the device is open,
+// not after the 30 s that a NONE would make the peer wait.
+func TestRDMASlowDeviceDoesNotDelayTheStart(t *testing.T) {
+	fabric := newFakeFabric()
+	fabric.add("fa", 10)
+	fabric.add("fb", 14)
+	fabric.openDelay = 2 * time.Second
+	old := openRDMA
+	openRDMA = fabric.open
+	t.Cleanup(func() { openRDMA = old })
+	start := time.Now()
+	a := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1", Sockets: 2, Offload: true, Super: true, RDMA: smallRDMA("fa")}, NewRouteTable(), &rdmaRecorder{})
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("Start took %v with a device that takes 2 s to open", d)
+	}
+	fabric.mu.Lock()
+	fabric.openDelay = 0
+	fabric.mu.Unlock()
+	b := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.2", Sockets: 2, Offload: true, Super: true, RDMA: smallRDMA("fb")}, NewRouteTable(), &rdmaRecorder{})
+	if err := b.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	_, netA, _ := net.ParseCIDR("10.244.1.0/24")
+	_, netB, _ := net.ParseCIDR("10.244.2.0/24")
+	a.routes.AddRoute(&RouteEntry{Subnet: netB, RemoteHostIP: net.ParseIP("127.0.0.2").To4(), VNI: 1, Port: b.LocalPort()})
+	b.routes.AddRoute(&RouteEntry{Subnet: netA, RemoteHostIP: net.ParseIP("127.0.0.1").To4(), VNI: 1, Port: a.LocalPort()})
+	waitState(t, a, "up") // within 10 s: B was not told NONE while A's device opened
+	waitState(t, b, "up")
+}

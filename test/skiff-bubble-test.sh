@@ -210,24 +210,11 @@ run_bubble controller FAKE_HELPER=ok SLURM_JOB_ID=5 SLURM_MEM_PER_NODE=4096
 [ "$(node_memory)" = 4096 ] || fail "a job's own amount was replaced: '$(node_memory)'"
 kill -TERM "$BUBBLE_PID"; wait_exit; released
 
-# /dev/infiniband is bound into the bubble when the host has it (plaidd's RDMA transport opens
-# the devices there, and a site may give containers a minimal /dev), unless SKIFF_RDMA=off,
-# which also turns plaidd's transport off. The host is a tree of the real one (SKIFF_SYS_ROOT)
-# with a /dev/infiniband of its own.
-if [ ! -d /dev/infiniband ]; then
-    run_bubble controller FAKE_HELPER=ok
-    ! grep -q -- "--bind /dev/infiniband" "$FAKE_DIR/instance-run" || fail "/dev/infiniband was bound on a host without it"
-    kill -TERM "$BUBBLE_PID"; wait_exit; released
-fi
-sysroot="$test_dir/sysroot"
-mkdir -p "$sysroot/dev/infiniband"
-for d in proc sys etc; do ln -s "/$d" "$sysroot/$d"; done
-ln -s /dev/net "$sysroot/dev/net"
-run_bubble controller FAKE_HELPER=ok SKIFF_SYS_ROOT="$sysroot"
-grep -q -- "--bind /dev/infiniband " "$FAKE_DIR/instance-run" || { cat "$FAKE_DIR/instance-run" >&2; fail "/dev/infiniband was not bound into the bubble"; }
-kill -TERM "$BUBBLE_PID"; wait_exit; released
-run_bubble controller FAKE_HELPER=ok SKIFF_SYS_ROOT="$sysroot" SKIFF_RDMA=off
-! grep -q -- "--bind /dev/infiniband" "$FAKE_DIR/instance-run" || fail "/dev/infiniband was bound with SKIFF_RDMA=off"
+# SKIFF_RDMA=off turns plaidd's RDMA transport off. (/dev/infiniband is not bound into the
+# bubble: Apptainer mounts a bind nodev, where the devices cannot be opened; the bubble has
+# them through Apptainer's own mount of the host's /dev.)
+run_bubble controller FAKE_HELPER=ok SKIFF_RDMA=off
+! grep -q -- "--bind /dev/infiniband" "$FAKE_DIR/instance-run" || fail "/dev/infiniband was bound into the bubble"
 grep -q -- "--env PLAID_RDMA=false " "$FAKE_DIR/instance-run" || fail "SKIFF_RDMA=off did not turn plaidd's transport off"
 kill -TERM "$BUBBLE_PID"; wait_exit; released
 

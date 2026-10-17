@@ -1351,16 +1351,10 @@ skiff_bubble() {
     local nv=()
     skiff_node_grant
     if [ -n "$SKIFF_NODE_GPUS" ]; then nv=(--nv); fi
-    # /dev/infiniband: plaidd's RDMA transport opens the InfiniBand devices from the bubble.
-    # Apptainer gives the bubble the host's /dev, unless a site has it give a minimal one;
-    # bound here, they are there either way.
-    local ib=()
-    if [ "$SKIFF_RDMA" != off ] && [ -d "$(_skiff_sys /dev/infiniband)" ]; then ib=(--bind /dev/infiniband); fi
     apptainer instance run \
     	--fakeroot \
     	--ignore-fakeroot-command \
     	${nv[@]+"${nv[@]}"} \
-    	${ib[@]+"${ib[@]}"} \
     	--no-mount home \
     	--no-mount cwd \
     	--no-mount hostfs \

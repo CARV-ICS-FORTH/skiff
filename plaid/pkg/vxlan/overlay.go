@@ -188,6 +188,9 @@ type OverlayEngine struct {
 	peers     peers
 	clock     func() int64 // nanoseconds from some start; a variable so that tests can move it
 	rd        atomic.Pointer[rdmaTransport]
+	// rdmaStarting: the transport is being started (see attach); control datagrams are not
+	// answered meanwhile.
+	rdmaStarting atomic.Bool
 }
 
 var clockStart = time.Now()
@@ -339,20 +342,37 @@ func (oe *OverlayEngine) attach(ctx context.Context, rx, tx []*net.UDPConn, tran
 	}
 	oe.transport.Store(transport)
 	oe.socks.Store(s)
-	if oe.cfg.RDMA != nil {
-		if t, err := startRDMA(oe, *oe.cfg.RDMA, s.rx); err != nil {
-			fmt.Printf("[plaidd/rdma] RDMA is not used (%v): the overlay is UDP only\n", err)
-		} else {
-			oe.rd.Store(t)
-			a := t.attr
-			fmt.Printf("[plaidd/rdma] RDMA offered on %s (LID %d, MTU %d, %d Gb/s, %s; %d lanes, %d MiB registered)\n",
-				t.port, a.LID, a.MTU, a.RateGbps, a.State, len(t.lanes), len(t.mem)>>20)
-		}
-	}
 	for _, l := range s.rx {
 		go l.readLoop(ctx, l.queue)
 		go l.processLoop(ctx, l.queue)
 	}
+	if oe.cfg.RDMA != nil {
+		// Started once the sockets work, not before the caller goes on: opening a device can
+		// take seconds (on a /dev mounted nodev the open fails only after about 5), and the
+		// caller may be waiting to acknowledge the handoff of the sockets, which has a deadline.
+		oe.rdmaStarting.Store(true)
+		go oe.startRDMA(*oe.cfg.RDMA, s.rx)
+	}
+}
+
+// startRDMA starts the RDMA transport, or says why it is not used.
+func (oe *OverlayEngine) startRDMA(cfg RDMAConfig, rx []*rxLane) {
+	defer oe.rdmaStarting.Store(false)
+	t, err := startRDMA(oe, cfg, rx)
+	if err != nil {
+		fmt.Printf("[plaidd/rdma] RDMA is not used (%v): the overlay is UDP only\n", err)
+		return
+	}
+	oe.rd.Store(t)
+	select {
+	case <-oe.closedChan: // the engine closed while the transport started (Close may not have seen it)
+		t.close()
+		return
+	default:
+	}
+	a := t.attr
+	fmt.Printf("[plaidd/rdma] RDMA offered on %s (LID %d, MTU %d, %d Gb/s, %s; %d lanes, %d MiB registered)\n",
+		t.port, a.LID, a.MTU, a.RateGbps, a.State, len(t.lanes), len(t.mem)>>20)
 }
 
 // LocalPort returns the actual bound port of the receive sockets (useful for tests using
@@ -541,7 +561,7 @@ func (l *rxLane) process(sink FrameInjector, datagram []byte, src netip.AddrPort
 	if flags&(packet.VXLANFlags|packet.VXLANFlagControl) == packet.VXLANFlagControl {
 		if t := oe.rd.Load(); t != nil {
 			t.control(src.Addr(), datagram[packet.VXLANHeaderLen:])
-		} else {
+		} else if !oe.rdmaStarting.Load() { // (while it starts, the peer's next HELLO is answered)
 			oe.noRDMA(src.Addr(), datagram[packet.VXLANHeaderLen:])
 		}
 		return
