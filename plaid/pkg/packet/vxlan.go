@@ -12,13 +12,18 @@ const (
 	DefaultVNI       = 1
 )
 
-// Two of the header's reserved flag bits, which RFC 7348 says a receiver ignores and
-// ParseVXLAN does (it checks the I flag only): a node that sends the first says that it
-// takes TCP super-frames whole, and the second marks a datagram as a chunk of one (see
-// the vxlan package). They are not bits that Linux's own VXLAN device gives a meaning.
+// Reserved flag bits of the header, which RFC 7348 says a receiver ignores and ParseVXLAN
+// does (it checks the I flag only): a node that sends SuperOK says that it takes TCP
+// super-frames whole, and Chunk marks a datagram as a chunk of one (see the vxlan
+// package). Control marks a control datagram of the RDMA transport, which is sent without
+// the I flag, so that ParseVXLAN rejects it; Whole marks, inside an RDMA message only, a
+// super-frame that follows whole. They are not bits that Linux's own VXLAN device gives a
+// meaning.
 const (
 	VXLANFlagSuperOK = 0x20
 	VXLANFlagChunk   = 0x10
+	VXLANFlagControl = 0x40
+	VXLANFlagWhole   = 0x04
 )
 
 var (

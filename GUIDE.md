@@ -198,6 +198,8 @@ sbatch --nodes=2 --export=ALL,SKIFF_POD_CIDR=10.200.0.0/16,SKIFF_SERVICE_CIDR=10
 | `SKIFF_UPLINK_MTU` | the smallest MTU of the nodes' interfaces on the way to the controller, else `1500` | MTU of the links between the bubbles (read from the interfaces unless `SKIFF_UPLINK_MTU` or `SKIFF_POD_MTU` is set; a node that reaches the controller through a gateway keeps `1500`, since a link of the path may be smaller) |
 | `SKIFF_NETWORK` | `auto` | The network the nodes use to reach each other, chosen on the controller: `auto` (the fastest physical interface that is up and has an IPv4 address), an interface name (`enp130s0`) or an IPv4 network (`10.0.1.0/24`) the controller has an address in |
 | `SKIFF_SLIRP_MTU` | `65520` | MTU of each bubble's link to slirp4netns, which is faster the larger it is; between 576 and 65520, at least `SKIFF_POD_MTU`. Pods keep their MTU: Plaid joins what they send and cuts what comes back |
+| `SKIFF_RDMA` | `auto` | The pod network over InfiniBand RDMA: `auto` lets every node with an active InfiniBand port offer it, and two nodes that both do carry what their pods send each other over RDMA, everything else over UDP; `off` keeps the whole cluster on UDP (all nodes alike, or to compare). See [InfiniBand](#infiniband) |
+| `SKIFF_RDMA_DEVICE` | `auto` | The InfiniBand port where a node has several (`mlx5_0` or `mlx5_0:1`); `auto` takes the port of the cluster's network when that is IPoIB, else the first active InfiniBand port |
 | `SKIFF_TMP_DIR` | `/tmp/.skiff.<uid>` | The node's scratch directory (see [Directories](#directories)) |
 
 Each bubble's log starts with the effective configuration. On nodes with several networks (a management network and a fabric, say) the address of the controller decides which one the cluster uses, and a fabric with a larger MTU carries pod traffic several times faster than the default 1500. The job's output says what was chosen (`Network: enp130s0 10.0.1.11 (56000 Mb/s, SKIFF_NETWORK=auto)`, `MTU: ... (from the interfaces)`); to see it before submitting, run the probe on the controller's node, and on the others with the controller's address:
@@ -208,6 +210,12 @@ srun -N2 --ntasks-per-node=1 bash ~/skiff/scripts/skiff.sh network-probe 10.0.1.
 ```
 
 Both only read the node's interfaces and need no privileges.
+
+### InfiniBand
+
+On nodes with an active InfiniBand port (Mellanox/NVIDIA ConnectX-4 or later, native InfiniBand, not RoCE) Plaid carries the pod network between them over RDMA instead of UDP, by itself (`SKIFF_RDMA=auto`): each node offers it to the others over the pod network's own UDP path, two nodes that both offer it connect their queue pairs, and what their pods send each other then goes over RDMA, with a TCP stream's large segments in one message each. Everything else stays as it is: nodes without InfiniBand, or with `SKIFF_RDMA=off`, use UDP, and a cluster may mix them. Nothing of the site's RDMA software is used (plaidd carries its own), and nothing needs an administrator beyond what the node has for MPI: `/dev/infiniband`, and a locked-memory limit (`ulimit -l`) of at least 72 MiB, which `skiff.sh check` reports for each node with InfiniBand (a lower one is a warning: that node uses UDP).
+
+`plaidctl status` in a bubble (`apptainer exec instance://bubble1 plaidctl status`) has a line `RDMA:` with the port and its counters, and a line for each other node: `up` with its queue pairs, or why not. A link that fails (the other node's adapter stopped answering for about seven seconds) puts that pair of nodes on UDP at once and is set up again when the port is active and the other node answers, up to three times; an error that should not happen leaves the pair on UDP. The job's output says each of these.
 
 ## Directories
 

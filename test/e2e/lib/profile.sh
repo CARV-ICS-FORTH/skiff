@@ -40,7 +40,7 @@ profile_required_cases() {
         T60-pod-names-and-dns T61-termination-message T62-stop-signal T63-api-service \
         T64-crash-loop-backoff T65-restart-sees-new-config T66-volume-updates \
         T67-statefulset T68-daemonset T69-job-retries T70-cronjob T71-kubectl-cp T72-file-modes T73-status-repaired \
-        T74-system-images
+        T74-system-images T79-links T79-traffic
 }
 
 profile_is_required() {
@@ -151,5 +151,5 @@ profile_merge_subresults() {
 #   34 35   NVIDIA GPUs (UNAVAILABLE on a cluster without them), memory volumes and /dev/shm
 # (NET-3, the TAP acceptance checks, is run after them by the runner.)
 profile_smoke_cases() {
-    echo 02 03 04 05 06 20 23 24 27 28 29 30 31 32 33 34 35
+    echo 02 03 04 05 06 20 23 24 27 28 29 30 31 32 33 34 35 37
 }

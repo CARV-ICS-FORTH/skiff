@@ -457,6 +457,7 @@ run_workload_cases() {
     run_case "34" "gpu"
     run_case "35" "memory-volumes"
     run_case "36" "controllers"
+    run_case "37" "rdma"
     run_overlay_startup_failures
     run_fresh_job_storage
     run_alternative_network
@@ -571,6 +572,7 @@ if [ -n "$ONLY_CASE" ]; then
             34) run_case "34" "gpu" ;;
             35) run_case "35" "memory-volumes" ;;
             36) run_case "36" "controllers" ;;
+            37) run_case "37" "rdma" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

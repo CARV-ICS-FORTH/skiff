@@ -51,6 +51,9 @@ check "the smallest pod MTU" 0 "" 2 -- SKIFF_POD_MTU=576
 check "the slirp4netns link at the pod MTU, and at the most it takes" 0 "" 2 -- SKIFF_SLIRP_MTU=1450
 check "the largest slirp4netns MTU" 0 "" 2 -- SKIFF_SLIRP_MTU=65520
 check "a slirp4netns MTU that is a larger pod MTU" 0 "" 2 -- SKIFF_UPLINK_MTU=9000 SKIFF_POD_MTU=8950 SKIFF_SLIRP_MTU=8950
+check "RDMA off" 0 "" 2 -- SKIFF_RDMA=off
+check "an RDMA device" 0 "" 2 -- SKIFF_RDMA_DEVICE=mlx5_0
+check "an RDMA device and port" 0 "" 2 -- SKIFF_RDMA_DEVICE=mlx5_1:2
 
 # --- refused, with the reason -----------------------------------------------------
 check "malformed pod CIDR" 1 'SKIFF_POD_CIDR.*not an IPv4 network' 2 -- SKIFF_POD_CIDR=10.244.0.0
@@ -82,6 +85,9 @@ check "a job instance that is a path" 1 'SKIFF_JOB_INSTANCE.*not a job instance 
 check "an empty setting means the default" 0 "" 2 -- SKIFF_CLUSTER_DOMAIN= SKIFF_POD_CIDR=
 check "MTU that is not a number" 1 'SKIFF_POD_MTU.*not an MTU' 2 -- SKIFF_POD_MTU=big
 check "MTU below the minimum" 1 'SKIFF_POD_MTU.*at least 576' 2 -- SKIFF_POD_MTU=500
+check "RDMA neither auto nor off" 1 'SKIFF_RDMA: "on" is not auto or off' 2 -- SKIFF_RDMA=on
+check "an RDMA device with a space" 1 'SKIFF_RDMA_DEVICE: "mlx5 0" is not auto or an RDMA device' 2 -- "SKIFF_RDMA_DEVICE=mlx5 0"
+check "an RDMA device's port 0" 1 'SKIFF_RDMA_DEVICE: "mlx5_0:0" is not' 2 -- SKIFF_RDMA_DEVICE=mlx5_0:0
 check "slirp4netns MTU that is not a number" 1 'SKIFF_SLIRP_MTU.*not an MTU' 2 -- SKIFF_SLIRP_MTU=big
 check "slirp4netns MTU below the minimum" 1 'SKIFF_SLIRP_MTU.*between 576 and 65520' 2 -- SKIFF_SLIRP_MTU=500
 check "slirp4netns MTU above what it takes" 1 'SKIFF_SLIRP_MTU.*between 576 and 65520' 2 -- SKIFF_SLIRP_MTU=65521
@@ -319,6 +325,31 @@ expect "and told how to get them from the image" "$(grep -c "skiff.sh download" 
 mkdir "$nodedir/only-socat-missing"; for tool in apptainer slirp4netns ip; do ln -s "$nodedir/tools/$tool" "$nodedir/only-socat-missing/$tool"; done
 out=$(node_check "$nodedir/only-socat-missing:$nodedir/base" "$nodedir/scratch"); status=$?
 expect "only what is missing is named" "$status:$(grep -o 'PATH:.*(' <<< "$out")" "1:PATH: socat ("
+
+# InfiniBand: an active port is reported with the locked-memory limit, which must allow what
+# plaidd's RDMA transport pins (a lower one is a warning: the node will use UDP); an Ethernet
+# port (RoCE) is not taken, and SKIFF_RDMA=off says nothing. The test cannot raise the limit,
+# only lower it, so what an unchanged limit gives depends on the machine's.
+ibport() { mkdir -p "$nodedir/sys/sys/class/infiniband/$1/ports/$2"; echo "$3" > "$nodedir/sys/sys/class/infiniband/$1/ports/$2/state"; echo "$4" > "$nodedir/sys/sys/class/infiniband/$1/ports/$2/link_layer"; }
+ibport mlx5_1 1 "4: ACTIVE" Ethernet
+out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+expect "a RoCE port alone is not reported" "$status:$out" "0:"
+ibport mlx5_0 1 "4: ACTIVE" InfiniBand
+ibport mlx5_2 1 "1: DOWN" InfiniBand
+pinned=$(bash -c 'source "$1"; echo "$SKIFF_RDMA_PINNED_KB"' _ "$repo_dir/scripts/skiff.sh")
+limit=$(ulimit -l)
+out=$(node_check "$GOOD" "$nodedir/scratch"); status=$?
+if [ "$limit" = unlimited ] || [ "$limit" -ge "$pinned" ]; then
+    expect "an active InfiniBand port is reported, the others not" "$status:$out" "0:$(hostname): RDMA: InfiniBand mlx5_0:1, locked memory $limit$([ "$limit" = unlimited ] || echo " KiB")"
+else
+    expect "an active InfiniBand port, under this machine's low limit" "$status:$(grep -c "WARNING: InfiniBand mlx5_0:1, but the locked-memory limit (ulimit -l) is $limit KiB" <<< "$out")" "0:1"
+fi
+low=$(( pinned / 2 )); [ "$limit" != unlimited ] && [ "$limit" -lt "$low" ] && low=$limit
+out=$(env -i PATH="$GOOD" SKIFF_TMP_DIR="$nodedir/scratch" SKIFF_SYS_ROOT="$nodedir/sys" "$BASH" -c 'ulimit -S -l "$3"; source "$1"; skiff_check_node "$2"' _ "$repo_dir/scripts/skiff.sh" "" "$low" 2>&1); status=$?
+expect "a locked-memory limit below what RDMA pins is a warning, not a refusal" "$status:$(grep -c "WARNING: InfiniBand mlx5_0:1, but the locked-memory limit (ulimit -l) is $low KiB, below the $pinned KiB.*SKIFF_RDMA=off" <<< "$out")" "0:1"
+out=$(node_check "$GOOD" "$nodedir/scratch" "" SKIFF_RDMA=off); status=$?
+expect "with SKIFF_RDMA=off nothing is said of InfiniBand" "$status:$out" "0:"
+rm -rf "$nodedir/sys/sys/class/infiniband"
 
 # versions: older than the qualified ones is reported and not refused
 out=$(node_check "$GOOD" "$nodedir/scratch" "" FAKE_APPTAINER=1.4.0); status=$?

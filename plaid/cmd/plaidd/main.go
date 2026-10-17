@@ -24,6 +24,7 @@ import (
 	"plaid/pkg/ipam"
 	"plaid/pkg/k8s"
 	"plaid/pkg/packet"
+	"plaid/pkg/rdma"
 	"plaid/pkg/slirp"
 	"plaid/pkg/slirpapi"
 	"plaid/pkg/svc"
@@ -55,23 +56,30 @@ type PlaidDaemon struct {
 }
 
 type Config struct {
-	SocketPath        string
-	NodeCIDR          string
-	ClusterCIDR       string
-	GatewayIP         string
-	GatewayMAC        string
-	BubbleMAC         string
-	GatewayMode       string
-	Uplink            string
-	UplinkAddress     string
-	ServiceCIDR       string
-	Resolver          string
-	VXLANPort         int
-	VXLANVNI          int
-	VXLANBind         string
-	OverlayHandoff    string
-	OverlaySockets    int
-	Offload           bool
+	SocketPath     string
+	NodeCIDR       string
+	ClusterCIDR    string
+	GatewayIP      string
+	GatewayMAC     string
+	BubbleMAC      string
+	GatewayMode    string
+	Uplink         string
+	UplinkAddress  string
+	ServiceCIDR    string
+	Resolver       string
+	VXLANPort      int
+	VXLANVNI       int
+	VXLANBind      string
+	OverlayHandoff string
+	OverlaySockets int
+	Offload        bool
+	// RDMA lets the overlay offer its RDMA transport (see vxlan.RDMAConfig) on RDMADevice,
+	// or, when that is empty, on the port behind RDMAInterface (the host's interface of the
+	// cluster's network, which plaidd cannot see from a bubble) or the first active
+	// InfiniBand port.
+	RDMA              bool
+	RDMADevice        string
+	RDMAInterface     string
 	UplinkMTU         int
 	SlirpBin          string
 	SlirpSocket       string
@@ -121,6 +129,9 @@ func main() {
 	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP sockets, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
 	flag.IntVar(&cfg.OverlaySockets, "overlay-sockets", vxlan.DefaultSockets, "Receive sockets of the overlay (1 to 16), in one SO_REUSEPORT group, each read and processed by its own goroutines so that what a node receives is not limited to one core, and four times as many send sockets, so that the kernel of the receiving node spreads the flows over its sockets. Only when plaidd opens the VXLAN port itself: with --overlay-handoff the helper's --sockets decides. The wire format is the same for any number, and nodes with different numbers interoperate")
 	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay sockets. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call, and a pod's TCP super-frames are cut instead of being written whole to the other pods and the bubble of this node or sent whole to other nodes (a node still receives the ones that arrive)")
+	flag.BoolVar(&cfg.RDMA, "rdma", envBool(EnvRDMA, true), "Offer the overlay's RDMA transport to the nodes plaidd has routes to, over reliable-connected queue pairs on an active InfiniBand port: what the overlay sends to a node that offers it too goes over RDMA, everything else over the UDP sockets as without it. false (or $"+EnvRDMA+"=false): UDP only, and the offers of other nodes are declined")
+	flag.StringVar(&cfg.RDMADevice, "rdma-device", os.Getenv(EnvRDMADevice), "The InfiniBand port of the RDMA transport, DEVICE or DEVICE:PORT (e.g. mlx5_0 or mlx5_0:1); empty: the port behind --rdma-interface if it is an active InfiniBand port, else the first active InfiniBand port (default: $"+EnvRDMADevice+")")
+	flag.StringVar(&cfg.RDMAInterface, "rdma-interface", os.Getenv(EnvRDMAInterface), "The host's network interface of the cluster's network (e.g. an IPoIB interface), whose InfiniBand port the RDMA transport prefers (default: $"+EnvRDMAInterface+")")
 	flag.IntVar(&cfg.UplinkMTU, "uplink-mtu", 0, "MTU of the bubble's TAP (plaid0) and of its link to slirp4netns in tap mode, which may be much larger than the pods' (at most 65520), so that slirp4netns, which pays for every packet, moves fewer: what a pod sends is joined into packets of up to this size, and larger packets from the bubble are cut for the pods. 0: the pod MTU")
 	flag.StringVar(&cfg.SlirpBin, "slirp-bin", "slirp4netns", "Path to slirp4netns binary")
 	flag.StringVar(&cfg.SlirpSocket, "slirp-socket", "/run/plaid/slirp.sock", "UNIX socket path for slirp BESS mode")
@@ -340,6 +351,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		Sockets:     cfg.OverlaySockets,
 		Offload:     cfg.Offload,
 		Super:       cfg.Offload,
+		RDMA:        rdmaConfig(&cfg),
 	}, routes, bridgeInjector{b})
 
 	var slirpMgr *slirp.SlirpManager
@@ -601,6 +613,67 @@ func (d *PlaidDaemon) receiveOverlaySocket(ctx context.Context) error {
 	return nil
 }
 
+// The environment variables that the RDMA flags default to.
+const (
+	EnvRDMA          = "PLAID_RDMA"
+	EnvRDMADevice    = "PLAID_RDMA_DEVICE"
+	EnvRDMAInterface = "PLAID_RDMA_INTERFACE"
+)
+
+// envBool is a boolean variable's value: false for false, 0, no and off, true for true, 1,
+// yes and on, def when it is unset or empty (or anything else, which is said).
+func envBool(name string, def bool) bool {
+	switch strings.ToLower(os.Getenv(name)) {
+	case "":
+		return def
+	case "false", "0", "no", "off":
+		return false
+	case "true", "1", "yes", "on":
+		return true
+	}
+	fmt.Fprintf(os.Stderr, "Warning: $%s=%q is neither true nor false; taken as %t\n", name, os.Getenv(name), def)
+	return def
+}
+
+// rdmaConfig is the overlay's RDMA transport as the flags ask for it, nil for none (said).
+func rdmaConfig(cfg *Config) *vxlan.RDMAConfig {
+	if !cfg.RDMA {
+		fmt.Println("[plaidd/rdma] RDMA is off (--rdma=false): the overlay is UDP only")
+		return nil
+	}
+	if cfg.RDMADevice != "" {
+		p, err := rdma.ParsePort(cfg.RDMADevice)
+		if err != nil {
+			fmt.Printf("[plaidd/rdma] --rdma-device: %v: the overlay is UDP only\n", err)
+			return nil
+		}
+		return &vxlan.RDMAConfig{Port: p}
+	}
+	p, why, err := rdma.Choose(rdma.SysRoot, cfg.RDMAInterface)
+	if err != nil {
+		fmt.Printf("[plaidd/rdma] RDMA is not used (%v): the overlay is UDP only\n", err)
+		return nil
+	}
+	fmt.Printf("[plaidd/rdma] %s: %s\n", p, why)
+	return &vxlan.RDMAConfig{Port: p}
+}
+
+// overlayRDMA is the status of the overlay's RDMA transport, nil without one.
+func overlayRDMA(st vxlan.Stats) *api.OverlayRDMAStatus {
+	r := st.RDMA
+	if r == nil {
+		return nil
+	}
+	s := &api.OverlayRDMAStatus{Port: r.Port, LID: r.LID, MTU: r.MTU, RateGbps: r.RateGbps, PortActive: r.PortActive,
+		Failed: r.Failed, TxMessages: r.TxMessages, TxBytes: r.TxBytes, RxMessages: r.RxMessages, RxBytes: r.RxBytes,
+		TxFull: r.TxFull, TxNoSlot: r.TxNoSlot, CompletionErrors: r.CompletionErrors, LinksUp: r.LinksUp,
+		LinkFailures: r.LinkFailures, RecvPosted: r.RecvPosted, PinnedBytes: r.PinnedBytes}
+	for _, p := range r.Peers {
+		s.Peers = append(s.Peers, api.RDMAPeerStatus{Address: p.Address, State: p.State, Why: p.Why, Failures: p.Failures, QPs: p.QPs})
+	}
+	return s
+}
+
 func closeAll(conns []*net.UDPConn) {
 	for _, c := range conns {
 		_ = c.Close()
@@ -794,6 +867,7 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		OverlayRxPerSocket:  ov.RxPerSocket,
 		OverlayOffload:      overlayOffload(ov),
 		OverlaySuper:        d.overlaySuper(ov),
+		OverlayRDMA:         overlayRDMA(ov),
 		TapOffload:          d.tapOffload(),
 		TapPipeline:         d.tapPipeline(),
 		EndpointsCount:      len(eps),

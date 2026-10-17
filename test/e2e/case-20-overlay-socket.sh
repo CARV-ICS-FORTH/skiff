@@ -64,9 +64,16 @@ no_forward() {
 e2e_subcase_run T21-no-forward no_forward
 
 # counters NODE: "tx txerrors rx rxinvalid rxdropped" from plaidctl status, each found by its
-# name: the line has more fields than these, and gains some.
+# name: the line has more fields than these, and gains some. tx and rx count what the overlay
+# carried over UDP (datagrams) and over RDMA (messages, from the RDMA line, when the nodes have
+# InfiniBand: see case 37).
 counters() {
-    runtime_plaidctl "$1" status | sed -n 's/^Overlay:.*[(, ]tx=\([0-9]*\).*, tx errors=\([0-9]*\), rx=\([0-9]*\).*, rx invalid=\([0-9]*\), rx dropped=\([0-9]*\).*/\1 \2 \3 \4 \5/p'
+    local status rdma_tx rdma_rx
+    status=$(runtime_plaidctl "$1" status)
+    rdma_tx=$(sed -n 's/^RDMA:.*: tx \([0-9]*\) messages, .*/\1/p' <<< "$status")
+    rdma_rx=$(sed -n 's/^RDMA:.*, rx \([0-9]*\) messages, .*/\1/p' <<< "$status")
+    sed -n 's/^Overlay:.*[(, ]tx=\([0-9]*\).*, tx errors=\([0-9]*\), rx=\([0-9]*\).*, rx invalid=\([0-9]*\), rx dropped=\([0-9]*\).*/\1 \2 \3 \4 \5/p' <<< "$status" |
+        awk -v t="${rdma_tx:-0}" -v r="${rdma_rx:-0}" '{print $1 + t, $2, $3 + r, $4, $5}'
 }
 
 # Cross-node traffic moves the overlay counters of both ends, from the first node to every other

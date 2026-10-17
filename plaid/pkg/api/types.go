@@ -170,6 +170,7 @@ type Response struct {
 	// of the TAPs.
 	OverlayOffload string              `json:"overlay_offload,omitempty"`
 	OverlaySuper   *OverlaySuperStatus `json:"overlay_super,omitempty"`
+	OverlayRDMA    *OverlayRDMAStatus  `json:"overlay_rdma,omitempty"`
 	TapOffload     *TapOffloadStatus   `json:"tap_offload,omitempty"`
 	TapPipeline    *TapPipelineStatus  `json:"tap_pipeline,omitempty"`
 
@@ -203,6 +204,42 @@ type OverlaySuperStatus struct {
 	Evicted  uint64 `json:"evicted"`
 	Peers    int    `json:"peers"`
 	TxFailed uint64 `json:"tx_failed"`
+}
+
+// OverlayRDMAStatus reports the overlay's RDMA transport, when it has one: the port it is
+// offered on (its LID, IB MTU and rate, and whether it is active), whether a fatal device
+// error ended it, each peer's link (its state, why it is not up, its failures and the QPs it
+// uses), the messages and bytes sent and received, the sends dropped because a QP had its
+// most in flight or no send slot was free, the completions in error, the links that came up
+// and that failed, the receives posted on each lane and the registered (pinned) memory.
+type OverlayRDMAStatus struct {
+	Port             string           `json:"port"`
+	LID              uint16           `json:"lid"`
+	MTU              int              `json:"mtu"`
+	RateGbps         int              `json:"rate_gbps"`
+	PortActive       bool             `json:"port_active"`
+	Failed           bool             `json:"failed,omitempty"`
+	Peers            []RDMAPeerStatus `json:"peers,omitempty"`
+	TxMessages       uint64           `json:"tx_messages"`
+	TxBytes          uint64           `json:"tx_bytes"`
+	RxMessages       uint64           `json:"rx_messages"`
+	RxBytes          uint64           `json:"rx_bytes"`
+	TxFull           uint64           `json:"tx_full"`
+	TxNoSlot         uint64           `json:"tx_no_slot"`
+	CompletionErrors uint64           `json:"completion_errors"`
+	LinksUp          uint64           `json:"links_up"`
+	LinkFailures     uint64           `json:"link_failures"`
+	RecvPosted       []int64          `json:"recv_posted,omitempty"`
+	PinnedBytes      int              `json:"pinned_bytes"`
+}
+
+// RDMAPeerStatus is a peer's RDMA link.
+type RDMAPeerStatus struct {
+	Address  string `json:"address"`
+	State    string `json:"state"`
+	Why      string `json:"why,omitempty"`
+	Failures int    `json:"failures,omitempty"`
+	QPs      int    `json:"qps,omitempty"`
 }
 
 // TapPipelineStatus reports the pipelines of the TAPs, which split the work of a TAP

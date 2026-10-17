@@ -65,7 +65,10 @@ exit 0
 STUB
 cat > "$test_dir/bin/ip" <<'STUB'
 #!/usr/bin/env bash
-echo "192.0.2.1 dev eth0 src 192.0.2.10 uid 0"
+case "$*" in
+    "-o -4 addr show") echo "3: ib0    inet 192.0.2.10/24 brd 192.0.2.255 scope global ib0\       valid_lft forever preferred_lft forever" ;;
+    *) echo "192.0.2.1 dev eth0 src 192.0.2.10 uid 0" ;;
+esac
 STUB
 cat > "$test_dir/bin/slirp4netns" <<STUB
 #!/usr/bin/env bash
@@ -166,6 +169,10 @@ tcp 127.0.0.1 6443 $guest 6443"
 grep -q -- "--mtu=$SKIFF_SLIRP_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&2; fail "slirp4netns was not started at the MTU of its link"; }
 [ "$SKIFF_SLIRP_MTU" -gt "$SKIFF_POD_MTU" ] || fail "the test does not tell the slirp4netns link from the pod MTU"
 grep -q -- "--env SKIFF_SLIRP_MTU=$SKIFF_SLIRP_MTU " "$FAKE_DIR/instance-run" || fail "the bubble was not told the MTU of the slirp4netns link"
+# plaidd's RDMA transport: on (SKIFF_RDMA=auto), its device chosen by plaidd, and the host's
+# interface of the node's address, which plaidd cannot see from the bubble
+grep -q -- "--env PLAID_RDMA=true --env PLAID_RDMA_DEVICE= --env PLAID_RDMA_INTERFACE=ib0 " "$FAKE_DIR/instance-run" ||
+    { cat "$FAKE_DIR/instance-run" >&2; fail "the bubble was not given plaidd's RDMA settings"; }
 
 # The helper was started once, from the image, with the host address, the port and the
 # handoff socket in the scratch directory; the bubble was told where it is, got the
@@ -201,6 +208,27 @@ run_bubble controller FAKE_HELPER=ok SLURM_JOB_ID=5 SLURM_MEM_PER_NODE=0
 kill -TERM "$BUBBLE_PID"; wait_exit; released
 run_bubble controller FAKE_HELPER=ok SLURM_JOB_ID=5 SLURM_MEM_PER_NODE=4096
 [ "$(node_memory)" = 4096 ] || fail "a job's own amount was replaced: '$(node_memory)'"
+kill -TERM "$BUBBLE_PID"; wait_exit; released
+
+# /dev/infiniband is bound into the bubble when the host has it (plaidd's RDMA transport opens
+# the devices there, and a site may give containers a minimal /dev), unless SKIFF_RDMA=off,
+# which also turns plaidd's transport off. The host is a tree of the real one (SKIFF_SYS_ROOT)
+# with a /dev/infiniband of its own.
+if [ ! -d /dev/infiniband ]; then
+    run_bubble controller FAKE_HELPER=ok
+    ! grep -q -- "--bind /dev/infiniband" "$FAKE_DIR/instance-run" || fail "/dev/infiniband was bound on a host without it"
+    kill -TERM "$BUBBLE_PID"; wait_exit; released
+fi
+sysroot="$test_dir/sysroot"
+mkdir -p "$sysroot/dev/infiniband"
+for d in proc sys etc; do ln -s "/$d" "$sysroot/$d"; done
+ln -s /dev/net "$sysroot/dev/net"
+run_bubble controller FAKE_HELPER=ok SKIFF_SYS_ROOT="$sysroot"
+grep -q -- "--bind /dev/infiniband " "$FAKE_DIR/instance-run" || { cat "$FAKE_DIR/instance-run" >&2; fail "/dev/infiniband was not bound into the bubble"; }
+kill -TERM "$BUBBLE_PID"; wait_exit; released
+run_bubble controller FAKE_HELPER=ok SKIFF_SYS_ROOT="$sysroot" SKIFF_RDMA=off
+! grep -q -- "--bind /dev/infiniband" "$FAKE_DIR/instance-run" || fail "/dev/infiniband was bound with SKIFF_RDMA=off"
+grep -q -- "--env PLAID_RDMA=false " "$FAKE_DIR/instance-run" || fail "SKIFF_RDMA=off did not turn plaidd's transport off"
 kill -TERM "$BUBBLE_PID"; wait_exit; released
 
 # A bubble of a job of the launcher (skiff.sh start) ends when its lease says stop, as on TERM:

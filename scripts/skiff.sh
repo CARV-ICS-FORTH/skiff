@@ -73,6 +73,15 @@ if [ -n "${SKIFF_UPLINK_MTU:-}" ] || [ -n "${SKIFF_POD_MTU:-}" ]; then SKIFF_MTU
 # pods send into packets of this size and cuts what comes back for the pods, whose MTU
 # stays as it is. 65520 is the most slirp4netns takes.
 : "${SKIFF_SLIRP_MTU:=65520}"
+# The pod network over InfiniBand RDMA (Plaid's RDMA transport): `auto` lets every node that
+# has an active InfiniBand port offer it, and two nodes that both do carry what their pods
+# send each other over RDMA, everything else over UDP as without it; `off` keeps the whole
+# cluster on UDP (all nodes alike, or to compare). SKIFF_RDMA_DEVICE names the port where a
+# node has several (DEVICE or DEVICE:PORT, for example mlx5_0:1); `auto` takes the port of
+# the cluster's network (SKIFF_NETWORK) when that is IPoIB, else the first active
+# InfiniBand port.
+: "${SKIFF_RDMA:=auto}"
+: "${SKIFF_RDMA_DEVICE:=auto}"
 # The node's scratch directory, for runtimes whose scratch space is not /tmp: pod
 # runtime state, Apptainer's image conversion and unpacking, and the socket between
 # the host and the bubble live below it. It is node-local and disposable (a shared
@@ -350,6 +359,15 @@ skiff_config_validate() {
         errors=$((errors + 1))
     fi
 
+    if [ "$SKIFF_RDMA" != auto ] && [ "$SKIFF_RDMA" != off ]; then
+        echo "SKIFF_RDMA: \"$SKIFF_RDMA\" is not auto or off" >&2
+        errors=$((errors + 1))
+    fi
+    if [ "$SKIFF_RDMA_DEVICE" != auto ] && ! [[ "$SKIFF_RDMA_DEVICE" =~ ^[A-Za-z0-9_.-]{1,63}(:[1-9][0-9]{0,2})?$ ]]; then
+        echo "SKIFF_RDMA_DEVICE: \"$SKIFF_RDMA_DEVICE\" is not auto or an RDMA device, DEVICE or DEVICE:PORT (for example mlx5_0 or mlx5_0:1)" >&2
+        errors=$((errors + 1))
+    fi
+
     if ! _skiff_mtu_check SKIFF_UPLINK_MTU "$SKIFF_UPLINK_MTU" 576 9000 ||
        ! _skiff_mtu_check SKIFF_POD_MTU "$SKIFF_POD_MTU" 576; then
         errors=$((errors + 1))
@@ -452,7 +470,7 @@ skiff_record_cause() {
 # skiff_config_export: make the resolved values available to what is started.
 skiff_config_export() {
     export SKIFF_POD_CIDR SKIFF_SERVICE_CIDR SKIFF_CLUSTER_DOMAIN SKIFF_CLUSTER_DNS \
-        SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_SLIRP_MTU SKIFF_TMP_DIR
+        SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_SLIRP_MTU SKIFF_TMP_DIR SKIFF_RDMA SKIFF_RDMA_DEVICE
     [ -z "${SKIFF_JOB_INSTANCE:-}" ] || export SKIFF_JOB_INSTANCE
 }
 
@@ -471,6 +489,9 @@ SKIFF_QUALIFIED_SLIRP4NETNS=1.2.1
 # The ports of a node that cannot be configured: the API server's 6443 on the controller,
 # the kubelet's 10250 and the overlay's UDP 8472 on every node (they are spelled in the
 # script, the entrypoint, the certificates and Plaid, and cannot change in one place).
+# What Plaid's RDMA transport registers (pins), in KiB, with its default 4 lanes: 128 receive
+# slots per lane and 512 send slots of 66 KiB (plaid/pkg/vxlan/rdma_transport.go), and a margin.
+SKIFF_RDMA_PINNED_KB=73728
 SKIFF_PORTS_CONTROLLER="tcp:6443 tcp:10250 udp:8472"
 SKIFF_PORTS_NODE="tcp:10250 udp:8472"
 
@@ -772,6 +793,31 @@ skiff_check_node() {
         SKIFF_CHECK_WARNINGS=$((SKIFF_CHECK_WARNINGS + 1))
     fi
 
+    # The pod network over RDMA (SKIFF_RDMA): a node with an active InfiniBand port offers it,
+    # and plaidd then registers (pins) about SKIFF_RDMA_PINNED_KB of memory, which the
+    # locked-memory limit must allow. A node without InfiniBand is a node on UDP: nothing is
+    # required, and nothing said.
+    if [ "$SKIFF_RDMA" = auto ]; then
+        local ib="" port_dir dev memlock
+        for port_dir in "$(_skiff_sys /sys/class/infiniband)"/*/ports/*; do
+            [ -e "$port_dir/state" ] || continue
+            [ "$(_skiff_sysfs_value "$port_dir/link_layer")" != Ethernet ] || continue
+            dev=${port_dir%/ports/*}
+            case "$(_skiff_sysfs_value "$port_dir/state")" in
+                *ACTIVE*) ib+=" ${dev##*/}:${port_dir##*/}" ;;
+            esac
+        done
+        memlock=$(ulimit -l)
+        if [ -z "$ib" ]; then
+            : # no InfiniBand: the node is on UDP, as every node without it, and there is nothing to say
+        elif [ "$memlock" != unlimited ] && [ "$memlock" -lt "$SKIFF_RDMA_PINNED_KB" ]; then
+            echo "$host: WARNING: InfiniBand${ib}, but the locked-memory limit (ulimit -l) is $memlock KiB, below the $SKIFF_RDMA_PINNED_KB KiB that the pod network's RDMA transport pins: this node will use UDP. Ask your administrator to raise the limit (for example \"* - memlock unlimited\" in /etc/security/limits.conf, and with Slurm PropagateResourceLimitsExcept=MEMLOCK), or set SKIFF_RDMA=off" >&2
+            SKIFF_CHECK_WARNINGS=$((SKIFF_CHECK_WARNINGS + 1))
+        else
+            echo "$host: RDMA: InfiniBand${ib}, locked memory $memlock$([ "$memlock" = unlimited ] || echo " KiB")"
+        fi
+    fi
+
     # The ports.
     case "$role" in
         controller) ports=$SKIFF_PORTS_CONTROLLER ;;
@@ -1066,6 +1112,11 @@ skiff_config_print() {
         echo "  Network:          $SKIFF_NET_DEV ${CONTROLLER_IP:-} (${SKIFF_NET_SPEED:-0} Mb/s, SKIFF_NETWORK=$SKIFF_NETWORK)"
     fi
     echo "  MTU:              pods $SKIFF_POD_MTU, bubble link $SKIFF_UPLINK_MTU (${SKIFF_MTU_SOURCE:-set}), slirp4netns link $SKIFF_SLIRP_MTU"
+    if [ "$SKIFF_RDMA" = off ]; then
+        echo "  RDMA:             off (SKIFF_RDMA=off): the overlay is UDP"
+    else
+        echo "  RDMA:             between the nodes that have an active InfiniBand port (SKIFF_RDMA=auto, SKIFF_RDMA_DEVICE=$SKIFF_RDMA_DEVICE)"
+    fi
     echo "  Directories:      state $SKIFF_STATE_DIR (fixed, /root/.skiff in the cluster), scratch $SKIFF_TMP_DIR (node-local)"
     [ -z "${SKIFF_JOB_INSTANCE:-}" ] || echo "  Volume data:      $SKIFF_VOLUMES_DIR/$SKIFF_JOB_INSTANCE (claims of this job)"
 }
@@ -1231,6 +1282,9 @@ skiff_bubble() {
     if [ -z "${HOST_IP_DETECTED:-}" ]; then
         HOST_IP_DETECTED=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
     fi
+    # The host's interface of that address, whose InfiniBand port plaidd's RDMA transport prefers:
+    # from the bubble's own network namespace plaidd cannot tell which interface it is.
+    RDMA_INTERFACE=$(ip -o -4 addr show 2>/dev/null | awk -v a="$HOST_IP_DETECTED" '{split($4, x, "/"); if (x[1] == a && !found) {print $2; found = 1}}' || true)
 
     SOCAT_PID_6443=""
     SOCAT_PID_10250=""
@@ -1297,10 +1351,16 @@ skiff_bubble() {
     local nv=()
     skiff_node_grant
     if [ -n "$SKIFF_NODE_GPUS" ]; then nv=(--nv); fi
+    # /dev/infiniband: plaidd's RDMA transport opens the InfiniBand devices from the bubble.
+    # Apptainer gives the bubble the host's /dev, unless a site has it give a minimal one;
+    # bound here, they are there either way.
+    local ib=()
+    if [ "$SKIFF_RDMA" != off ] && [ -d "$(_skiff_sys /dev/infiniband)" ]; then ib=(--bind /dev/infiniband); fi
     apptainer instance run \
     	--fakeroot \
     	--ignore-fakeroot-command \
     	${nv[@]+"${nv[@]}"} \
+    	${ib[@]+"${ib[@]}"} \
     	--no-mount home \
     	--no-mount cwd \
     	--no-mount hostfs \
@@ -1330,6 +1390,9 @@ skiff_bubble() {
     	--env SKIFF_API_SERVICE_IP="$SKIFF_API_SERVICE_IP" \
     	--env SKIFF_POD_MTU="$SKIFF_POD_MTU" \
     	--env SKIFF_SLIRP_MTU="$SKIFF_SLIRP_MTU" \
+    	--env PLAID_RDMA="$([ "$SKIFF_RDMA" = off ] && echo false || echo true)" \
+    	--env PLAID_RDMA_DEVICE="${SKIFF_RDMA_DEVICE#auto}" \
+    	--env PLAID_RDMA_INTERFACE="${RDMA_INTERFACE:-}" \
     	--env SKIFF_TMP_DIR="$SKIFF_TMP_DIR" \
     	--env SKIFF_JOB_INSTANCE="$SKIFF_JOB_INSTANCE" \
     	--env SKIFF_NODE_CPUS="$SKIFF_NODE_CPUS" \

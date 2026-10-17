@@ -101,6 +101,11 @@ type OverlayConfig struct {
 	// the offload to be on, UDP_GRO included; without it the engine does neither, but it
 	// still receives the super-frames that arrive.
 	Super bool
+	// RDMA, when set, has the engine offer its RDMA transport on an InfiniBand port to the
+	// nodes it has routes to (see rdma_transport.go). If the port cannot be used, the engine
+	// says why and goes on over UDP. Without it, the engine answers the offers of other
+	// nodes with NONE.
+	RDMA *RDMAConfig
 }
 
 // defaultRxQueueLen is enough to absorb a TCP window's worth of jumbo frames arriving
@@ -147,6 +152,8 @@ type Stats struct {
 	// The super-frames (see the package comment); api.OverlaySuperStatus says what each counts.
 	SuperTx, SuperTxChunks, SuperRx, SuperPartial, SuperInvalid, SuperEvicted, SuperTxFailed uint64
 	SuperPeers                                                                               int
+	// RDMA is the RDMA transport's, nil without one.
+	RDMA *RDMAStats
 }
 
 // OverlayEngine manages sending and receiving VXLAN packets over UDP.
@@ -180,6 +187,7 @@ type OverlayEngine struct {
 	sendFlags byte
 	peers     peers
 	clock     func() int64 // nanoseconds from some start; a variable so that tests can move it
+	rd        atomic.Pointer[rdmaTransport]
 }
 
 var clockStart = time.Now()
@@ -210,6 +218,7 @@ type txSock struct {
 type rxLane struct {
 	oe        *OverlayEngine
 	conn      *net.UDPConn
+	queue     chan rxRead   // the reads (and RDMA messages) for the lane's worker
 	delivered atomic.Uint64 // valid VXLAN packets handed to the bridge
 	drops     atomic.Uint64 // the socket's drop count at the last datagram read from it
 
@@ -325,12 +334,24 @@ func (oe *OverlayEngine) attach(ctx context.Context, rx, tx []*net.UDPConn, tran
 		oe.sendFlags |= packet.VXLANFlagSuperOK
 	}
 
+	for _, l := range s.rx {
+		l.queue = make(chan rxRead, oe.cfg.RxQueueLen)
+	}
 	oe.transport.Store(transport)
 	oe.socks.Store(s)
+	if oe.cfg.RDMA != nil {
+		if t, err := startRDMA(oe, *oe.cfg.RDMA, s.rx); err != nil {
+			fmt.Printf("[plaidd/rdma] RDMA is not used (%v): the overlay is UDP only\n", err)
+		} else {
+			oe.rd.Store(t)
+			a := t.attr
+			fmt.Printf("[plaidd/rdma] RDMA offered on %s (LID %d, MTU %d, %d Gb/s, %s; %d lanes, %d MiB registered)\n",
+				t.port, a.LID, a.MTU, a.RateGbps, a.State, len(t.lanes), len(t.mem)>>20)
+		}
+	}
 	for _, l := range s.rx {
-		queue := make(chan rxRead, oe.cfg.RxQueueLen)
-		go l.readLoop(ctx, queue)
-		go l.processLoop(ctx, queue)
+		go l.readLoop(ctx, l.queue)
+		go l.processLoop(ctx, l.queue)
 	}
 }
 
@@ -366,6 +387,9 @@ func (oe *OverlayEngine) Stats() Stats {
 	if t, ok := oe.transport.Load().(string); ok {
 		st.Transport = t
 	}
+	if t := oe.rd.Load(); t != nil {
+		st.RDMA = t.stats()
+	}
 	if s := oe.socks.Load(); s != nil {
 		st.Address = s.rx[0].conn.LocalAddr().String()
 		st.RxSockets, st.TxSockets = len(s.rx), len(s.tx)
@@ -392,11 +416,13 @@ func (oe *OverlayEngine) stopped(ctx context.Context) bool {
 }
 
 // rxRead is one read from the socket: a datagram, or with UDP_GRO several of seg bytes
-// each (the last may be shorter) one after the other.
+// each (the last may be shorter) one after the other. An RDMA message is one too: a run of
+// datagrams, or (whole) a TCP super-frame, its virtio header first, as deliverSuper takes it.
 type rxRead struct {
-	buf *packet.Buffer
-	seg int
-	src netip.AddrPort // the sender's address (not 4-in-6) and port
+	buf   *packet.Buffer
+	seg   int
+	src   netip.AddrPort // the sender's address (not 4-in-6) and port
+	whole bool
 }
 
 // datagrams is how many datagrams the read holds.
@@ -429,7 +455,7 @@ func (l *rxLane) readLoop(ctx context.Context, queue chan<- rxRead) {
 		}
 
 		buf.B = buf.B[:n]
-		r := rxRead{buf, parseGROSize(oob[:oobn]), netip.AddrPortFrom(src.Addr().Unmap(), src.Port())}
+		r := rxRead{buf: buf, seg: parseGROSize(oob[:oobn]), src: netip.AddrPortFrom(src.Addr().Unmap(), src.Port())}
 		select {
 		case queue <- r:
 			buf = packet.GetBuffer()
@@ -481,6 +507,14 @@ func (l *rxLane) processLoop(ctx context.Context, queue <-chan rxRead) {
 
 // processRead handles the datagrams of one read and releases its buffer.
 func (l *rxLane) processRead(ctx context.Context, sink FrameInjector, r rxRead) {
+	if r.whole {
+		if l.oe.stopped(ctx) {
+			r.buf.Release()
+			return
+		}
+		l.deliverSuper(sink, packet.ParseVnetHeader(r.buf.B), r.buf) // takes the buffer
+		return
+	}
 	if !l.oe.stopped(ctx) {
 		now := l.oe.clock()
 		for rest := r.buf.B; len(rest) > 0; {
@@ -504,6 +538,14 @@ func (l *rxLane) process(sink FrameInjector, datagram []byte, src netip.AddrPort
 		return
 	}
 	flags := datagram[0]
+	if flags&(packet.VXLANFlags|packet.VXLANFlagControl) == packet.VXLANFlagControl {
+		if t := oe.rd.Load(); t != nil {
+			t.control(src.Addr(), datagram[packet.VXLANHeaderLen:])
+		} else {
+			oe.noRDMA(src.Addr(), datagram[packet.VXLANHeaderLen:])
+		}
+		return
+	}
 	if flags&(packet.VXLANFlags|packet.VXLANFlagSuperOK) == packet.VXLANFlags|packet.VXLANFlagSuperOK && oe.cfg.Super {
 		l.notePeer(src.Addr(), now)
 	}
@@ -544,6 +586,9 @@ func (l *rxLane) notePeer(a netip.Addr, now int64) {
 func (oe *OverlayEngine) Close() error {
 	var err error
 	oe.closeOnce.Do(func() {
+		if t := oe.rd.Load(); t != nil {
+			t.close()
+		}
 		close(oe.closedChan)
 		oe.attachMu.Lock()
 		defer oe.attachMu.Unlock()

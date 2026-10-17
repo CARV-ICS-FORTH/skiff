@@ -32,6 +32,10 @@ const (
 //
 // A TCP super-frame does not go through the batch: SendSuper sends it whole, after what
 // the batch holds.
+//
+// To a node whose RDMA link is up, a run is one RDMA message instead (see
+// rdma_transport.go), with or without UDP_SEGMENT, and a super-frame is sent whole in one
+// message.
 type TxBatch struct {
 	oe  *OverlayEngine
 	buf *packet.Buffer // the datagrams of the run, back to back
@@ -39,6 +43,7 @@ type TxBatch struct {
 
 	addr  netip.AddrPort // the run's destination
 	sock  int            // and its send socket, an index into the engine's send sockets
+	link  *rdmaLink      // the RDMA link the run goes over, nil for UDP
 	seg   int            // the size of its datagrams: the first one's
 	n     int            // how many it has
 	short bool           // the last one is shorter than seg, which ends the run
@@ -97,7 +102,8 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 
 	size := packet.VXLANHeaderLen + packet.EthernetHeaderLen + len(frame.Payload)
 	sock := packet.FlowIndex(frame.EtherType, frame.Payload, len(socks.tx))
-	if tb.n > 0 && !tb.joins(remoteAddr, sock, size) {
+	link := oe.rdmaLink(remoteAddr.Addr())
+	if tb.n > 0 && !tb.joins(remoteAddr, sock, size, link) {
 		tb.sendRun()
 	}
 	// The header and the frame go into one pooled buffer, behind the datagrams of the run.
@@ -111,13 +117,21 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 		return fmt.Errorf("failed to marshal inner frame: %w", err)
 	}
 	if tb.n == 0 {
-		tb.addr, tb.sock, tb.seg = remoteAddr, sock, size
+		tb.addr, tb.sock, tb.seg, tb.link = remoteAddr, sock, size, link
 	} else if size < tb.seg {
 		tb.short = true
 	}
 	tb.n++
-	if !oe.gso.Load() {
+	if !oe.gso.Load() && link == nil {
 		tb.sendRun() // without UDP_SEGMENT there is nothing to gain by waiting: each datagram goes out at once
+	}
+	return nil
+}
+
+// rdmaLink is the RDMA link to the node at a that is up, or nil.
+func (oe *OverlayEngine) rdmaLink(a netip.Addr) *rdmaLink {
+	if t := oe.rd.Load(); t != nil {
+		return t.upLink(a)
 	}
 	return nil
 }
@@ -144,11 +158,11 @@ func (tb *TxBatch) resolve(dstIP net.IP) (route *RouteEntry, vni uint32, addr ne
 	return route, vni, netip.AddrPortFrom(ip.Unmap(), uint16(port)), nil
 }
 
-// joins reports whether a datagram of size bytes to addr, from send socket sock, can go
-// in the run.
-func (tb *TxBatch) joins(addr netip.AddrPort, sock, size int) bool {
-	return tb.oe.gso.Load() && addr == tb.addr && sock == tb.sock && !tb.short && size <= tb.seg &&
-		tb.n < maxSegments && len(tb.buf.B)+size <= maxSegmentedBytes
+// joins reports whether a datagram of size bytes to addr, from send socket sock, over link
+// (nil: UDP), can go in the run.
+func (tb *TxBatch) joins(addr netip.AddrPort, sock, size int, link *rdmaLink) bool {
+	return (tb.oe.gso.Load() || link != nil) && link == tb.link && addr == tb.addr && sock == tb.sock && !tb.short &&
+		size <= tb.seg && tb.n < maxSegments && len(tb.buf.B)+size <= maxSegmentedBytes
 }
 
 // Flush sends what is held and returns the first send error since the last Flush.
@@ -167,8 +181,13 @@ func (tb *TxBatch) sendRun() {
 	}
 	oe := tb.oe
 	conn := oe.socks.Load().tx[tb.sock].conn
-	data, n, seg := tb.buf.B, tb.n, tb.seg
-	tb.buf.B, tb.n, tb.seg, tb.short = data[:0], 0, 0, false
+	data, n, seg, link := tb.buf.B, tb.n, tb.seg, tb.link
+	tb.buf.B, tb.n, tb.seg, tb.short, tb.link = data[:0], 0, 0, false, nil
+
+	if link != nil && oe.rdmaLink(tb.addr.Addr()) == link {
+		oe.rd.Load().sendRun(link, tb.sock, data, seg)
+		return
+	} // a link that went down since: the run goes over UDP
 
 	if n > 1 && oe.gso.Load() {
 		putSegmentSize(tb.oob[:], seg)
@@ -224,11 +243,14 @@ func (oe *OverlayEngine) canSendSuper() bool {
 // it is on a route to an IPv4 address that has sent the mark within the last two seconds.
 func (tb *TxBatch) AcceptsSuper(dstIP net.IP) bool {
 	oe := tb.oe
-	if !oe.canSendSuper() || oe.socks.Load() == nil {
+	if oe.socks.Load() == nil {
 		return false
 	}
 	_, _, addr, err := tb.resolve(dstIP)
-	return err == nil && addr.Addr().Is4() && oe.peers.fresh(addr.Addr(), oe.clock())
+	if err == nil && oe.rdmaLink(addr.Addr()) != nil {
+		return true // a super-frame goes whole over an RDMA link, in one message
+	}
+	return oe.canSendSuper() && err == nil && addr.Addr().Is4() && oe.peers.fresh(addr.Addr(), oe.clock())
 }
 
 // superDatagram is the size of the datagrams that carry the super-frame whose IP packet is
@@ -263,7 +285,13 @@ func superDatagram(h packet.VnetHeader, ip []byte) (int, bool) {
 func (tb *TxBatch) SendSuper(h packet.VnetHeader, frame *packet.EthernetFrame, dstIP net.IP) (sent bool, err error) {
 	oe := tb.oe
 	socks := oe.socks.Load()
-	if socks == nil || !oe.canSendSuper() {
+	if socks == nil {
+		return false, nil
+	}
+	if sent := tb.sendSuperRDMA(h, frame, dstIP); sent {
+		return true, nil
+	}
+	if !oe.canSendSuper() {
 		return false, nil
 	}
 	route, vni, addr, rerr := tb.resolve(dstIP)
@@ -289,6 +317,31 @@ func (tb *TxBatch) SendSuper(h packet.VnetHeader, frame *packet.EthernetFrame, d
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	return tb.sendChunks(ts, vni, addr, h, frame, d)
+}
+
+// sendSuperRDMA sends a super-frame whole over the RDMA link to dstIP's node, after the
+// run the batch holds, if the link is up.
+func (tb *TxBatch) sendSuperRDMA(h packet.VnetHeader, frame *packet.EthernetFrame, dstIP net.IP) bool {
+	oe := tb.oe
+	route, vni, addr, err := tb.resolve(dstIP)
+	if err != nil {
+		return false
+	}
+	link := oe.rdmaLink(addr.Addr())
+	if link == nil {
+		return false
+	}
+	if len(route.VtepMAC) == 6 {
+		frame.DstMAC = route.VtepMAC
+	}
+	if len(frame.DstMAC) != 6 || len(frame.SrcMAC) != 6 {
+		return false
+	}
+	tb.sendRun()
+	sock := packet.FlowIndex(frame.EtherType, frame.Payload, len(oe.socks.Load().tx))
+	oe.rd.Load().sendWhole(link, sock, vni, h, frame)
+	oe.superTx.Add(1)
+	return true
 }
 
 // sendChunks is SendSuper once the socket is locked.

@@ -70,6 +70,31 @@ func main() {
 				status.OverlayRxPackets, status.OverlayRxReads, status.OverlayRxInvalid, status.OverlayRxDropped,
 				status.OverlayRxQueueDrops, status.OverlaySocketDrops, status.OverlayRcvBuf, orNone(status.OverlayOffload), superSummary(status.OverlaySuper))
 		}
+		if r := status.OverlayRDMA; r != nil {
+			state := "active"
+			if !r.PortActive {
+				state = "not active"
+			}
+			if r.Failed {
+				state = "failed (a fatal device error: RDMA ended)"
+			}
+			fmt.Printf("RDMA:         %s (LID %d, MTU %d, %d Gb/s, %s; %d MiB registered; receives posted per lane %v): tx %d messages, %d bytes, rx %d messages, %d bytes; dropped %d at the in-flight cap, %d for want of a slot; completion errors %d; links up %d, failed %d\n",
+				r.Port, r.LID, r.MTU, r.RateGbps, state, r.PinnedBytes>>20, r.RecvPosted, r.TxMessages, r.TxBytes, r.RxMessages, r.RxBytes,
+				r.TxFull, r.TxNoSlot, r.CompletionErrors, r.LinksUp, r.LinkFailures)
+			for _, p := range r.Peers {
+				fmt.Printf("              %s: %s", p.Address, p.State)
+				if p.QPs > 0 {
+					fmt.Printf(", %d QPs", p.QPs)
+				}
+				if p.Failures > 0 {
+					fmt.Printf(", %d failures", p.Failures)
+				}
+				if p.Why != "" {
+					fmt.Printf(" (%s)", p.Why)
+				}
+				fmt.Println()
+			}
+		}
 		if o := status.TapOffload; o != nil {
 			fmt.Printf("TAP offload:  enabled=%t, on %d TAPs (read %d super-frames as %d segments, %d dropped; wrote %d super-frames of %d segments; passed %d super-frames whole, %d bytes)\n",
 				o.Enabled, o.Endpoints, o.ReadSuperFrames, o.ReadSegments, o.ReadDropped, o.WriteSuperFrames, o.WriteSegments,
