@@ -111,9 +111,9 @@ func init() {
 		time.Sleep(10 * time.Second)
 		return 0
 	}
-	// relisten PORT CLOSE AGAIN: a server that closes its listener when the file CLOSE
-	// appears and listens at the same port again when AGAIN appears, then takes a
-	// connection of its own pod.
+	// relisten PORT CLOSE AGAIN [DIAL]: a server that closes its listener when the file CLOSE
+	// appears (and a client of its pod then connects, if DIAL) and listens at the same port
+	// again when AGAIN appears, then takes a connection of its own pod.
 	helpers["relisten"] = func(args []string) int {
 		if err := loUp(); err != nil {
 			return 2
@@ -127,6 +127,9 @@ func init() {
 		waitForFile(args[1])
 		l.Close()
 		fmt.Println("closed")
+		if len(args) > 3 {
+			localDial(args[0]) // the pod-side socket is still there: it takes the connection and drops it
+		}
 		waitForFile(args[2])
 		l, err = net.Listen("tcp", ":"+args[0])
 		if err != nil {
@@ -221,23 +224,29 @@ func TestProxyEndsWithTheListener(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		prompt  bool // bind again before the proxy has been noticed to be out of date
+		dial    bool // a client of the pod connects after the listener has closed
 		timeout time.Duration
-	}{{"noticed", false, 6 * time.Second}, {"rebound at once", true, 0}} {
+	}{{"noticed", false, false, 4 * time.Second}, {"noticed by a client", false, true, 800 * time.Millisecond}, {"rebound at once", true, false, 0}} {
 		t.Run(tc.name, func(t *testing.T) {
 			port := freePort(t)
 			p := strconv.Itoa(port)
 			cfg := podConfig(t, "10.244.5.4", Ports{uint16(port): {}}, hostPorts{fakeResolver{}, map[uint16]uint16{uint16(port): uint16(freePort(t))}})
 			dir := t.TempDir()
 			closeFile, againFile := filepath.Join(dir, "close"), filepath.Join(dir, "again")
-			server, out := runPod(t, cfg, "relisten", p, closeFile, againFile)
+			args := []string{p, closeFile, againFile}
+			if tc.dial {
+				args = append(args, "dial")
+			}
+			server, out := runPod(t, cfg, "relisten", args...)
 			out.waitFor(t, "listening")
 			if server.proxyCount() != 1 {
 				t.Fatalf("%d proxies after the bind", server.proxyCount())
 			}
 			os.WriteFile(closeFile, nil, 0o600)
 			out.waitFor(t, "closed")
+			closedAt := time.Now()
 			if !tc.prompt {
-				deadline := time.Now().Add(tc.timeout)
+				deadline := closedAt.Add(tc.timeout)
 				for server.proxyCount() != 0 {
 					if time.Now().After(deadline) {
 						t.Fatal("the proxy of a closed listener is still there")

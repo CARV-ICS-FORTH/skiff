@@ -32,8 +32,11 @@ const (
 	// proxyBacklog is the backlog of the pod-side socket (the container's own listen is
 	// made on the host socket, and its backlog is the host socket's).
 	proxyBacklog = 128
-	// proxyWatchEvery is how often a proxy asks whether the container's listener is still there.
-	proxyWatchEvery = time.Second
+	// proxyWatchEvery is how often a proxy asks whether the container's listener is still
+	// there, and proxyRecheckEvery how soon it asks again when the answer was no, or when a
+	// connection could not be carried to the listener.
+	proxyWatchEvery   = time.Second
+	proxyRecheckEvery = 250 * time.Millisecond
 )
 
 // localProxy is one swapped listener's pod-side socket.
@@ -45,6 +48,7 @@ type localProxy struct {
 	ln       *net.TCPListener
 	once     sync.Once
 	done     chan struct{}
+	suspect  chan struct{} // a connection could not be carried: the listener may be gone
 }
 
 // startProxy takes over the container's own socket (held.dup, already bound to the address
@@ -58,7 +62,7 @@ func (s *Supervisor) startProxy(held *heldSocket, addr netip.AddrPort, hostPort 
 	if err != nil {
 		return err
 	}
-	p := &localProxy{s: s, addr: addr, hostPort: hostPort, family: held.family, ln: ln.(*net.TCPListener), done: make(chan struct{})}
+	p := &localProxy{s: s, addr: addr, hostPort: hostPort, family: held.family, ln: ln.(*net.TCPListener), done: make(chan struct{}), suspect: make(chan struct{}, 1)}
 	s.proxyMu.Lock()
 	if s.proxies == nil {
 		s.proxies = make(map[netip.AddrPort]*localProxy)
@@ -118,20 +122,24 @@ func (p *localProxy) accept() {
 
 // watch ends the proxy when the container's listener has gone. The container's close of
 // its listener is not a call the filter holds, so the supervisor asks the host: a bind of
-// the host port (the container's own bind needs it free to rebind, as a listener's does)
-// that succeeds twice in a row, with nobody listening, says it is gone. Connections that
-// the listener accepted and that are still open do not keep the port from this bind: it
-// sets SO_REUSEADDR, as the container's socket mostly did. A container that did not set it
-// keeps its proxy until those connections end.
+// the host port that succeeds twice in a row, a moment apart, with nobody listening, says
+// it is gone (once may be a socket that is bound and not listening yet). It asks every
+// second, and at once when a connection could not be carried to the listener. The bind sets
+// SO_REUSEADDR, as the container's socket mostly did, so the connections the listener
+// accepted do not keep the port from it; a container that did not set it keeps its proxy
+// until those connections end.
 func (p *localProxy) watch() {
-	tick := time.NewTicker(proxyWatchEvery)
-	defer tick.Stop()
 	free := 0
 	for {
+		wait := proxyWatchEvery
+		if free > 0 {
+			wait = proxyRecheckEvery
+		}
 		select {
 		case <-p.done:
 			return
-		case <-tick.C:
+		case <-time.After(wait):
+		case <-p.suspect:
 		}
 		if !p.s.hostPortFree(p.family, p.hostPort) {
 			free = 0
@@ -165,6 +173,10 @@ func (p *localProxy) forward(c *net.TCPConn) {
 	local := c.LocalAddr().(*net.TCPAddr).AddrPort()
 	h, hostAddr, err := p.dial()
 	if err != nil {
+		select {
+		case p.suspect <- struct{}{}:
+		default:
+		}
 		p.s.stats.ProxyFailed.Add(1)
 		p.s.logf("proxy: %s: %v", p.addr, err)
 		return
