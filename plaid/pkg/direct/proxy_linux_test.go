@@ -111,6 +111,47 @@ func init() {
 		time.Sleep(10 * time.Second)
 		return 0
 	}
+	// latelisten PORT LISTEN [DIAL]: a server that binds its port (with SO_REUSEADDR, as most
+	// do) and listens only when the file LISTEN appears; if DIAL, a client of its pod connects
+	// to the port while it is bound and does not listen (it is refused, as on any host), and
+	// another after it has listened and takes the connection.
+	helpers["latelisten"] = func(args []string) int {
+		if err := loUp(); err != nil {
+			return 2
+		}
+		port, _ := strconv.Atoi(args[0])
+		fd, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+		if err := unix.Bind(fd, &unix.SockaddrInet4{Port: port}); err != nil {
+			fmt.Println("error bind", err)
+			return 2
+		}
+		fmt.Println("bound")
+		if len(args) > 2 {
+			c, err := net.Dial("tcp", "127.0.0.1:"+args[0])
+			if err == nil {
+				c.Close()
+			}
+			fmt.Println("dialed while bound", err)
+		}
+		waitForFile(args[1])
+		if err := unix.Listen(fd, 8); err != nil {
+			fmt.Println("error listen", err)
+			return 2
+		}
+		f := os.NewFile(uintptr(fd), "listener")
+		l, err := net.FileListener(f)
+		if err != nil {
+			fmt.Println("error", err)
+			return 2
+		}
+		fmt.Println("listening")
+		go localDial(args[0])
+		if !acceptAndSay(l.(*net.TCPListener), "accepted") {
+			return 2
+		}
+		return 0
+	}
 	// relisten PORT CLOSE AGAIN [DIAL]: a server that closes its listener when the file CLOSE
 	// appears (and a client of its pod then connects, if DIAL) and listens at the same port
 	// again when AGAIN appears, then takes a connection of its own pod.
@@ -275,5 +316,43 @@ func TestEachListenerOfAPortHasItsProxy(t *testing.T) {
 	defer func() { server.cmd.Process.Kill(); server.Wait() }()
 	if server.Stats().Swapped() != 2 || server.proxyCount() != 2 {
 		t.Errorf("swapped %d, %d proxies; want 2 and 2\n%s", server.Stats().Swapped(), server.proxyCount(), out)
+	}
+}
+
+// A container that binds its port and listens later (a socket bound with SO_REUSEADDR does not
+// keep another such socket from the port, and a connection to it is refused) has not closed
+// its listener: the pod-side socket stays, however long it takes and whoever tries the port
+// meanwhile, and carries the connection that comes after the listen.
+func TestProxyStaysWhileTheContainerIsBoundAndNotListening(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dial bool // a client of the pod finds the port refused while it is bound
+	}{{"nobody tries", false}, {"a client tries", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			port := freePort(t)
+			p := strconv.Itoa(port)
+			cfg := podConfig(t, "10.244.5.4", Ports{uint16(port): {}}, hostPorts{fakeResolver{}, map[uint16]uint16{uint16(port): uint16(freePort(t))}})
+			listenFile := filepath.Join(t.TempDir(), "listen")
+			args := []string{p, listenFile}
+			if tc.dial {
+				args = append(args, "dial")
+			}
+			server, out := runPod(t, cfg, "latelisten", args...)
+			out.waitFor(t, "bound")
+			if tc.dial {
+				out.waitFor(t, "dialed while bound")
+			}
+			time.Sleep(3 * time.Second) // more than the proxy's looks at the host port take to decide
+			if server.proxyCount() != 1 {
+				t.Errorf("the pod-side socket was closed while the container was bound and not yet listening (%d proxies)", server.proxyCount())
+			}
+			os.WriteFile(listenFile, nil, 0o600)
+			if err := server.Wait(); err != nil {
+				t.Fatalf("server: %v\n%s", err, out)
+			}
+			if o := out.String(); !strings.Contains(o, "accepted") || !strings.Contains(o, "data=hello") {
+				t.Errorf("the connection of the pod's client after the listen was not carried:\n%s", o)
+			}
+		})
 	}
 }

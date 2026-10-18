@@ -369,12 +369,24 @@ func (s *Supervisor) bind(n *notif) reply {
 	}
 	s.table.Add(cookie, Socket{Kind: KindListener, Family: held.family, Local: want})
 	s.stats.Binds.Add(1)
-	if err := s.startProxy(held, want, hostPort); err != nil {
+	if err := s.startProxy(held, want, hostPort, s.ownerOf(tid, fd, cookie)); err != nil {
 		s.stats.Errors.Add(1)
 		s.logf("bind %s: the proxy in the pod's network: %v", want, err)
 	}
 	s.logf("bind %s: on the host, %s", want, host)
 	return succeed()
+}
+
+// ownerOf says where the container has the socket that was put in place for descriptor fd of
+// thread tid: the process, kept open by a pidfd of its own, and the descriptor.
+func (s *Supervisor) ownerOf(tid, fd int, cookie uint64) descriptor {
+	d := descriptor{pidfd: -1, fd: fd, cookie: cookie}
+	if t, err := s.targets.lookup(tid, false); err == nil {
+		if pidfd, err := unix.PidfdOpen(t.tgid, 0); err == nil {
+			d.pidfd = pidfd
+		}
+	}
+	return d
 }
 
 // accept on a socket that bind put in place: the supervisor accepts, reads who the client

@@ -39,12 +39,36 @@ const (
 	proxyRecheckEvery = 250 * time.Millisecond
 )
 
+// descriptor is where the container has a socket that the supervisor put in place: a
+// descriptor of a process, which is told by the socket's cookie.
+type descriptor struct {
+	pidfd  int // of the process, which the proxy keeps open (-1 if it could not be opened)
+	fd     int
+	cookie uint64
+}
+
+// holds says whether the container still has the socket there: not if the process or the
+// descriptor is gone, or the descriptor is another socket now. If it cannot be told it
+// says no, and the proxy goes by the host port alone.
+func (d descriptor) holds() bool {
+	if d.pidfd < 0 {
+		return false
+	}
+	dup, err := unix.PidfdGetfd(d.pidfd, d.fd, 0)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(dup)
+	return cookieOf(dup) == d.cookie
+}
+
 // localProxy is one swapped listener's pod-side socket.
 type localProxy struct {
 	s        *Supervisor
 	addr     netip.AddrPort // the address in the pod's network it listens at
 	hostPort uint16
-	family   int // of the container's socket, and so of the host's
+	family   int        // of the container's socket, and so of the host's
+	owner    descriptor // where the container has the listener
 	ln       *net.TCPListener
 	once     sync.Once
 	done     chan struct{}
@@ -54,7 +78,7 @@ type localProxy struct {
 // startProxy takes over the container's own socket (held.dup, already bound to the address
 // the container asked for and listening) and accepts on it, and watches for the container's
 // listener to go.
-func (s *Supervisor) startProxy(held *heldSocket, addr netip.AddrPort, hostPort uint16) error {
+func (s *Supervisor) startProxy(held *heldSocket, addr netip.AddrPort, hostPort uint16, owner descriptor) error {
 	f := os.NewFile(uintptr(held.dup), "pod-side listener")
 	ln, err := net.FileListener(f)
 	f.Close() // FileListener has its own descriptor; this one is the held duplicate
@@ -62,7 +86,7 @@ func (s *Supervisor) startProxy(held *heldSocket, addr netip.AddrPort, hostPort 
 	if err != nil {
 		return err
 	}
-	p := &localProxy{s: s, addr: addr, hostPort: hostPort, family: held.family, ln: ln.(*net.TCPListener), done: make(chan struct{}), suspect: make(chan struct{}, 1)}
+	p := &localProxy{s: s, addr: addr, hostPort: hostPort, family: held.family, owner: owner, ln: ln.(*net.TCPListener), done: make(chan struct{}), suspect: make(chan struct{}, 1)}
 	s.proxyMu.Lock()
 	if s.proxies == nil {
 		s.proxies = make(map[netip.AddrPort]*localProxy)
@@ -107,6 +131,9 @@ func (p *localProxy) close() {
 	p.once.Do(func() {
 		close(p.done)
 		p.ln.Close()
+		if p.owner.pidfd >= 0 {
+			unix.Close(p.owner.pidfd)
+		}
 	})
 }
 
@@ -123,7 +150,9 @@ func (p *localProxy) accept() {
 // watch ends the proxy when the container's listener has gone. The container's close of
 // its listener is not a call the filter holds, so the supervisor asks the host: a bind of
 // the host port that succeeds twice in a row, a moment apart, with nobody listening, says
-// it is gone (once may be a socket that is bound and not listening yet). It asks every
+// it is gone, unless the container still has the socket where the supervisor put it (a
+// socket that is bound and does not listen yet does not keep another from the port, and a
+// connection to it is refused, which looks like a listener that is gone). It asks every
 // second, and at once when a connection could not be carried to the listener. The bind sets
 // SO_REUSEADDR, as the container's socket mostly did, so the connections the listener
 // accepted do not keep the port from it; a container that did not set it keeps its proxy
@@ -141,7 +170,7 @@ func (p *localProxy) watch() {
 		case <-time.After(wait):
 		case <-p.suspect:
 		}
-		if !p.s.hostPortFree(p.family, p.hostPort) {
+		if !p.s.hostPortFree(p.family, p.hostPort) || p.owner.holds() {
 			free = 0
 			continue
 		}
