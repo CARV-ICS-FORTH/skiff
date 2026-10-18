@@ -26,6 +26,7 @@ type Supervisor struct {
 	table    *Table
 	stop     chan struct{}
 	loopDone chan struct{}
+	loopOnce sync.Once
 	handlers sync.WaitGroup
 	stats    Stats
 	timings  Timings
@@ -173,19 +174,26 @@ func (s *Supervisor) logf(format string, args ...any) {
 	}
 }
 
-// serve receives the held calls. It waits with poll, so that it learns that no task is
-// left that the filter holds (POLLHUP) or that it should stop.
+// serve receives the held calls, and decides the quick ones. It waits with poll, so that it
+// learns that no task is left that the filter holds (POLLHUP) or that it should stop.
+//
+// A call that can wait (a connect makes a connection, an accept waits for one) is decided
+// by the goroutine that received it, and another goroutine takes over the receiving first,
+// so that the others are not held up. Handing the call to a new goroutine instead made the
+// connect wait for a thread to be woken for it (36 microseconds on the cluster's nodes);
+// the thread that is woken now is the next receiver's, while this one works.
 func (s *Supervisor) serve() {
-	defer close(s.loopDone)
 	fds := []unix.PollFd{{Fd: int32(s.listener), Events: unix.POLLIN}}
 	for {
 		select {
 		case <-s.stop:
+			s.loopEnded()
 			return
 		default:
 		}
 		_, err := unix.Poll(fds, 100)
 		if err != nil && err != unix.EINTR {
+			s.loopEnded()
 			return
 		}
 		if fds[0].Revents&unix.POLLIN != 0 {
@@ -194,33 +202,31 @@ func (s *Supervisor) serve() {
 				if err == unix.EINTR || err == unix.ENOENT {
 					continue
 				}
+				s.loopEnded()
 				return
 			}
 			s.stats.Notifications.Add(1)
-			s.hold(&n)
+			tl := s.timings.begin()
+			switch int(n.Nr) {
+			case unix.SYS_CONNECT, unix.SYS_ACCEPT, unix.SYS_ACCEPT4:
+				s.handlers.Add(1)
+				go s.serve()
+				s.answer(&n, tl)
+				s.handlers.Done()
+				return
+			}
+			s.answer(&n, tl)
 			continue
 		}
 		if fds[0].Revents&(unix.POLLHUP|unix.POLLERR) != 0 {
+			s.loopEnded()
 			return
 		}
 	}
 }
 
-// hold decides a held call. A call that can wait (a connect makes a connection, an accept
-// waits for one) is decided on a goroutine of its own, so that the others are not held up.
-func (s *Supervisor) hold(n *notif) {
-	tl := s.timings.begin()
-	switch int(n.Nr) {
-	case unix.SYS_CONNECT, unix.SYS_ACCEPT, unix.SYS_ACCEPT4:
-		s.handlers.Add(1)
-		go func(n notif) {
-			defer s.handlers.Done()
-			s.answer(&n, tl)
-		}(*n)
-	default:
-		s.answer(n, tl)
-	}
-}
+// loopEnded says that the receiving has ended (there is one receiver at a time).
+func (s *Supervisor) loopEnded() { s.loopOnce.Do(func() { close(s.loopDone) }) }
 
 // answer decides one call and tells the kernel. Whatever goes wrong in the supervisor lets
 // the call run as it would have without one: the container loses the direct path for that
