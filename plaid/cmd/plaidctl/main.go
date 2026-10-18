@@ -191,7 +191,7 @@ func main() {
 
 	case "route":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: plaidctl route <add|del> ...")
+			fmt.Fprintln(os.Stderr, "Usage: plaidctl route <list|add|del> ...")
 			os.Exit(1)
 		}
 		switch args[1] {
@@ -220,6 +220,16 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Printf("Route added: %s -> %s\n", req.Subnet, req.RemoteHostIP)
+
+		case "list":
+			routes, err := client.ListRoutes()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error listing routes: %v\n", err)
+				os.Exit(1)
+			}
+			for _, r := range routes {
+				fmt.Printf("%s -> %s\n", r.Subnet, r.RemoteHostIP)
+			}
 
 		case "del", "remove":
 			if len(args) < 3 {
@@ -351,6 +361,7 @@ Commands:
   endpoint del <endpoint-id>                      Remove a container endpoint
   service list                                    List the Service engine's table and flows
   service set <file.json|->                       Replace the Service table (plaidd --disable-kubernetes only)
+  route list                                      List the overlay's routes
   route add <subnet> <remote-host> [vni] [port]   Add a cross-host overlay route
   route del <subnet>                              Remove an overlay route
   filter list                                     List active packet filter rules

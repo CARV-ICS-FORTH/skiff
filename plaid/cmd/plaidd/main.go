@@ -843,6 +843,15 @@ func (d *PlaidDaemon) HandleRemoveRoute(req *api.Request) error {
 	return nil
 }
 
+func (d *PlaidDaemon) HandleListRoutes() ([]api.RouteInfo, error) {
+	routes := d.routes.Routes()
+	list := make([]api.RouteInfo, 0, len(routes))
+	for _, r := range routes {
+		list = append(list, api.RouteInfo{Subnet: r.Subnet.String(), RemoteHostIP: r.RemoteHostIP.String()})
+	}
+	return list, nil
+}
+
 func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 	eps := d.bridge.Endpoints()
 	epList := make([]string, len(eps))

@@ -29,10 +29,11 @@ type EndpointHandler interface {
 	HandleRemoveEndpoint(req *Request) error
 }
 
-// RouteHandler handles AddRoute and RemoveRoute requests.
+// RouteHandler handles AddRoute, RemoveRoute and ListRoutes requests.
 type RouteHandler interface {
 	HandleAddRoute(req *Request) error
 	HandleRemoveRoute(req *Request) error
+	HandleListRoutes() ([]RouteInfo, error)
 }
 
 // StatusProvider provides status info for GetStatus requests.
@@ -296,6 +297,15 @@ func (s *Server) handleConn(conn net.Conn) {
 				resp = Response{Success: false, Error: err.Error()}
 			} else {
 				resp = Response{Success: true}
+			}
+		}
+	case ActionListRoutes:
+		if s.rtHandler != nil {
+			routes, err := s.rtHandler.HandleListRoutes()
+			if err != nil {
+				resp = Response{Success: false, Error: err.Error()}
+			} else {
+				resp = Response{Success: true, Routes: routes}
 			}
 		}
 	case ActionGetStatus:

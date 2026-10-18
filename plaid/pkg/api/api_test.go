@@ -16,6 +16,7 @@ type mockHandlers struct {
 	lastAddRoute *Request
 	lastDelRoute *Request
 	receivedFDs  []int
+	routes       []RouteInfo
 }
 
 func (m *mockHandlers) HandleAddEndpoint(req *Request, tapFDs []int) error {
@@ -37,6 +38,10 @@ func (m *mockHandlers) HandleAddRoute(req *Request) error {
 func (m *mockHandlers) HandleRemoveRoute(req *Request) error {
 	m.lastDelRoute = req
 	return nil
+}
+
+func (m *mockHandlers) HandleListRoutes() ([]RouteInfo, error) {
+	return m.routes, nil
 }
 
 func (m *mockHandlers) HandleGetStatus() (*Response, error) {
@@ -98,6 +103,13 @@ func TestAPIServerAndClient(t *testing.T) {
 	}
 	if handlers.lastDelRoute == nil || handlers.lastDelRoute.Subnet != "10.244.2.0/24" {
 		t.Errorf("RemoveRoute handler did not receive expected params")
+	}
+
+	// A route is listed with the address of its node.
+	handlers.routes = []RouteInfo{{Subnet: "10.244.2.0/24", RemoteHostIP: "192.168.1.10"}}
+	routes, err := client.ListRoutes()
+	if err != nil || len(routes) != 1 || routes[0] != handlers.routes[0] {
+		t.Fatalf("ListRoutes: %v, %v", routes, err)
 	}
 
 	// 3. Test AddEndpoint with SCM_RIGHTS FD passing

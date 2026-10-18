@@ -11,6 +11,7 @@ const (
 	ActionRemoveEndpoint   Action = "remove_endpoint"
 	ActionAddRoute         Action = "add_route"
 	ActionRemoveRoute      Action = "remove_route"
+	ActionListRoutes       Action = "list_routes"
 	ActionGetStatus        Action = "get_status"
 	ActionAddFilterRule    Action = "add_filter_rule"
 	ActionRemoveFilterRule Action = "remove_filter_rule"
@@ -29,6 +30,13 @@ type ServiceEntry struct {
 	Backends []BackendEntry `json:"backends,omitempty"`
 	// Flows is the number of live flows of the entry (in listings).
 	Flows int `json:"flows,omitempty"`
+}
+
+// RouteInfo is one route of the overlay: the pods of a remote node's subnet are reached
+// through the node's address.
+type RouteInfo struct {
+	Subnet       string `json:"subnet"`
+	RemoteHostIP string `json:"remote_host_ip"`
 }
 
 // BackendEntry is one backend; only eligible backends take new flows.
@@ -185,6 +193,9 @@ type Response struct {
 	ServiceWatch   *ServiceWatchStatus `json:"service_watch,omitempty"`
 	NodePorts      *NodePortStatus     `json:"node_ports,omitempty"`
 	Services       []ServiceEntry      `json:"services,omitempty"`
+
+	// From list_routes: the overlay's routes (the remote nodes' subnets).
+	Routes []RouteInfo `json:"routes,omitempty"`
 }
 
 // OverlaySuperStatus reports the overlay's TCP super-frames: whether this node sends them
