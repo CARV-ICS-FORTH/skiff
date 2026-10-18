@@ -159,15 +159,16 @@ func (ts *targets) inEpoll(tid, fd int) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	defer d.Close()
 	names, err := d.Readdirnames(-1) // the names only: a stat of each would double the cost
-	d.Close()
 	if err != nil {
 		return false, err
 	}
 	want := []byte("tfd:")
 	var link [32]byte
 	for _, name := range names {
-		n, err := unix.Readlink(dir+"/fd/"+name, link[:])
+		// (one path component to resolve for each descriptor, not the five of its full path)
+		n, err := unix.Readlinkat(int(d.Fd()), name, link[:])
 		if err != nil || string(link[:n]) != "anon_inode:[eventpoll]" {
 			continue
 		}
