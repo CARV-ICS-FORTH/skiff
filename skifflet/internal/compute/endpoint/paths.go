@@ -41,6 +41,7 @@ import (
 //	job/resolv.conf      the pod's /etc/resolv.conf, mounted into every container
 //	job/hosts            the pod's /etc/hosts
 //	job/<container>.env  the container's environment, given to Apptainer
+//	job/<container>.direct.log  the log of its supervisor of the direct path (see DirectPorts)
 //	volumes/<volume>     the pod's volumes
 //	logs/                container logs (see ContainerPath)
 //	tmp/                 the pod's Apptainer temporary directory (see TmpDir)
@@ -73,6 +74,9 @@ const (
 
 	// ExtensionAttemptLog ends the name of the log file of one attempt.
 	ExtensionAttemptLog = ".log"
+
+	// ExtensionDirectLog ends the name of the log of a container's supervisor of the direct path.
+	ExtensionDirectLog = ".direct.log"
 )
 
 type SkiffPath struct {
@@ -363,6 +367,13 @@ func (c ContainerPath) ScratchAttempts() ([]int, error) {
 	}
 	sort.Ints(attempts)
 	return attempts, nil
+}
+
+// DirectLogPath is the log of the container's supervisor of the direct path, in the pod's
+// job directory beside the environment (a container's own log is its output, and the
+// supervisor's lines are not that).
+func (c ContainerPath) DirectLogPath() string {
+	return filepath.Join(c.p.JobDir(), c.containerName+ExtensionDirectLog)
 }
 
 func (c ContainerPath) EnvFilePath() string {

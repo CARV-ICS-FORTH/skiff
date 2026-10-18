@@ -340,3 +340,33 @@ func TestPrepareAttemptScratch_MakesTheWorkingDirectory(t *testing.T) {
 		t.Fatalf("the working directory is not in the writable layer: %v", err)
 	}
 }
+
+func TestBuildApptainerArgs_DirectPorts(t *testing.T) {
+	podDir := endpoint.PodPath(t.TempDir())
+	plain := strings.Join((&Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/i.sif"}).BuildApptainerArgs(5, podDir, 1), " ")
+	if strings.Contains(plain, "--direct") || strings.Contains(plain, "--pod-ip") {
+		t.Errorf("a container with no direct ports got options for them: %s", plain)
+	}
+	marked := &Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/i.sif", DirectPorts: "5201,5203", PodIP: "10.244.1.9"}
+	args := marked.BuildApptainerArgs(5, podDir, 1)
+	// plaidtainer's own options come after its command (the ones before it are its global ones),
+	// and before Apptainer's, which it forwards.
+	want := "--host-networking exec --direct-ports 5201,5203 --pod-ip 10.244.1.9 --direct-log " + podDir.Container("app").DirectLogPath() + " --pid"
+	if got := strings.Join(args, " "); !strings.HasPrefix(got, want) {
+		t.Errorf("arguments %q do not start with %q", got, want)
+	}
+	// The pod has no address yet: nothing to keep on the direct path.
+	if got := strings.Join((&Container{Name: "app", ExecutionMode: "exec", DirectPorts: "5201"}).BuildApptainerArgs(5, podDir, 1), " "); strings.Contains(got, "--direct") {
+		t.Errorf("a container of a pod with no address was given the direct path: %s", got)
+	}
+}
+
+func TestDirectPortsOf(t *testing.T) {
+	envs := []corev1.EnvVar{{Name: "A", Value: "1"}, {Name: DirectPortsEnv, Value: " 5201,5203 "}}
+	if got := directPortsOf(envs); got != "5201,5203" {
+		t.Errorf("got %q", got)
+	}
+	if got := directPortsOf(envs[:1]); got != "" {
+		t.Errorf("got %q for a container that marks none", got)
+	}
+}

@@ -296,9 +296,25 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		Command:       kubecontainer.ExpandContainerCommand(container.Command, resolvedEnvs),
 		Args:          kubecontainer.ExpandContainerCommand(container.Args, resolvedEnvs),
 		ExecutionMode: executionMode,
+		DirectPorts:   directPortsOf(resolvedEnvs),
+	}
+	if h.lifecycle != nil {
+		c.PodIP = h.lifecycle.GetPodStatus().PodIP
 	}
 
 	return c, nil
+}
+
+// directPortsOf is the ports the container marks for the direct path (DirectPortsEnv), as
+// written: plaidtainer reads the list, and runs the container as any other if it is not one.
+func directPortsOf(envs []corev1.EnvVar) string {
+	ports := ""
+	for _, env := range envs {
+		if env.Name == DirectPortsEnv {
+			ports = strings.TrimSpace(env.Value)
+		}
+	}
+	return ports
 }
 
 // subPathInside resolves path (below the volume at root) with its symlinks, and says whether it

@@ -75,7 +75,19 @@ type Container struct {
 	Command       []string
 	Args          []string
 	ExecutionMode string
+	// DirectPorts are the TCP ports the container marks for the direct path (see
+	// DirectPortsEnv), and PodIP is the address of its pod, which it keeps on that path.
+	// With no ports the container is as any other.
+	DirectPorts string
+	PodIP       string
 }
+
+// DirectPortsEnv is the environment variable with which a container marks the TCP ports that
+// take the direct path: a comma separated list, "5201,5203". Connections of the container to a
+// Service on one of them, and its servers' ports among them, run on sockets of the node's
+// network namespace and not through Plaid's overlay, with the addresses the pod network gives.
+// See plaid/pkg/direct for what that is and what it costs.
+const DirectPortsEnv = "PLAID_DIRECT_PORTS"
 
 // NoMounts are what Apptainer would mount into a container by default and Skiff does not:
 // the user's home, the paths the site configured, the node's /tmp and /var/tmp (a
@@ -105,9 +117,13 @@ const NoMounts = "home,bind-paths,tmp,cwd"
 // (prepareAttemptScratch creates them) take their place, unless the pod mounts a
 // volume there itself.
 func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, attempt int) []string {
-	args := []string{
-		"--host-networking",
-		c.ExecutionMode,
+	args := []string{"--host-networking", c.ExecutionMode}
+	if c.DirectPorts != "" && c.PodIP != "" {
+		// (plaidtainer's own options follow its command, not the global ones before it)
+		args = append(args, "--direct-ports", c.DirectPorts, "--pod-ip", c.PodIP,
+			"--direct-log", podDir.Container(c.Name).DirectLogPath())
+	}
+	args = append(args,
 		"--pid",
 		"--no-init",
 		"--contain",
@@ -117,7 +133,7 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 		"--no-mount", NoMounts,
 		"--unsquash",
 		"--overlay", podDir.Container(c.Name).AttemptOverlayDir(attempt),
-	}
+	)
 
 	for _, minor := range c.GPUs {
 		args = append(args, "--device", fmt.Sprintf("%s=%d", gpu.CDIKind, minor))
