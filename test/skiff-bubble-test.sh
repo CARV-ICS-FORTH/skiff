@@ -35,6 +35,11 @@ case "$*" in
         echo drain >> "$FAKE_DIR/drain-requests"
         kill "$(cat "$FAKE_DIR/inst-pid")" 2>/dev/null
         exit 0 ;;
+    *socket-factory*)
+        # The direct path's factory is a daemon: it stays until it is stopped (or killed by the test).
+        echo "$*" >> "$FAKE_DIR/factory-args"
+        echo $$ > "$FAKE_DIR/factory-pid"
+        exec sleep 300 ;;
     *overlay-socket*)
         echo "$*" >> "$FAKE_DIR/helper-args"
         echo $$ > "$FAKE_DIR/helper-pid"
@@ -151,10 +156,11 @@ alive() { kill -0 "$(cat "$1")" 2>/dev/null; }
 released() {
     local i
     for i in $(seq 1 20); do
-        if ! alive "$FAKE_DIR/pid" && { [ ! -e "$FAKE_DIR/helper-pid" ] || ! alive "$FAKE_DIR/helper-pid"; }; then return 0; fi
+        if ! alive "$FAKE_DIR/pid" && { [ ! -e "$FAKE_DIR/helper-pid" ] || ! alive "$FAKE_DIR/helper-pid"; } \
+            && { [ ! -e "$FAKE_DIR/factory-pid" ] || ! alive "$FAKE_DIR/factory-pid"; }; then return 0; fi
         sleep 0.25
     done
-    fail "slirp4netns or the overlay helper is still running"
+    fail "slirp4netns, the overlay helper or the socket factory is still running"
 }
 
 # A controller: the kubelet and the API are forwarded to the host's loopback for the
@@ -185,6 +191,12 @@ grep -q -- "$HOME/.skiff/images/skiff.sif /usr/local/bin/plaidctl overlay-socket
     || { cat "$FAKE_DIR/helper-args" >&2; fail "unexpected helper command line"; }
 grep -q -- "instance run --fakeroot --ignore-fakeroot-command " "$FAKE_DIR/instance-run" || fail "the bubble does not ignore the host's fakeroot command (it would run under its LD_PRELOAD)"
 grep -q -- "--env SKIFF_OVERLAY_HANDOFF=$SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told the handoff path"
+# The direct path's socket factory runs on the host beside it, from the same image, once, and the
+# bubble is told where its socket is.
+[ "$(wc -l < "$FAKE_DIR/factory-args" | tr -d ' ')" = 1 ] || fail "the socket factory was not started exactly once"
+grep -q -- "$HOME/.skiff/images/skiff.sif /usr/local/bin/plaidctl socket-factory --listen $SKIFF_TMP_DIR/direct.sock" "$FAKE_DIR/factory-args" \
+    || { cat "$FAKE_DIR/factory-args" >&2; fail "unexpected socket factory command line"; }
+grep -q -- "--env PLAID_DIRECT_SOCKET=$SKIFF_TMP_DIR/direct.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told the socket factory's socket"
 grep -q -- "--bind $SKIFF_TMP_DIR:$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not given the scratch directory at the same path"
 grep -q -- "--env SKIFF_TMP_DIR=$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not told the scratch directory"
 # A bubble started by hand makes the job's volume directory name; one that is given is kept.
@@ -193,7 +205,7 @@ for variable in APPTAINER_TMPDIR SINGULARITY_TMPDIR TMPDIR; do
     grep -q -- "--env $variable=$SKIFF_TMP_DIR/.apptainer/tmp " "$FAKE_DIR/instance-run" || fail "$variable is not below the scratch directory"
 done
 grep -q -- "--bind $HOME/.skiff:/root/.skiff " "$FAKE_DIR/instance-run" || fail "the state directory is not bound as /root/.skiff"
-if grep -q "/tmp/.skiff" "$FAKE_DIR/instance-run" "$FAKE_DIR/helper-args"; then fail "the default scratch directory is still used"; fi
+if grep -q "/tmp/.skiff" "$FAKE_DIR/instance-run" "$FAKE_DIR/helper-args" "$FAKE_DIR/factory-args"; then fail "the default scratch directory is still used"; fi
 grep -q -- "--env SKIFF_SLIRP_API=/root/.skiff/slirp-bubble1.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told slirp4netns's API socket"
 
 # The memory of the node the bubble is told it has (SKIFF_NODE_MEMORY, which Skifflet advertises):
@@ -248,6 +260,14 @@ kill -0 "$BUBBLE_PID" 2>/dev/null || fail "a bubble whose lease is renewed ended
 kill -TERM "$BUBBLE_PID"; wait_exit; released
 run_bubble controller
 
+# A socket factory that ends is started again, and the bubble goes on: the direct path is not the
+# cluster's.
+kill "$(cat "$FAKE_DIR/factory-pid")"
+for i in $(seq 1 20); do [ "$(wc -l < "$FAKE_DIR/factory-args" | tr -d ' ')" = 2 ] && break; sleep 0.25; done
+[ "$(wc -l < "$FAKE_DIR/factory-args" | tr -d ' ')" = 2 ] || fail "a socket factory that ended was not started again"
+grep -q 'the socket factory of the direct path ended' "$LOG" || fail "the end of the socket factory was not said"
+alive "$FAKE_DIR/factory-pid" || fail "the new socket factory is not running"
+
 # A helper that is still waiting is not a failure, and terminating the bubble stops it.
 sleep 3
 kill -0 "$BUBBLE_PID" 2>/dev/null || fail "the bubble stopped while the helper was waiting"
@@ -259,6 +279,7 @@ released
 [ "$(wc -l < "$FAKE_DIR/drain-requests" 2>/dev/null | tr -d ' ')" = 1 ] || fail "the bubble did not ask its entrypoint to stop gracefully"
 grep -q 'Stopping the pods of bubble bubble1' "$LOG" || fail "the graceful stop is not in the log"
 [ ! -e "$SKIFF_TMP_DIR/overlay.sock" ] || fail "the handoff socket was left behind"
+[ ! -e "$SKIFF_TMP_DIR/direct.sock" ] || fail "the socket factory's socket was left behind"
 [ ! -e "$HOME/.skiff/slirp-bubble1.sock" ] || fail "the API socket was left behind"
 
 run_bubble controller SKIFF_JOB_INSTANCE=4711-0123abcd

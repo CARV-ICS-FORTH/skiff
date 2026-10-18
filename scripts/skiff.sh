@@ -257,6 +257,7 @@ skiff_config_resolve() {
     # Where things live below the scratch directory (spelled here and nowhere else).
     SKIFF_APPTAINER_TMP="$SKIFF_TMP_DIR/.apptainer/tmp"
     SKIFF_OVERLAY_HANDOFF="$SKIFF_TMP_DIR/overlay.sock"
+    SKIFF_DIRECT_SOCKET="$SKIFF_TMP_DIR/direct.sock"
 }
 
 # skiff_config_validate [NODE_COUNT [HOST_IP...]]: check the configuration as a
@@ -1146,6 +1147,14 @@ bubble_start_socat_relays() {
     echo "Started kubelet socat relay on ${HOST_IP_DETECTED}:10250/tcp"
 }
 
+# The direct path's socket factory (plaidctl socket-factory), from the same image and in the
+# same kind of Apptainer execution as the overlay's helper: it keeps the host network. Unlike
+# that helper it is a daemon.
+bubble_start_socket_factory() {
+    apptainer exec "$BUBBLE_IMAGE" /usr/local/bin/plaidctl socket-factory --listen "$DIRECT_SOCKET" &
+    DIRECT_HELPER_PID=$!
+}
+
 # When the bubble dies, why is in its own log (the entrypoint says which daemon ended):
 # the last lines are shown in the job's output.
 bubble_show_log() {
@@ -1214,6 +1223,10 @@ bubble_cleanup() {
         kill "$OVERLAY_HELPER_PID" 2>/dev/null || true
         wait "$OVERLAY_HELPER_PID" 2>/dev/null || true
     fi
+    if [[ -n ${DIRECT_HELPER_PID:-} ]]; then
+        kill "$DIRECT_HELPER_PID" 2>/dev/null || true
+        wait "$DIRECT_HELPER_PID" 2>/dev/null || true
+    fi
     if [[ -n ${SLIRP_PID:-} ]]; then
         kill "$SLIRP_PID" 2>/dev/null || true
         wait "$SLIRP_PID" 2>/dev/null || true
@@ -1221,7 +1234,7 @@ bubble_cleanup() {
     # (When the instance is gone already, Apptainer answers "no instance found" with its usage
     # text on stdout, which does not belong in the job's output.)
     apptainer instance stop "$NAME" >/dev/null 2>&1 || true
-    rm -f "$SLIRP_SOCK" "$OVERLAY_HANDOFF" 2>/dev/null || true
+    rm -f "$SLIRP_SOCK" "$OVERLAY_HANDOFF" "$DIRECT_SOCKET" 2>/dev/null || true
     exit "${EXIT_CODE:-0}"
 }
 
@@ -1297,6 +1310,11 @@ skiff_bubble() {
     OVERLAY_HANDOFF="$SKIFF_OVERLAY_HANDOFF"
     OVERLAY_PORT=8472
     OVERLAY_HELPER_PID=""
+    # The direct path's sockets (containers that mark ports in PLAID_DIRECT_PORTS): TCP sockets
+    # of the physical host, made by a factory that runs there and stays, for the containers'
+    # supervisors in the bubble to ask for. Same directory as the handoff, same reasons.
+    DIRECT_SOCKET="$SKIFF_DIRECT_SOCKET"
+    DIRECT_HELPER_PID=""
     SKIFF_ROLE=${SKIFF_ROLE:-controller}
 
 
@@ -1312,7 +1330,7 @@ skiff_bubble() {
     # inside the bubble) goes to the node's scratch directory, not to the system's default.
     export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
     rm -f "$SLIRP_SOCK"
-    rm -f "$OVERLAY_HANDOFF"
+    rm -f "$OVERLAY_HANDOFF" "$DIRECT_SOCKET"
 
     echo "Starting Bubble $NAME..."
     echo "  Role: $SKIFF_ROLE"
@@ -1336,6 +1354,7 @@ skiff_bubble() {
     apptainer exec "$BUBBLE_IMAGE" /usr/local/bin/plaidctl overlay-socket \
         --bind "$HOST_IP_DETECTED" --port "$OVERLAY_PORT" --handoff "$OVERLAY_HANDOFF" --timeout 10m &
     OVERLAY_HELPER_PID=$!
+    bubble_start_socket_factory
 
     # --ignore-fakeroot-command: without a range of subordinate ids Apptainer maps only the user's own
     # id, and on a host that has the fakeroot command (the fakeroot package; some sites install it) it
@@ -1372,6 +1391,7 @@ skiff_bubble() {
         --env TMPDIR="$SKIFF_APPTAINER_TMP" \
     	--env HOST_IP="$HOST_IP_DETECTED" \
     	--env SKIFF_OVERLAY_HANDOFF="$OVERLAY_HANDOFF" \
+    	--env PLAID_DIRECT_SOCKET="$DIRECT_SOCKET" \
     	--env SKIFF_SLIRP_API="/root/.skiff/slirp-${NAME}.sock" \
     	--env PLAID_UPLINK=tap0 \
     	--env PLAID_UPLINK_ADDRESS="$NS_ADDR" \
@@ -1493,6 +1513,14 @@ skiff_bubble() {
                 EXIT_CODE=1
                 exit 1
             fi
+        fi
+        # The direct path is not the cluster's: a factory that ended is started again, and said.
+        # (The containers' supervisors connect to it again when they need a socket.)
+        if [[ -n ${DIRECT_HELPER_PID:-} ]] && ! kill -0 "$DIRECT_HELPER_PID" 2>/dev/null; then
+            rc=0
+            wait "$DIRECT_HELPER_PID" || rc=$?
+            echo "WARNING: the socket factory of the direct path ended ($(skiff_describe_status "$rc")); starting it again" >&2
+            bubble_start_socket_factory
         fi
         if ! kill -0 "$SLIRP_PID" 2>/dev/null; then
             rc=0
