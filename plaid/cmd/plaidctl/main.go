@@ -8,10 +8,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"plaid/pkg/api"
+	"plaid/pkg/direct"
 	"plaid/pkg/handoff"
 	"plaid/pkg/netcfg"
 	"plaid/pkg/version"
@@ -36,6 +39,10 @@ func main() {
 
 	if args[0] == "overlay-socket" {
 		overlaySocket(args[1:])
+		return
+	}
+	if args[0] == "socket-factory" {
+		socketFactory(args[1:])
 		return
 	}
 
@@ -348,6 +355,27 @@ func overlaySocket(args []string) {
 	fmt.Printf("Overlay sockets %s:%d (%d receive, %d send) handed to plaidd\n", ip, *port, len(rx), len(tx))
 }
 
+// socketFactory is the program the deployment runs in the physical host's network
+// namespace for the direct path: it makes TCP sockets there and gives them to the
+// supervisors of the containers that run in the bubble, which connect and bind them. It
+// runs until it is stopped.
+func socketFactory(args []string) {
+	fs := flag.NewFlagSet("socket-factory", flag.ExitOnError)
+	path := fs.String("listen", "", "UNIX socket to serve the factory on (the user's own, mode 0600)")
+	_ = fs.Parse(args)
+	if *path == "" {
+		fmt.Fprintln(os.Stderr, "Usage: plaidctl socket-factory --listen <socket>")
+		os.Exit(2)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	fmt.Printf("Socket factory on %s\n", *path)
+	if err := direct.ServeFactory(ctx, *path); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: socket factory: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func printUsage() {
 	fmt.Print(`plaidctl - Control utility for Plaid daemon (plaidd)
 
@@ -358,6 +386,7 @@ Commands:
   version                                         Display version information
   status                                          Display daemon status & endpoints
   overlay-socket --bind <ip> --handoff <socket>   Open the overlay UDP sockets here and hand them to plaidd (host helper; --sockets N)
+  socket-factory --listen <socket>                Make TCP sockets here for the direct path of the containers in the bubble (host helper)
   endpoint del <endpoint-id>                      Remove a container endpoint
   service list                                    List the Service engine's table and flows
   service set <file.json|->                       Replace the Service table (plaidd --disable-kubernetes only)
