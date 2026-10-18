@@ -3,10 +3,6 @@ package direct
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"errors"
-	"fmt"
-
-	"k8s.io/client-go/tools/clientcmd"
 )
 
 // keyLabel separates the key of the direct path from any other use of the cluster's key.
@@ -21,22 +17,4 @@ func DeriveKey(clusterKey []byte) []byte {
 	h := hmac.New(sha256.New, clusterKey)
 	h.Write([]byte(keyLabel))
 	return h.Sum(nil)
-}
-
-// KeyFromKubeconfig reads the private key of the current context's user from the
-// kubeconfig at path and derives the key of the direct path from it.
-func KeyFromKubeconfig(path string) ([]byte, error) {
-	cfg, err := clientcmd.LoadFromFile(path)
-	if err != nil {
-		return nil, err
-	}
-	ctx := cfg.Contexts[cfg.CurrentContext]
-	if ctx == nil {
-		return nil, fmt.Errorf("%s has no current context", path)
-	}
-	user := cfg.AuthInfos[ctx.AuthInfo]
-	if user == nil || len(user.ClientKeyData) == 0 {
-		return nil, errors.New(path + " has no client-key-data for its current user")
-	}
-	return DeriveKey(user.ClientKeyData), nil
 }

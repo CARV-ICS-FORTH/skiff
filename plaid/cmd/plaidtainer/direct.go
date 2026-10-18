@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"plaid/pkg/api"
 	"plaid/pkg/direct"
 	"plaid/pkg/netcfg"
+	"sigs.k8s.io/yaml"
 )
 
 func init() {
@@ -83,6 +85,44 @@ func directExit(cmd *exec.Cmd, waitErr error) (code int, sig syscall.Signal) {
 	return 0, 0
 }
 
+// clusterKey is the key of the direct path from the private key of the current context's user
+// in the cluster's kubeconfig at path (see direct.DeriveKey).
+func clusterKey(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cfg struct {
+		CurrentContext string `json:"current-context"`
+		Contexts       []struct {
+			Name    string `json:"name"`
+			Context struct {
+				User string `json:"user"`
+			} `json:"context"`
+		} `json:"contexts"`
+		Users []struct {
+			Name string `json:"name"`
+			User struct {
+				ClientKeyData []byte `json:"client-key-data"`
+			} `json:"user"`
+		} `json:"users"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	for _, c := range cfg.Contexts {
+		if c.Name != cfg.CurrentContext {
+			continue
+		}
+		for _, u := range cfg.Users {
+			if u.Name == c.Context.User && len(u.User.ClientKeyData) > 0 {
+				return direct.DeriveKey(u.User.ClientKeyData), nil
+			}
+		}
+	}
+	return nil, errors.New("no client-key-data for the current context's user")
+}
+
 // directConfig is what the supervisor of a container needs, from its options.
 func directConfig(opts PlaidOptions) (direct.Config, error) {
 	ports, err := direct.ParsePorts(opts.DirectPorts)
@@ -102,7 +142,7 @@ func directConfig(opts PlaidOptions) (direct.Config, error) {
 	if keyFile == "" {
 		return direct.Config{}, fmt.Errorf("no key (%s): the cluster's kubeconfig", netcfg.EnvDirectKeyFile)
 	}
-	key, err := direct.KeyFromKubeconfig(keyFile)
+	key, err := clusterKey(keyFile)
 	if err != nil {
 		return direct.Config{}, fmt.Errorf("the key from %s: %w", keyFile, err)
 	}

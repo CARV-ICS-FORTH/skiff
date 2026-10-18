@@ -73,4 +73,3 @@ func (fakeResolver) HostOf(pod netip.Addr) (netip.Addr, bool) {
 
 // A pod's server is served at its own port on the host.
 func (fakeResolver) HostPort(pod netip.AddrPort) (uint16, bool) { return pod.Port(), true }
-

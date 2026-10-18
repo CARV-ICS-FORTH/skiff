@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"plaid/pkg/api"
+	"plaid/pkg/direct"
 	"plaid/pkg/netcfg"
 )
 
@@ -572,5 +573,36 @@ func TestLaunchDirectWaitsForTheContainerToTerminate(t *testing.T) {
 	}
 	if _, err := os.Stat(complete); err != nil {
 		t.Errorf("the launcher ended before the container finished: %v (%v)", err, cmd.ProcessState)
+	}
+}
+
+func TestClusterKey(t *testing.T) {
+	write := func(user string) string {
+		path := filepath.Join(t.TempDir(), "kubeconfig")
+		yaml := "apiVersion: v1\nkind: Config\ncurrent-context: c\n" +
+			"clusters: [{name: k, cluster: {server: 'https://127.0.0.1:6443'}}]\n" +
+			"users: [{name: other, user: {client-key-data: b3RoZXI=}}, {name: u, user: " + user + "}]\n" +
+			"contexts: [{name: c, context: {cluster: k, user: u}}]\n"
+		if err := os.WriteFile(path, []byte(yaml), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// The key follows the current context's user and the private key, and is not the private key itself.
+	a, b := write("{client-key-data: Y2x1c3RlciBBIGtleQ==}"), write("{client-key-data: Y2x1c3RlciBCIGtleQ==}") // "cluster A key", "cluster B key"
+	k1, err := clusterKey(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, _ := clusterKey(a)
+	k3, _ := clusterKey(b)
+	if string(k1) != string(k2) || string(k1) == string(k3) || len(k1) != 32 || string(k1) != string(direct.DeriveKey([]byte("cluster A key"))) {
+		t.Errorf("keys %x %x %x", k1, k2, k3)
+	}
+	if _, err := clusterKey(write("{token: abc}")); err == nil {
+		t.Error("a user with no private key gave a key")
+	}
+	if _, err := clusterKey(filepath.Join(t.TempDir(), "absent")); err == nil {
+		t.Error("a kubeconfig that is not there gave a key")
 	}
 }
