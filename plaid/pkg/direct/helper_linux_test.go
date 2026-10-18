@@ -17,6 +17,7 @@ import (
 var helpers = map[string]func(args []string) int{}
 
 func TestMain(m *testing.M) {
+	RunWatchdogIfRequested()
 	if name := os.Getenv("DIRECT_TEST_HELPER"); name != "" {
 		time.AfterFunc(20*time.Second, func() { os.Exit(99) }) // a scenario that waits for what never comes
 		os.Exit(helpers[name](os.Args[1:]))

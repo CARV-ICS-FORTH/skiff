@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"plaid/pkg/api"
+	"plaid/pkg/direct"
 	"plaid/pkg/ipam"
 	"plaid/pkg/version"
 )
@@ -27,6 +28,7 @@ func randomID(prefix string) string {
 }
 
 func main() {
+	direct.RunWatchdogIfRequested() // a supervisor's watchdog is this program started again
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)

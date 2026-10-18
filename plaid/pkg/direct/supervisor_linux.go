@@ -27,6 +27,7 @@ type Supervisor struct {
 	table      *Table
 	stop       chan struct{}
 	loopDone   chan struct{}
+	watchdog   *watchdog // ends the container if the supervisor does not (see watchdog_linux.go)
 	loopOnce   sync.Once
 	handlers   sync.WaitGroup
 	stats      Stats
@@ -79,6 +80,11 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 	if cfg.AckTimeout <= 0 {
 		cfg.AckTimeout = DefaultAckTimeout
 	}
+	// The watchdog is started here, on a thread that is not filtered, before the filter's.
+	wd, err := startWatchdog()
+	if err != nil && cfg.Logf != nil {
+		cfg.Logf("no watchdog, the container will not end with its supervisor: %v", err)
+	}
 	type started struct {
 		listener int
 		err      error
@@ -96,8 +102,10 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 	}()
 	r := <-result
 	if r.err != nil {
+		wd.finished()
 		return nil, r.err
 	}
+	wd.launched(cmd.Process.Pid)
 	s := &Supervisor{
 		cfg:      cfg,
 		cmd:      cmd,
@@ -106,6 +114,7 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 		table:    NewTable(DefaultTableSize),
 		stop:     make(chan struct{}),
 		loopDone: make(chan struct{}),
+		watchdog: wd,
 	}
 	go s.serve()
 	go s.report()
@@ -177,6 +186,7 @@ func (s *Supervisor) push(ended bool) {
 // normally: a container's processes end with it), and returns the command's error.
 func (s *Supervisor) Wait() error {
 	err := s.cmd.Wait()
+	s.watchdog.finished()
 	select {
 	case <-s.loopDone:
 	case <-time.After(drainGrace):

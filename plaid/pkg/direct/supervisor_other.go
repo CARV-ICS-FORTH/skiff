@@ -18,3 +18,6 @@ func Start(Config, *exec.Cmd) (*Supervisor, error) {
 
 // Wait is not reached: there is no supervisor.
 func (*Supervisor) Wait() error { return errors.New("no supervisor") }
+
+// RunWatchdogIfRequested does nothing here: there is no watchdog.
+func RunWatchdogIfRequested() {}

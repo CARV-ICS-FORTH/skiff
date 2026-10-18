@@ -504,6 +504,11 @@ func TestDirectConfigRefusals(t *testing.T) {
 	}
 }
 
+func TestMain(m *testing.M) {
+	direct.RunWatchdogIfRequested() // the supervisors of the tests below start the test binary as their watchdog
+	os.Exit(m.Run())
+}
+
 // launchDirect runs script as the container of a launcher with direct ports, in a process
 // of its own (it replaces itself or ends in a signal), and returns how that ended.
 func launchDirect(t *testing.T, script string, signalGroup syscall.Signal) (*exec.Cmd, error, string) {
@@ -659,4 +664,81 @@ func TestCounterReporterTellsPlaidd(t *testing.T) {
 	if len(logged) != 1 {
 		t.Errorf("a plaidd that is not there was logged %d times: %q", len(logged), logged)
 	}
+}
+
+// containerHelper is the "container" of the test below: it records, every 50 ms, what a call
+// that the supervisor holds (getsockname on a new socket) says.
+func TestContainerHelper(t *testing.T) {
+	if os.Getenv("PLAID_TEST_CONTAINER") != "1" {
+		t.Skip("a helper of the test below")
+	}
+	log, err := os.OpenFile(os.Getenv("PLAID_TEST_LOG"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	if err != nil {
+		os.Exit(2)
+	}
+	for {
+		fd, _ := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+		_, err := syscall.Getsockname(fd)
+		syscall.Close(fd)
+		fmt.Fprintf(log, "getsockname: %v\n", err)
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A supervisor that is killed (SIGKILL: nothing in it runs) leaves a container whose
+// getsockname, connect, bind and accept all fail with ENOSYS, which no program takes as a
+// network that is down. The container must not outlive its supervisor.
+func TestContainerDoesNotOutliveItsSupervisor(t *testing.T) {
+	writeKubeconfig(t, "a private key")
+	dir := t.TempDir()
+	logFile, pidFile := filepath.Join(dir, "calls"), filepath.Join(dir, "pid")
+	script := writeScript(t, "echo $$ > "+pidFile+"\nPLAID_TEST_CONTAINER=1 PLAID_TEST_LOG="+logFile+" exec "+os.Args[0]+" -test.run=^TestContainerHelper$\n")
+	sup := exec.Command(os.Args[0], "-test.run=^TestLaunchDirectHelper$")
+	sup.Env = append(os.Environ(), "PLAID_TEST_DIRECT=1", "PLAID_TEST_SCRIPT="+script)
+	sup.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stderrFile, err := os.Create(filepath.Join(dir, "stderr")) // a file: a pipe would be held open by the container
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup.Stderr = stderrFile
+	if err := sup.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stderr := func() string { b, _ := os.ReadFile(stderrFile.Name()); return string(b) }
+	reaped := make(chan struct{})
+	go func() { sup.Wait(); close(reaped) }()
+	defer syscall.Kill(-sup.Process.Pid, syscall.SIGKILL)
+	var container int
+	for i := 0; i < 100 && container == 0; i++ {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			container, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if strings.Contains(stderr(), "the direct path is off") {
+		t.Skip(strings.TrimSpace(stderr()))
+	}
+	if container == 0 {
+		t.Fatalf("the container did not start: %s", stderr())
+	}
+	time.Sleep(300 * time.Millisecond)
+	if b, _ := os.ReadFile(logFile); !strings.Contains(string(b), "getsockname: <nil>") {
+		t.Fatalf("the container's calls did not work under the supervisor: %q", b)
+	}
+	syscall.Kill(sup.Process.Pid, syscall.SIGKILL) // the supervisor alone
+	<-reaped
+	for i := 0; i < 60; i++ { // up to 3 s
+		if syscall.Kill(container, 0) == syscall.ESRCH {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	b, _ := os.ReadFile(logFile)
+	t.Errorf("the container is still running after its supervisor was killed; its calls now say: %s", lastLine(string(b)))
+	syscall.Kill(container, syscall.SIGKILL)
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return lines[len(lines)-1]
 }
