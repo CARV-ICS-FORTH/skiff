@@ -1,0 +1,61 @@
+//go:build linux && (amd64 || arm64)
+
+package direct
+
+import (
+	"net/netip"
+	"os"
+	"os/exec"
+	"syscall"
+	"testing"
+)
+
+// The tests run their "containers" as copies of the test binary: with DIRECT_TEST_HELPER
+// set, TestMain runs the named scenario instead of the tests. A scenario prints what it
+// saw, one line a thing, and exits.
+var helpers = map[string]func(args []string) int{}
+
+func TestMain(m *testing.M) {
+	if name := os.Getenv("DIRECT_TEST_HELPER"); name != "" {
+		os.Exit(helpers[name](os.Args[1:]))
+	}
+	os.Exit(m.Run())
+}
+
+// helperCmd is the command that runs scenario name; in a user and network namespace of its
+// own if isolated (the namespaces of a pod: its addresses are not the host's, and
+// whatever it does to the network stays in it). The tests that need them skip where the
+// kernel does not give an unprivileged user the namespaces.
+func helperCmd(name string, isolated bool, args ...string) *exec.Cmd {
+	cmd := exec.Command(os.Args[0], args...)
+	cmd.Env = append(os.Environ(), "DIRECT_TEST_HELPER="+name)
+	if isolated {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
+			UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+			GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+		}
+	}
+	return cmd
+}
+
+// requireNamespaces skips the test where an unprivileged user cannot make the namespaces.
+func requireNamespaces(t *testing.T) {
+	t.Helper()
+	probe := exec.Command("true")
+	probe.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+	}
+	if err := probe.Run(); err != nil {
+		t.Skipf("no user and network namespaces for an unprivileged user: %v", err)
+	}
+}
+
+type fakeResolver map[string]Backend
+
+func (f fakeResolver) Resolve(dst netip.AddrPort) (Backend, bool) {
+	b, ok := f[dst.String()]
+	return b, ok
+}

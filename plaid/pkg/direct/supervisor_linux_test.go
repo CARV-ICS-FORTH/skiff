@@ -1,0 +1,72 @@
+//go:build linux && (amd64 || arm64)
+
+package direct
+
+import (
+	"net/netip"
+	"syscall"
+	"testing"
+)
+
+func init() {
+	// names: getsockname on a fresh socket, ten times.
+	helpers["names"] = func([]string) int {
+		fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+		if err != nil {
+			return 2
+		}
+		for i := 0; i < 10; i++ {
+			if _, err := syscall.Getsockname(fd); err != nil {
+				return 3
+			}
+		}
+		return 0
+	}
+}
+
+func testConfig(t *testing.T) Config {
+	t.Helper()
+	return Config{
+		Ports:    Ports{5201: {}},
+		PodIP:    netip.MustParseAddr("10.244.1.9"),
+		Factory:  startFactory(t),
+		Resolver: fakeResolver{},
+		Logf:     t.Logf,
+	}
+}
+
+// The supervisor holds the calls of its command and of nothing else, and lets through
+// what it does not decide: the command behaves as without it.
+func TestSupervisorHoldsAndLetsThrough(t *testing.T) {
+	s, err := Start(testConfig(t), helperCmd("names", false))
+	if err != nil {
+		t.Skipf("no seccomp user notification here: %v", err)
+	}
+	if err := s.Wait(); err != nil {
+		t.Fatalf("the command failed under the supervisor: %v", err)
+	}
+	if got := s.Stats().Notifications.Load(); got < 10 {
+		t.Errorf("%d calls held, want at least the ten getsockname", got)
+	}
+	// The filter is on the command and on the thread that started it, not on this one.
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	before := s.Stats().Notifications.Load()
+	if _, err := syscall.Getsockname(fd); err != nil {
+		t.Fatal(err)
+	}
+	if s.Stats().Notifications.Load() != before {
+		t.Error("the supervisor's own process was held")
+	}
+}
+
+func TestSupervisorRefusesAnIncompleteConfig(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Resolver = nil
+	if _, err := Start(cfg, helperCmd("names", false)); err == nil {
+		t.Error("started without a resolver")
+	}
+}
