@@ -4,7 +4,6 @@ package direct
 
 import (
 	"fmt"
-	"net/netip"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -14,23 +13,6 @@ import (
 
 	"golang.org/x/sys/unix"
 )
-
-// Config is what a supervisor needs to know.
-type Config struct {
-	// Ports are the ports the container marks: connections to a Service port in the set,
-	// and binds of a port in it, take the direct path. (One list serves both roles; they are
-	// different things in general, the Service's port and the container's.)
-	Ports Ports
-	// PodIP is the pod's address, which the container is told for its own sockets.
-	PodIP netip.Addr
-	// Factory makes the host sockets.
-	Factory *FactoryClient
-	// Resolver finds the backends of Service addresses.
-	Resolver Resolver
-	// Logf, when set, receives a line for every decision (the container's own output is
-	// not the place for them).
-	Logf func(format string, args ...any)
-}
 
 // Supervisor holds the container's connect, bind, accept, getsockname and getpeername
 // calls and decides them.
@@ -60,8 +42,11 @@ type Stats struct {
 // ancestor of the container: it is how it is allowed to look into it.
 //
 // The filter is installed on a thread of its own, which starts cmd and ends: a filter
-// cannot be removed, and the supervisor's other threads must not be held. Run the call
-// only once cmd is configured, and use cmd's Wait through the supervisor's.
+// cannot be removed, and the supervisor's other threads must not be held. The runtime
+// does not end its main thread, so a program that calls Start should keep its main
+// goroutine on the main thread (runtime.LockOSThread in init); otherwise the supervisor
+// may not learn that the command has gone, and Wait takes a second more. Use the
+// supervisor's Wait, not cmd's.
 func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 	if cfg.Factory == nil || cfg.Resolver == nil || !cfg.PodIP.Is4() {
 		return nil, fmt.Errorf("the direct path needs a socket factory, a resolver and the pod's IPv4 address")

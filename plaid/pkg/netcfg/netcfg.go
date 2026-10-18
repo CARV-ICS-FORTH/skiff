@@ -37,6 +37,9 @@ const (
 	// EnvSocket and EnvMTU are the variables every Plaid tool reads.
 	EnvSocket = "PLAID_SOCKET_PATH"
 	EnvMTU    = "PLAID_MTU"
+
+	// EnvDirectSocket is where plaidtainer finds the socket factory of the direct path.
+	EnvDirectSocket = "PLAID_DIRECT_SOCKET"
 )
 
 // SocketPath is the API socket in effect: the explicit setting, else the
@@ -49,6 +52,15 @@ func SocketPath(explicit string) string {
 		return env
 	}
 	return DefaultSocketPath
+}
+
+// DirectSocketPath is the socket factory's socket in effect: the explicit setting, else the
+// environment's, else none (the direct path is off).
+func DirectSocketPath(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return os.Getenv(EnvDirectSocket)
 }
 
 // MTUFromEnv returns the MTU the environment asks for, or 0 when it asks for none (or

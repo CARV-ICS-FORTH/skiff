@@ -411,3 +411,122 @@ func TestResolveNetworkParams_StandaloneResolverAndOverrides(t *testing.T) {
 		t.Errorf("a cluster must state its resolver; got %q", dns)
 	}
 }
+
+func TestParseDirectPathOptions(t *testing.T) {
+	opts, flags, image, workload := parseWrapperArgs([]string{
+		"--direct-ports", "5201,5203", "--pod-ip=10.244.1.9", "--direct-socket", "/tmp/f.sock", "--direct-log=/tmp/d.log",
+		"--pid", "--no-init", "--netns-path", "/proc/12/ns/net", "img.sif", "iperf3", "-s", "--pod-ip", "x",
+	})
+	if opts.DirectPorts != "5201,5203" || opts.PodIP != "10.244.1.9" || opts.DirectSocket != "/tmp/f.sock" || opts.DirectLog != "/tmp/d.log" {
+		t.Errorf("options: %+v", opts)
+	}
+	if strings.Join(flags, " ") != "--pid --no-init --netns-path /proc/12/ns/net" {
+		t.Errorf("Apptainer flags: %q", flags)
+	}
+	// What follows the image is the container's, whatever it looks like.
+	if image != "img.sif" || strings.Join(workload, " ") != "iperf3 -s --pod-ip x" {
+		t.Errorf("image %q, workload %q", image, workload)
+	}
+	merged := mergePlaidOptions(PlaidOptions{DirectSocket: "/g.sock"}, opts)
+	if merged.DirectSocket != "/tmp/f.sock" || merged.DirectPorts != "5201,5203" {
+		t.Errorf("merged: %+v", merged)
+	}
+	t.Setenv("PLAID_DIRECT_SOCKET", "/env.sock")
+	d := PlaidOptions{}
+	d.EnsureDefaults()
+	if d.DirectSocket != "/env.sock" {
+		t.Errorf("the environment's factory socket was not used: %q", d.DirectSocket)
+	}
+}
+
+func TestDirectConfigRefusals(t *testing.T) {
+	good := PlaidOptions{DirectPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/tmp/f.sock", Socket: "/tmp/plaidd.sock"}
+	if _, err := directConfig(good); err != nil {
+		t.Fatalf("a complete configuration was refused: %v", err)
+	}
+	for name, mutate := range map[string]func(*PlaidOptions){
+		"bad port":   func(o *PlaidOptions) { o.DirectPorts = "http" },
+		"no pod IP":  func(o *PlaidOptions) { o.PodIP = "" },
+		"IPv6 pod":   func(o *PlaidOptions) { o.PodIP = "fd00::1" },
+		"no factory": func(o *PlaidOptions) { o.DirectSocket = "" },
+	} {
+		o := good
+		mutate(&o)
+		if _, err := directConfig(o); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// launchDirect runs script as the container of a launcher with direct ports, in a process
+// of its own (it replaces itself or ends in a signal), and returns how that ended.
+func launchDirect(t *testing.T, script string, signalGroup syscall.Signal) (*exec.Cmd, error, string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLaunchDirectHelper$")
+	cmd.Env = append(os.Environ(), "PLAID_TEST_DIRECT=1", "PLAID_TEST_SCRIPT="+script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if signalGroup != 0 {
+		time.Sleep(500 * time.Millisecond)
+		syscall.Kill(-cmd.Process.Pid, signalGroup)
+	}
+	timer := time.AfterFunc(10*time.Second, func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	defer timer.Stop()
+	err := cmd.Wait()
+	if strings.Contains(stderr.String(), "the direct path is off") {
+		t.Skip(strings.TrimSpace(stderr.String()))
+	}
+	return cmd, err, stderr.String()
+}
+
+func TestLaunchDirectHelper(t *testing.T) {
+	if os.Getenv("PLAID_TEST_DIRECT") != "1" {
+		t.Skip("a helper of the tests below")
+	}
+	opts := PlaidOptions{DirectPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/nonexistent/factory.sock", Socket: "/nonexistent/plaidd.sock"}
+	os.Exit(launchHostNetworking("/bin/sh", []string{os.Getenv("PLAID_TEST_SCRIPT")}, opts))
+}
+
+func writeScript(t *testing.T, body string) string {
+	path := filepath.Join(t.TempDir(), "container.sh")
+	if err := os.WriteFile(path, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The launcher outlives nothing it supervises and ends as Apptainer ends: with its exit
+// status, and of the signal that killed it.
+func TestLaunchDirectEndsAsTheContainerDoes(t *testing.T) {
+	cmd, err, _ := launchDirect(t, writeScript(t, "exit 7\n"), 0)
+	if cmd.ProcessState.ExitCode() != 7 {
+		t.Errorf("exit status %d (%v), want 7", cmd.ProcessState.ExitCode(), err)
+	}
+	cmd, _, _ = launchDirect(t, writeScript(t, "kill -KILL $$\n"), 0)
+	if ws := cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+		t.Errorf("ended %v, want killed by SIGKILL as the container's launcher was", ws)
+	}
+	cmd, _, _ = launchDirect(t, writeScript(t, "kill -TERM $$\n"), 0)
+	if ws := cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+		t.Errorf("ended %v, want killed by SIGTERM", ws)
+	}
+}
+
+// A signal to the process group reaches the container; the launcher stays until it has
+// finished its graceful work, as the one that started the launcher expects.
+func TestLaunchDirectWaitsForTheContainerToTerminate(t *testing.T) {
+	root := t.TempDir()
+	complete := filepath.Join(root, "complete")
+	script := writeScript(t, "trap 'sleep 0.3; touch "+complete+"; exit 0' TERM\nsleep 30 &\nwait $!\n")
+	cmd, err, stderr := launchDirect(t, script, syscall.SIGTERM)
+	if err != nil {
+		t.Fatalf("the launcher ended badly: %v (%s)", err, stderr)
+	}
+	if _, err := os.Stat(complete); err != nil {
+		t.Errorf("the launcher ended before the container finished: %v (%v)", err, cmd.ProcessState)
+	}
+}

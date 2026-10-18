@@ -330,7 +330,7 @@ func handleExec(apptainerBin string, globalOpts PlaidOptions, args []string) {
 		apptainerArgs = append(apptainerArgs, image)
 		apptainerArgs = append(apptainerArgs, cmdArgs...)
 
-		code := execPassthroughCommand(apptainerBin, apptainerArgs)
+		code := launchHostNetworking(apptainerBin, apptainerArgs, opts)
 		os.Exit(code)
 	}
 
@@ -446,7 +446,7 @@ func handleRun(apptainerBin string, globalOpts PlaidOptions, args []string) {
 		apptainerArgs = append(apptainerArgs, image)
 		apptainerArgs = append(apptainerArgs, cmdArgs...)
 
-		code := execPassthroughCommand(apptainerBin, apptainerArgs)
+		code := launchHostNetworking(apptainerBin, apptainerArgs, opts)
 		os.Exit(code)
 	}
 
