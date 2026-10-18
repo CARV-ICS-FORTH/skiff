@@ -129,3 +129,19 @@ func TestResolveRefreshesAndSurvivesPlaidd(t *testing.T) {
 		t.Error("the copy was dropped when plaidd could not be asked")
 	}
 }
+
+func TestHostOfPods(t *testing.T) {
+	f := &fakePlaid{
+		status: exampleStatus(),
+		routes: []api.RouteInfo{{Subnet: "10.244.5.0/24", RemoteHostIP: "10.0.1.13"}},
+	}
+	r, _ := newTestResolver(f)
+	for pod, want := range map[string]string{"10.244.1.7": "10.0.1.11", "10.244.5.4": "10.0.1.13"} {
+		if got, ok := r.HostOf(netip.MustParseAddr(pod)); !ok || got.String() != want {
+			t.Errorf("%s: %v, %v; want %s", pod, got, ok, want)
+		}
+	}
+	if got, ok := r.HostOf(netip.MustParseAddr("10.244.9.9")); ok {
+		t.Errorf("a pod of no known node is on %v", got)
+	}
+}

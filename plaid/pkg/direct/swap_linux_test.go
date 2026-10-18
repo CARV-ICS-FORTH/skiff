@@ -238,19 +238,16 @@ func TestDirectConnectionBetweenPods(t *testing.T) {
 	server, serverOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "serve", p)
 	serverOut.waitFor(t, "listening")
 
-	// Connections to the server's host port that are not a client of ours are closed, and the
-	// next is accepted: no preamble, and one meant for another pod.
-	stray, err := net.Dial("tcp", "127.0.0.1:"+p)
-	if err != nil {
-		t.Fatal(err)
+	// Connections to the server's host port that are not a client of ours are closed, and
+	// the next is accepted; none of them is told anything (no ack).
+	forgeries := map[string]net.Conn{
+		"not-a-preamble": forged(t, p, func(pre *Preamble, key *[]byte) { *key = nil }),
+		"bad-mac":        forged(t, p, func(pre *Preamble, key *[]byte) { *key = DeriveKey([]byte("another cluster")) }),
+		"stale":          forged(t, p, func(pre *Preamble, _ *[]byte) { pre.Time = pre.Time.Add(-2 * time.Minute) }),
+		"wrong-host":     forged(t, p, func(pre *Preamble, _ *[]byte) { pre.Host = netip.MustParseAddrPort("127.0.0.1:9") }),
+		"wrong-backend":  forged(t, p, func(pre *Preamble, _ *[]byte) { pre.Backend = netip.MustParseAddrPort("10.244.7.7:" + p) }),
+		"wrong-client":   forged(t, p, func(pre *Preamble, _ *[]byte) { pre.Client = netip.MustParseAddrPort("10.9.9.9:1") }),
 	}
-	stray.Write([]byte("GET / HTTP/1.1\r\n\r\n"))
-	wrong, err := net.Dial("tcp", "127.0.0.1:"+p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pre, _ := Preamble{Client: netip.MustParseAddrPort("10.244.9.9:1"), Backend: netip.MustParseAddrPort("10.244.7.7:" + p)}.Marshal()
-	wrong.Write(pre[:])
 
 	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
 	client, clientOut := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", vip, "1000000")
@@ -260,12 +257,18 @@ func TestDirectConnectionBetweenPods(t *testing.T) {
 	if err := server.Wait(); err != nil {
 		t.Fatalf("server: %v\n%s", err, serverOut)
 	}
-	for _, c := range []net.Conn{stray, wrong} {
+	for reason, c := range forgeries {
 		c.SetReadDeadline(time.Now().Add(time.Second))
-		if _, err := c.Read(make([]byte, 1)); err != io.EOF && !isReset(err) {
-			t.Errorf("a connection that is not a client of ours stayed open: %v", err)
+		if n, err := c.Read(make([]byte, 1)); n != 0 || (err != io.EOF && !isReset(err)) {
+			t.Errorf("%s: the connection stayed open or was acknowledged: %d bytes, %v", reason, n, err)
 		}
 		c.Close()
+	}
+	rejected := server.Stats().Rejected.Snapshot()
+	for reason := range forgeries {
+		if rejected[reason] != 1 {
+			t.Errorf("rejections: %v; want one %s", rejected, reason)
+		}
 	}
 
 	// Criterion: the client sees itself as its pod IP and its peer as the Service address ...
@@ -303,6 +306,30 @@ func TestDirectConnectionBetweenPods(t *testing.T) {
 	if server.Stats().Accepted.Load() != 1 || client.Stats().Swapped.Load() != 1 {
 		t.Errorf("accepted %d, swapped %d; want 1, 1", server.Stats().Accepted.Load(), client.Stats().Swapped.Load())
 	}
+}
+
+// forged connects to the server's host port as a client would and sends it a preamble
+// that is true of the connection, changed by edit (and signed with the key, which edit may
+// change; none is a message that is no preamble at all).
+func forged(t *testing.T, port string, edit func(pre *Preamble, key *[]byte)) net.Conn {
+	t.Helper()
+	c, err := net.Dial("tcp", "127.0.0.1:"+port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := c.LocalAddr().(*net.TCPAddr).AddrPort()
+	pre, _ := NewPreamble(PreambleDirect, netip.AddrPortFrom(netip.MustParseAddr("10.244.1.9"), host.Port()),
+		netip.MustParseAddrPort("10.244.5.4:"+port), host)
+	key := testKey
+	edit(&pre, &key)
+	wire := pre.Marshal(key)
+	if key == nil {
+		wire = [PreambleSize]byte{'G', 'E', 'T', ' ', '/'}
+	}
+	if _, err := c.Write(wire[:]); err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 func isReset(err error) bool {
@@ -379,5 +406,124 @@ func TestDirectBlockingAccept(t *testing.T) {
 	}
 	if so := serverOut.String(); !strings.Contains(so, "accepted from 10.244.1.9:") || !strings.Contains(so, "nonblock false") {
 		t.Errorf("server: %s", so)
+	}
+}
+
+// admit on its own, on a listener of the test's: a client that closes before the
+// container accepts is not handed over, and the others are acknowledged.
+func TestAdmit(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	lf, err := l.(*net.TCPListener).File() // a descriptor of the listener, to accept on
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf.Close()
+	p := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
+	s := &Supervisor{cfg: Config{PodIP: netip.MustParseAddr("10.244.5.4"), Key: testKey, Resolver: fakeResolver{}}}
+	listener := Socket{Kind: KindListener, Local: netip.MustParseAddrPort("[::]:" + p)}
+
+	// connect makes a client that sends a preamble of kind; admit decides it on the accepted end.
+	connect := func(kind PreambleKind, backend string) (client net.Conn, sent Preamble) {
+		c, err := net.Dial("tcp", "127.0.0.1:"+p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		host := c.LocalAddr().(*net.TCPAddr).AddrPort()
+		sent, _ = NewPreamble(kind, netip.AddrPortFrom(netip.MustParseAddr("10.244.1.9"), host.Port()), netip.MustParseAddrPort(backend), host)
+		wire := sent.Marshal(testKey)
+		c.Write(wire[:])
+		return c, sent
+	}
+	admit := func() (Preamble, string, error) {
+		fd, _, err := unix.Accept(int(lf.Fd()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unix.Close(fd)
+		return s.admit(fd, listener)
+	}
+
+	// The client wrote its preamble and went away.
+	c, _ := connect(PreambleDirect, "10.244.5.4:"+p)
+	c.Close()
+	if _, reason, err := admit(); reason != "client-gone" {
+		t.Errorf("a client that closed: %q, %v", reason, err)
+	}
+	// A client that waits is acknowledged, with the ack of its own preamble.
+	c, sent := connect(PreambleDirect, "10.244.5.4:"+p)
+	defer c.Close()
+	pre, reason, err := admit()
+	if reason != "" || err != nil || pre.Client != sent.Client {
+		t.Fatalf("admitted %v, %q, %v", pre, reason, err)
+	}
+	ack := make([]byte, AckSize)
+	c.SetReadDeadline(time.Now().Add(time.Second))
+	want := sent.Ack(testKey)
+	if _, err := io.ReadFull(c, ack); err != nil || string(ack) != string(want[:]) {
+		t.Errorf("ack %x, %v", ack, err)
+	}
+	// The pod's own proxy connects on the loopback and says the connection is a local one.
+	c, _ = connect(PreambleLocal, "127.0.0.1:"+p)
+	defer c.Close()
+	if _, reason, err := admit(); reason != "" {
+		t.Errorf("a local connection from the loopback: %q, %v", reason, err)
+	}
+}
+
+// A direct attempt that fails in any way leaves the container's connect to the pod network
+// (here a network with nothing in it: the call fails as it would without a supervisor), and
+// is counted with its reason.
+func TestFallbackToThePodNetwork(t *testing.T) {
+	requireNamespaces(t)
+	tests := []struct {
+		reason string
+		// serve is the backend's node: nothing listens (nil), or a listener whose accepted connections it handles.
+		serve func(c net.Conn)
+	}{
+		{"refused", nil},
+		{"no-ack", func(c net.Conn) { io.Copy(io.Discard, c) }},
+		{"bad-ack", func(c net.Conn) { c.Write(make([]byte, AckSize)); io.Copy(io.Discard, c) }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.reason, func(t *testing.T) {
+			port := freePort(t)
+			p := strconv.Itoa(port)
+			if tc.serve != nil {
+				l, err := net.Listen("tcp", "127.0.0.1:"+p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer l.Close()
+				go func() {
+					for {
+						c, err := l.Accept()
+						if err != nil {
+							return
+						}
+						go tc.serve(c)
+					}
+				}()
+			}
+			vip := "10.43.0.77:" + p
+			resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+			cfg := podConfig(t, "10.244.1.9", Ports{uint16(port): {}}, resolver)
+			cfg.AckTimeout = 200 * time.Millisecond
+			start := time.Now()
+			client, out := runPod(t, cfg, "rawdial", vip)
+			if err := client.Wait(); err != nil {
+				t.Fatalf("client: %v\n%s", err, out)
+			}
+			if !strings.Contains(out.String(), "connect network is unreachable") {
+				t.Errorf("the connect did not go on to the pod network: %s", out)
+			}
+			if got := client.Stats().Fallbacks.Snapshot(); got[tc.reason] != 1 || len(got) != 1 || client.Stats().Swapped.Load() != 0 {
+				t.Errorf("fallbacks %v, swapped %d; want one %s", got, client.Stats().Swapped.Load(), tc.reason)
+			}
+			t.Logf("%s: the container's connect returned after %v", tc.reason, time.Since(start))
+		})
 	}
 }

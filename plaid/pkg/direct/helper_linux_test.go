@@ -61,3 +61,14 @@ func (f fakeResolver) Resolve(dst netip.AddrPort) (Backend, bool) {
 	b, ok := f[dst.String()]
 	return b, ok
 }
+
+// The pods of the tests are on the node whose address is the loopback, which is where their
+// host sockets meet.
+func (fakeResolver) HostOf(pod netip.Addr) (netip.Addr, bool) {
+	if netip.MustParsePrefix("10.244.0.0/16").Contains(pod) {
+		return netip.MustParseAddr("127.0.0.1"), true
+	}
+	return netip.Addr{}, false
+}
+
+var testKey = DeriveKey([]byte("the cluster's private key"))

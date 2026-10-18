@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"plaid/pkg/api"
+	"plaid/pkg/netcfg"
 )
 
 func TestPassthroughWaitsForTermCompletion(t *testing.T) {
@@ -439,7 +441,24 @@ func TestParseDirectPathOptions(t *testing.T) {
 	}
 }
 
+// writeKubeconfig makes a cluster kubeconfig whose user has a private key, and points the
+// bubble's environment at it, as the bubble does.
+func writeKubeconfig(t *testing.T, key string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	yaml := "apiVersion: v1\nkind: Config\ncurrent-context: c\n" +
+		"clusters: [{name: k, cluster: {server: 'https://127.0.0.1:6443'}}]\n" +
+		"users: [{name: u, user: {client-key-data: " + base64.StdEncoding.EncodeToString([]byte(key)) + "}}]\n" +
+		"contexts: [{name: c, context: {cluster: k, user: u}}]\n"
+	if err := os.WriteFile(path, []byte(yaml), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(netcfg.EnvDirectKeyFile, path)
+	return path
+}
+
 func TestDirectConfigRefusals(t *testing.T) {
+	writeKubeconfig(t, "a private key")
 	good := PlaidOptions{DirectPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/tmp/f.sock", Socket: "/tmp/plaidd.sock"}
 	if _, err := directConfig(good); err != nil {
 		t.Fatalf("a complete configuration was refused: %v", err)
@@ -455,6 +474,24 @@ func TestDirectConfigRefusals(t *testing.T) {
 		if _, err := directConfig(o); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+	// The key is the cluster's: no key file, or a kubeconfig without a key, is no direct path.
+	t.Setenv(netcfg.EnvDirectKeyFile, "")
+	if _, err := directConfig(good); err == nil {
+		t.Error("accepted without a key file")
+	}
+	t.Setenv(netcfg.EnvDirectKeyFile, filepath.Join(t.TempDir(), "absent"))
+	if _, err := directConfig(good); err == nil {
+		t.Error("accepted with a key file that is not there")
+	}
+	writeKubeconfig(t, "a private key")
+	t.Setenv(netcfg.EnvDirectAckTimeout, "soon")
+	if _, err := directConfig(good); err == nil {
+		t.Error("accepted an ack timeout that is no duration")
+	}
+	t.Setenv(netcfg.EnvDirectAckTimeout, "250ms")
+	if cfg, err := directConfig(good); err != nil || cfg.AckTimeout != 250*time.Millisecond {
+		t.Errorf("ack timeout: %v, %v", cfg.AckTimeout, err)
 	}
 }
 
@@ -502,6 +539,7 @@ func writeScript(t *testing.T, body string) string {
 // The launcher outlives nothing it supervises and ends as Apptainer ends: with its exit
 // status, and of the signal that killed it.
 func TestLaunchDirectEndsAsTheContainerDoes(t *testing.T) {
+	writeKubeconfig(t, "a private key")
 	cmd, err, _ := launchDirect(t, writeScript(t, "exit 7\n"), 0)
 	if cmd.ProcessState.ExitCode() != 7 {
 		t.Errorf("exit status %d (%v), want 7", cmd.ProcessState.ExitCode(), err)
@@ -519,6 +557,7 @@ func TestLaunchDirectEndsAsTheContainerDoes(t *testing.T) {
 // A signal to the process group reaches the container; the launcher stays until it has
 // finished its graceful work, as the one that started the launcher expects.
 func TestLaunchDirectWaitsForTheContainerToTerminate(t *testing.T) {
+	writeKubeconfig(t, "a private key")
 	root := t.TempDir()
 	complete := filepath.Join(root, "complete")
 	script := writeScript(t, "trap 'sleep 0.3; touch "+complete+"; exit 0' TERM\nsleep 30 &\nwait $!\n")

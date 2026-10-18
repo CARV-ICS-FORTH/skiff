@@ -1,6 +1,9 @@
 package direct
 
-import "net/netip"
+import (
+	"net/netip"
+	"time"
+)
 
 // Config is what a supervisor needs to know.
 type Config struct {
@@ -10,6 +13,12 @@ type Config struct {
 	Ports Ports
 	// PodIP is the pod's address, which the container is told for its own sockets.
 	PodIP netip.Addr
+	// Key authenticates the preambles and acks (DeriveKey): the same on every node of the
+	// cluster, and not known to the pods.
+	Key []byte
+	// AckTimeout is how long a client waits for the server's ack before its connect is left
+	// to the pod network (DefaultAckTimeout if zero).
+	AckTimeout time.Duration
 	// Factory makes the host sockets.
 	Factory *FactoryClient
 	// Resolver finds the backends of Service addresses.

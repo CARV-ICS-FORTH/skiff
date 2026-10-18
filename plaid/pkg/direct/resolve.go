@@ -22,6 +22,8 @@ type Backend struct {
 // way it would have without the supervisor.
 type Resolver interface {
 	Resolve(dst netip.AddrPort) (Backend, bool)
+	// HostOf is the address of the node a pod is on, as the other nodes reach it.
+	HostOf(pod netip.Addr) (netip.Addr, bool)
 }
 
 // PlaidAPI is what the resolver asks of plaidd (api.Client).
@@ -97,6 +99,20 @@ func (r *APIResolver) Resolve(dst netip.AddrPort) (Backend, bool) {
 		return Backend{}, false
 	}
 	return usable[r.pick(len(usable))], true
+}
+
+// HostOf implements Resolver.
+func (r *APIResolver) HostOf(pod netip.Addr) (netip.Addr, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.now().Sub(r.loaded) >= refreshAfter {
+		r.load()
+	}
+	host, ok := r.hostOf(pod)
+	if !ok && r.load() {
+		host, ok = r.hostOf(pod)
+	}
+	return host, ok
 }
 
 // hostOf is the address of the node a pod is on.

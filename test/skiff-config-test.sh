@@ -91,6 +91,9 @@ check "an RDMA device's port 0" 1 'SKIFF_RDMA_DEVICE: "mlx5_0:0" is not' 2 -- SK
 check "slirp4netns MTU that is not a number" 1 'SKIFF_SLIRP_MTU.*not an MTU' 2 -- SKIFF_SLIRP_MTU=big
 check "slirp4netns MTU below the minimum" 1 'SKIFF_SLIRP_MTU.*between 576 and 65520' 2 -- SKIFF_SLIRP_MTU=500
 check "slirp4netns MTU above what it takes" 1 'SKIFF_SLIRP_MTU.*between 576 and 65520' 2 -- SKIFF_SLIRP_MTU=65521
+check "a direct path ack timeout in seconds or milliseconds" 0 "" 2 -- SKIFF_DIRECT_ACK_TIMEOUT=250ms
+check "a direct path ack timeout that is no duration" 1 'SKIFF_DIRECT_ACK_TIMEOUT.*not a duration' 2 -- SKIFF_DIRECT_ACK_TIMEOUT=soon
+check "a direct path ack timeout of nothing" 1 'SKIFF_DIRECT_ACK_TIMEOUT.*not a duration' 2 -- SKIFF_DIRECT_ACK_TIMEOUT=0s
 check "slirp4netns MTU below the pod MTU" 1 'SKIFF_SLIRP_MTU \(1400\) is below the pod MTU \(1450\)' 2 -- SKIFF_SLIRP_MTU=1400
 check "MTU without room for VXLAN" 1 'no room for VXLAN.*at most 1450' 2 -- SKIFF_POD_MTU=1500
 check "the network: an interface name" 0 "" 2 -- SKIFF_NETWORK=enp130s0

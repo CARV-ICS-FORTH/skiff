@@ -82,6 +82,10 @@ if [ -n "${SKIFF_UPLINK_MTU:-}" ] || [ -n "${SKIFF_POD_MTU:-}" ]; then SKIFF_MTU
 # InfiniBand port.
 : "${SKIFF_RDMA:=auto}"
 : "${SKIFF_RDMA_DEVICE:=auto}"
+# The direct path (Plaid's pkg/direct, for the containers that mark ports): how long a
+# client's supervisor waits for the server's to acknowledge a connection before the connect
+# goes the way it would have without the direct path, on the pod network. A Go duration.
+: "${SKIFF_DIRECT_ACK_TIMEOUT:=1s}"
 # The node's scratch directory, for runtimes whose scratch space is not /tmp: pod
 # runtime state, Apptainer's image conversion and unpacking, and the socket between
 # the host and the bubble live below it. It is node-local and disposable (a shared
@@ -384,6 +388,11 @@ skiff_config_validate() {
         errors=$((errors + 1))
     fi
 
+    if ! [[ "$SKIFF_DIRECT_ACK_TIMEOUT" =~ ^[1-9][0-9]*(ms|s)$ ]]; then
+        echo "SKIFF_DIRECT_ACK_TIMEOUT: \"$SKIFF_DIRECT_ACK_TIMEOUT\" is not a duration in milliseconds or seconds (for example 500ms or 1s)" >&2
+        errors=$((errors + 1))
+    fi
+
     if [[ "$SKIFF_TMP_DIR" != /* ]] || [[ "$SKIFF_TMP_DIR" =~ [[:space:]] ]]; then
         echo "SKIFF_TMP_DIR: \"$SKIFF_TMP_DIR\" is not an absolute path without spaces" >&2
         errors=$((errors + 1))
@@ -471,7 +480,8 @@ skiff_record_cause() {
 # skiff_config_export: make the resolved values available to what is started.
 skiff_config_export() {
     export SKIFF_POD_CIDR SKIFF_SERVICE_CIDR SKIFF_CLUSTER_DOMAIN SKIFF_CLUSTER_DNS \
-        SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_SLIRP_MTU SKIFF_TMP_DIR SKIFF_RDMA SKIFF_RDMA_DEVICE
+        SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_SLIRP_MTU SKIFF_TMP_DIR SKIFF_RDMA SKIFF_RDMA_DEVICE \
+        SKIFF_DIRECT_ACK_TIMEOUT
     [ -z "${SKIFF_JOB_INSTANCE:-}" ] || export SKIFF_JOB_INSTANCE
 }
 
@@ -1392,6 +1402,8 @@ skiff_bubble() {
     	--env HOST_IP="$HOST_IP_DETECTED" \
     	--env SKIFF_OVERLAY_HANDOFF="$OVERLAY_HANDOFF" \
     	--env PLAID_DIRECT_SOCKET="$DIRECT_SOCKET" \
+    	--env PLAID_DIRECT_KEY_FILE=/var/lib/skiff/kubeconfig \
+    	--env PLAID_DIRECT_ACK_TIMEOUT="$SKIFF_DIRECT_ACK_TIMEOUT" \
     	--env SKIFF_SLIRP_API="/root/.skiff/slirp-${NAME}.sock" \
     	--env PLAID_UPLINK=tap0 \
     	--env PLAID_UPLINK_ADDRESS="$NS_ADDR" \

@@ -3,6 +3,7 @@
 package direct
 
 import (
+	"crypto/hmac"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -25,6 +26,10 @@ const (
 	// preambleTimeout bounds the wait for a client's preamble: a connection that does not
 	// send one is not a client of ours.
 	preambleTimeout = time.Second
+	// preambleSkew is how far a preamble's time may be from the server's clock.
+	preambleSkew = time.Minute
+	// DefaultAckTimeout is how long a client's supervisor waits for the server's ack.
+	DefaultAckTimeout = time.Second
 )
 
 // heldSocket is a container's socket as the supervisor sees it through a duplicate.
@@ -145,7 +150,9 @@ func unspecifiedFor(family int) netip.Addr {
 
 // connect: a marked Service port goes to its backend on the host network. The container
 // is told the connection is made; the backend's supervisor is told, in the preamble, who
-// the client is and which pod it means.
+// the client is and which pod it means, and says in the ack that it has the connection.
+// Whatever fails before that leaves the container's socket as it was and lets the call
+// through: the connect goes to the Service on the pod network.
 func (s *Supervisor) connect(n *notif) reply {
 	dst, ok := sockaddrArg(n)
 	if !ok || !s.cfg.Ports.Has(dst.Port()) {
@@ -184,25 +191,35 @@ func (s *Supervisor) connect(n *notif) reply {
 	timeout := unix.NsecToTimeval(int64(connectTimeout))
 	_ = unix.SetsockoptTimeval(sock, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &timeout)
 	if err := unix.Connect(sock, sockaddrFor(backend.Host, held.family)); err != nil {
-		if err == unix.EINPROGRESS {
-			err = unix.ETIMEDOUT // the timeout of a blocking connect
+		reason := "connect-error"
+		switch err {
+		case unix.ECONNREFUSED:
+			reason = "refused"
+		case unix.EINPROGRESS, unix.ETIMEDOUT: // EINPROGRESS: the timeout of a blocking connect
+			reason = "timeout"
 		}
-		s.logf("connect %s: to %s: %v", dst, backend.Host, err)
-		return failWith(errnoOf(err))
+		return s.fallback(reason, "connect %s: to %s: %v", dst, backend.Host, err)
 	}
 	_ = unix.SetsockoptTimeval(sock, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &unix.Timeval{})
 	sa, err := unix.Getsockname(sock)
 	if err != nil {
-		return failWith(errnoOf(err))
+		return s.fallback("connect-error", "connect %s: %v", dst, err)
 	}
 	local := netip.AddrPortFrom(s.cfg.PodIP, addrPortOf(sa).Port())
-	pre, err := Preamble{Client: local, Backend: backend.Pod}.Marshal()
+	pre, err := NewPreamble(PreambleDirect, local, backend.Pod, addrPortOf(sa))
 	if err != nil {
-		s.logf("connect %s: %v", dst, err)
-		return failWith(unix.EAFNOSUPPORT)
+		return s.fallback("connect-error", "connect %s: %v", dst, err)
 	}
-	if _, err := unix.Write(sock, pre[:]); err != nil {
-		return failWith(errnoOf(err))
+	wire := pre.Marshal(s.cfg.Key)
+	if _, err := unix.Write(sock, wire[:]); err != nil {
+		return s.fallback("connect-error", "connect %s: %v", dst, err)
+	}
+	var ack [AckSize]byte
+	if err := readFull(sock, ack[:], s.cfg.AckTimeout); err != nil {
+		return s.fallback("no-ack", "connect %s: %s did not acknowledge: %v", dst, backend.Host, err)
+	}
+	if want := pre.Ack(s.cfg.Key); !hmac.Equal(ack[:], want[:]) {
+		return s.fallback("bad-ack", "connect %s: %s sent a wrong acknowledgement", dst, backend.Host)
 	}
 	if held.nonblock {
 		_ = unix.SetNonblock(sock, true)
@@ -215,6 +232,22 @@ func (s *Supervisor) connect(n *notif) reply {
 	s.stats.Swapped.Add(1)
 	s.logf("connect %s: on the host, %s to %s, as %s", dst, addrPortOf(sa), backend.Host, local)
 	return succeed()
+}
+
+// fallback counts a direct attempt that was given up for the reason, logs it (the first
+// time and then at most every few seconds), and lets the call through.
+func (s *Supervisor) fallback(reason, format string, args ...any) reply {
+	if total, log := s.stats.Fallbacks.Add(reason); log {
+		s.logf("falling back to the pod network, %s (%d so far): %s", reason, total, fmt.Sprintf(format, args...))
+	}
+	return letThrough
+}
+
+// reject counts a connection to a swapped listener that was turned away for the reason.
+func (s *Supervisor) reject(reason, format string, args ...any) {
+	if total, log := s.stats.Rejected.Add(reason); log {
+		s.logf("accept: closed a connection, %s (%d so far): %s", reason, total, fmt.Sprintf(format, args...))
+	}
 }
 
 func (s *Supervisor) putFailed(call string, err error) reply {
@@ -319,17 +352,14 @@ func (s *Supervisor) accept(n *notif) reply {
 			}
 			return failWith(errnoOf(err))
 		}
-		if pre, err = s.readPreamble(conn); err == nil {
-			if pre.Backend.Addr() == s.cfg.PodIP && pre.Backend.Port() == listener.Local.Port() {
-				break
-			}
-			err = fmt.Errorf("meant for %s, not for this pod (%s:%d)", pre.Backend, s.cfg.PodIP, listener.Local.Port())
+		var reason string
+		if pre, reason, err = s.admit(conn, listener); err == nil {
+			break
 		}
-		// Not a client of ours, or one that was sent to the wrong pod (an out-of-date
-		// Service table): closed, and the next connection is accepted. EAGAIN is for the
-		// kernel to say: an edge-triggered epoll would not wake again for the connections
-		// that are queued.
-		s.logf("accept: closed a connection: %v", err)
+		// Not a client of ours, or a wrong or old one: closed, and the next connection is
+		// accepted. EAGAIN is for the kernel to say: an edge-triggered epoll would not wake
+		// again for the connections that are queued.
+		s.reject(reason, "%v", err)
 		unix.Close(conn)
 	}
 	defer unix.Close(conn)
@@ -363,28 +393,80 @@ func (s *Supervisor) accept(n *notif) reply {
 	return reply{answered: true}
 }
 
-// readPreamble reads the preamble a client's supervisor wrote first.
-func (s *Supervisor) readPreamble(conn int) (Preamble, error) {
+// admit decides whether the connection that was accepted on the listener is a client
+// of ours that the listener's container may have, and if it is acknowledges it. The reason
+// it is not is a short word for the counts.
+func (s *Supervisor) admit(conn int, listener Socket) (pre Preamble, reason string, err error) {
 	var buf [PreambleSize]byte
-	deadline := time.Now().Add(preambleTimeout)
+	if err := readFull(conn, buf[:], preambleTimeout); err != nil {
+		return pre, "no-preamble", err
+	}
+	if pre, err = ParsePreamble(buf[:], s.cfg.Key); err != nil {
+		if err == errBadMAC {
+			return pre, "bad-mac", err
+		}
+		return pre, "not-a-preamble", err
+	}
+	if age := time.Since(pre.Time); age > preambleSkew || age < -preambleSkew {
+		return pre, "stale", fmt.Errorf("made %s ago", age.Round(time.Second))
+	}
+	sa, perr := unix.Getpeername(conn)
+	peer := addrPortOf(sa)
+	if perr != nil || peer != pre.Host {
+		return pre, "wrong-host", fmt.Errorf("from %v, not from the %s it says", peer, pre.Host)
+	}
+	if pre.Backend.Port() != listener.Local.Port() {
+		return pre, "wrong-backend", fmt.Errorf("meant for %s, not for port %d of this pod", pre.Backend, listener.Local.Port())
+	}
+	switch pre.Kind {
+	case PreambleDirect:
+		if pre.Backend.Addr() != s.cfg.PodIP {
+			return pre, "wrong-backend", fmt.Errorf("meant for %s, not for this pod (%s)", pre.Backend, s.cfg.PodIP)
+		}
+		if host, ok := s.cfg.Resolver.HostOf(pre.Client.Addr()); !ok || host != peer.Addr() {
+			return pre, "wrong-client", fmt.Errorf("%s is not a pod of the node %s", pre.Client.Addr(), peer.Addr())
+		}
+	case PreambleLocal:
+		if !peer.Addr().IsLoopback() {
+			return pre, "wrong-host", fmt.Errorf("a local connection from %s", peer.Addr())
+		}
+	default:
+		return pre, "not-a-preamble", fmt.Errorf("kind %d", pre.Kind)
+	}
+	// The client waits for the ack before it goes on, and gives up after a while: a client
+	// that has given up has closed its end, and the container should not be handed that.
+	var probe [1]byte
+	if m, _, err := unix.Recvfrom(conn, probe[:], unix.MSG_PEEK|unix.MSG_DONTWAIT); err == nil && m == 0 {
+		return pre, "client-gone", errors.New("the client closed it while it waited")
+	}
+	ack := pre.Ack(s.cfg.Key)
+	if _, err := unix.Write(conn, ack[:]); err != nil {
+		return pre, "client-gone", err
+	}
+	return pre, "", nil
+}
+
+// readFull reads len(buf) bytes from fd, waiting at most timeout for them.
+func readFull(fd int, buf []byte, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
 	for got := 0; got < len(buf); {
 		wait := time.Until(deadline)
 		if wait <= 0 {
-			return Preamble{}, errors.New("no preamble")
+			return errors.New("timed out")
 		}
-		if !pollReadable(conn, int(wait.Milliseconds())+1) {
+		if !pollReadable(fd, int(wait.Milliseconds())+1) {
 			continue
 		}
-		m, err := unix.Read(conn, buf[got:])
+		m, err := unix.Read(fd, buf[got:])
 		if err == unix.EINTR || err == unix.EAGAIN {
 			continue
 		}
 		if err != nil || m == 0 {
-			return Preamble{}, errors.New("closed before a preamble")
+			return errors.New("closed before it was complete")
 		}
 		got += m
 	}
-	return ParsePreamble(buf[:])
+	return nil
 }
 
 func pollReadable(fd, timeoutMs int) bool {

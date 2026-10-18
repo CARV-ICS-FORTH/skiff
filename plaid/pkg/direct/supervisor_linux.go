@@ -35,6 +35,12 @@ type Stats struct {
 	Accepted      atomic.Uint64 // connections handed to a swapped listener's accept
 	Names         atomic.Uint64 // getsockname and getpeername answered
 	Errors        atomic.Uint64 // calls that went wrong in the supervisor (and were let through, or failed)
+
+	// Fallbacks counts, by reason, the connects and binds that were let through to the pod
+	// network after the direct path was tried or ruled out; Rejected the connections to a
+	// swapped listener that were closed without the container seeing them.
+	Fallbacks Reasons
+	Rejected  Reasons
 }
 
 // Start starts cmd, with the filter on it and on everything it starts, and serves the
@@ -48,8 +54,11 @@ type Stats struct {
 // may not learn that the command has gone, and Wait takes a second more. Use the
 // supervisor's Wait, not cmd's.
 func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
-	if cfg.Factory == nil || cfg.Resolver == nil || !cfg.PodIP.Is4() {
-		return nil, fmt.Errorf("the direct path needs a socket factory, a resolver and the pod's IPv4 address")
+	if cfg.Factory == nil || cfg.Resolver == nil || !cfg.PodIP.Is4() || len(cfg.Key) == 0 {
+		return nil, fmt.Errorf("the direct path needs a socket factory, a resolver, a key and the pod's IPv4 address")
+	}
+	if cfg.AckTimeout <= 0 {
+		cfg.AckTimeout = DefaultAckTimeout
 	}
 	type started struct {
 		listener int
@@ -102,6 +111,8 @@ func (s *Supervisor) Wait() error {
 	s.handlers.Wait()
 	s.targets.closeAll()
 	unix.Close(s.listener)
+	s.logf("ended: held %d, swapped %d, accepted %d; fallbacks: %s; rejected: %s",
+		s.stats.Notifications.Load(), s.stats.Swapped.Load(), s.stats.Accepted.Load(), s.stats.Fallbacks.String(), s.stats.Rejected.String())
 	return err
 }
 

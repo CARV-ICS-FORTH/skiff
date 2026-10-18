@@ -29,6 +29,7 @@ func testConfig(t *testing.T) Config {
 	return Config{
 		Ports:    Ports{5201: {}},
 		PodIP:    netip.MustParseAddr("10.244.1.9"),
+		Key:      testKey,
 		Factory:  startFactory(t),
 		Resolver: fakeResolver{},
 		Logf:     t.Logf,

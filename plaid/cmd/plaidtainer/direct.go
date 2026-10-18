@@ -12,6 +12,7 @@ import (
 
 	"plaid/pkg/api"
 	"plaid/pkg/direct"
+	"plaid/pkg/netcfg"
 )
 
 func init() {
@@ -94,14 +95,32 @@ func directConfig(opts PlaidOptions) (direct.Config, error) {
 	if opts.DirectSocket == "" {
 		return direct.Config{}, fmt.Errorf("no socket factory (--direct-socket, or $PLAID_DIRECT_SOCKET)")
 	}
+	// What the deployment says, in the bubble's environment (the container does not get it):
+	// the cluster's kubeconfig, which the key is derived from, and how long to wait for an ack.
+	keyFile := os.Getenv(netcfg.EnvDirectKeyFile)
+	if keyFile == "" {
+		return direct.Config{}, fmt.Errorf("no key (%s): the cluster's kubeconfig", netcfg.EnvDirectKeyFile)
+	}
+	key, err := direct.KeyFromKubeconfig(keyFile)
+	if err != nil {
+		return direct.Config{}, fmt.Errorf("the key from %s: %w", keyFile, err)
+	}
+	var ackTimeout time.Duration
+	if v := os.Getenv(netcfg.EnvDirectAckTimeout); v != "" {
+		if ackTimeout, err = time.ParseDuration(v); err != nil || ackTimeout <= 0 {
+			return direct.Config{}, fmt.Errorf("%s=%q is not a duration", netcfg.EnvDirectAckTimeout, v)
+		}
+	}
 	// This node's address, if the deployment says it ($HOST_IP in a bubble); else plaidd's
 	// overlay address is it.
 	hostIP, _ := netip.ParseAddr(os.Getenv("HOST_IP"))
 	cfg := direct.Config{
-		Ports:    ports,
-		PodIP:    podIP,
-		Factory:  direct.NewFactoryClient(opts.DirectSocket),
-		Resolver: direct.NewAPIResolver(api.NewClient(opts.Socket), hostIP),
+		Ports:      ports,
+		PodIP:      podIP,
+		Key:        key,
+		AckTimeout: ackTimeout,
+		Factory:    direct.NewFactoryClient(opts.DirectSocket),
+		Resolver:   direct.NewAPIResolver(api.NewClient(opts.Socket), hostIP),
 	}
 	if opts.DirectLog != "" {
 		f, err := os.OpenFile(opts.DirectLog, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)

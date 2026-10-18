@@ -197,6 +197,8 @@ grep -q -- "--env SKIFF_OVERLAY_HANDOFF=$SKIFF_TMP_DIR/overlay.sock" "$FAKE_DIR/
 grep -q -- "$HOME/.skiff/images/skiff.sif /usr/local/bin/plaidctl socket-factory --listen $SKIFF_TMP_DIR/direct.sock" "$FAKE_DIR/factory-args" \
     || { cat "$FAKE_DIR/factory-args" >&2; fail "unexpected socket factory command line"; }
 grep -q -- "--env PLAID_DIRECT_SOCKET=$SKIFF_TMP_DIR/direct.sock" "$FAKE_DIR/instance-run" || fail "the bubble was not told the socket factory's socket"
+grep -q -- "--env PLAID_DIRECT_KEY_FILE=/var/lib/skiff/kubeconfig " "$FAKE_DIR/instance-run" || fail "the bubble was not told the file the direct path's key comes from"
+grep -q -- "--env PLAID_DIRECT_ACK_TIMEOUT=1s " "$FAKE_DIR/instance-run" || fail "the bubble was not told how long to wait for the direct path's ack"
 grep -q -- "--bind $SKIFF_TMP_DIR:$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not given the scratch directory at the same path"
 grep -q -- "--env SKIFF_TMP_DIR=$SKIFF_TMP_DIR " "$FAKE_DIR/instance-run" || fail "the bubble was not told the scratch directory"
 # A bubble started by hand makes the job's volume directory name; one that is given is kept.

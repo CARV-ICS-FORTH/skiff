@@ -4,36 +4,73 @@ import (
 	"net/netip"
 	"syscall"
 	"testing"
+	"time"
 )
 
-func TestPreambleRoundTrip(t *testing.T) {
-	in := Preamble{
-		Client:  netip.MustParseAddrPort("10.244.1.9:40458"),
-		Backend: netip.MustParseAddrPort("10.244.5.4:5201"),
-	}
-	b, err := in.Marshal()
+func examplePreamble(t *testing.T) Preamble {
+	t.Helper()
+	p, err := NewPreamble(PreambleDirect, netip.MustParseAddrPort("10.244.1.9:40458"),
+		netip.MustParseAddrPort("10.244.5.4:5201"), netip.MustParseAddrPort("10.0.1.11:40458"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(b[:4]) != "DPv1" || len(b) != PreambleSize {
+	p.Time = p.Time.Truncate(time.Second)
+	return p
+}
+
+func TestPreambleRoundTrip(t *testing.T) {
+	in := examplePreamble(t)
+	b := in.Marshal(testKey)
+	if string(b[:4]) != "DPv2" || len(b) != PreambleSize {
 		t.Fatalf("unexpected wire form %q", b)
 	}
-	out, err := ParsePreamble(b[:])
-	if err != nil || out != in {
-		t.Fatalf("got %v, %v; want %v", out, err, in)
+	out, err := ParsePreamble(b[:], testKey)
+	if err != nil || out.Kind != in.Kind || out.Client != in.Client || out.Backend != in.Backend ||
+		out.Host != in.Host || !out.Time.Equal(in.Time) || out.Nonce != in.Nonce {
+		t.Fatalf("got %+v, %v; want %+v", out, err, in)
+	}
+	// An address that is not IPv4 (a pod-local client on ::1) goes through as well.
+	in.Client = netip.MustParseAddrPort("[::1]:40000")
+	b = in.Marshal(testKey)
+	if out, err := ParsePreamble(b[:], testKey); err != nil || out.Client != in.Client {
+		t.Errorf("got %v, %v; want %v", out.Client, err, in.Client)
+	}
+}
+
+// Every byte of the preamble is covered by its MAC, and the key is the cluster's.
+func TestPreambleIsAuthenticated(t *testing.T) {
+	b := examplePreamble(t).Marshal(testKey)
+	for i := 4; i < PreambleSize; i++ {
+		forged := b
+		forged[i] ^= 1
+		if _, err := ParsePreamble(forged[:], testKey); err != errBadMAC {
+			t.Errorf("byte %d changed: %v", i, err)
+		}
+	}
+	if _, err := ParsePreamble(b[:], DeriveKey([]byte("another cluster"))); err != errBadMAC {
+		t.Errorf("another cluster's key: %v", err)
+	}
+	// Two preambles of the same connection differ: the ack is for this one.
+	p, q := examplePreamble(t), examplePreamble(t)
+	if p.Nonce == q.Nonce || p.Ack(testKey) == q.Ack(testKey) {
+		t.Error("the nonce repeats")
+	}
+	if p.Ack(testKey) == p.Ack(DeriveKey([]byte("another cluster"))) {
+		t.Error("the ack does not depend on the key")
 	}
 }
 
 func TestPreambleRefusals(t *testing.T) {
-	if _, err := ParsePreamble([]byte("GET / HTTP/1.1\r\n")); err == nil {
+	if _, err := ParsePreamble([]byte("GET / HTTP/1.1\r\n"), testKey); err == nil {
 		t.Error("a request line was taken for a preamble")
 	}
-	if _, err := ParsePreamble([]byte("DPv1")); err == nil {
+	if _, err := ParsePreamble([]byte("DPv2"), testKey); err == nil {
 		t.Error("a short preamble was accepted")
 	}
-	v6 := Preamble{Client: netip.MustParseAddrPort("[fd00::1]:1"), Backend: netip.MustParseAddrPort("10.0.0.1:1")}
-	if _, err := v6.Marshal(); err == nil {
-		t.Error("an IPv6 client address was marshalled")
+	b := examplePreamble(t).Marshal(testKey)
+	b[3] = '1' // the first version's magic
+	if _, err := ParsePreamble(b[:], testKey); err == nil {
+		t.Error("an old magic was accepted")
 	}
 }
 
