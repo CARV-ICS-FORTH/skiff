@@ -209,16 +209,16 @@ func (s *Supervisor) serve() {
 // hold decides a held call. A call that can wait (a connect makes a connection, an accept
 // waits for one) is decided on a goroutine of its own, so that the others are not held up.
 func (s *Supervisor) hold(n *notif) {
+	tl := s.timings.begin()
 	switch int(n.Nr) {
 	case unix.SYS_CONNECT, unix.SYS_ACCEPT, unix.SYS_ACCEPT4:
 		s.handlers.Add(1)
-		tl := s.timings.begin()
 		go func(n notif) {
 			defer s.handlers.Done()
 			s.answer(&n, tl)
 		}(*n)
 	default:
-		s.answer(n, nil)
+		s.answer(n, tl)
 	}
 }
 
@@ -248,9 +248,14 @@ func (s *Supervisor) answer(n *notif, tl *timeline) {
 		s.logf("answering call %d of thread %d: %v", n.Nr, n.Pid, err)
 		return
 	}
-	if int(n.Nr) == unix.SYS_CONNECT && !r.through && r.errno == 0 { // a connect that was swapped
-		tl.mark(phReply)
-		tl.finish(phConnect)
+	if !r.through && r.errno == 0 { // a connect that was swapped, a name that was given
+		switch int(n.Nr) {
+		case unix.SYS_CONNECT:
+			tl.mark(phReply)
+			tl.finish(phConnect)
+		case unix.SYS_GETSOCKNAME, unix.SYS_GETPEERNAME:
+			tl.finish(phName)
+		}
 	}
 }
 
@@ -290,7 +295,7 @@ func (s *Supervisor) decide(n *notif, tl *timeline) reply {
 	case unix.SYS_ACCEPT, unix.SYS_ACCEPT4:
 		return s.accept(n, tl)
 	case unix.SYS_GETSOCKNAME, unix.SYS_GETPEERNAME:
-		return s.name(n)
+		return s.name(n, tl)
 	}
 	return letThrough
 }

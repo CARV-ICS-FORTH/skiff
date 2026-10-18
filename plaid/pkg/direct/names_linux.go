@@ -9,7 +9,7 @@ import "golang.org/x/sys/unix"
 // and its peer as the Service address it connected to (as it would behind kube-proxy's
 // DNAT); a server sees itself as its pod IP and port and its peer as the client's pod IP
 // and port. Any other socket is let through.
-func (s *Supervisor) name(n *notif) reply {
+func (s *Supervisor) name(n *notif, tl *timeline) reply {
 	if s.table.Len() == 0 {
 		return letThrough // nothing has been put in place: no lookup to make for every socket
 	}
@@ -26,6 +26,7 @@ func (s *Supervisor) name(n *notif) reply {
 	if !ok {
 		return letThrough
 	}
+	tl.mark(phLookup)
 	addr := sock.Local
 	if int(n.Nr) == unix.SYS_GETPEERNAME {
 		if sock.Kind == KindListener {
@@ -36,6 +37,7 @@ func (s *Supervisor) name(n *notif) reply {
 	if err := writeAddr(int(n.Pid), n.Args[1], n.Args[2], addr, sock.Family); err != nil {
 		return failWith(unix.EFAULT)
 	}
+	tl.mark(phWriteName)
 	s.stats.Names.Add(1)
 	return succeed()
 }

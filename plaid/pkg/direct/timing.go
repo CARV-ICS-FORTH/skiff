@@ -41,6 +41,11 @@ const (
 	phWriteAddr // the client's address is written to the container
 	phAcceptFD  // the connection is put in the container's table and the call answered
 	phAdmit     // all of it, from the connection that was taken
+
+	// getsockname and getpeername of a socket that was put in place
+	phLookup    // the socket is duplicated and found in the table
+	phWriteName // the address is written to the container
+	phName      // all of it, from the call's receipt, to the answer sent
 	numPhases
 )
 
@@ -50,6 +55,7 @@ var phaseNames = [numPhases]string{
 	phAddfd: "addfd", phReply: "reply", phConnect: "total",
 	phAccept: "wait", phReadPre: "read-preamble", phVerify: "verify", phChecks: "checks", phAckWrite: "write-ack",
 	phWriteAddr: "addr", phAcceptFD: "addfd", phAdmit: "total",
+	phLookup: "lookup", phWriteName: "write", phName: "total",
 }
 
 // A histogram's buckets are eight to each power of two of the nanoseconds: a percentile
@@ -153,7 +159,7 @@ func (tl *timeline) finish(p phase) {
 	tl.d = [numPhases]time.Duration{}
 }
 
-// String is the phases of connect and of accept that were timed, a line for each: the
+// String is the phases of connect, accept and the names that were timed, a line for each: the
 // number of calls, then each phase as its median and 90th percentile in microseconds.
 func (t *Timings) String() string {
 	line := func(name string, from, to phase) string {
@@ -169,5 +175,5 @@ func (t *Timings) String() string {
 		}
 		return b.String()
 	}
-	return strings.TrimSpace(line("connect", phDispatch, phConnect) + "\n" + line("accept", phAccept, phAdmit))
+	return strings.TrimSpace(line("connect", phDispatch, phConnect) + "\n" + line("accept", phAccept, phAdmit) + "\n" + line("name", phLookup, phName))
 }
