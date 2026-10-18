@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+var testKey = DeriveKey([]byte("the cluster's private key"))
+
 func examplePreamble(t *testing.T) Preamble {
 	t.Helper()
 	p, err := NewPreamble(PreambleDirect, netip.MustParseAddrPort("10.244.1.9:40458"),
