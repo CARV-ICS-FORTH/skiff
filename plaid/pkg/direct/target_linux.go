@@ -21,8 +21,8 @@ import (
 // it. A held call names the thread (the pid of the notification is a thread id; there is
 // no PIDFD_THREAD before Linux 6.9), pidfd_open wants the process, and finding it out
 // takes a read of /proc/<tid>/status, the largest part of a lookup. A kept entry is good
-// while /proc/<tgid>/task/<tid> exists: a thread id belongs to one process at a time. A
-// pidfd of a process that ended fails with ESRCH, and then the entry is dropped.
+// while tgkill(tgid, tid, 0) finds the thread: a thread id belongs to one process at a
+// time. A pidfd of a process that ended fails with ESRCH, and then the entry is dropped.
 type targets struct {
 	mu      sync.Mutex
 	known   map[int]target
@@ -60,8 +60,7 @@ func (ts *targets) lookup(tid int, fresh bool) (target, error) {
 		t, ok := ts.known[tid]
 		ts.mu.Unlock()
 		if ok {
-			var st unix.Stat_t
-			if unix.Stat("/proc/"+strconv.Itoa(t.tgid)+"/task/"+strconv.Itoa(tid), &st) == nil {
+			if unix.Tgkill(t.tgid, tid, 0) == nil {
 				return t, nil
 			}
 			ts.drop(tid)
@@ -124,23 +123,28 @@ func tgidOf(tid int) (int, error) {
 	return 0, errors.New("no Tgid in /proc/" + strconv.Itoa(tid) + "/status")
 }
 
-// fdCloexec says whether descriptor fd of the thread's process is close-on-exec, which a
-// duplicate of it cannot tell (the flag belongs to the descriptor, not the file).
-func fdCloexec(tid, fd int) (bool, error) {
-	info, err := os.ReadFile("/proc/" + strconv.Itoa(tid) + "/fdinfo/" + strconv.Itoa(fd))
+// fdFlags is the flags of descriptor fd of the thread's process as /proc shows them: those of
+// the open file (O_NONBLOCK among them, which a duplicate has too) and O_CLOEXEC if the
+// descriptor is close-on-exec, which a duplicate of it cannot tell (the flag belongs to the
+// descriptor, not the file).
+func fdFlags(tid, fd int) (int, error) {
+	f, err := unix.Open("/proc/"+strconv.Itoa(tid)+"/fdinfo/"+strconv.Itoa(fd), unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	for _, line := range bytes.Split(info, []byte("\n")) {
+	defer unix.Close(f)
+	var buf [256]byte
+	n, err := unix.Read(f, buf[:])
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range bytes.Split(buf[:n], []byte("\n")) {
 		if v, ok := bytes.CutPrefix(line, []byte("flags:")); ok {
 			flags, err := strconv.ParseUint(string(bytes.TrimSpace(v)), 8, 64)
-			if err != nil {
-				return false, err
-			}
-			return flags&unix.O_CLOEXEC != 0, nil
+			return int(flags), err
 		}
 	}
-	return false, errors.New("no flags in fdinfo")
+	return 0, errors.New("no flags in fdinfo")
 }
 
 // inEpoll says whether descriptor fd of the thread's process is registered in an epoll

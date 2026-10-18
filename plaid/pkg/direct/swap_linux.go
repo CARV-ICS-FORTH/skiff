@@ -58,16 +58,13 @@ func (s *Supervisor) inspect(tid, fd int) (*heldSocket, error) {
 		unix.Close(dup)
 		return nil, errNotOurs
 	}
-	flags, err := unix.FcntlInt(uintptr(dup), unix.F_GETFL, 0)
+	flags, err := fdFlags(tid, fd)
 	if err != nil {
 		unix.Close(dup)
 		return nil, err
 	}
 	h.nonblock = flags&unix.O_NONBLOCK != 0
-	if h.cloexec, err = fdCloexec(tid, fd); err != nil {
-		unix.Close(dup)
-		return nil, err
-	}
+	h.cloexec = flags&unix.O_CLOEXEC != 0
 	return h, nil
 }
 
