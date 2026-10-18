@@ -322,19 +322,6 @@ func readRemote(tid int, addr uint64, buf []byte) error {
 	return nil
 }
 
-// writeRemote2 writes two buffers, in one call if the process's memory allows it.
-func writeRemote2(tid int, addr1 uint64, buf1 []byte, addr2 uint64, buf2 []byte) error {
-	local := []unix.Iovec{{Base: &buf1[0], Len: uint64(len(buf1))}, {Base: &buf2[0], Len: uint64(len(buf2))}}
-	remote := []unix.RemoteIovec{{Base: uintptr(addr1), Len: len(buf1)}, {Base: uintptr(addr2), Len: len(buf2)}}
-	if n, err := unix.ProcessVMWritev(tid, local, remote, 0); err == nil && n == len(buf1)+len(buf2) {
-		return nil
-	}
-	if err := writeRemote(tid, addr1, buf1); err != nil {
-		return err
-	}
-	return writeRemote(tid, addr2, buf2)
-}
-
 // writeRemote writes buf at addr of thread tid's process. Where process_vm_writev refuses
 // (a page that is not writable to it) the process's memory is written through /proc.
 func writeRemote(tid int, addr uint64, buf []byte) error {
