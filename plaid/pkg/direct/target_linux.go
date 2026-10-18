@@ -143,6 +143,49 @@ func fdCloexec(tid, fd int) (bool, error) {
 	return false, errors.New("no flags in fdinfo")
 }
 
+// inEpoll says whether descriptor fd of the thread's process is registered in an epoll
+// instance of the process. Swapping the socket behind the descriptor would leave the
+// registration with the old one, which is closed by it, and no event would ever arrive: a
+// runtime that registers a socket before it connects or binds it (the ones that do not,
+// register it after the call returns) must keep its own. It reads the process's descriptors
+// and the registrations of its epoll instances (`tfd:` lines of their fdinfo).
+func (ts *targets) inEpoll(tid, fd int) (bool, error) {
+	t, err := ts.lookup(tid, false)
+	if err != nil {
+		return false, err
+	}
+	dir := "/proc/" + strconv.Itoa(t.tgid)
+	d, err := os.Open(dir + "/fd")
+	if err != nil {
+		return false, err
+	}
+	names, err := d.Readdirnames(-1) // the names only: a stat of each would double the cost
+	d.Close()
+	if err != nil {
+		return false, err
+	}
+	want := []byte("tfd:")
+	var link [32]byte
+	for _, name := range names {
+		n, err := unix.Readlink(dir+"/fd/"+name, link[:])
+		if err != nil || string(link[:n]) != "anon_inode:[eventpoll]" {
+			continue
+		}
+		info, err := os.ReadFile(dir + "/fdinfo/" + name)
+		if err != nil {
+			return false, err
+		}
+		for _, line := range bytes.Split(info, []byte("\n")) {
+			if rest, ok := bytes.CutPrefix(line, want); ok {
+				if f := bytes.Fields(rest); len(f) > 0 && string(f[0]) == strconv.Itoa(fd) {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
 // readRemote reads len(buf) bytes at addr of thread tid's process.
 func readRemote(tid int, addr uint64, buf []byte) error {
 	if len(buf) == 0 {

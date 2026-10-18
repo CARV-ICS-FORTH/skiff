@@ -617,3 +617,113 @@ func TestHostPortInUse(t *testing.T) {
 		t.Errorf("client: fallbacks %v: %s", got, clientOut)
 	}
 }
+
+func init() {
+	// epoll ORDER CALL ADDR: a non-blocking socket that is added to an epoll set before
+	// (or after) the connect (or bind) that the supervisor may swap.
+	helpers["epoll"] = func(args []string) int {
+		order, call, ap := args[0], args[1], netip.MustParseAddrPort(args[2])
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_NONBLOCK, 0)
+		if err != nil {
+			return 2
+		}
+		ep, _ := unix.EpollCreate1(0)
+		add := func() {
+			if err := unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.EPOLLIN | unix.EPOLLOUT}); err != nil {
+				fmt.Println("error epoll_ctl", err)
+			}
+		}
+		if order == "before" {
+			add()
+		}
+		if call == "bind" {
+			err = unix.Bind(fd, sockaddrFor(ap, unix.AF_INET))
+		} else {
+			err = unix.Connect(fd, sockaddrFor(ap, unix.AF_INET))
+		}
+		if order == "after" {
+			add()
+		}
+		if err == unix.EINPROGRESS {
+			// Whether the swapped socket is connected is what the epoll set says.
+			events := make([]unix.EpollEvent, 1)
+			n, _ := unix.EpollWait(ep, events, 1000)
+			fmt.Println("epoll events", n)
+		}
+		local, _ := unix.Getsockname(fd)
+		fmt.Println(call, err, "local", addrPortOf(local))
+		return 0
+	}
+}
+
+// A socket that is in an epoll set when the container connects or binds it is not swapped
+// (the set would keep the old one), and one that is added afterwards is.
+func TestEpollGuard(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	vip := "10.43.0.77:" + p
+	marked := Ports{uint16(port): {}}
+	server, serverOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "serve", p)
+	serverOut.waitFor(t, "listening")
+	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+
+	cfg := podConfig(t, "10.244.1.9", marked, resolver)
+	before, beforeOut := runPod(t, cfg, "epoll", "before", "connect", vip)
+	if err := before.Wait(); err != nil {
+		t.Fatalf("%v\n%s", err, beforeOut)
+	}
+	if got := before.Stats().Fallbacks.Snapshot(); got["epoll"] != 1 || before.Stats().Swapped.Load() != 0 || !strings.Contains(beforeOut.String(), "network is unreachable") {
+		t.Errorf("registered before connect: fallbacks %v, swapped %d: %s", got, before.Stats().Swapped.Load(), beforeOut)
+	}
+	after, afterOut := runPod(t, cfg, "epoll", "after", "connect", vip)
+	if err := after.Wait(); err != nil {
+		t.Fatalf("%v\n%s", err, afterOut)
+	}
+	if after.Stats().Swapped.Load() != 1 || len(after.Stats().Fallbacks.Snapshot()) != 0 || !strings.Contains(afterOut.String(), "local 10.244.1.9:") {
+		t.Errorf("registered after connect: swapped %d: %s", after.Stats().Swapped.Load(), afterOut)
+	}
+	server.cmd.Process.Kill()
+	server.Wait()
+
+	b, bOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "epoll", "before", "bind", "0.0.0.0:"+p)
+	if err := b.Wait(); err != nil {
+		t.Fatalf("%v\n%s", err, bOut)
+	}
+	if got := b.Stats().Fallbacks.Snapshot(); got["epoll"] != 1 || b.Stats().Swapped.Load() != 0 || !strings.Contains(bOut.String(), "bind <nil> local 0.0.0.0:"+p) {
+		t.Errorf("registered before bind: fallbacks %v, swapped %d: %s", got, b.Stats().Swapped.Load(), bOut)
+	}
+}
+
+func BenchmarkInEpoll(b *testing.B) {
+	for _, n := range []int{20, 200, 2000} {
+		b.Run(fmt.Sprintf("%d descriptors", n), func(b *testing.B) {
+			ep, _ := unix.EpollCreate1(0)
+			defer unix.Close(ep)
+			var fds []int
+			for i := 0; i < n; i++ {
+				fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+				if err != nil {
+					b.Skip(err)
+				}
+				fds = append(fds, fd)
+				if i%2 == 0 {
+					unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.EPOLLIN})
+				}
+			}
+			defer func() {
+				for _, fd := range fds {
+					unix.Close(fd)
+				}
+			}()
+			ts := newTargets()
+			defer ts.closeAll()
+			tid := unix.Gettid()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := ts.inEpoll(tid, fds[len(fds)-1]); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

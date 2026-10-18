@@ -172,6 +172,9 @@ func (s *Supervisor) connect(n *notif) reply {
 		return letThrough
 	}
 	defer held.close()
+	if s.inEpoll(tid, fd) {
+		return s.fallback("epoll", "connect %s: the socket is in an epoll set already", dst)
+	}
 	if _, err := unix.Getpeername(held.dup); err == nil {
 		return letThrough // connected already: the kernel says EISCONN
 	}
@@ -250,6 +253,19 @@ func (s *Supervisor) reject(reason, format string, args ...any) {
 	}
 }
 
+// inEpoll says whether the container's socket is registered in an epoll set (see
+// targets.inEpoll); if that cannot be told it is taken to be, as swapping it would be the
+// mistake that cannot be seen.
+func (s *Supervisor) inEpoll(tid, fd int) bool {
+	registered, err := s.targets.inEpoll(tid, fd)
+	if err != nil {
+		s.stats.Errors.Add(1)
+		s.logf("looking for descriptor %d of thread %d in epoll sets: %v", fd, tid, err)
+		return true
+	}
+	return registered
+}
+
 func (s *Supervisor) putFailed(call string, err error) reply {
 	if errors.Is(err, errCancelled) {
 		return cancelled
@@ -287,6 +303,9 @@ func (s *Supervisor) bind(n *notif) reply {
 		return letThrough
 	}
 	defer held.close()
+	if s.inEpoll(tid, fd) {
+		return s.fallback("epoll", "bind %s: the socket is in an epoll set already", want)
+	}
 	if sa, err := unix.Getsockname(held.dup); err == nil && addrPortOf(sa).Port() != 0 {
 		return letThrough // bound already: the kernel says EINVAL
 	}
