@@ -11,7 +11,7 @@ import (
 )
 
 // Backend is where a Service address leads: the pod that will serve the connection, and the
-// host socket address on its node that the connection goes to.
+// host socket address on its node that the connection goes to (see HostPort).
 type Backend struct {
 	Pod  netip.AddrPort // the pod's address and port
 	Host netip.AddrPort // the node's address and the port the pod's server listens on there
@@ -24,6 +24,9 @@ type Resolver interface {
 	Resolve(dst netip.AddrPort) (Backend, bool)
 	// HostOf is the address of the node a pod is on, as the other nodes reach it.
 	HostOf(pod netip.Addr) (netip.Addr, bool)
+	// HostPort is the port on its node's address where the pod's port is served on the host
+	// (see the package's HostPort); false if the pod has none.
+	HostPort(pod netip.AddrPort) (uint16, bool)
 }
 
 // PlaidAPI is what the resolver asks of plaidd (api.Client).
@@ -47,8 +50,11 @@ const (
 type APIResolver struct {
 	client PlaidAPI
 	local  netip.Addr // this node's address, when it is not what the overlay is bound to
+	base   int        // where the host ports start
 	now    func() time.Time
 	pick   func(n int) int
+	// Logf, when set, receives a line for a node whose pods have no host ports.
+	Logf func(format string, args ...any)
 
 	mu       sync.Mutex
 	loaded   time.Time                           // when the copy was made
@@ -57,6 +63,7 @@ type APIResolver struct {
 	nodeNet  netip.Prefix                        // the pods of this node
 	localIP  netip.Addr
 	routes   []route
+	noPorts  map[netip.Prefix]bool // the pod networks that were said to have no host ports
 }
 
 type route struct {
@@ -66,9 +73,9 @@ type route struct {
 
 // NewAPIResolver makes a resolver that asks client. localHost is this node's address on
 // the network the other nodes reach it by; if it is not valid the address plaidd's overlay
-// socket is bound to is used.
-func NewAPIResolver(client PlaidAPI, localHost netip.Addr) *APIResolver {
-	return &APIResolver{client: client, local: localHost, now: time.Now, pick: rand.IntN}
+// socket is bound to is used. portBase is where the host ports start (CheckPortBase).
+func NewAPIResolver(client PlaidAPI, localHost netip.Addr, portBase int) *APIResolver {
+	return &APIResolver{client: client, local: localHost, base: portBase, now: time.Now, pick: rand.IntN}
 }
 
 // Resolve implements Resolver. The backend is one of the Service's eligible ones, picked
@@ -91,8 +98,10 @@ func (r *APIResolver) Resolve(dst netip.AddrPort) (Backend, bool) {
 	// unknown is not one for the direct path.
 	var usable []Backend
 	for _, pod := range backends {
-		if host, ok := r.hostOf(pod.Addr()); ok {
-			usable = append(usable, Backend{Pod: pod, Host: netip.AddrPortFrom(host, pod.Port())})
+		if node, ok := r.nodeOf(pod.Addr()); ok {
+			if port, ok := r.hostPort(node, pod); ok {
+				usable = append(usable, Backend{Pod: pod, Host: netip.AddrPortFrom(node.host, port)})
+			}
 		}
 	}
 	if len(usable) == 0 {
@@ -108,26 +117,57 @@ func (r *APIResolver) HostOf(pod netip.Addr) (netip.Addr, bool) {
 	if r.now().Sub(r.loaded) >= refreshAfter {
 		r.load()
 	}
-	host, ok := r.hostOf(pod)
+	node, ok := r.nodeOf(pod)
 	if !ok && r.load() {
-		host, ok = r.hostOf(pod)
+		node, ok = r.nodeOf(pod)
 	}
-	return host, ok
+	return node.host, ok
 }
 
-// hostOf is the address of the node a pod is on.
-func (r *APIResolver) hostOf(pod netip.Addr) (netip.Addr, bool) {
+// HostPort implements Resolver.
+func (r *APIResolver) HostPort(pod netip.AddrPort) (uint16, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.now().Sub(r.loaded) >= refreshAfter {
+		r.load()
+	}
+	node, ok := r.nodeOf(pod.Addr())
+	if !ok && r.load() {
+		node, ok = r.nodeOf(pod.Addr())
+	}
+	if !ok {
+		return 0, false
+	}
+	return r.hostPort(node, pod)
+}
+
+// nodeOf is the node a pod is on: its pod network and its address.
+func (r *APIResolver) nodeOf(pod netip.Addr) (route, bool) {
 	if r.nodeNet.Contains(pod) {
-		return r.localIP, r.localIP.IsValid() && !r.localIP.IsUnspecified()
+		return route{r.nodeNet, r.localIP}, r.localIP.IsValid() && !r.localIP.IsUnspecified()
 	}
 	best := -1
-	var host netip.Addr
+	var node route
 	for _, rt := range r.routes {
 		if rt.subnet.Contains(pod) && rt.subnet.Bits() > best {
-			best, host = rt.subnet.Bits(), rt.host
+			best, node = rt.subnet.Bits(), rt
 		}
 	}
-	return host, best >= 0
+	return node, best >= 0
+}
+
+// hostPort is the host port of a pod on the node, and says (once for each pod network) when
+// the node's pod network is too large to have one.
+func (r *APIResolver) hostPort(node route, pod netip.AddrPort) (uint16, bool) {
+	port, ok := HostPort(r.base, node.subnet, pod)
+	if !ok && r.Logf != nil && node.subnet.Bits() < 24 && !r.noPorts[node.subnet] {
+		if r.noPorts == nil {
+			r.noPorts = make(map[netip.Prefix]bool)
+		}
+		r.noPorts[node.subnet] = true
+		r.Logf("no direct path to the pods of %s: a node's pod network is at most a /24 for host ports", node.subnet)
+	}
+	return port, ok
 }
 
 // load replaces the copy with plaidd's tables, unless it asked a moment ago, and says

@@ -489,6 +489,11 @@ func TestDirectConfigRefusals(t *testing.T) {
 	if _, err := directConfig(good); err == nil {
 		t.Error("accepted an ack timeout that is no duration")
 	}
+	t.Setenv(netcfg.EnvDirectPortBase, "80")
+	if _, err := directConfig(good); err == nil {
+		t.Error("accepted a port base in the system's ports")
+	}
+	t.Setenv(netcfg.EnvDirectPortBase, "")
 	t.Setenv(netcfg.EnvDirectAckTimeout, "250ms")
 	if cfg, err := directConfig(good); err != nil || cfg.AckTimeout != 250*time.Millisecond {
 		t.Errorf("ack timeout: %v, %v", cfg.AckTimeout, err)

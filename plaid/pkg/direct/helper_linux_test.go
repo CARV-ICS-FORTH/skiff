@@ -71,4 +71,7 @@ func (fakeResolver) HostOf(pod netip.Addr) (netip.Addr, bool) {
 	return netip.Addr{}, false
 }
 
+// A pod's server is served at its own port on the host.
+func (fakeResolver) HostPort(pod netip.AddrPort) (uint16, bool) { return pod.Port(), true }
+
 var testKey = DeriveKey([]byte("the cluster's private key"))

@@ -259,8 +259,11 @@ func (s *Supervisor) putFailed(call string, err error) reply {
 	return failWith(errnoOf(err))
 }
 
-// bind: a marked port is bound on the host, on every address, as the pod's own port.
-// listen then runs on the host socket.
+// bind: a marked port is bound on the host, on every address, at the host port that follows
+// from the pod's address and the port (HostPort). listen then runs on the host socket. If
+// the host port cannot be had (a process of the host holds it, or another port of the pod
+// with the same host port does) the socket stays a socket of the pod network: its clients
+// find no ack at the host port and fall back to the overlay.
 func (s *Supervisor) bind(n *notif) reply {
 	want, ok := sockaddrArg(n)
 	if !ok || !s.cfg.Ports.Has(want.Port()) {
@@ -268,6 +271,10 @@ func (s *Supervisor) bind(n *notif) reply {
 	}
 	if !want.Addr().IsUnspecified() && want.Addr() != s.cfg.PodIP {
 		return letThrough // the pod's loopback or another address: the pod network's
+	}
+	hostPort, ok := s.cfg.Resolver.HostPort(netip.AddrPortFrom(s.cfg.PodIP, want.Port()))
+	if !ok {
+		return s.fallback("no-host-port", "bind %s: the pod has no host port for it", want)
 	}
 	tid, fd := int(n.Pid), int(n.Args[0])
 	held, err := s.inspect(tid, fd)
@@ -290,10 +297,13 @@ func (s *Supervisor) bind(n *notif) reply {
 	}
 	defer unix.Close(sock)
 	copyOptions(held.dup, sock, held.family)
-	host := netip.AddrPortFrom(unspecifiedFor(held.family), want.Port())
+	host := netip.AddrPortFrom(unspecifiedFor(held.family), hostPort)
 	if err := unix.Bind(sock, sockaddrFor(host, held.family)); err != nil {
-		s.logf("bind %s: on the host: %v", want, err)
-		return failWith(errnoOf(err))
+		reason := "bind-error"
+		if err == unix.EADDRINUSE {
+			reason = "host-port-in-use"
+		}
+		return s.fallback(reason, "bind %s: on the host at %s: %v", want, host, err)
 	}
 	if held.nonblock {
 		_ = unix.SetNonblock(sock, true)

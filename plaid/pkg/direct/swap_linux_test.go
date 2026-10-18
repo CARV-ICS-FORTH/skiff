@@ -218,7 +218,7 @@ func runPod(t *testing.T, cfg Config, name string, args ...string) (*Supervisor,
 	return s, out
 }
 
-func podConfig(t *testing.T, ip string, ports Ports, backends fakeResolver) Config {
+func podConfig(t *testing.T, ip string, ports Ports, backends Resolver) Config {
 	cfg := testConfig(t)
 	cfg.PodIP = netip.MustParseAddr(ip)
 	cfg.Ports = ports
@@ -525,5 +525,95 @@ func TestFallbackToThePodNetwork(t *testing.T) {
 			}
 			t.Logf("%s: the container's connect returned after %v", tc.reason, time.Since(start))
 		})
+	}
+}
+
+// hostPorts is a resolver for a pod whose ports are served at other ports of the host.
+type hostPorts struct {
+	fakeResolver
+	ports map[uint16]uint16
+}
+
+func (h hostPorts) HostPort(pod netip.AddrPort) (uint16, bool) {
+	p, ok := h.ports[pod.Port()]
+	return p, ok
+}
+
+// Two pods of a node may mark the same port: each is served at a host port of its own, and
+// a client reaches the one its Service address leads to.
+func TestPodsOfANodeMarkTheSamePort(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	marked := Ports{uint16(port): {}}
+	var servers []*Supervisor
+	var outs []*syncBuffer
+	var resolver = fakeResolver{}
+	for i, ip := range []string{"10.244.5.4", "10.244.5.5"} {
+		hostPort := freePort(t)
+		cfg := podConfig(t, ip, marked, hostPorts{fakeResolver{}, map[uint16]uint16{uint16(port): uint16(hostPort)}})
+		s, out := runPod(t, cfg, "serve", p)
+		out.waitFor(t, "listening")
+		servers, outs = append(servers, s), append(outs, out)
+		vip := fmt.Sprintf("10.43.0.8%d:%s", i, p)
+		resolver[vip] = Backend{Pod: netip.MustParseAddrPort(ip + ":" + p), Host: netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", hostPort))}
+	}
+	for i, s := range servers {
+		vip := fmt.Sprintf("10.43.0.8%d:%s", i, p)
+		client, out := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", vip, "1000")
+		if err := client.Wait(); err != nil {
+			t.Fatalf("client %d: %v\n%s", i, err, out)
+		}
+		if err := s.Wait(); err != nil {
+			t.Fatalf("server %d: %v\n%s", i, err, outs[i])
+		}
+		if got, want := field(t, outs[i].String(), "accepted", "local"), fmt.Sprintf("10.244.5.%d:%s", 4+i, p); got != want {
+			t.Errorf("server %d is %s, want %s", i, got, want)
+		}
+	}
+}
+
+// A host port that a process of the host holds is not the pod's: the listener stays a socket
+// of the pod network, and a client that comes to the host port finds no ack there and
+// leaves its connect to the pod network.
+func TestHostPortInUse(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	marked := Ports{uint16(port): {}}
+	foreign, err := net.Listen("tcp", ":0") // a process of the host
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer foreign.Close()
+	hostPort := foreign.Addr().(*net.TCPAddr).Port
+	go func() {
+		for {
+			c, err := foreign.Accept()
+			if err != nil {
+				return
+			}
+			go io.Copy(io.Discard, c)
+		}
+	}()
+
+	cfg := podConfig(t, "10.244.5.4", marked, hostPorts{fakeResolver{}, map[uint16]uint16{uint16(port): uint16(hostPort)}})
+	server, serverOut := runPod(t, cfg, "serve", p)
+	serverOut.waitFor(t, "listening")
+	if got := field(t, serverOut.String(), "listening", "rawlocal"); got != "[::]:"+p {
+		t.Errorf("the listener is at %s", got)
+	}
+	resolver := fakeResolver{"10.43.0.77:" + p: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", hostPort))}}
+	ccfg := podConfig(t, "10.244.1.9", marked, resolver)
+	ccfg.AckTimeout = 200 * time.Millisecond
+	client, clientOut := runPod(t, ccfg, "rawdial", "10.43.0.77:"+p)
+	if err := client.Wait(); err != nil {
+		t.Fatalf("client: %v\n%s", err, clientOut)
+	}
+	server.cmd.Process.Kill()
+	server.Wait()
+	if got := server.Stats().Fallbacks.Snapshot(); got["host-port-in-use"] != 1 || server.Stats().Swapped.Load() != 0 {
+		t.Errorf("server: fallbacks %v, swapped %d", got, server.Stats().Swapped.Load())
+	}
+	if got := client.Stats().Fallbacks.Snapshot(); got["no-ack"] != 1 || !strings.Contains(clientOut.String(), "connect network is unreachable") {
+		t.Errorf("client: fallbacks %v: %s", got, clientOut)
 	}
 }

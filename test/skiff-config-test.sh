@@ -94,6 +94,10 @@ check "slirp4netns MTU above what it takes" 1 'SKIFF_SLIRP_MTU.*between 576 and 
 check "a direct path ack timeout in seconds or milliseconds" 0 "" 2 -- SKIFF_DIRECT_ACK_TIMEOUT=250ms
 check "a direct path ack timeout that is no duration" 1 'SKIFF_DIRECT_ACK_TIMEOUT.*not a duration' 2 -- SKIFF_DIRECT_ACK_TIMEOUT=soon
 check "a direct path ack timeout of nothing" 1 'SKIFF_DIRECT_ACK_TIMEOUT.*not a duration' 2 -- SKIFF_DIRECT_ACK_TIMEOUT=0s
+check "a direct path port base" 0 "" 2 -- SKIFF_DIRECT_PORT_BASE=30000
+check "a direct path port base that is no port" 1 'SKIFF_DIRECT_PORT_BASE.*not a port' 2 -- SKIFF_DIRECT_PORT_BASE=high
+check "a direct path port base in the system's ports" 1 'SKIFF_DIRECT_PORT_BASE.*not a port' 2 -- SKIFF_DIRECT_PORT_BASE=80
+check "a direct path port base with no room for 4096 ports" 1 'SKIFF_DIRECT_PORT_BASE.*not a port' 2 -- SKIFF_DIRECT_PORT_BASE=61441
 check "slirp4netns MTU below the pod MTU" 1 'SKIFF_SLIRP_MTU \(1400\) is below the pod MTU \(1450\)' 2 -- SKIFF_SLIRP_MTU=1400
 check "MTU without room for VXLAN" 1 'no room for VXLAN.*at most 1450' 2 -- SKIFF_POD_MTU=1500
 check "the network: an interface name" 0 "" 2 -- SKIFF_NETWORK=enp130s0

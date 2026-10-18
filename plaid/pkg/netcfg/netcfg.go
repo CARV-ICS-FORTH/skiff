@@ -43,9 +43,11 @@ const (
 	// EnvDirectKeyFile is the cluster's kubeconfig, whose private key the direct path's key
 	// is derived from (the bubble's, not a pod's: containers get none of the bubble's
 	// environment). EnvDirectAckTimeout (a duration like "1s") is how long a client waits
-	// for the server's ack before it leaves the connect to the pod network.
+	// for the server's ack before it leaves the connect to the pod network. EnvDirectPortBase
+	// is the first of the host ports (4096 of them) that the pods' servers are served at.
 	EnvDirectKeyFile    = "PLAID_DIRECT_KEY_FILE"
 	EnvDirectAckTimeout = "PLAID_DIRECT_ACK_TIMEOUT"
+	EnvDirectPortBase   = "PLAID_DIRECT_PORT_BASE"
 )
 
 // SocketPath is the API socket in effect: the explicit setting, else the

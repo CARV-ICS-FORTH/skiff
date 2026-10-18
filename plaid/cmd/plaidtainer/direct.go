@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -111,16 +112,26 @@ func directConfig(opts PlaidOptions) (direct.Config, error) {
 			return direct.Config{}, fmt.Errorf("%s=%q is not a duration", netcfg.EnvDirectAckTimeout, v)
 		}
 	}
+	portBase := direct.DefaultPortBase
+	if v := os.Getenv(netcfg.EnvDirectPortBase); v != "" {
+		if portBase, err = strconv.Atoi(v); err != nil {
+			return direct.Config{}, fmt.Errorf("%s=%q is not a port", netcfg.EnvDirectPortBase, v)
+		}
+	}
+	if err := direct.CheckPortBase(portBase); err != nil {
+		return direct.Config{}, fmt.Errorf("%s: %w", netcfg.EnvDirectPortBase, err)
+	}
 	// This node's address, if the deployment says it ($HOST_IP in a bubble); else plaidd's
 	// overlay address is it.
 	hostIP, _ := netip.ParseAddr(os.Getenv("HOST_IP"))
+	resolver := direct.NewAPIResolver(api.NewClient(opts.Socket), hostIP, portBase)
 	cfg := direct.Config{
 		Ports:      ports,
 		PodIP:      podIP,
 		Key:        key,
 		AckTimeout: ackTimeout,
 		Factory:    direct.NewFactoryClient(opts.DirectSocket),
-		Resolver:   direct.NewAPIResolver(api.NewClient(opts.Socket), hostIP),
+		Resolver:   resolver,
 	}
 	if opts.DirectLog != "" {
 		f, err := os.OpenFile(opts.DirectLog, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
@@ -130,6 +141,7 @@ func directConfig(opts PlaidOptions) (direct.Config, error) {
 		cfg.Logf = func(format string, args ...any) {
 			fmt.Fprintf(f, time.Now().Format("15:04:05.000 ")+format+"\n", args...)
 		}
+		resolver.Logf = cfg.Logf
 	}
 	return cfg, nil
 }
