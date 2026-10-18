@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // The tests run their "containers" as copies of the test binary: with DIRECT_TEST_HELPER
@@ -17,6 +18,7 @@ var helpers = map[string]func(args []string) int{}
 
 func TestMain(m *testing.M) {
 	if name := os.Getenv("DIRECT_TEST_HELPER"); name != "" {
+		time.AfterFunc(20*time.Second, func() { os.Exit(99) }) // a scenario that waits for what never comes
 		os.Exit(helpers[name](os.Args[1:]))
 	}
 	os.Exit(m.Run())

@@ -247,5 +247,15 @@ func errnoOf(err error) syscall.Errno {
 
 // decide is the supervisor's judgement of one held call.
 func (s *Supervisor) decide(n *notif) reply {
+	switch int(n.Nr) {
+	case unix.SYS_CONNECT:
+		return s.connect(n)
+	case unix.SYS_BIND:
+		return s.bind(n)
+	case unix.SYS_ACCEPT, unix.SYS_ACCEPT4:
+		return s.accept(n)
+	case unix.SYS_GETSOCKNAME, unix.SYS_GETPEERNAME:
+		return s.name(n)
+	}
 	return letThrough
 }

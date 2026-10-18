@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"net/netip"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // Sizes of the kernel's socket address structures.
@@ -53,20 +55,23 @@ func encodeSockaddr(ap netip.AddrPort, family int) []byte {
 }
 
 // sockaddrFor is ap as an address to connect or bind a socket of the family to.
-func sockaddrFor(ap netip.AddrPort, family int) syscall.Sockaddr {
+func sockaddrFor(ap netip.AddrPort, family int) unix.Sockaddr {
 	if family == syscall.AF_INET6 {
-		return &syscall.SockaddrInet6{Port: int(ap.Port()), Addr: ap.Addr().As16()}
+		return &unix.SockaddrInet6{Port: int(ap.Port()), Addr: ap.Addr().As16()}
 	}
-	return &syscall.SockaddrInet4{Port: int(ap.Port()), Addr: ap.Addr().Unmap().As4()}
+	return &unix.SockaddrInet4{Port: int(ap.Port()), Addr: ap.Addr().Unmap().As4()}
 }
 
 // addrPortOf is the address a socket reports, IPv4-mapped ones unmapped.
-func addrPortOf(sa syscall.Sockaddr) netip.AddrPort {
+func addrPortOf(sa unix.Sockaddr) netip.AddrPort {
 	switch s := sa.(type) {
-	case *syscall.SockaddrInet4:
+	case *unix.SockaddrInet4:
 		return netip.AddrPortFrom(netip.AddrFrom4(s.Addr), uint16(s.Port))
-	case *syscall.SockaddrInet6:
+	case *unix.SockaddrInet6:
 		return netip.AddrPortFrom(netip.AddrFrom16(s.Addr).Unmap(), uint16(s.Port))
 	}
 	return netip.AddrPort{}
 }
+
+func nativeUint32(b []byte) uint32       { return binary.NativeEndian.Uint32(b) }
+func putNativeUint32(b []byte, v uint32) { binary.NativeEndian.PutUint32(b, v) }
