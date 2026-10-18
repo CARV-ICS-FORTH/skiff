@@ -18,6 +18,7 @@ const (
 	ActionListFilterRules  Action = "list_filter_rules"
 	ActionSetServices      Action = "set_services"
 	ActionListServices     Action = "list_services"
+	ActionReportDirect     Action = "report_direct"
 )
 
 // ServiceEntry is one Service address, port and protocol with its backends, as the
@@ -97,6 +98,73 @@ type ServiceStats struct {
 	RecentDrops []string `json:"recent_drops,omitempty"`
 }
 
+// DirectCounters are what a supervisor of the direct path (plaid/pkg/direct) has done: the
+// sockets of the host's network it put in the place of a container's, and the connections it
+// turned away or left to the overlay.
+type DirectCounters struct {
+	Connects    uint64 `json:"connects"`     // connects made on the host network
+	Binds       uint64 `json:"binds"`        // listeners put on the host network
+	Accepts     uint64 `json:"accepts"`      // connections handed to such a listener's accept
+	Proxied     uint64 `json:"proxied"`      // connections carried from the pod side to such a listener
+	ProxyFailed uint64 `json:"proxy_failed"` // those that could not be
+	Errors      uint64 `json:"errors"`       // calls that went wrong in the supervisor
+	// Fallbacks counts, by reason, the connects and binds that were left to the overlay or to
+	// the pod network; Rejected the connections to a listener that were closed without the
+	// container seeing them, by reason.
+	Fallbacks map[string]uint64 `json:"fallbacks,omitempty"`
+	Rejected  map[string]uint64 `json:"rejected,omitempty"`
+}
+
+// Add adds the counters of o.
+func (c *DirectCounters) Add(o DirectCounters) {
+	c.Connects += o.Connects
+	c.Binds += o.Binds
+	c.Accepts += o.Accepts
+	c.Proxied += o.Proxied
+	c.ProxyFailed += o.ProxyFailed
+	c.Errors += o.Errors
+	c.Fallbacks = addCounts(c.Fallbacks, o.Fallbacks)
+	c.Rejected = addCounts(c.Rejected, o.Rejected)
+}
+
+func addCounts(to, from map[string]uint64) map[string]uint64 {
+	if len(from) == 0 {
+		return to
+	}
+	if to == nil {
+		to = make(map[string]uint64, len(from))
+	}
+	for k, v := range from {
+		to[k] += v
+	}
+	return to
+}
+
+// DirectReport is what a supervisor tells plaidd: its counters so far, and when it has ended
+// its last counters.
+type DirectReport struct {
+	Supervisor string         `json:"supervisor"` // the container, as "namespace/pod/container"
+	PID        int            `json:"pid"`        // of the supervisor, which plaidd asks whether it is still there
+	Ended      bool           `json:"ended,omitempty"`
+	Counters   DirectCounters `json:"counters"` // the totals of this supervisor so far, not since the last report
+}
+
+// DirectStatus is what plaidd knows of the supervisors of the direct path on its node.
+type DirectStatus struct {
+	Running int `json:"running"` // supervisors that are there
+	Ended   int `json:"ended"`   // supervisors that have ended since plaidd started
+	// Total is the counters of all of them, those that ended included.
+	Total      DirectCounters    `json:"total"`
+	Containers []DirectContainer `json:"containers,omitempty"` // the running ones
+}
+
+// DirectContainer is a running supervisor's last report.
+type DirectContainer struct {
+	Name     string         `json:"name"`
+	PID      int            `json:"pid"`
+	Counters DirectCounters `json:"counters"`
+}
+
 // Request is the JSON request sent across the IPC socket.
 type Request struct {
 	Action Action `json:"action"`
@@ -128,6 +196,9 @@ type Request struct {
 
 	// SetServices params: the complete table of the Service engine.
 	Services []ServiceEntry `json:"services,omitempty"`
+
+	// ReportDirect params.
+	Direct *DirectReport `json:"direct,omitempty"`
 }
 
 // Response is the JSON response returned by plaidd.
@@ -196,6 +267,9 @@ type Response struct {
 
 	// From list_routes: the overlay's routes (the remote nodes' subnets).
 	Routes []RouteInfo `json:"routes,omitempty"`
+
+	// The direct path's supervisors on this node, once one has reported.
+	Direct *DirectStatus `json:"direct,omitempty"`
 }
 
 // OverlaySuperStatus reports the overlay's TCP super-frames: whether this node sends them

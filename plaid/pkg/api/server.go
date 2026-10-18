@@ -54,6 +54,12 @@ type ServiceHandler interface {
 	HandleListServices() (*Response, error)
 }
 
+// DirectHandler handles ReportDirect requests: the counters of the supervisors of the
+// direct path.
+type DirectHandler interface {
+	HandleReportDirect(report *DirectReport) error
+}
+
 // Server is the IPC server listening on a UNIX domain socket.
 type Server struct {
 	socketPath    string
@@ -62,6 +68,7 @@ type Server struct {
 	statusProv    StatusProvider
 	filterHandler FilterHandler
 	svcHandler    ServiceHandler
+	directHandler DirectHandler
 	listener      net.Listener
 	lockFile      *os.File
 	mu            sync.Mutex
@@ -97,6 +104,13 @@ func (s *Server) SetServiceHandler(h ServiceHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.svcHandler = h
+}
+
+// SetDirectHandler registers a DirectHandler with the server.
+func (s *Server) SetDirectHandler(h DirectHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.directHandler = h
 }
 
 // Start begins listening on the UNIX domain socket.
@@ -375,6 +389,19 @@ func (s *Server) handleConn(conn net.Conn) {
 		} else {
 			resp = *listResp
 			resp.Success = true
+		}
+	case ActionReportDirect:
+		s.mu.Lock()
+		h := s.directHandler
+		s.mu.Unlock()
+		if h == nil {
+			resp = Response{Success: false, Error: "this daemon does not take reports of the direct path"}
+		} else if req.Direct == nil {
+			resp = Response{Success: false, Error: "report_direct has no report"}
+		} else if err := h.HandleReportDirect(req.Direct); err != nil {
+			resp = Response{Success: false, Error: err.Error()}
+		} else {
+			resp = Response{Success: true}
 		}
 	default:
 		resp = Response{Success: false, Error: fmt.Sprintf("unknown action: %s", req.Action)}
