@@ -260,7 +260,8 @@ func (s *Supervisor) putFailed(call string, err error) reply {
 }
 
 // bind: a marked port is bound on the host, on every address, at the host port that follows
-// from the pod's address and the port (HostPort). listen then runs on the host socket. If
+// from the pod's address and the port (HostPort). listen then runs on the host socket. The
+// container's own socket stays in the pod's network behind a proxy (see startProxy). If
 // the host port cannot be had (a process of the host holds it, or another port of the pod
 // with the same host port does) the socket stays a socket of the pod network: its clients
 // find no ack at the host port and fall back to the overlay.
@@ -305,6 +306,18 @@ func (s *Supervisor) bind(n *notif) reply {
 		}
 		return s.fallback(reason, "bind %s: on the host at %s: %v", want, host, err)
 	}
+	// The container's own socket, which the host's is about to replace, stays in the pod's
+	// network at the address it asked for (see the proxy). A port that the pod's network
+	// has taken is what the container would have been told. A proxy of an earlier listener
+	// of the container's is still there if the container closed its listener and bound
+	// again: the host port was free, so it is out of date.
+	s.dropProxy(want.Port())
+	if err := unix.Bind(held.dup, sockaddrFor(want, held.family)); err != nil {
+		return failWith(errnoOf(err))
+	}
+	if err := unix.Listen(held.dup, proxyBacklog); err != nil {
+		return failWith(errnoOf(err))
+	}
 	if held.nonblock {
 		_ = unix.SetNonblock(sock, true)
 	}
@@ -314,6 +327,10 @@ func (s *Supervisor) bind(n *notif) reply {
 	}
 	s.table.Add(cookie, Socket{Kind: KindListener, Family: held.family, Local: want})
 	s.stats.Swapped.Add(1)
+	if err := s.startProxy(held, want.Port(), hostPort); err != nil {
+		s.stats.Errors.Add(1)
+		s.logf("bind %s: the proxy in the pod's network: %v", want, err)
+	}
 	s.logf("bind %s: on the host, %s", want, host)
 	return succeed()
 }

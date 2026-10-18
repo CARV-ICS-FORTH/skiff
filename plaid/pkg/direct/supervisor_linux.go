@@ -26,6 +26,9 @@ type Supervisor struct {
 	loopDone chan struct{}
 	handlers sync.WaitGroup
 	stats    Stats
+
+	proxyMu sync.Mutex
+	proxies map[uint16]*localProxy // by the pod's port
 }
 
 // Stats counts what the supervisor has done.
@@ -34,6 +37,8 @@ type Stats struct {
 	Swapped       atomic.Uint64 // sockets put in place of the container's (connect, bind)
 	Accepted      atomic.Uint64 // connections handed to a swapped listener's accept
 	Names         atomic.Uint64 // getsockname and getpeername answered
+	Proxied       atomic.Uint64 // connections to a swapped listener's pod-side socket that were carried to it
+	ProxyFailed   atomic.Uint64 // those that could not be
 	Errors        atomic.Uint64 // calls that went wrong in the supervisor (and were let through, or failed)
 
 	// Fallbacks counts, by reason, the connects and binds that were let through to the pod
@@ -109,10 +114,11 @@ func (s *Supervisor) Wait() error {
 		}
 	}
 	s.handlers.Wait()
+	s.closeProxies()
 	s.targets.closeAll()
 	unix.Close(s.listener)
-	s.logf("ended: held %d, swapped %d, accepted %d; fallbacks: %s; rejected: %s",
-		s.stats.Notifications.Load(), s.stats.Swapped.Load(), s.stats.Accepted.Load(), s.stats.Fallbacks.String(), s.stats.Rejected.String())
+	s.logf("ended: held %d, swapped %d, accepted %d, proxied %d (failed %d); fallbacks: %s; rejected: %s",
+		s.stats.Notifications.Load(), s.stats.Swapped.Load(), s.stats.Accepted.Load(), s.stats.Proxied.Load(), s.stats.ProxyFailed.Load(), s.stats.Fallbacks.String(), s.stats.Rejected.String())
 	return err
 }
 
