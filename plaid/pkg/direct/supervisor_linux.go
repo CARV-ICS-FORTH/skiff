@@ -95,11 +95,39 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 		loopDone: make(chan struct{}),
 	}
 	go s.serve()
+	go s.report()
 	return s, nil
 }
 
 // Stats is the supervisor's counters.
 func (s *Supervisor) Stats() *Stats { return &s.stats }
+
+// summary is the counters in a line of the log.
+func (st *Stats) summary() string {
+	return fmt.Sprintf("held %d, swapped %d, accepted %d, proxied %d (failed %d); fallbacks: %s; rejected: %s",
+		st.Notifications.Load(), st.Swapped.Load(), st.Accepted.Load(), st.Proxied.Load(), st.ProxyFailed.Load(), st.Fallbacks.String(), st.Rejected.String())
+}
+
+// reportEvery is how often the counters are logged, when they have changed: the log of a
+// container that runs for days says what its supervisor has done, not only when it ends.
+const reportEvery = 10 * time.Second
+
+func (s *Supervisor) report() {
+	tick := time.NewTicker(reportEvery)
+	defer tick.Stop()
+	var last string
+	for {
+		select {
+		case <-s.loopDone:
+			return
+		case <-tick.C:
+		}
+		if now := s.stats.summary(); now != last {
+			last = now
+			s.logf("stats, %s", now)
+		}
+	}
+}
 
 // Wait waits for the command to end, then for the held calls of what is left of it (nothing,
 // normally: a container's processes end with it), and returns the command's error.
@@ -118,8 +146,7 @@ func (s *Supervisor) Wait() error {
 	s.closeProxies()
 	s.targets.closeAll()
 	unix.Close(s.listener)
-	s.logf("ended: held %d, swapped %d, accepted %d, proxied %d (failed %d); fallbacks: %s; rejected: %s",
-		s.stats.Notifications.Load(), s.stats.Swapped.Load(), s.stats.Accepted.Load(), s.stats.Proxied.Load(), s.stats.ProxyFailed.Load(), s.stats.Fallbacks.String(), s.stats.Rejected.String())
+	s.logf("ended, %s", s.stats.summary())
 	return err
 }
 
