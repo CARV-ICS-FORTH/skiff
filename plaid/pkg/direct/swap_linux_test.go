@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+	"plaid/pkg/api"
 )
 
 // What the "containers" of these tests do, in a user and network namespace of their own.
@@ -338,8 +339,8 @@ func TestDirectConnectionBetweenPods(t *testing.T) {
 	if !strings.Contains(so, "received 1000000") {
 		t.Errorf("the server got %q", so)
 	}
-	if server.Stats().Accepted.Load() != 1 || client.Stats().Swapped.Load() != 1 {
-		t.Errorf("accepted %d, swapped %d; want 1, 1", server.Stats().Accepted.Load(), client.Stats().Swapped.Load())
+	if server.Stats().Accepted.Load() != 1 || client.Stats().Swapped() != 1 {
+		t.Errorf("accepted %d, swapped %d; want 1, 1", server.Stats().Accepted.Load(), client.Stats().Swapped())
 	}
 }
 
@@ -412,8 +413,8 @@ func TestUnmarkedConnectionsAreLeftAlone(t *testing.T) {
 	if err := s.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if s.Stats().Swapped.Load() != 0 || !strings.Contains(out.String(), "connect network is unreachable") {
-		t.Errorf("swapped %d; output %q", s.Stats().Swapped.Load(), out.String())
+	if s.Stats().Swapped() != 0 || !strings.Contains(out.String(), "connect network is unreachable") {
+		t.Errorf("swapped %d; output %q", s.Stats().Swapped(), out.String())
 	}
 }
 
@@ -555,8 +556,8 @@ func TestFallbackToThePodNetwork(t *testing.T) {
 			if !strings.Contains(out.String(), "connect network is unreachable") {
 				t.Errorf("the connect did not go on to the pod network: %s", out)
 			}
-			if got := client.Stats().Fallbacks.Snapshot(); got[tc.reason] != 1 || len(got) != 1 || client.Stats().Swapped.Load() != 0 {
-				t.Errorf("fallbacks %v, swapped %d; want one %s", got, client.Stats().Swapped.Load(), tc.reason)
+			if got := client.Stats().Fallbacks.Snapshot(); got[tc.reason] != 1 || len(got) != 1 || client.Stats().Swapped() != 0 {
+				t.Errorf("fallbacks %v, swapped %d; want one %s", got, client.Stats().Swapped(), tc.reason)
 			}
 			t.Logf("%s: the container's connect returned after %v", tc.reason, time.Since(start))
 		})
@@ -645,8 +646,8 @@ func TestHostPortInUse(t *testing.T) {
 	}
 	server.cmd.Process.Kill()
 	server.Wait()
-	if got := server.Stats().Fallbacks.Snapshot(); got["host-port-in-use"] != 1 || server.Stats().Swapped.Load() != 0 {
-		t.Errorf("server: fallbacks %v, swapped %d", got, server.Stats().Swapped.Load())
+	if got := server.Stats().Fallbacks.Snapshot(); got["host-port-in-use"] != 1 || server.Stats().Swapped() != 0 {
+		t.Errorf("server: fallbacks %v, swapped %d", got, server.Stats().Swapped())
 	}
 	if got := client.Stats().Fallbacks.Snapshot(); got["no-ack"] != 1 || !strings.Contains(clientOut.String(), "connect network is unreachable") {
 		t.Errorf("client: fallbacks %v: %s", got, clientOut)
@@ -707,15 +708,15 @@ func TestEpollGuard(t *testing.T) {
 	if err := before.Wait(); err != nil {
 		t.Fatalf("%v\n%s", err, beforeOut)
 	}
-	if got := before.Stats().Fallbacks.Snapshot(); got["epoll"] != 1 || before.Stats().Swapped.Load() != 0 || !strings.Contains(beforeOut.String(), "network is unreachable") {
-		t.Errorf("registered before connect: fallbacks %v, swapped %d: %s", got, before.Stats().Swapped.Load(), beforeOut)
+	if got := before.Stats().Fallbacks.Snapshot(); got["epoll"] != 1 || before.Stats().Swapped() != 0 || !strings.Contains(beforeOut.String(), "network is unreachable") {
+		t.Errorf("registered before connect: fallbacks %v, swapped %d: %s", got, before.Stats().Swapped(), beforeOut)
 	}
 	after, afterOut := runPod(t, cfg, "epoll", "after", "connect", vip)
 	if err := after.Wait(); err != nil {
 		t.Fatalf("%v\n%s", err, afterOut)
 	}
-	if after.Stats().Swapped.Load() != 1 || len(after.Stats().Fallbacks.Snapshot()) != 0 || !strings.Contains(afterOut.String(), "local 10.244.1.9:") {
-		t.Errorf("registered after connect: swapped %d: %s", after.Stats().Swapped.Load(), afterOut)
+	if after.Stats().Swapped() != 1 || len(after.Stats().Fallbacks.Snapshot()) != 0 || !strings.Contains(afterOut.String(), "local 10.244.1.9:") {
+		t.Errorf("registered after connect: swapped %d: %s", after.Stats().Swapped(), afterOut)
 	}
 	server.cmd.Process.Kill()
 	server.Wait()
@@ -724,8 +725,8 @@ func TestEpollGuard(t *testing.T) {
 	if err := b.Wait(); err != nil {
 		t.Fatalf("%v\n%s", err, bOut)
 	}
-	if got := b.Stats().Fallbacks.Snapshot(); got["epoll"] != 1 || b.Stats().Swapped.Load() != 0 || !strings.Contains(bOut.String(), "bind <nil> local 0.0.0.0:"+p) {
-		t.Errorf("registered before bind: fallbacks %v, swapped %d: %s", got, b.Stats().Swapped.Load(), bOut)
+	if got := b.Stats().Fallbacks.Snapshot(); got["epoll"] != 1 || b.Stats().Swapped() != 0 || !strings.Contains(bOut.String(), "bind <nil> local 0.0.0.0:"+p) {
+		t.Errorf("registered before bind: fallbacks %v, swapped %d: %s", got, b.Stats().Swapped(), bOut)
 	}
 }
 
@@ -806,4 +807,69 @@ func BenchmarkDirectConnect(b *testing.B) {
 	}()
 	hostOut, err := host.CombinedOutput()
 	b.Log("host:", strings.TrimSpace(string(hostOut)), err)
+}
+
+// A supervisor reports its counters when it starts and once more, ended, with the last, and
+// nothing after that.
+func TestSupervisorsReportTheirCounters(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	vip := "10.43.0.77:" + p
+	marked := Ports{uint16(port): {}}
+	type report struct {
+		c     api.DirectCounters
+		ended bool
+	}
+	collect := func(cfg *Config) *[]report {
+		var mu sync.Mutex
+		var reports []report
+		cfg.Report = func(c api.DirectCounters, ended bool) {
+			mu.Lock()
+			defer mu.Unlock()
+			reports = append(reports, report{c, ended})
+		}
+		return &reports
+	}
+	scfg := podConfig(t, "10.244.5.4", marked, fakeResolver{})
+	serverReports := collect(&scfg)
+	server, serverOut := runPod(t, scfg, "serve", p)
+	serverOut.waitFor(t, "listening")
+	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+	ccfg := podConfig(t, "10.244.1.9", marked, resolver)
+	clientReports := collect(&ccfg)
+	client, clientOut := runPod(t, ccfg, "dial", vip, "1000")
+	if err := client.Wait(); err != nil {
+		t.Fatalf("client: %v\n%s", err, clientOut)
+	}
+	if err := server.Wait(); err != nil {
+		t.Fatalf("server: %v\n%s", err, serverOut)
+	}
+	before := len(*clientReports)
+	client.push(false) // a late report of a supervisor that has ended is not made
+	client.push(true)
+	if len(*clientReports) != before {
+		t.Errorf("%d reports after the last one", len(*clientReports)-before)
+	}
+	for name, c := range map[string]struct {
+		reports *[]report
+		want    api.DirectCounters
+	}{
+		"client": {clientReports, api.DirectCounters{Connects: 1}},
+		"server": {serverReports, api.DirectCounters{Binds: 1, Accepts: 1}},
+	} {
+		rs := *c.reports
+		if len(rs) < 2 || rs[0].ended || !rs[len(rs)-1].ended {
+			t.Errorf("%s: %d reports, the first ended %t, the last ended %t", name, len(rs), len(rs) > 0 && rs[0].ended, len(rs) > 0 && rs[len(rs)-1].ended)
+			continue
+		}
+		last := rs[len(rs)-1].c
+		if last.Connects != c.want.Connects || last.Binds != c.want.Binds || last.Accepts != c.want.Accepts {
+			t.Errorf("%s: the last report is %+v, want %+v", name, last, c.want)
+		}
+		for _, r := range rs[:len(rs)-1] {
+			if r.ended {
+				t.Errorf("%s: a report after the last one", name)
+			}
+		}
+	}
 }

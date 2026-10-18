@@ -273,7 +273,7 @@ func TestEachListenerOfAPortHasItsProxy(t *testing.T) {
 	server, out := runPod(t, cfg, "twolisteners", strconv.Itoa(port))
 	out.waitFor(t, "listening")
 	defer func() { server.cmd.Process.Kill(); server.Wait() }()
-	if server.Stats().Swapped.Load() != 2 || server.proxyCount() != 2 {
-		t.Errorf("swapped %d, %d proxies; want 2 and 2\n%s", server.Stats().Swapped.Load(), server.proxyCount(), out)
+	if server.Stats().Swapped() != 2 || server.proxyCount() != 2 {
+		t.Errorf("swapped %d, %d proxies; want 2 and 2\n%s", server.Stats().Swapped(), server.proxyCount(), out)
 	}
 }

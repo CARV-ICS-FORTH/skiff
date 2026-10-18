@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -604,5 +607,56 @@ func TestClusterKey(t *testing.T) {
 	}
 	if _, err := clusterKey(filepath.Join(t.TempDir(), "absent")); err == nil {
 		t.Error("a kubeconfig that is not there gave a key")
+	}
+}
+
+func TestDirectNameFollowsTheLogPath(t *testing.T) {
+	for log, want := range map[string]string{
+		"/tmp/.skiff.20002/.pods/default/dp-server-a_99ef93ff-4a28-42e5-83e0-042d4ebe3656/job/i5201.direct.log": "default/dp-server-a/i5201",
+		"/s/pods/kube-system/coredns_1/job/coredns.direct.log":                                                  "kube-system/coredns/coredns",
+	} {
+		if got := directName(log); got != want {
+			t.Errorf("directName(%q) = %q, want %q", log, got, want)
+		}
+	}
+	if got := directName(""); got != "pid "+strconv.Itoa(os.Getpid()) {
+		t.Errorf("without a log: %q", got)
+	}
+}
+
+type reportRecorder struct{ got chan api.DirectReport }
+
+func (r reportRecorder) HandleReportDirect(report *api.DirectReport) error {
+	r.got <- *report
+	return nil
+}
+
+// The counters reach plaidd named by the container, with the supervisor's process; a plaidd that is
+// not there is told of once in the log and does not stop the supervisor.
+func TestCounterReporterTellsPlaidd(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "p.sock")
+	srv := api.NewServer(sock, nil, nil, nil)
+	rec := reportRecorder{make(chan api.DirectReport, 4)}
+	srv.SetDirectHandler(rec)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	srv.MarkReady()
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	report := counterReporter(api.NewClient(sock), "default/p/c", logf)
+	report(api.DirectCounters{Connects: 2}, true)
+	r := <-rec.got
+	if r.Supervisor != "default/p/c" || r.PID != os.Getpid() || !r.Ended || r.Counters.Connects != 2 {
+		t.Errorf("the report is %+v", r)
+	}
+	srv.Close()
+	report(api.DirectCounters{}, false)
+	report(api.DirectCounters{}, false)
+	if len(logged) != 1 {
+		t.Errorf("a plaidd that is not there was logged %d times: %q", len(logged), logged)
 	}
 }

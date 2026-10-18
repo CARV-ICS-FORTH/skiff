@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+	"plaid/pkg/api"
 )
 
 // Supervisor holds the container's connect, bind, accept, getsockname and getpeername
@@ -32,6 +33,9 @@ type Supervisor struct {
 	timings    Timings
 	connLogged atomic.Uint64 // connections logged so far (logConn)
 
+	pushMu     sync.Mutex
+	pushedLast bool // the last report has been made
+
 	proxyMu sync.Mutex
 	proxies map[netip.AddrPort]*localProxy // by the address in the pod's network
 }
@@ -39,7 +43,8 @@ type Supervisor struct {
 // Stats counts what the supervisor has done.
 type Stats struct {
 	Notifications atomic.Uint64 // calls held
-	Swapped       atomic.Uint64 // sockets put in place of the container's (connect, bind)
+	Connects      atomic.Uint64 // connects made on the host network for the container
+	Binds         atomic.Uint64 // listeners put on the host network
 	Accepted      atomic.Uint64 // connections handed to a swapped listener's accept
 	Names         atomic.Uint64 // getsockname and getpeername answered
 	Proxied       atomic.Uint64 // connections to a swapped listener's pod-side socket that were carried to it
@@ -106,19 +111,33 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 // Stats is the supervisor's counters.
 func (s *Supervisor) Stats() *Stats { return &s.stats }
 
-// summary is the counters in a line of the log.
-func (st *Stats) summary() string {
-	return fmt.Sprintf("held %d, swapped %d, accepted %d, proxied %d (failed %d); fallbacks: %s; rejected: %s",
-		st.Notifications.Load(), st.Swapped.Load(), st.Accepted.Load(), st.Proxied.Load(), st.ProxyFailed.Load(), st.Fallbacks.String(), st.Rejected.String())
+// Swapped is the number of sockets put in place of the container's.
+func (st *Stats) Swapped() uint64 { return st.Connects.Load() + st.Binds.Load() }
+
+// Counters is a copy of the counters, as plaidd takes them.
+func (st *Stats) Counters() api.DirectCounters {
+	return api.DirectCounters{
+		Connects: st.Connects.Load(), Binds: st.Binds.Load(), Accepts: st.Accepted.Load(),
+		Proxied: st.Proxied.Load(), ProxyFailed: st.ProxyFailed.Load(), Errors: st.Errors.Load(),
+		Fallbacks: st.Fallbacks.Snapshot(), Rejected: st.Rejected.Snapshot(),
+	}
 }
 
-// reportEvery is how often the counters are logged, when they have changed: the log of a
-// container that runs for days says what its supervisor has done, not only when it ends.
+// summary is the counters in a line of the log.
+func (st *Stats) summary() string {
+	return fmt.Sprintf("held %d, connects %d, binds %d, accepts %d, proxied %d (failed %d); fallbacks: %s; rejected: %s",
+		st.Notifications.Load(), st.Connects.Load(), st.Binds.Load(), st.Accepted.Load(), st.Proxied.Load(), st.ProxyFailed.Load(), st.Fallbacks.String(), st.Rejected.String())
+}
+
+// reportEvery is how often the counters are logged and reported (Config.Report), when they
+// have changed: the log of a container that runs for days says what its supervisor has done,
+// not only when it ends, and plaidd's status has it.
 const reportEvery = 10 * time.Second
 
 func (s *Supervisor) report() {
 	tick := time.NewTicker(reportEvery)
 	defer tick.Stop()
+	s.push(false) // so that the supervisor is known as soon as it runs
 	var last string
 	for {
 		select {
@@ -130,8 +149,24 @@ func (s *Supervisor) report() {
 			last = now
 			s.logf("stats, %s", now)
 			s.logTimings()
+			s.push(false)
 		}
 	}
+}
+
+// push gives the counters to Config.Report, ended if the supervisor has. Nothing is
+// reported after the last report: it would come to plaidd as a supervisor that began again.
+func (s *Supervisor) push(ended bool) {
+	if s.cfg.Report == nil {
+		return
+	}
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	if s.pushedLast {
+		return
+	}
+	s.pushedLast = ended
+	s.cfg.Report(s.stats.Counters(), ended)
 }
 
 // Wait waits for the command to end, then for the held calls of what is left of it (nothing,
@@ -153,6 +188,16 @@ func (s *Supervisor) Wait() error {
 	unix.Close(s.listener)
 	s.logf("ended, %s", s.stats.summary())
 	s.logTimings()
+	// The last counters: plaidd is waited for a moment, not for as long as it might take.
+	done := make(chan struct{})
+	go func() {
+		s.push(true)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(finalReportWait):
+	}
 	return err
 }
 
@@ -168,6 +213,9 @@ func (s *Supervisor) logTimings() {
 // drainGrace is how long the supervisor keeps serving after the command has ended, for
 // processes the container left behind.
 const drainGrace = time.Second
+
+// finalReportWait is how long the end of a supervisor waits for plaidd to take its last counters.
+const finalReportWait = 3 * time.Second
 
 func (s *Supervisor) logf(format string, args ...any) {
 	if s.cfg.Logf != nil {

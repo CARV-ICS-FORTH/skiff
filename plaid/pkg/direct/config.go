@@ -3,6 +3,8 @@ package direct
 import (
 	"net/netip"
 	"time"
+
+	"plaid/pkg/api"
 )
 
 // Config is what a supervisor needs to know.
@@ -23,6 +25,9 @@ type Config struct {
 	Factory *FactoryClient
 	// Resolver finds the backends of Service addresses.
 	Resolver Resolver
+	// Report, when set, is given the counters (their totals so far) now and then when they
+	// have changed, and the last time, with ended true, when the supervisor ends.
+	Report func(counters api.DirectCounters, ended bool)
 	// Logf, when set, receives a line for what the supervisor does that is not routine (the
 	// container's own output is not the place for them): the first connections, the
 	// fallbacks, the counters and where the time of a connect goes.

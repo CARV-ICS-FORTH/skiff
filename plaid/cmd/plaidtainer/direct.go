@@ -7,8 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -164,7 +167,8 @@ func directConfig(opts PlaidOptions) (direct.Config, error) {
 	// This node's address, if the deployment says it ($HOST_IP in a bubble); else plaidd's
 	// overlay address is it.
 	hostIP, _ := netip.ParseAddr(os.Getenv("HOST_IP"))
-	resolver := direct.NewAPIResolver(api.NewClient(opts.Socket), hostIP, portBase)
+	client := api.NewClient(opts.Socket)
+	resolver := direct.NewAPIResolver(client, hostIP, portBase)
 	cfg := direct.Config{
 		Ports:      ports,
 		PodIP:      podIP,
@@ -173,6 +177,11 @@ func directConfig(opts PlaidOptions) (direct.Config, error) {
 		Factory:    direct.NewFactoryClient(opts.DirectSocket),
 		Resolver:   resolver,
 	}
+	cfg.Report = counterReporter(client, directName(opts.DirectLog), func(format string, args ...any) {
+		if cfg.Logf != nil {
+			cfg.Logf(format, args...)
+		}
+	})
 	if opts.DirectLog != "" {
 		f, err := os.OpenFile(opts.DirectLog, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
 		if err != nil {
@@ -184,4 +193,30 @@ func directConfig(opts PlaidOptions) (direct.Config, error) {
 		resolver.Logf = cfg.Logf
 	}
 	return cfg, nil
+}
+
+// directName is the container a supervisor works for, as "namespace/pod/container", from the
+// path of its log, which Skifflet puts at <pods>/<namespace>/<pod>_<uid>/job/<container>.direct.log
+// (a pod's name has no underscore). Without a log it is the supervisor's process.
+func directName(logPath string) string {
+	if logPath == "" {
+		return "pid " + strconv.Itoa(os.Getpid())
+	}
+	container := strings.TrimSuffix(filepath.Base(logPath), ".direct.log")
+	podDir := filepath.Dir(filepath.Dir(logPath))
+	pod, _, _ := strings.Cut(filepath.Base(podDir), "_")
+	return filepath.Base(filepath.Dir(podDir)) + "/" + pod + "/" + container
+}
+
+// counterReporter gives the supervisor's counters to plaidd. A report that fails is logged
+// the first time (plaidd may not be there, or may be an older one, and the container does
+// not need it).
+func counterReporter(client *api.Client, name string, logf func(format string, args ...any)) func(api.DirectCounters, bool) {
+	var failed atomic.Bool
+	return func(c api.DirectCounters, ended bool) {
+		err := client.ReportDirect(api.DirectReport{Supervisor: name, PID: os.Getpid(), Ended: ended, Counters: c})
+		if err != nil && !failed.Swap(true) {
+			logf("reporting the counters to plaidd: %v", err)
+		}
+	}
 }

@@ -242,7 +242,7 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	}
 	tl.mark(phAddfd)
 	s.table.Add(cookie, Socket{Kind: KindClient, Family: held.family, Local: local, Peer: dst})
-	s.stats.Swapped.Add(1)
+	s.stats.Connects.Add(1)
 	s.logConn("connect %s: on the host, %s to %s, as %s", dst, addrPortOf(sa), backend.Host, local)
 	return succeed()
 }
@@ -370,7 +370,7 @@ func (s *Supervisor) bind(n *notif) reply {
 		return s.putFailed("bind", err)
 	}
 	s.table.Add(cookie, Socket{Kind: KindListener, Family: held.family, Local: want})
-	s.stats.Swapped.Add(1)
+	s.stats.Binds.Add(1)
 	if err := s.startProxy(held, want, hostPort); err != nil {
 		s.stats.Errors.Add(1)
 		s.logf("bind %s: the proxy in the pod's network: %v", want, err)
