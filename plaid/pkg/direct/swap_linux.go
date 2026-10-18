@@ -116,15 +116,17 @@ func copyOptions(from, to, family int) {
 // put gives the container's descriptor fd the socket sock, and returns the kernel's
 // verdict on the held call: answered, or that the call has been cancelled meanwhile.
 func (s *Supervisor) put(n *notif, fd int, sock int, cloexec bool) error {
-	if !ioctlValid(s.listener, n.ID) {
-		return errCancelled
-	}
 	a := notifAddfd{ID: n.ID, Flags: unix.SECCOMP_ADDFD_FLAG_SETFD, Srcfd: uint32(sock), Newfd: uint32(fd)}
 	if cloexec {
 		a.NewfdFlags = unix.O_CLOEXEC
 	}
-	_, err := ioctlAddfd(s.listener, &a)
-	return err
+	if _, err := ioctlAddfd(s.listener, &a); err != nil {
+		if errors.Is(err, unix.ENOENT) { // the call is not held any more
+			return errCancelled
+		}
+		return err
+	}
+	return nil
 }
 
 // errCancelled says that the container's thread gave up the call (a signal, or it died):
@@ -444,9 +446,6 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	}
 	tl.mark(phWriteAddr)
 	cookie := cookieOf(conn)
-	if !ioctlValid(s.listener, n.ID) {
-		return cancelled
-	}
 	// The descriptor is added and the call answered with its number in one step.
 	a := notifAddfd{ID: n.ID, Flags: unix.SECCOMP_ADDFD_FLAG_SEND, Srcfd: uint32(conn)}
 	if flags&unix.SOCK_CLOEXEC != 0 {
@@ -563,11 +562,9 @@ func writeAddr(tid int, addrPtr, lenPtr uint64, ap netip.AddrPort, family int) e
 	}
 	have := int(int32(nativeUint32(lb[:])))
 	sa := encodeSockaddr(ap, family)
-	if have > 0 {
-		if err := writeRemote(tid, addrPtr, sa[:min(have, len(sa))]); err != nil {
-			return err
-		}
-	}
 	putNativeUint32(lb[:], uint32(len(sa)))
-	return writeRemote(tid, lenPtr, lb[:])
+	if have <= 0 {
+		return writeRemote(tid, lenPtr, lb[:])
+	}
+	return writeRemote2(tid, addrPtr, sa[:min(have, len(sa))], lenPtr, lb[:])
 }

@@ -3,7 +3,10 @@
 package direct
 
 import (
+	"bytes"
+	"net/netip"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -115,4 +118,27 @@ func TestInEpollFollowsTheProcess(t *testing.T) {
 		t.Error("a descriptor that is no epoll instance any more was read as one")
 	}
 	unix.Close(c)
+}
+
+// The address and its length are written to the container's buffers as getsockname does:
+// the address cut to the buffer, the length the whole address has.
+func TestWriteAddrTruncates(t *testing.T) {
+	tid := unix.Gettid()
+	ap := netip.MustParseAddrPort("10.244.1.9:5201")
+	for _, size := range []int{0, 4, 16, 28, 64} {
+		buf := make([]byte, 64)
+		length := uint32(size)
+		lenBytes := make([]byte, 4)
+		putNativeUint32(lenBytes, length)
+		if err := writeAddr(tid, uint64(uintptr(unsafe.Pointer(&buf[0]))), uint64(uintptr(unsafe.Pointer(&lenBytes[0]))), ap, unix.AF_INET6); err != nil {
+			t.Fatal(err)
+		}
+		full := encodeSockaddr(ap, unix.AF_INET6)
+		if got := int(nativeUint32(lenBytes)); got != len(full) {
+			t.Errorf("buffer of %d: length %d, want %d", size, got, len(full))
+		}
+		if want := full[:min(size, len(full))]; !bytes.Equal(buf[:len(want)], want) || !bytes.Equal(buf[len(want):], make([]byte, 64-len(want))) {
+			t.Errorf("buffer of %d: %x", size, buf)
+		}
+	}
 }
