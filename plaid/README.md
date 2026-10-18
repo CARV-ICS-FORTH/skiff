@@ -38,6 +38,28 @@ The reconciler owns the forwards that have the shape of its own (the host addres
 
 Not published, each with a Warning event and the Service's cluster IP still served: an `externalTrafficPolicy` of `Local`, LoadBalancer Services and their node ports, SCTP ports, node ports outside the range. Limits: a client on the node's own host cannot use the node's own address (slirp4netns shows the bubble that address as the client's, and it is the bubble's own: the connection stalls); use another host (the usual client of a node port, such as the cluster's login node, is one) or the cluster IP. Existing connections are not drained when a port is withdrawn: closing the listener ends nothing in flight in the bubble, but new connections are refused. slirp4netns stops moving packets while it serves a request, so Plaid asks for a listing and only the changes.
 
+### Direct path (prototype)
+
+A pod can have some of its TCP connections bypass the overlay and run on sockets of the physical host's network namespace, at the host's rate, while it keeps the addresses Kubernetes gave it. A container marks the ports with the environment variable `PLAID_DIRECT_PORTS` (`"5201,5203"`; the list is both the Service ports it connects to and the ports it listens on). Everything else it does (DNS, other ports, other protocols) stays on the overlay.
+
+For such a container Skifflet gives `plaidtainer` the ports and the pod's address, and `plaidtainer` stays as the container's *supervisor* (`pkg/direct`) instead of replacing itself with Apptainer. A seccomp filter holds the container's `connect`, `bind`, `accept`, `accept4`, `getsockname` and `getpeername` calls (SECCOMP_RET_USER_NOTIF) until the supervisor has decided them; the filter is on the container only, the others are let through at once.
+
+- **connect** to a marked port whose address is a Service's (from plaidd's `list_services`; the node of the backend from its subnet's route, `list_routes`): the supervisor takes a TCP socket of the host's network namespace from the *socket factory*, connects it to the backend's node, writes a 16 byte preamble (the client's pod address, the pod it means), and puts the socket in place of the container's with `pidfd_getfd` and `SECCOMP_IOCTL_NOTIF_ADDFD`. The container's connect returns 0.
+- **bind** of a marked port: a host socket bound to that port on every address of the host. `listen` runs on it.
+- **accept** on such a listener: the supervisor accepts, reads the preamble (a connection without one, or meant for another pod, is closed) and gives the container the connection and the client's pod address.
+- **getsockname** and **getpeername** of those sockets answer with the pod's addresses: a client sees its pod IP and the Service address it connected to, a server its pod IP and port and the client's pod IP and port. Nothing in the pod can tell the socket is the host's.
+
+The socket factory (`plaidctl socket-factory --listen <socket>`) runs on the physical host, next to the overlay's socket helper: a socket belongs to the namespace it was made in, so the host's can be made there and passed (SCM_RIGHTS) to the bubble's supervisors. In a Skiff bubble `skiff.sh` starts it and tells the bubble its socket in `PLAID_DIRECT_SOCKET`. It makes sockets and sees no traffic.
+
+What it is not, in this prototype:
+
+- **Not a security boundary and not authenticated.** The preamble claims who the client is; anyone who can reach the node's port can claim any pod address. The packet filter and NetworkPolicy of the overlay never see this traffic.
+- **A server's port is a port of the node** (the same number as the pod's): two pods that mark the same port cannot run on one node, and a process of the host that holds it blocks the bind.
+- **A listening socket is not in the pod.** Probes of the kubelet-style (`tcpSocket`, `httpGet`) that Skifflet runs over the pod network, other containers of the pod and `kubectl exec` on the pod's address or on localhost do not reach it, and processes started into the container from outside (`nsenter`) are not under the supervisor.
+- **IPv4 pod addresses, TCP, amd64 and arm64 Linux with Yama's `ptrace_scope` of at most 1** (the supervisor is the ancestor of the container). A runtime that adds a socket to its epoll set *before* it calls `connect` or `bind` loses it when the socket is replaced (Go and C programs do not).
+- If the supervisor cannot start (no factory, a kernel without the interface), the container runs as any other.
+- Costs: about 20 microseconds for each held call on the nodes of the test cluster and about 430 microseconds more for a connect than a host connect. Only containers that mark ports are held at all.
+
 ### Offloads
 
 A pod sends one frame per system call and `plaidd` forwards one frame per system call on each hop, which limits the throughput of one TCP stream. With the kernel's offloads, which an unprivileged user may use, a hop handles many frames at once, while the bridge (filter, Service translation, ARP, routing) still sees only ordinary MTU-sized frames with complete checksums, and the overlay carries standard VXLAN, one frame per datagram, or a TCP super-frame as a run of datagrams between nodes that take them (see Super-frames over the overlay). `--offload` (default on) controls them, and with them the super-frames that a TAP takes whole and that cross the overlay; with `--offload=false` there is one frame and one datagram per system call, and every super-frame is cut.
