@@ -55,3 +55,64 @@ func TestTargetsForgetAThreadThatEnded(t *testing.T) {
 		t.Errorf("the entry of a thread that is not in its process was kept: %v, tgid %d", err, ts.known[tid].tgid)
 	}
 }
+
+// The epoll look follows the process: a registration made or removed, an instance made
+// after the look was kept, and a descriptor that was an instance and became something else.
+func TestInEpollFollowsTheProcess(t *testing.T) {
+	ts := newTargets()
+	defer ts.closeAll()
+	tid := unix.Gettid()
+	sock := func() int {
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fd
+	}
+	in := func(fd int) bool {
+		t.Helper()
+		registered, err := ts.inEpoll(tid, fd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return registered
+	}
+	add := func(ep, fd int) {
+		if err := unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.EPOLLIN}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b := sock(), sock()
+	defer unix.Close(a)
+	defer unix.Close(b)
+	if in(a) {
+		t.Error("a socket that is in no epoll set is in one")
+	}
+	ep1, _ := unix.EpollCreate1(0) // a new instance: the descriptors are others
+	add(ep1, a)
+	if !in(a) || in(b) {
+		t.Errorf("registered a: in(a) %t in(b) %t", in(a), in(b))
+	}
+	add(ep1, b)
+	if !in(b) { // the same descriptors, the instance's registrations are read again
+		t.Error("a registration made after the look was not seen")
+	}
+	c := sock()
+	ep2, _ := unix.EpollCreate1(0)
+	add(ep2, c)
+	if !in(c) {
+		t.Error("a second instance was not found")
+	}
+	unix.Close(ep2)
+	if in(c) {
+		t.Error("an instance that was closed still has its registrations")
+	}
+	// The instance's number is taken by a socket: what was kept of it is not trusted.
+	unix.Close(ep1)
+	other := sock()
+	defer unix.Close(other)
+	if in(a) {
+		t.Error("a descriptor that is no epoll instance any more was read as one")
+	}
+	unix.Close(c)
+}

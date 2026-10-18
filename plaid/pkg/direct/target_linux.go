@@ -26,6 +26,7 @@ import (
 type targets struct {
 	mu      sync.Mutex
 	known   map[int]target
+	epolls  map[int]epollSet // by process
 	maxSize int
 }
 
@@ -33,7 +34,9 @@ type target struct{ tgid, pidfd int }
 
 const maxTargets = 4096
 
-func newTargets() *targets { return &targets{known: make(map[int]target), maxSize: maxTargets} }
+func newTargets() *targets {
+	return &targets{known: make(map[int]target), epolls: make(map[int]epollSet), maxSize: maxTargets}
+}
 
 // getfd duplicates descriptor fd of thread tid's process into this process.
 func (ts *targets) getfd(tid, fd int) (int, error) {
@@ -147,44 +150,155 @@ func fdFlags(tid, fd int) (int, error) {
 	return 0, errors.New("no flags in fdinfo")
 }
 
+// epollSet is what the supervisor found of a process's epoll instances when it last looked.
+type epollSet struct {
+	fds []int  // the descriptors that were epoll instances
+	sig uint64 // of the numbers of all the process's descriptors then
+}
+
 // inEpoll says whether descriptor fd of the thread's process is registered in an epoll
 // instance of the process. Swapping the socket behind the descriptor would leave the
 // registration with the old one, which is closed by it, and no event would ever arrive: a
 // runtime that registers a socket before it connects or binds it (the ones that do not,
-// register it after the call returns) must keep its own. It reads the process's descriptors
-// and the registrations of its epoll instances (`tfd:` lines of their fdinfo).
+// register it after the call returns) must keep its own. It finds the process's epoll
+// instances and reads the registrations of each (`tfd:` lines of their fdinfo).
+//
+// Finding the instances is a readlink for each descriptor of the process, and is not
+// repeated while the process has the same descriptors (their numbers, from one read of the
+// directory) and the instances that were found still are epoll instances. What it does not
+// see is an instance made since the last look that has the number of a descriptor that was
+// closed since: between two connects, and only a registration of the socket made before
+// the connect would then be missed.
 func (ts *targets) inEpoll(tid, fd int) (bool, error) {
 	t, err := ts.lookup(tid, false)
 	if err != nil {
 		return false, err
 	}
 	dir := "/proc/" + strconv.Itoa(t.tgid)
-	d, err := os.Open(dir + "/fd")
+	d, err := unix.Open(dir+"/fd", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return false, err
 	}
-	defer d.Close()
-	names, err := d.Readdirnames(-1) // the names only: a stat of each would double the cost
+	defer unix.Close(d)
+	nums, sig, err := listDescriptors(d)
 	if err != nil {
 		return false, err
 	}
-	want := []byte("tfd:")
-	var link [32]byte
-	for _, name := range names {
-		// (one path component to resolve for each descriptor, not the five of its full path)
-		n, err := unix.Readlinkat(int(d.Fd()), name, link[:])
-		if err != nil || string(link[:n]) != "anon_inode:[eventpoll]" {
-			continue
+	ts.mu.Lock()
+	known, ok := ts.epolls[t.tgid]
+	ts.mu.Unlock()
+	if !ok || known.sig != sig || !areEpolls(d, known.fds) {
+		known = epollSet{sig: sig}
+		for _, n := range nums {
+			if isEpoll(d, n) {
+				known.fds = append(known.fds, n)
+			}
 		}
-		info, err := os.ReadFile(dir + "/fdinfo/" + name)
+		ts.mu.Lock()
+		if len(ts.epolls) >= ts.maxSize {
+			for k := range ts.epolls { // some, not the oldest: the cache is for speed
+				delete(ts.epolls, k)
+				break
+			}
+		}
+		ts.epolls[t.tgid] = known
+		ts.mu.Unlock()
+	}
+	for _, n := range known.fds {
+		if registered, err := epollHas(dir+"/fdinfo/"+strconv.Itoa(n), fd); err != nil || registered {
+			return registered, err
+		}
+	}
+	return false, nil
+}
+
+// listDescriptors reads the directory of a process's descriptors (/proc/<pid>/fd, open as d):
+// their numbers, and a hash of them.
+func listDescriptors(d int) (nums []int, sig uint64, err error) {
+	buf := make([]byte, 4096)
+	sig = 14695981039346656037 // FNV-1a
+	for {
+		n, err := unix.ReadDirent(d, buf)
+		if err != nil {
+			return nil, 0, err
+		}
+		if n == 0 {
+			return nums, sig, nil
+		}
+		complete := len(buf)-n >= 64 // what fits is all there is if a whole entry would have fitted too
+		// linux_dirent64: ino (8), off (8), reclen (2), type (1), the name and a NUL.
+		for b := buf[:n]; len(b) >= 19; {
+			reclen := int(b[16]) | int(b[17])<<8
+			if reclen < 19 || reclen > len(b) {
+				return nil, 0, errors.New("a damaged directory entry")
+			}
+			name := b[19:reclen]
+			if i := bytes.IndexByte(name, 0); i >= 0 {
+				name = name[:i]
+			}
+			if num, err := strconv.Atoi(string(name)); err == nil { // not "." and ".."
+				nums = append(nums, num)
+				sig = (sig ^ uint64(num)) * 1099511628211
+			}
+			b = b[reclen:]
+		}
+		if complete {
+			return nums, sig, nil
+		}
+	}
+}
+
+const epollLink = "anon_inode:[eventpoll]"
+
+// isEpoll says whether descriptor n of the process (whose descriptors are the directory d)
+// is an epoll instance.
+func isEpoll(d, n int) bool {
+	var link [32]byte
+	m, err := unix.Readlinkat(d, strconv.Itoa(n), link[:])
+	return err == nil && string(link[:m]) == epollLink
+}
+
+func areEpolls(d int, fds []int) bool {
+	for _, n := range fds {
+		if !isEpoll(d, n) {
+			return false
+		}
+	}
+	return true
+}
+
+// epollHas says whether the fdinfo of an epoll instance lists descriptor fd as registered.
+func epollHas(path string, fd int) (bool, error) {
+	f, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return false, err
+	}
+	defer unix.Close(f)
+	want := []byte(strconv.Itoa(fd))
+	data := make([]byte, 0, 4096)
+	for {
+		if len(data) == cap(data) {
+			data = append(data, 0)[:len(data)] // room for more: an instance with many registrations
+		}
+		n, err := unix.Read(f, data[len(data):cap(data)])
 		if err != nil {
 			return false, err
 		}
-		for _, line := range bytes.Split(info, []byte("\n")) {
-			if rest, ok := bytes.CutPrefix(line, want); ok {
-				if f := bytes.Fields(rest); len(f) > 0 && string(f[0]) == strconv.Itoa(fd) {
-					return true, nil
-				}
+		if n == 0 {
+			break
+		}
+		data = data[:len(data)+n]
+	}
+	for rest := data; len(rest) > 0; {
+		line := rest
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			line, rest = rest[:i], rest[i+1:]
+		} else {
+			rest = nil
+		}
+		if v, ok := bytes.CutPrefix(line, []byte("tfd:")); ok {
+			if f := bytes.Fields(v); len(f) > 0 && bytes.Equal(f[0], want) {
+				return true, nil
 			}
 		}
 	}
