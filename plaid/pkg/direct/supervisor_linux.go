@@ -15,20 +15,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Backend is where a Service address leads: the pod that will serve the connection, and the
-// host socket address on its node that the connection goes to.
-type Backend struct {
-	Pod  netip.AddrPort // the pod's address and port
-	Host netip.AddrPort // the node's address and the port the pod's server listens on there
-}
-
-// Resolver finds the backend of a Service address. It says false for an address that is no
-// Service's (or that has no backend that can take a connection), and the connect goes the
-// way it would have without the supervisor.
-type Resolver interface {
-	Resolve(dst netip.AddrPort) (Backend, bool)
-}
-
 // Config is what a supervisor needs to know.
 type Config struct {
 	// Ports are the ports the container marks: connections to a Service port in the set,
