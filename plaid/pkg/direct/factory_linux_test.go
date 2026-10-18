@@ -119,6 +119,52 @@ func TestFactoryClientReconnects(t *testing.T) {
 	unix.Close(fd)
 }
 
+// After the first request the client has sockets ready, makes more as they are used, and
+// gives them all up when it is closed.
+func TestFactoryClientKeepsSocketsReady(t *testing.T) {
+	c := startFactory(t)
+	ready := func() []int {
+		for i := 0; i < 200; i++ {
+			c.mu.Lock()
+			n := len(c.spare[0])
+			held := append([]int(nil), c.spare[0]...)
+			c.mu.Unlock()
+			if n == spareSockets {
+				return held
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("%d sockets ready, want %d", len(c.spare[0]), spareSockets)
+		return nil
+	}
+	fd, err := c.Socket(unix.AF_INET)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unix.Close(fd)
+	held := ready()
+	for i := 0; i < 3*spareSockets; i++ { // more than are ready: some wait for the factory
+		fd, err := c.Socket(unix.AF_INET)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if typ, _ := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_TYPE); typ != unix.SOCK_STREAM {
+			t.Errorf("socket %d is of type %d", i, typ)
+		}
+		unix.Close(fd)
+	}
+	held = ready()
+	c.Close()
+	for _, fd := range held {
+		if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != unix.EBADF {
+			t.Errorf("a socket that was ready is still open after Close: %v", err)
+		}
+	}
+	if len(c.spare[0]) != 0 {
+		t.Error("sockets are ready after Close")
+	}
+}
+
 func TestFactoryRefusesAPathThatIsNotASocket(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(path, nil, 0600); err != nil {

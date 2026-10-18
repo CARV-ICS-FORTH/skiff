@@ -115,12 +115,23 @@ func peerUID(conn *net.UnixConn) (uint32, error) {
 	return uid, cerr
 }
 
+// spareSockets is how many sockets of a family a FactoryClient keeps ready: the round trip
+// to the factory, which is the larger part of a connect's wait for a socket, is then made
+// after the connect that used the last one, not during it.
+const spareSockets = 4
+
 // FactoryClient asks the socket factory for sockets. It keeps the connections it opened
-// for the next request.
+// for the next request, and some sockets of each family that it asked for ahead of time.
 type FactoryClient struct {
 	path string
 	mu   sync.Mutex
 	idle []*net.UnixConn
+	// The sockets that are ready, and whether they are being made, by family (index 0 is
+	// IPv4, 1 IPv6). A family that the factory refuses is not asked for ahead of time.
+	spare    [2][]int
+	filling  [2]bool
+	noSpares [2]bool
+	closed   bool
 }
 
 // NewFactoryClient makes a client of the factory at path; it connects when it is asked
@@ -129,27 +140,87 @@ func NewFactoryClient(path string) *FactoryClient {
 	return &FactoryClient{path: path}
 }
 
-// Close closes the connections the client keeps.
+// Close closes the connections the client keeps, and the sockets it has ready.
 func (c *FactoryClient) Close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.closed = true
 	for _, conn := range c.idle {
 		conn.Close()
 	}
 	c.idle = nil
+	for i := range c.spare {
+		for _, fd := range c.spare[i] {
+			unix.Close(fd)
+		}
+		c.spare[i] = nil
+	}
+}
+
+func familyIndex(family int) int {
+	if family == unix.AF_INET6 {
+		return 1
+	}
+	return 0
 }
 
 // Socket returns a new TCP socket of the host's network namespace, of the family
 // (unix.AF_INET or unix.AF_INET6); the caller owns the descriptor.
 func (c *FactoryClient) Socket(family int) (int, error) {
-	var req byte
-	switch family {
-	case unix.AF_INET:
-		req = '4'
-	case unix.AF_INET6:
-		req = '6'
-	default:
+	if family != unix.AF_INET && family != unix.AF_INET6 {
 		return -1, fmt.Errorf("the socket factory makes IPv4 and IPv6 sockets, not family %d", family)
+	}
+	i := familyIndex(family)
+	c.mu.Lock()
+	var fd = -1
+	if n := len(c.spare[i]); n > 0 {
+		fd, c.spare[i] = c.spare[i][n-1], c.spare[i][:n-1]
+	}
+	if !c.closed && !c.noSpares[i] && !c.filling[i] {
+		c.filling[i] = true
+		go c.fill(family)
+	}
+	c.mu.Unlock()
+	if fd >= 0 {
+		return fd, nil
+	}
+	return c.fetch(family)
+}
+
+// fill makes the sockets of the family that are ready up to spareSockets.
+func (c *FactoryClient) fill(family int) {
+	i := familyIndex(family)
+	for {
+		c.mu.Lock()
+		if c.closed || len(c.spare[i]) >= spareSockets {
+			c.filling[i] = false
+			c.mu.Unlock()
+			return
+		}
+		c.mu.Unlock()
+		fd, err := c.fetch(family)
+		c.mu.Lock()
+		if err != nil || c.closed {
+			if err != nil && errors.Is(err, errRefused) {
+				c.noSpares[i] = true
+			}
+			c.filling[i] = false
+			c.mu.Unlock()
+			if err == nil {
+				unix.Close(fd)
+			}
+			return
+		}
+		c.spare[i] = append(c.spare[i], fd)
+		c.mu.Unlock()
+	}
+}
+
+// fetch asks the factory for a socket.
+func (c *FactoryClient) fetch(family int) (int, error) {
+	req := byte('4')
+	if family == unix.AF_INET6 {
+		req = '6'
 	}
 	// A kept connection may have been closed by the factory since: try the next, and a new one.
 	for {
@@ -214,6 +285,10 @@ func (c *FactoryClient) take() *net.UnixConn {
 func (c *FactoryClient) put(conn *net.UnixConn) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		conn.Close()
+		return
+	}
 	c.idle = append(c.idle, conn)
 }
 
