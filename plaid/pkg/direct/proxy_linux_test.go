@@ -90,6 +90,27 @@ func init() {
 		}
 		return 0
 	}
+	// twolisteners PORT: an IPv4 and an IPv6-only listener at one port, as a server that
+	// listens on every address of the host often has (Python's asyncio).
+	helpers["twolisteners"] = func(args []string) int {
+		port, _ := strconv.Atoi(args[0])
+		a, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		b, _ := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0)
+		unix.SetsockoptInt(b, unix.IPPROTO_IPV6, unix.IPV6_V6ONLY, 1)
+		if err := unix.Bind(a, &unix.SockaddrInet4{Port: port}); err != nil {
+			fmt.Println("error bind 4", err)
+			return 2
+		}
+		if err := unix.Bind(b, &unix.SockaddrInet6{Port: port}); err != nil {
+			fmt.Println("error bind 6", err)
+			return 2
+		}
+		unix.Listen(a, 8)
+		unix.Listen(b, 8)
+		fmt.Println("listening")
+		time.Sleep(10 * time.Second)
+		return 0
+	}
 	// relisten PORT CLOSE AGAIN: a server that closes its listener when the file CLOSE
 	// appears and listens at the same port again when AGAIN appears, then takes a
 	// connection of its own pod.
@@ -232,5 +253,18 @@ func TestProxyEndsWithTheListener(t *testing.T) {
 				t.Errorf("the container could not listen again, or the new listener is not reachable in the pod:\n%s", out)
 			}
 		})
+	}
+}
+
+// A server that listens at one port on an IPv4 and an IPv6 socket has a pod-side socket for
+// each, and the second does not replace the first.
+func TestEachListenerOfAPortHasItsProxy(t *testing.T) {
+	port := freePort(t)
+	cfg := podConfig(t, "10.244.5.4", Ports{uint16(port): {}}, hostPorts{fakeResolver{}, map[uint16]uint16{uint16(port): uint16(freePort(t))}})
+	server, out := runPod(t, cfg, "twolisteners", strconv.Itoa(port))
+	out.waitFor(t, "listening")
+	defer func() { server.cmd.Process.Kill(); server.Wait() }()
+	if server.Stats().Swapped.Load() != 2 || server.proxyCount() != 2 {
+		t.Errorf("swapped %d, %d proxies; want 2 and 2\n%s", server.Stats().Swapped.Load(), server.proxyCount(), out)
 	}
 }

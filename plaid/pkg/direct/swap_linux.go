@@ -330,7 +330,7 @@ func (s *Supervisor) bind(n *notif) reply {
 	// has taken is what the container would have been told. A proxy of an earlier listener
 	// of the container's is still there if the container closed its listener and bound
 	// again: the host port was free, so it is out of date.
-	s.dropProxy(want.Port())
+	s.dropProxy(want, nil)
 	if err := unix.Bind(held.dup, sockaddrFor(want, held.family)); err != nil {
 		return failWith(errnoOf(err))
 	}
@@ -346,7 +346,7 @@ func (s *Supervisor) bind(n *notif) reply {
 	}
 	s.table.Add(cookie, Socket{Kind: KindListener, Family: held.family, Local: want})
 	s.stats.Swapped.Add(1)
-	if err := s.startProxy(held, want.Port(), hostPort); err != nil {
+	if err := s.startProxy(held, want, hostPort); err != nil {
 		s.stats.Errors.Add(1)
 		s.logf("bind %s: the proxy in the pod's network: %v", want, err)
 	}

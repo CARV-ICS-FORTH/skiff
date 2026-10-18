@@ -39,7 +39,7 @@ const (
 // localProxy is one swapped listener's pod-side socket.
 type localProxy struct {
 	s        *Supervisor
-	podPort  uint16
+	addr     netip.AddrPort // the address in the pod's network it listens at
 	hostPort uint16
 	family   int // of the container's socket, and so of the host's
 	ln       *net.TCPListener
@@ -50,7 +50,7 @@ type localProxy struct {
 // startProxy takes over the container's own socket (held.dup, already bound to the address
 // the container asked for and listening) and accepts on it, and watches for the container's
 // listener to go.
-func (s *Supervisor) startProxy(held *heldSocket, podPort, hostPort uint16) error {
+func (s *Supervisor) startProxy(held *heldSocket, addr netip.AddrPort, hostPort uint16) error {
 	f := os.NewFile(uintptr(held.dup), "pod-side listener")
 	ln, err := net.FileListener(f)
 	f.Close() // FileListener has its own descriptor; this one is the held duplicate
@@ -58,23 +58,29 @@ func (s *Supervisor) startProxy(held *heldSocket, podPort, hostPort uint16) erro
 	if err != nil {
 		return err
 	}
-	p := &localProxy{s: s, podPort: podPort, hostPort: hostPort, family: held.family, ln: ln.(*net.TCPListener), done: make(chan struct{})}
+	p := &localProxy{s: s, addr: addr, hostPort: hostPort, family: held.family, ln: ln.(*net.TCPListener), done: make(chan struct{})}
 	s.proxyMu.Lock()
 	if s.proxies == nil {
-		s.proxies = make(map[uint16]*localProxy)
+		s.proxies = make(map[netip.AddrPort]*localProxy)
 	}
-	s.proxies[podPort] = p
+	s.proxies[addr] = p
 	s.proxyMu.Unlock()
 	go p.accept()
 	go p.watch()
 	return nil
 }
 
-// dropProxy closes the proxy of the pod port, if there is one.
-func (s *Supervisor) dropProxy(podPort uint16) {
+// dropProxy closes the proxy at the address, if there is one (and it is only, if that is
+// given: the proxy that has noticed that its listener is gone must not close the one that
+// replaced it).
+func (s *Supervisor) dropProxy(addr netip.AddrPort, only *localProxy) {
 	s.proxyMu.Lock()
-	p := s.proxies[podPort]
-	delete(s.proxies, podPort)
+	p := s.proxies[addr]
+	if p != nil && (only == nil || only == p) {
+		delete(s.proxies, addr)
+	} else {
+		p = nil
+	}
 	s.proxyMu.Unlock()
 	if p != nil {
 		p.close()
@@ -132,8 +138,8 @@ func (p *localProxy) watch() {
 			continue
 		}
 		if free++; free == 2 {
-			p.s.logf("the listener of port %d is gone: the proxy at the pod's port is closed", p.podPort)
-			p.s.dropProxy(p.podPort)
+			p.s.logf("the listener of %s is gone: the proxy at the pod's address is closed", p.addr)
+			p.s.dropProxy(p.addr, p)
 			return
 		}
 	}
@@ -160,7 +166,7 @@ func (p *localProxy) forward(c *net.TCPConn) {
 	h, hostAddr, err := p.dial()
 	if err != nil {
 		p.s.stats.ProxyFailed.Add(1)
-		p.s.logf("proxy: port %d: %v", p.podPort, err)
+		p.s.logf("proxy: %s: %v", p.addr, err)
 		return
 	}
 	defer h.Close()
@@ -187,7 +193,7 @@ func (p *localProxy) forward(c *net.TCPConn) {
 			return
 		}
 		if want := pre.Ack(p.s.cfg.Key); !hmac.Equal(ack[:], want[:]) {
-			p.s.logf("proxy: port %d: a wrong acknowledgement", p.podPort)
+			p.s.logf("proxy: %s: a wrong acknowledgement", p.addr)
 			c.Close()
 			return
 		}

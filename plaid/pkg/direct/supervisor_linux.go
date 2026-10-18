@@ -4,6 +4,7 @@ package direct
 
 import (
 	"fmt"
+	"net/netip"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -28,7 +29,7 @@ type Supervisor struct {
 	stats    Stats
 
 	proxyMu sync.Mutex
-	proxies map[uint16]*localProxy // by the pod's port
+	proxies map[netip.AddrPort]*localProxy // by the address in the pod's network
 }
 
 // Stats counts what the supervisor has done.
