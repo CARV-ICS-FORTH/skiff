@@ -14,7 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func startFactory(t *testing.T) *FactoryClient {
+func startFactory(t testing.TB) *FactoryClient {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "f.sock")
 	ctx, cancel := context.WithCancel(context.Background())

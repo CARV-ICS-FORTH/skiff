@@ -153,7 +153,8 @@ func unspecifiedFor(family int) netip.Addr {
 // the client is and which pod it means, and says in the ack that it has the connection.
 // Whatever fails before that leaves the container's socket as it was and lets the call
 // through: the connect goes to the Service on the pod network.
-func (s *Supervisor) connect(n *notif) reply {
+func (s *Supervisor) connect(n *notif, tl *timeline) reply {
+	tl.mark(phDispatch)
 	dst, ok := sockaddrArg(n)
 	if !ok || !s.cfg.Ports.Has(dst.Port()) {
 		return letThrough
@@ -162,6 +163,7 @@ func (s *Supervisor) connect(n *notif) reply {
 	if !ok {
 		return letThrough
 	}
+	tl.mark(phResolve)
 	tid, fd := int(n.Pid), int(n.Args[0])
 	held, err := s.inspect(tid, fd)
 	if err != nil {
@@ -172,15 +174,18 @@ func (s *Supervisor) connect(n *notif) reply {
 		return letThrough
 	}
 	defer held.close()
+	tl.mark(phInspect)
 	if s.inEpoll(tid, fd) {
 		return s.fallback("epoll", "connect %s: the socket is in an epoll set already", dst)
 	}
+	tl.mark(phEpoll)
 	if _, err := unix.Getpeername(held.dup); err == nil {
 		return letThrough // connected already: the kernel says EISCONN
 	}
 	if sa, err := unix.Getsockname(held.dup); err == nil && addrPortOf(sa).Port() != 0 {
 		return letThrough // the container chose its address: the pod network's to give
 	}
+	tl.mark(phState)
 
 	sock, err := s.cfg.Factory.Socket(held.family)
 	if err != nil {
@@ -189,10 +194,12 @@ func (s *Supervisor) connect(n *notif) reply {
 		return letThrough
 	}
 	defer unix.Close(sock)
+	tl.mark(phFactory)
 	copyOptions(held.dup, sock, held.family)
 
 	timeout := unix.NsecToTimeval(int64(connectTimeout))
 	_ = unix.SetsockoptTimeval(sock, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &timeout)
+	tl.mark(phOptions)
 	if err := unix.Connect(sock, sockaddrFor(backend.Host, held.family)); err != nil {
 		reason := "connect-error"
 		switch err {
@@ -203,6 +210,7 @@ func (s *Supervisor) connect(n *notif) reply {
 		}
 		return s.fallback(reason, "connect %s: to %s: %v", dst, backend.Host, err)
 	}
+	tl.mark(phDial)
 	_ = unix.SetsockoptTimeval(sock, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &unix.Timeval{})
 	sa, err := unix.Getsockname(sock)
 	if err != nil {
@@ -217,10 +225,12 @@ func (s *Supervisor) connect(n *notif) reply {
 	if _, err := unix.Write(sock, wire[:]); err != nil {
 		return s.fallback("connect-error", "connect %s: %v", dst, err)
 	}
+	tl.mark(phPreamble)
 	var ack [AckSize]byte
 	if err := readFull(sock, ack[:], s.cfg.AckTimeout); err != nil {
 		return s.fallback("no-ack", "connect %s: %s did not acknowledge: %v", dst, backend.Host, err)
 	}
+	tl.mark(phAck)
 	if want := pre.Ack(s.cfg.Key); !hmac.Equal(ack[:], want[:]) {
 		return s.fallback("bad-ack", "connect %s: %s sent a wrong acknowledgement", dst, backend.Host)
 	}
@@ -231,6 +241,7 @@ func (s *Supervisor) connect(n *notif) reply {
 	if err := s.put(n, fd, sock, held.cloexec); err != nil {
 		return s.putFailed("connect", err)
 	}
+	tl.mark(phAddfd)
 	s.table.Add(cookie, Socket{Kind: KindClient, Family: held.family, Local: local, Peer: dst})
 	s.stats.Swapped.Add(1)
 	s.logf("connect %s: on the host, %s to %s, as %s", dst, addrPortOf(sa), backend.Host, local)
@@ -359,7 +370,7 @@ func (s *Supervisor) bind(n *notif) reply {
 // The listener is the container's open file (the duplicate shares it), so a non-blocking
 // listener answers EAGAIN as it would, and the readiness the container's epoll sees is
 // the listener's own.
-func (s *Supervisor) accept(n *notif) reply {
+func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	tid, fd := int(n.Pid), int(n.Args[0])
 	dup, err := s.targets.getfd(tid, fd)
 	if err != nil {
@@ -398,8 +409,10 @@ func (s *Supervisor) accept(n *notif) reply {
 			}
 			return failWith(errnoOf(err))
 		}
+		tl.mark(phAccept)
+		tl.restart()
 		var reason string
-		if pre, reason, err = s.admit(conn, listener); err == nil {
+		if pre, reason, err = s.admit(conn, listener, tl); err == nil {
 			break
 		}
 		// Not a client of ours, or a wrong or old one: closed, and the next connection is
@@ -417,6 +430,7 @@ func (s *Supervisor) accept(n *notif) reply {
 			return failWith(unix.EFAULT)
 		}
 	}
+	tl.mark(phWriteAddr)
 	cookie := cookieOf(conn)
 	if !ioctlValid(s.listener, n.ID) {
 		return cancelled
@@ -434,6 +448,8 @@ func (s *Supervisor) accept(n *notif) reply {
 		}
 		return failWith(errnoOf(err))
 	}
+	tl.mark(phAcceptFD)
+	tl.finish(phAdmit)
 	s.stats.Accepted.Add(1)
 	s.logf("accept: fd %d of %s, from %s", newfd, listener.Local, pre.Client)
 	return reply{answered: true}
@@ -442,17 +458,19 @@ func (s *Supervisor) accept(n *notif) reply {
 // admit decides whether the connection that was accepted on the listener is a client
 // of ours that the listener's container may have, and if it is acknowledges it. The reason
 // it is not is a short word for the counts.
-func (s *Supervisor) admit(conn int, listener Socket) (pre Preamble, reason string, err error) {
+func (s *Supervisor) admit(conn int, listener Socket, tl *timeline) (pre Preamble, reason string, err error) {
 	var buf [PreambleSize]byte
 	if err := readFull(conn, buf[:], preambleTimeout); err != nil {
 		return pre, "no-preamble", err
 	}
+	tl.mark(phReadPre)
 	if pre, err = ParsePreamble(buf[:], s.cfg.Key); err != nil {
 		if err == errBadMAC {
 			return pre, "bad-mac", err
 		}
 		return pre, "not-a-preamble", err
 	}
+	tl.mark(phVerify)
 	if age := time.Since(pre.Time); age > preambleSkew || age < -preambleSkew {
 		return pre, "stale", fmt.Errorf("made %s ago", age.Round(time.Second))
 	}
@@ -481,6 +499,7 @@ func (s *Supervisor) admit(conn int, listener Socket) (pre Preamble, reason stri
 	}
 	// The client waits for the ack before it goes on, and gives up after a while: a client
 	// that has given up has closed its end, and the container should not be handed that.
+	tl.mark(phChecks)
 	var probe [1]byte
 	if m, _, err := unix.Recvfrom(conn, probe[:], unix.MSG_PEEK|unix.MSG_DONTWAIT); err == nil && m == 0 {
 		return pre, "client-gone", errors.New("the client closed it while it waited")
@@ -489,6 +508,7 @@ func (s *Supervisor) admit(conn int, listener Socket) (pre Preamble, reason stri
 	if _, err := unix.Write(conn, ack[:]); err != nil {
 		return pre, "client-gone", err
 	}
+	tl.mark(phAckWrite)
 	return pre, "", nil
 }
 

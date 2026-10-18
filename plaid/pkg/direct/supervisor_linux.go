@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os/exec"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -27,6 +28,7 @@ type Supervisor struct {
 	loopDone chan struct{}
 	handlers sync.WaitGroup
 	stats    Stats
+	timings  Timings
 
 	proxyMu sync.Mutex
 	proxies map[netip.AddrPort]*localProxy // by the address in the pod's network
@@ -125,6 +127,7 @@ func (s *Supervisor) report() {
 		if now := s.stats.summary(); now != last {
 			last = now
 			s.logf("stats, %s", now)
+			s.logTimings()
 		}
 	}
 }
@@ -147,7 +150,17 @@ func (s *Supervisor) Wait() error {
 	s.targets.closeAll()
 	unix.Close(s.listener)
 	s.logf("ended, %s", s.stats.summary())
+	s.logTimings()
 	return err
+}
+
+// logTimings logs where the time of the connects and accepts went (see Timings).
+func (s *Supervisor) logTimings() {
+	for _, line := range strings.Split(s.timings.String(), "\n") {
+		if line != "" {
+			s.logf("timing, %s", line)
+		}
+	}
 }
 
 // drainGrace is how long the supervisor keeps serving after the command has ended, for
@@ -199,19 +212,20 @@ func (s *Supervisor) hold(n *notif) {
 	switch int(n.Nr) {
 	case unix.SYS_CONNECT, unix.SYS_ACCEPT, unix.SYS_ACCEPT4:
 		s.handlers.Add(1)
+		tl := s.timings.begin()
 		go func(n notif) {
 			defer s.handlers.Done()
-			s.answer(&n)
+			s.answer(&n, tl)
 		}(*n)
 	default:
-		s.answer(n)
+		s.answer(n, nil)
 	}
 }
 
 // answer decides one call and tells the kernel. Whatever goes wrong in the supervisor lets
 // the call run as it would have without one: the container loses the direct path for that
 // call, not its network.
-func (s *Supervisor) answer(n *notif) {
+func (s *Supervisor) answer(n *notif, tl *timeline) {
 	var r reply
 	func() {
 		defer func() {
@@ -221,7 +235,7 @@ func (s *Supervisor) answer(n *notif) {
 				r = letThrough
 			}
 		}()
-		r = s.decide(n)
+		r = s.decide(n, tl)
 	}()
 	if r.answered {
 		return
@@ -232,6 +246,11 @@ func (s *Supervisor) answer(n *notif) {
 	}
 	if err := ioctlSend(s.listener, &resp); err != nil && err != unix.ENOENT {
 		s.logf("answering call %d of thread %d: %v", n.Nr, n.Pid, err)
+		return
+	}
+	if int(n.Nr) == unix.SYS_CONNECT && !r.through && r.errno == 0 { // a connect that was swapped
+		tl.mark(phReply)
+		tl.finish(phConnect)
 	}
 }
 
@@ -262,14 +281,14 @@ func errnoOf(err error) syscall.Errno {
 }
 
 // decide is the supervisor's judgement of one held call.
-func (s *Supervisor) decide(n *notif) reply {
+func (s *Supervisor) decide(n *notif, tl *timeline) reply {
 	switch int(n.Nr) {
 	case unix.SYS_CONNECT:
-		return s.connect(n)
+		return s.connect(n, tl)
 	case unix.SYS_BIND:
 		return s.bind(n)
 	case unix.SYS_ACCEPT, unix.SYS_ACCEPT4:
-		return s.accept(n)
+		return s.accept(n, tl)
 	case unix.SYS_GETSOCKNAME, unix.SYS_GETPEERNAME:
 		return s.name(n)
 	}

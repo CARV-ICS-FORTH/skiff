@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -111,6 +112,40 @@ func init() {
 		fmt.Println("accepted from", addrPortOf(from), "peer", addrPortOf(peer), "nonblock", fl&unix.O_NONBLOCK != 0)
 		return 0
 	}
+	// acceptloop PORT: a Go server that takes connections and closes them, for ever.
+	helpers["acceptloop"] = func(args []string) int {
+		l, err := net.Listen("tcp", ":"+args[0])
+		if err != nil {
+			return 2
+		}
+		fmt.Println("listening")
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return 2
+			}
+			c.Close()
+		}
+	}
+	// dialloop ADDR N: N connects in a row, each closed, and the median and 90th percentile
+	// of how long a connect took, in microseconds.
+	helpers["dialloop"] = func(args []string) int {
+		n, _ := strconv.Atoi(args[1])
+		took := make([]time.Duration, 0, n)
+		for i := 0; i < n; i++ {
+			t0 := time.Now()
+			c, err := net.Dial("tcp", args[0])
+			if err != nil {
+				fmt.Println("error", err)
+				return 2
+			}
+			took = append(took, time.Since(t0))
+			c.Close()
+		}
+		sort.Slice(took, func(i, j int) bool { return took[i] < took[j] })
+		fmt.Println("connect p50", took[n/2].Microseconds(), "p90", took[n*9/10].Microseconds())
+		return 0
+	}
 	// rawdial ADDR: a blocking connect, then the names of the socket.
 	helpers["rawdial"] = func(args []string) int {
 		ap := netip.MustParseAddrPort(args[0])
@@ -165,7 +200,7 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-func (b *syncBuffer) waitFor(t *testing.T, word string) {
+func (b *syncBuffer) waitFor(t testing.TB, word string) {
 	t.Helper()
 	for i := 0; i < 500; i++ {
 		if strings.Contains(b.String(), word) {
@@ -193,7 +228,7 @@ func field(t *testing.T, output, word, key string) string {
 	return ""
 }
 
-func freePort(t *testing.T) int {
+func freePort(t testing.TB) int {
 	t.Helper()
 	l, err := net.Listen("tcp", ":0")
 	if err != nil {
@@ -205,7 +240,7 @@ func freePort(t *testing.T) int {
 
 // runPod runs scenario name as a pod's container under a supervisor with cfg, and returns
 // the supervisor and the container's output.
-func runPod(t *testing.T, cfg Config, name string, args ...string) (*Supervisor, *syncBuffer) {
+func runPod(t testing.TB, cfg Config, name string, args ...string) (*Supervisor, *syncBuffer) {
 	t.Helper()
 	requireNamespaces(t)
 	out := &syncBuffer{}
@@ -218,7 +253,7 @@ func runPod(t *testing.T, cfg Config, name string, args ...string) (*Supervisor,
 	return s, out
 }
 
-func podConfig(t *testing.T, ip string, ports Ports, backends Resolver) Config {
+func podConfig(t testing.TB, ip string, ports Ports, backends Resolver) Config {
 	cfg := testConfig(t)
 	cfg.PodIP = netip.MustParseAddr(ip)
 	cfg.Ports = ports
@@ -444,7 +479,7 @@ func TestAdmit(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer unix.Close(fd)
-		return s.admit(fd, listener)
+		return s.admit(fd, listener, nil)
 	}
 
 	// The client wrote its preamble and went away.
@@ -726,4 +761,49 @@ func BenchmarkInEpoll(b *testing.B) {
 			}
 		})
 	}
+}
+
+// BenchmarkDirectConnect is the connect of a client pod to a server pod on a node (both
+// under a supervisor, the host sockets on the loopback), against the same connect on the
+// host's network. The supervisors' timings of the phases are logged (go test -v).
+func BenchmarkDirectConnect(b *testing.B) {
+	requireNamespaces(b)
+	port := freePort(b)
+	p := strconv.Itoa(port)
+	vip := "10.43.0.77:" + p
+	marked := Ports{uint16(port): {}}
+	server, serverOut := runPod(b, podConfig(b, "10.244.5.4", marked, fakeResolver{}), "acceptloop", p)
+	serverOut.waitFor(b, "listening")
+	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+	cfg := podConfig(b, "10.244.1.9", marked, resolver)
+	b.ResetTimer()
+	client, out := runPod(b, cfg, "dialloop", vip, strconv.Itoa(b.N))
+	if err := client.Wait(); err != nil {
+		b.Fatalf("client: %v\n%s", err, out)
+	}
+	b.StopTimer()
+	b.Log(strings.TrimSpace(out.String()))
+	b.Log("client:\n" + client.timings.String())
+	b.Log("server:\n" + server.timings.String())
+	server.cmd.Process.Kill()
+	server.Wait()
+
+	host := helperCmd("dialloop", false, "127.0.0.1:"+p, "1000")
+	// (the host's own listener: the server above is gone, so a plain one takes its place)
+	l, err := net.Listen("tcp", "127.0.0.1:"+p)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	hostOut, err := host.CombinedOutput()
+	b.Log("host:", strings.TrimSpace(string(hostOut)), err)
 }

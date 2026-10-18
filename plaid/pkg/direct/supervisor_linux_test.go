@@ -24,7 +24,7 @@ func init() {
 	}
 }
 
-func testConfig(t *testing.T) Config {
+func testConfig(t testing.TB) Config {
 	t.Helper()
 	return Config{
 		Ports:    Ports{5201: {}},

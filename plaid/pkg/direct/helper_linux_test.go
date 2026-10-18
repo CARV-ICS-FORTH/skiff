@@ -42,7 +42,7 @@ func helperCmd(name string, isolated bool, args ...string) *exec.Cmd {
 }
 
 // requireNamespaces skips the test where an unprivileged user cannot make the namespaces.
-func requireNamespaces(t *testing.T) {
+func requireNamespaces(t testing.TB) {
 	t.Helper()
 	probe := exec.Command("true")
 	probe.SysProcAttr = &syscall.SysProcAttr{
