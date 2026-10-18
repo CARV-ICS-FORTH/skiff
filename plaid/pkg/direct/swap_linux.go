@@ -32,6 +32,10 @@ const (
 	DefaultAckTimeout = time.Second
 )
 
+// fionbio is the ioctl that sets a socket non-blocking or not, in one call, where fcntl takes two
+// (x/sys/unix does not name it for Linux; it is the same on amd64 and arm64).
+const fionbio = 0x5421
+
 // heldSocket is a container's socket as the supervisor sees it through a duplicate.
 type heldSocket struct {
 	dup      int // the supervisor's descriptor of the container's socket
@@ -42,7 +46,8 @@ type heldSocket struct {
 
 var errNotOurs = errors.New("not a TCP socket of IPv4 or IPv6")
 
-// inspect duplicates descriptor fd of the held thread's process and says what it is.
+// inspect duplicates descriptor fd of the held thread's process and says what kind of socket
+// it is; readFlags then says how the container opened it.
 func (s *Supervisor) inspect(tid, fd int) (*heldSocket, error) {
 	dup, err := s.targets.getfd(tid, fd)
 	if err != nil {
@@ -58,14 +63,18 @@ func (s *Supervisor) inspect(tid, fd int) (*heldSocket, error) {
 		unix.Close(dup)
 		return nil, errNotOurs
 	}
+	return h, nil
+}
+
+// readFlags finds out whether the container's descriptor is non-blocking and close-on-exec.
+func (h *heldSocket) readFlags(tid, fd int) error {
 	flags, err := fdFlags(tid, fd)
 	if err != nil {
-		unix.Close(dup)
-		return nil, err
+		return err
 	}
 	h.nonblock = flags&unix.O_NONBLOCK != 0
 	h.cloexec = flags&unix.O_CLOEXEC != 0
-	return h, nil
+	return nil
 }
 
 func (h *heldSocket) close() { unix.Close(h.dup) }
@@ -150,6 +159,14 @@ func unspecifiedFor(family int) netip.Addr {
 // the client is and which pod it means, and says in the ack that it has the connection.
 // Whatever fails before that leaves the container's socket as it was and lets the call
 // through: the connect goes to the Service on the pod network.
+//
+// The connection to the backend's node is started as soon as the socket is known to be a
+// TCP one and has its options, and what is left to check about the container's socket (its
+// flags, the epoll look, that it is unused) is done while the handshake is on its way. A
+// check that fails then closes a connection that has been started: the server's supervisor
+// sees one that never sent a preamble. That happens only for a container whose runtime
+// registers its sockets in epoll before it connects them, and its supervisor then looks
+// before it connects (epollFirst).
 func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	tl.mark(phDispatch)
 	dst, ok := sockaddrArg(n)
@@ -172,17 +189,13 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	}
 	defer held.close()
 	tl.mark(phInspect)
-	if s.inEpoll(tid, fd) {
-		return s.fallback("epoll", "connect %s: the socket is in an epoll set already", dst)
+	epollFirst := s.epollFirst.Load()
+	if epollFirst {
+		if s.inEpoll(tid, fd) {
+			return s.fallback("epoll", "connect %s: the socket is in an epoll set already", dst)
+		}
+		tl.mark(phEpoll)
 	}
-	tl.mark(phEpoll)
-	if _, err := unix.Getpeername(held.dup); err == nil {
-		return letThrough // connected already: the kernel says EISCONN
-	}
-	if sa, err := unix.Getsockname(held.dup); err == nil && addrPortOf(sa).Port() != 0 {
-		return letThrough // the container chose its address: the pod network's to give
-	}
-	tl.mark(phState)
 
 	sock, err := s.cfg.Factory.Socket(held.family)
 	if err != nil {
@@ -193,22 +206,41 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	defer unix.Close(sock)
 	tl.mark(phFactory)
 	copyOptions(held.dup, sock, held.family)
-
-	timeout := unix.NsecToTimeval(int64(connectTimeout))
-	_ = unix.SetsockoptTimeval(sock, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &timeout)
 	tl.mark(phOptions)
-	if err := unix.Connect(sock, sockaddrFor(backend.Host, held.family)); err != nil {
-		reason := "connect-error"
-		switch err {
-		case unix.ECONNREFUSED:
-			reason = "refused"
-		case unix.EINPROGRESS, unix.ETIMEDOUT: // EINPROGRESS: the timeout of a blocking connect
-			reason = "timeout"
+	_ = unix.IoctlSetPointerInt(sock, fionbio, 1) // so that the connect starts and the checks go on
+	dialErr := unix.Connect(sock, sockaddrFor(backend.Host, held.family))
+	if dialErr != nil && dialErr != unix.EINPROGRESS {
+		return s.fallback(dialFailure(dialErr), "connect %s: to %s: %v", dst, backend.Host, dialErr)
+	}
+	tl.mark(phStart)
+
+	if err := held.readFlags(tid, fd); err != nil {
+		s.stats.Errors.Add(1)
+		s.logf("connect %s: %v", dst, err)
+		return letThrough
+	}
+	tl.mark(phFlags)
+	if !epollFirst {
+		if s.inEpoll(tid, fd) {
+			s.epollFirst.Store(true)
+			return s.fallback("epoll", "connect %s: the socket is in an epoll set already", dst)
 		}
-		return s.fallback(reason, "connect %s: to %s: %v", dst, backend.Host, err)
+		tl.mark(phEpoll)
+	}
+	if _, err := unix.Getpeername(held.dup); err == nil {
+		return letThrough // connected already: the kernel says EISCONN
+	}
+	if sa, err := unix.Getsockname(held.dup); err == nil && addrPortOf(sa).Port() != 0 {
+		return letThrough // the container chose its address: the pod network's to give
+	}
+	tl.mark(phState)
+
+	if dialErr == unix.EINPROGRESS {
+		if dialErr = waitConnected(sock, connectTimeout); dialErr != nil {
+			return s.fallback(dialFailure(dialErr), "connect %s: to %s: %v", dst, backend.Host, dialErr)
+		}
 	}
 	tl.mark(phDial)
-	_ = unix.SetsockoptTimeval(sock, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &unix.Timeval{})
 	sa, err := unix.Getsockname(sock)
 	if err != nil {
 		return s.fallback("connect-error", "connect %s: %v", dst, err)
@@ -231,8 +263,8 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	if want := pre.Ack(s.cfg.Key); !hmac.Equal(ack[:], want[:]) {
 		return s.fallback("bad-ack", "connect %s: %s sent a wrong acknowledgement", dst, backend.Host)
 	}
-	if held.nonblock {
-		_ = unix.SetNonblock(sock, true)
+	if !held.nonblock {
+		_ = unix.IoctlSetPointerInt(sock, fionbio, 0)
 	}
 	cookie := cookieOf(sock)
 	if err := s.put(n, fd, sock, held.cloexec); err != nil {
@@ -243,6 +275,49 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	s.stats.Connects.Add(1)
 	s.logConn("connect %s: on the host, %s to %s, as %s", dst, addrPortOf(sa), backend.Host, local)
 	return succeed()
+}
+
+// dialFailure is the short word the counts have for why a connection to the backend's node
+// could not be made.
+func dialFailure(err error) string {
+	switch err {
+	case unix.ECONNREFUSED:
+		return "refused"
+	case unix.ETIMEDOUT:
+		return "timeout"
+	}
+	return "connect-error"
+}
+
+// waitConnected waits for a connection that was started on a non-blocking socket to be made,
+// at most timeout, and returns the error it ended in (ETIMEDOUT if it did not end).
+func waitConnected(sock int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for {
+		wait := time.Until(deadline)
+		if wait <= 0 {
+			return unix.ETIMEDOUT
+		}
+		fds := []unix.PollFd{{Fd: int32(sock), Events: unix.POLLOUT}}
+		n, err := unix.Poll(fds, int(wait.Milliseconds())+1)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return unix.ETIMEDOUT
+		}
+		soerr, err := unix.GetsockoptInt(sock, unix.SOL_SOCKET, unix.SO_ERROR)
+		if err != nil {
+			return err
+		}
+		if soerr != 0 {
+			return unix.Errno(soerr)
+		}
+		return nil
+	}
 }
 
 // connLogFirst is how many connections (made and accepted) the log has a line for; the stats
@@ -314,6 +389,10 @@ func (s *Supervisor) bind(n *notif) reply {
 	}
 	tid, fd := int(n.Pid), int(n.Args[0])
 	held, err := s.inspect(tid, fd)
+	if err == nil {
+		defer held.close()
+		err = held.readFlags(tid, fd)
+	}
 	if err != nil {
 		if err != errNotOurs {
 			s.stats.Errors.Add(1)
@@ -321,7 +400,6 @@ func (s *Supervisor) bind(n *notif) reply {
 		}
 		return letThrough
 	}
-	defer held.close()
 	if s.inEpoll(tid, fd) {
 		return s.fallback("epoll", "bind %s: the socket is in an epoll set already", want)
 	}

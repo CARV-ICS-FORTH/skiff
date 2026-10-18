@@ -34,6 +34,7 @@ type Supervisor struct {
 	connLogged atomic.Uint64 // connections logged so far (logConn)
 
 	connecting atomic.Int32 // connects being decided
+	epollFirst atomic.Bool  // a socket of the container was in an epoll set before its connect
 	lastAnswer atomic.Int64 // when a call was last answered, in unix nanoseconds
 
 	pushMu     sync.Mutex

@@ -21,11 +21,13 @@ const (
 	phDispatch phase = iota // the call was received, and a goroutine runs for it
 	phResolve               // the destination is read from the container and the Service is resolved
 	phInspect               // the container's socket is duplicated and looked at
-	phEpoll                 // the look at the container's epoll sets
-	phState                 // the socket is checked to be unused
 	phFactory               // a host socket from the factory
 	phOptions               // the options are copied
-	phDial                  // the TCP connection to the backend's node
+	phStart                 // the connection to the backend's node is started
+	phFlags                 // the container's descriptor's flags are read
+	phEpoll                 // the look at the container's epoll sets
+	phState                 // the socket is checked to be unused
+	phDial                  // the wait for the connection to be made, what is left of it
 	phPreamble              // the preamble is made and written
 	phAck                   // the wait for the server's ack
 	phAddfd                 // the host socket is put in the container's table
@@ -50,8 +52,8 @@ const (
 )
 
 var phaseNames = [numPhases]string{
-	phDispatch: "dispatch", phResolve: "resolve", phInspect: "inspect", phEpoll: "epoll", phState: "state",
-	phFactory: "factory", phOptions: "options", phDial: "dial", phPreamble: "preamble", phAck: "ack",
+	phDispatch: "dispatch", phResolve: "resolve", phInspect: "inspect", phFactory: "factory", phOptions: "options",
+	phStart: "start", phFlags: "flags", phEpoll: "epoll", phState: "state", phDial: "dial", phPreamble: "preamble", phAck: "ack",
 	phAddfd: "addfd", phReply: "reply", phConnect: "total",
 	phAccept: "wait", phReadPre: "read-preamble", phVerify: "verify", phChecks: "checks", phAckWrite: "write-ack",
 	phWriteAddr: "addr", phAcceptFD: "addfd", phAdmit: "total",

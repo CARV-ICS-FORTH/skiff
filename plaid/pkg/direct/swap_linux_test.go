@@ -692,6 +692,67 @@ func init() {
 	}
 }
 
+func init() {
+	// epolltwice ADDR: two sockets that are added to an epoll set before they are connected,
+	// one after the other.
+	helpers["epolltwice"] = func(args []string) int {
+		ap := netip.MustParseAddrPort(args[0])
+		ep, _ := unix.EpollCreate1(0)
+		for i := 0; i < 2; i++ {
+			fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_NONBLOCK, 0)
+			if err != nil {
+				return 2
+			}
+			unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.EPOLLIN | unix.EPOLLOUT})
+			fmt.Println("connect", unix.Connect(fd, sockaddrFor(ap, unix.AF_INET)))
+		}
+		return 0
+	}
+}
+
+// The connection to the backend is started before the container's socket has been looked at
+// all the way; a container whose socket is in an epoll set pays for that with a connection
+// that never sends a preamble, once: its supervisor looks first from then on.
+func TestEpollGuardDoesNotConnectTwice(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	marked := Ports{uint16(port): {}}
+	l, err := net.Listen("tcp", "127.0.0.1:"+p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	var mu sync.Mutex
+	accepted := 0
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			accepted++
+			mu.Unlock()
+			c.Close()
+		}
+	}()
+	vip := "10.43.0.77:" + p
+	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+	client, out := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "epolltwice", vip)
+	if err := client.Wait(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if got := client.Stats().Fallbacks.Snapshot(); got["epoll"] != 2 || client.Stats().Swapped() != 0 {
+		t.Errorf("fallbacks %v, swapped %d: %s", got, client.Stats().Swapped(), out)
+	}
+	if accepted > 1 {
+		t.Errorf("the backend's node accepted %d connections for two connects that were not swapped, want at most the one started before the look", accepted)
+	}
+}
+
 // A socket that is in an epoll set when the container connects or binds it is not swapped
 // (the set would keep the old one), and one that is added afterwards is.
 func TestEpollGuard(t *testing.T) {
