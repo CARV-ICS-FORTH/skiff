@@ -33,6 +33,9 @@ type Supervisor struct {
 	timings    Timings
 	connLogged atomic.Uint64 // connections logged so far (logConn)
 
+	connecting atomic.Int32 // connects being decided
+	lastAnswer atomic.Int64 // when a call was last answered, in unix nanoseconds
+
 	pushMu     sync.Mutex
 	pushedLast bool // the last report has been made
 
@@ -240,7 +243,7 @@ func (s *Supervisor) serve() {
 			return
 		default:
 		}
-		_, err := unix.Poll(fds, 100)
+		_, err := s.waitForCall(fds)
 		if err != nil && err != unix.EINTR {
 			s.loopEnded()
 			return
@@ -274,6 +277,32 @@ func (s *Supervisor) serve() {
 	}
 }
 
+// A receiver does not go to sleep in poll while a connect is being decided and for a moment
+// after one has been: the container's next calls (Go asks for the new socket's two addresses
+// at once) come within microseconds of the answer, and waking a sleeping thread for each
+// takes a good part of what the call costs (about 30 microseconds on the cluster's nodes).
+// It costs a core for as long as a connect takes, at most spinMax for each wait.
+const (
+	spinMax   = 2 * time.Millisecond
+	spinAfter = 150 * time.Microsecond
+)
+
+// waitForCall waits for the listener to have something, spinning first where it is likely to
+// come soon.
+func (s *Supervisor) waitForCall(fds []unix.PollFd) (int, error) {
+	start := time.Now()
+	for s.connecting.Load() > 0 || time.Since(time.Unix(0, s.lastAnswer.Load())) < spinAfter {
+		n, err := unix.Poll(fds, 0)
+		if n > 0 || (err != nil && err != unix.EINTR) {
+			return n, err
+		}
+		if time.Since(start) > spinMax {
+			break
+		}
+	}
+	return unix.Poll(fds, 100)
+}
+
 // loopEnded says that the receiving has ended (there is one receiver at a time).
 func (s *Supervisor) loopEnded() { s.loopOnce.Do(func() { close(s.loopDone) }) }
 
@@ -281,6 +310,11 @@ func (s *Supervisor) loopEnded() { s.loopOnce.Do(func() { close(s.loopDone) }) }
 // the call run as it would have without one: the container loses the direct path for that
 // call, not its network.
 func (s *Supervisor) answer(n *notif, tl *timeline) {
+	if int(n.Nr) == unix.SYS_CONNECT {
+		s.connecting.Add(1)
+		defer s.connecting.Add(-1)
+	}
+	defer func() { s.lastAnswer.Store(time.Now().UnixNano()) }()
 	var r reply
 	func() {
 		defer func() {
