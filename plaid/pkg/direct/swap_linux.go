@@ -289,10 +289,6 @@ func (s *Supervisor) bind(n *notif) reply {
 	if !want.Addr().IsUnspecified() && want.Addr() != s.cfg.PodIP {
 		return letThrough // the pod's loopback or another address: the pod network's
 	}
-	hostPort, ok := s.cfg.Resolver.HostPort(netip.AddrPortFrom(s.cfg.PodIP, want.Port()))
-	if !ok {
-		return s.fallback("no-host-port", "bind %s: the pod has no host port for it", want)
-	}
 	tid, fd := int(n.Pid), int(n.Args[0])
 	held, err := s.inspect(tid, fd)
 	if err != nil {
@@ -308,6 +304,10 @@ func (s *Supervisor) bind(n *notif) reply {
 	}
 	if sa, err := unix.Getsockname(held.dup); err == nil && addrPortOf(sa).Port() != 0 {
 		return letThrough // bound already: the kernel says EINVAL
+	}
+	hostPort, ok := s.cfg.Resolver.HostPort(netip.AddrPortFrom(s.cfg.PodIP, want.Port()))
+	if !ok {
+		return s.fallback("no-host-port", "bind %s: the pod has no host port for it", want)
 	}
 	sock, err := s.cfg.Factory.Socket(held.family)
 	if err != nil {
