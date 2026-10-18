@@ -19,17 +19,18 @@ import (
 // Supervisor holds the container's connect, bind, accept, getsockname and getpeername
 // calls and decides them.
 type Supervisor struct {
-	cfg      Config
-	cmd      *exec.Cmd
-	listener int
-	targets  *targets
-	table    *Table
-	stop     chan struct{}
-	loopDone chan struct{}
-	loopOnce sync.Once
-	handlers sync.WaitGroup
-	stats    Stats
-	timings  Timings
+	cfg        Config
+	cmd        *exec.Cmd
+	listener   int
+	targets    *targets
+	table      *Table
+	stop       chan struct{}
+	loopDone   chan struct{}
+	loopOnce   sync.Once
+	handlers   sync.WaitGroup
+	stats      Stats
+	timings    Timings
+	connLogged atomic.Uint64 // connections logged so far (logConn)
 
 	proxyMu sync.Mutex
 	proxies map[netip.AddrPort]*localProxy // by the address in the pod's network

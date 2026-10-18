@@ -3,7 +3,9 @@
 package direct
 
 import (
+	"fmt"
 	"net/netip"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -69,5 +71,18 @@ func TestSupervisorRefusesAnIncompleteConfig(t *testing.T) {
 	cfg.Resolver = nil
 	if _, err := Start(cfg, helperCmd("names", false)); err == nil {
 		t.Error("started without a resolver")
+	}
+}
+
+// The log has a line for the first connections and says that it will not have the rest.
+func TestConnectionsAreLoggedOnlyAtFirst(t *testing.T) {
+	var lines []string
+	s := &Supervisor{cfg: Config{Logf: func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }}}
+	for i := 0; i < 3*connLogFirst; i++ {
+		s.logConn("connection %d", i)
+	}
+	if len(lines) != connLogFirst+1 || lines[0] != "connection 0" || lines[connLogFirst-1] != fmt.Sprintf("connection %d", connLogFirst-1) ||
+		!strings.Contains(lines[connLogFirst], "counted, not logged") {
+		t.Errorf("%d lines: %q", len(lines), lines)
 	}
 }

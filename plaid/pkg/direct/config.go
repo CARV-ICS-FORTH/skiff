@@ -23,7 +23,8 @@ type Config struct {
 	Factory *FactoryClient
 	// Resolver finds the backends of Service addresses.
 	Resolver Resolver
-	// Logf, when set, receives a line for every decision (the container's own output is
-	// not the place for them).
+	// Logf, when set, receives a line for what the supervisor does that is not routine (the
+	// container's own output is not the place for them): the first connections, the
+	// fallbacks, the counters and where the time of a connect goes.
 	Logf func(format string, args ...any)
 }

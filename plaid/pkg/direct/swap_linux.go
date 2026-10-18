@@ -241,8 +241,23 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	tl.mark(phAddfd)
 	s.table.Add(cookie, Socket{Kind: KindClient, Family: held.family, Local: local, Peer: dst})
 	s.stats.Swapped.Add(1)
-	s.logf("connect %s: on the host, %s to %s, as %s", dst, addrPortOf(sa), backend.Host, local)
+	s.logConn("connect %s: on the host, %s to %s, as %s", dst, addrPortOf(sa), backend.Host, local)
 	return succeed()
+}
+
+// connLogFirst is how many connections (made and accepted) the log has a line for; the stats
+// have them all. A line for every connection of a container that runs for days is a log of
+// its own, and a write for it in the middle of every connect.
+const connLogFirst = 20
+
+// logConn logs a connection that was put in the container, the first connLogFirst times.
+func (s *Supervisor) logConn(format string, args ...any) {
+	switch n := s.connLogged.Add(1); {
+	case n <= connLogFirst:
+		s.logf(format, args...)
+	case n == connLogFirst+1:
+		s.logf("the rest of the connections are counted, not logged (stats)")
+	}
 }
 
 // fallback counts a direct attempt that was given up for the reason, logs it (the first
@@ -448,7 +463,7 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	tl.mark(phAcceptFD)
 	tl.finish(phAdmit)
 	s.stats.Accepted.Add(1)
-	s.logf("accept: fd %d of %s, from %s", newfd, listener.Local, pre.Client)
+	s.logConn("accept: fd %d of %s, from %s", newfd, listener.Local, pre.Client)
 	return reply{answered: true}
 }
 
