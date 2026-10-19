@@ -357,6 +357,10 @@ start_skifflet
 start_plaidd() {
     echo "Starting plaidd..."
     mkdir -p /run/plaid
+    # The datagrams that carry a pod's TCP super-frames fill the links between the bubbles,
+    # whatever the pod MTU is.
+    local overlay_mtu=()
+    [[ "${SKIFF_UPLINK_MTU:-}" =~ ^[0-9]+$ ]] && overlay_mtu=(--overlay-mtu="$SKIFF_UPLINK_MTU")
     plaidd \
       --kubeconfig=/var/lib/skiff/kubeconfig \
       --node-name="$(hostname)" \
@@ -372,6 +376,7 @@ start_plaidd() {
       --resolver="$SKIFF_CLUSTER_DNS" \
       --mtu="$SKIFF_POD_MTU" \
       --uplink-mtu="$SKIFF_SLIRP_MTU" \
+      "${overlay_mtu[@]}" \
       >> /var/log/plaidd.log 2>&1 &
     PLAIDD_PID=$!
 }

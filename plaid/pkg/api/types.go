@@ -192,7 +192,9 @@ type Response struct {
 // (a chunk missing, repeated or out of order), the chunks and frames that were invalid and
 // the frames dropped to make room for another source's, and how many nodes have said
 // within the last two seconds that they take them, and the sends of one that failed before
-// anything was on the wire (for a second after each the node cuts them).
+// anything was on the wire (for a second after each the node cuts them). LinkMTU is the link
+// MTU that the chunks that carry them are sized by, 0 if they are as large as the datagrams of
+// the frames' segments.
 type OverlaySuperStatus struct {
 	Enabled  bool   `json:"enabled"`
 	Tx       uint64 `json:"tx"`
@@ -203,6 +205,7 @@ type OverlaySuperStatus struct {
 	Evicted  uint64 `json:"evicted"`
 	Peers    int    `json:"peers"`
 	TxFailed uint64 `json:"tx_failed"`
+	LinkMTU  int    `json:"link_mtu"`
 }
 
 // TapPipelineStatus reports the pipelines of the TAPs, which split the work of a TAP

@@ -24,12 +24,13 @@
 //	the bytes of the Ethernet frame as the pod handed it over (with the MAC addresses
 //	that the bridge sets for the overlay), up to the end of the datagram
 //
-// The datagrams are as large as the datagrams of the frame's segments would be, all but
-// the last of them equal, and leave from the send socket that the frame's flow selects,
-// so that a run of them goes in one send with UDP_SEGMENT and arrives, with UDP_GRO, in
-// one read. The receiving lane puts the chunks of a source (a node's socket, by address
-// and port) together, one frame at a time: a chunk that is not the next one drops the
-// frame in progress, which is counted. A complete frame is checked and handed to the
+// The datagrams are as large as the link between the nodes allows if OverlayConfig.LinkMTU
+// is set, and otherwise as large as the datagrams of the frame's segments would be (never
+// smaller than those); all but the last of them are equal, and they leave from the send
+// socket that the frame's flow selects, so that a run of them goes in one send with
+// UDP_SEGMENT and arrives, with UDP_GRO, in one read. The receiving lane puts the chunks of
+// a source (a node's socket, by address and port) together, one frame at a time: a chunk
+// that is not the next one drops the frame in progress, which is counted. A complete frame is checked and handed to the
 // bridge as a super-frame that came from the overlay. The check includes the segment
 // size the virtio header states, which the sending node chooses and the frame is cut by:
 // below the smallest MSS of its IP version (536 for IPv4, 1220 for IPv6), or for more than
@@ -101,6 +102,13 @@ type OverlayConfig struct {
 	// the offload to be on, UDP_GRO included; without it the engine does neither, but it
 	// still receives the super-frames that arrive.
 	Super bool
+	// LinkMTU is the IP MTU of the links between the nodes, which the datagrams that carry a
+	// super-frame may fill (0: they are as large as the datagrams of the frame's segments
+	// would be). Pods with a smaller MTU than the links then still cross the overlay in
+	// datagrams of the link's size, which cost the sender less per byte. If a send of such
+	// datagrams fails, because the route's MTU is smaller than this, the engine goes back to
+	// the segments' size for good.
+	LinkMTU int
 }
 
 // defaultRxQueueLen is enough to absorb a TCP window's worth of jumbo frames arriving
@@ -147,6 +155,9 @@ type Stats struct {
 	// The super-frames (see the package comment); api.OverlaySuperStatus says what each counts.
 	SuperTx, SuperTxChunks, SuperRx, SuperPartial, SuperInvalid, SuperEvicted, SuperTxFailed uint64
 	SuperPeers                                                                               int
+	// LinkMTU is the link MTU that the chunks are sized by, 0 if they are as large as the
+	// datagrams of the frames' segments (it was not set, or a send of larger ones failed).
+	LinkMTU int
 }
 
 // OverlayEngine manages sending and receiving VXLAN packets over UDP.
@@ -174,6 +185,8 @@ type OverlayEngine struct {
 	rcvBuf                                                                    atomic.Int64
 	// gso: sends use UDP_SEGMENT; gsoWorked: one did; gro: the receive sockets have UDP_GRO.
 	gso, gsoWorked, gro atomic.Bool
+	// linkChunksOff: the chunks are no longer sized by OverlayConfig.LinkMTU, because a send of them failed.
+	linkChunksOff atomic.Bool
 
 	// sendFlags are the flags of the VXLAN header of every datagram: the I flag, and the
 	// mark that the node takes super-frames if it is to say so. Set when attached.
@@ -362,6 +375,9 @@ func (oe *OverlayEngine) Stats() Stats {
 		SuperPartial: oe.superPartial.Load(), SuperInvalid: oe.superInvalid.Load(), SuperEvicted: oe.superEvicted.Load(),
 		SuperTxFailed: oe.superTxFailed.Load(),
 		SuperPeers:    oe.peers.count(oe.clock()),
+	}
+	if oe.linkChunks() {
+		st.LinkMTU = oe.cfg.LinkMTU
 	}
 	if t, ok := oe.transport.Load().(string); ok {
 		st.Transport = t

@@ -8,7 +8,12 @@ import (
 
 func TestSuperSummaryShowsTheFailedSends(t *testing.T) {
 	got := superSummary(&api.OverlaySuperStatus{Enabled: true, Tx: 3, TxChunks: 9, Rx: 4, Partial: 1, Invalid: 2, Evicted: 5, Peers: 6, TxFailed: 7})
-	want := "on tx 3/9 chunks rx 4 lost 1 invalid 2 evicted 5 peers 6 send failures 7"
+	want := "on tx 3/9 chunks of the segment size rx 4 lost 1 invalid 2 evicted 5 peers 6 send failures 7"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	got = superSummary(&api.OverlaySuperStatus{Enabled: true, Tx: 3, TxChunks: 9, LinkMTU: 9000})
+	want = "on tx 3/9 chunks of link MTU 9000 rx 0 lost 0 invalid 0 evicted 0 peers 0 send failures 0"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
