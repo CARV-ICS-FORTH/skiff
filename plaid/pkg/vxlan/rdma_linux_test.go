@@ -165,7 +165,9 @@ func checkOrder(t *testing.T, rec *rdmaRecorder, flows, rounds int) {
 // per flow, and not over the UDP sockets.
 func TestRDMALinkCarriesTheOverlay(t *testing.T) {
 	a, b := smallRDMA("fa"), smallRDMA("fb")
-	a.MaxInFlight, a.SendSlots, b.RecvSlots = rdmaDefaultInFlight, 256, rdmaDefaultRecv // room for the burst: no drops
+	// Room for the whole burst (240 frames) on either QP, however slowly the fake completes the
+	// sends: a burst beyond the cap is dropped, as it must be, but that is another test's.
+	a.MaxInFlight, a.SendSlots, b.RecvSlots = 256, 256, rdmaDefaultRecv
 	n := newRDMANodes(t, a, b)
 	waitState(t, n.a, "up")
 	waitState(t, n.b, "up")
