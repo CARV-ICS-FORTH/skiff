@@ -183,14 +183,23 @@ func (s *Server) handleConn(conn net.Conn) {
 		}
 	}
 
+	// The descriptors that no handler claims are closed before the reply, so that a client that
+	// has its answer knows that the daemon holds none of them; and when the connection ends
+	// without one.
 	claimed := false
-	defer func() {
+	closeUnclaimed := func() {
 		if !claimed {
 			for _, fd := range allFDs {
 				_ = syscall.Close(fd)
 			}
+			allFDs = nil
 		}
-	}()
+	}
+	defer closeUnclaimed()
+	respond := func(resp *Response) {
+		closeUnclaimed()
+		sendResponse(unixConn, resp)
+	}
 
 	// 2. Read full 4-byte header
 	for n < 4 {
@@ -203,7 +212,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	msgLen := binary.BigEndian.Uint32(buf[:4])
 	if msgLen > MaxMessageSize {
-		sendResponse(unixConn, &Response{Success: false, Error: "request payload exceeds maximum size"})
+		respond(&Response{Success: false, Error: "request payload exceeds maximum size"})
 		return
 	}
 
@@ -211,14 +220,14 @@ func (s *Server) handleConn(conn net.Conn) {
 	copied := copy(payload, buf[4:n])
 	if copied < int(msgLen) {
 		if _, err := io.ReadFull(unixConn, payload[copied:]); err != nil {
-			sendResponse(unixConn, &Response{Success: false, Error: "failed to read complete request body"})
+			respond(&Response{Success: false, Error: "failed to read complete request body"})
 			return
 		}
 	}
 
 	var req Request
 	if err := json.Unmarshal(payload, &req); err != nil {
-		sendResponse(unixConn, &Response{Success: false, Error: "invalid JSON request"})
+		respond(&Response{Success: false, Error: "invalid JSON request"})
 		return
 	}
 
@@ -231,7 +240,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		allFDs = nil
 	} else {
 		if len(allFDs) == 0 {
-			sendResponse(unixConn, &Response{Success: false, Error: "missing TAP file descriptor for add_endpoint"})
+			respond(&Response{Success: false, Error: "missing TAP file descriptor for add_endpoint"})
 			return
 		}
 		// Close any FDs beyond the queues of a TAP immediately
@@ -245,7 +254,7 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	var resp Response
 	if req.Action != ActionGetStatus && !s.ready.Load() {
-		sendResponse(unixConn, &Response{Success: false, Error: "plaidd is initializing"})
+		respond(&Response{Success: false, Error: "plaidd is initializing"})
 		return
 	}
 	switch req.Action {
@@ -361,7 +370,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		resp = Response{Success: false, Error: fmt.Sprintf("unknown action: %s", req.Action)}
 	}
 
-	sendResponse(unixConn, &resp)
+	respond(&resp)
 }
 
 func sendResponse(conn *net.UnixConn, resp *Response) {
