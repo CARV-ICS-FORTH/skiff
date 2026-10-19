@@ -106,6 +106,7 @@ type Config struct {
 }
 
 func main() {
+	capProcs()
 	var cfg Config
 	flag.StringVar(&cfg.SocketPath, "api-socket", netcfg.SocketPath(""), "Path to plaidd UNIX domain socket (default: $PLAID_SOCKET_PATH, else "+netcfg.DefaultSocketPath+")")
 	flag.StringVar(&cfg.NodeCIDR, "node-cidr", "", "Pod CIDR of this node (default: the one Kubernetes allocated to the Node; required with --disable-kubernetes)")

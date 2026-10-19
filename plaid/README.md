@@ -82,6 +82,10 @@ Between nodes that both have an active InfiniBand port, the overlay sends what i
 
 `plaidctl status` shows the port, the counters (messages and bytes each way, drops at the in-flight cap and for want of a slot, completion errors, links up and failed, the receives posted per lane, the pinned memory) and each peer's link.
 
+### Processors
+
+`plaidd` runs Go code on at most 16 processors (`GOMAXPROCS`), or fewer where the node has fewer CPUs or a cgroup limits the process, unless `GOMAXPROCS` is set in its environment, which then decides. With one processor per CPU of a large node, Go's scheduler keeps up to half of them spinning for work after every wake-up of a goroutine, which the pipelines make for every frame; on 64-CPU nodes the cap left the throughput as it was, or raised it, and saved 8 to 16% of `plaidd`'s CPU per Gbit/s over RDMA and 5 to 7% over UDP, CPU that is the pods'. The startup output says the number.
+
 ### Profiling
 
 `plaidd --pprof-socket=PATH` (or `PLAID_PPROF_SOCKET=PATH`, which Skiff's bubble passes through from the job's environment) serves Go's profiling endpoints on a UNIX socket, for finding where plaidd's CPU goes where `perf` cannot be used (no root, `perf_event_paranoid`). It is off by default; the socket is the owner's only (mode 0600), nothing listens on the network, and the mutex and blocking events are sampled lightly while it is on. In a Skiff bubble put the socket in the scratch directory (`$SKIFF_TMP_DIR`), which the host sees at the same path:
