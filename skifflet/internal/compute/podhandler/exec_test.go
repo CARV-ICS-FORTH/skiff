@@ -150,17 +150,29 @@ func TestExec_TerminalSizeFollowsResizes(t *testing.T) {
 	var out safeBuffer
 	done := make(chan error, 1)
 	go func() {
-		_, err := target.Exec(context.Background(), []string{"sh", "-c", `read a; stty size; read b; stty size`},
+		_, err := target.Exec(context.Background(), []string{"sh", "-c", `while read b; do [ "$b" = quit ] && exit; stty size; done`},
 			ExecStreams{TTY: true, Stdin: pr, Stdout: &out, Resize: resize})
 		done <- err
 	}()
 
+	// A resize and the input travel apart (as they do from a client), so the input that asks
+	// for the size may arrive before the resize is applied: the test asks until the size shows.
+	sizeShows := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !strings.Contains(out.String(), want) {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting for %q in the output %q", want, out.String())
+			}
+			_, _ = pw.Write([]byte("size\n"))
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
 	resize <- TermSize{Width: 100, Height: 30}
-	_, _ = pw.Write([]byte("go\n"))
-	out.waitFor(t, "30 100")
+	sizeShows("30 100")
 	resize <- TermSize{Width: 80, Height: 24}
-	_, _ = pw.Write([]byte("again\n"))
-	out.waitFor(t, "24 80")
+	sizeShows("24 80")
+	_, _ = pw.Write([]byte("quit\n"))
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
