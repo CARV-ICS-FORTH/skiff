@@ -253,10 +253,13 @@ var copyBuffers = sync.Pool{New: func() any { b := make([]byte, copyBufferSize);
 
 // copyConn copies src to dst until src ends, in user space: through a buffer, not with
 // splice, which is what io.Copy does between two TCP connections. Measured on the cluster, one
-// stream from an unmarked client pod over the overlay to a marked server: with splice 3.3 to
-// 8.6 Gbit/s (median 6.9 in six runs; an explicit splice loop with a pipe of 64 KiB the same),
-// with the copy 8.1 to 8.6 (median 8.2; an unmarked server takes 8.5). Why splice does worse
-// was not found. The copy costs about a core at 8 Gbit/s (splice: half of one).
+// stream from an unmarked client pod over the overlay to a marked server, the two builds
+// taking turns in one session, ten runs each: with splice a median of 5.9 Gbit/s (3.1 to 9.6),
+// with the copy 7.8 (3.5 to 8.5); an unmarked server takes 8.6 to 8.9. Both dip to 3 or 4
+// Gbit/s now and then, and in other sessions the medians were 7.0 and 8.2: the copy is better by
+// a Gbit/s or so, not steady, and an explicit splice loop with a pipe of 64 KiB was no
+// steadier. Why the stream into the container does worse than the one that goes through a
+// relay in the pod was not found. The copy costs about a core at 8 Gbit/s (splice: half of one).
 func copyConn(dst, src net.Conn) (int64, error) {
 	buf := copyBuffers.Get().(*[]byte)
 	defer copyBuffers.Put(buf)
