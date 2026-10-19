@@ -19,6 +19,7 @@ import (
 const (
 	maxSegments       = 64
 	maxSegmentedBytes = 65507
+	udpHeaderLen      = 8
 )
 
 // TxBatch collects the frames sent to remote nodes by one source, so that frames for one
@@ -268,6 +269,37 @@ func superDatagram(h packet.VnetHeader, ip []byte) (int, bool) {
 	return d, hdr < len(ip) && h.TSOSizeOK(len(ip)-hdr) && d > packet.VXLANHeaderLen+chunkHdrLen+packet.VnetHeaderLen+packet.EthernetHeaderLen && d <= maxSegmentedBytes
 }
 
+// linkChunks reports whether the chunks are sized by OverlayConfig.LinkMTU: it is set, and no
+// send of chunks of that size has failed.
+func (oe *OverlayEngine) linkChunks() bool {
+	return oe.cfg.LinkMTU > 0 && !oe.linkChunksOff.Load()
+}
+
+// chunkBytes is the size of the datagrams that carry a super-frame whose segments'
+// datagrams are d (see superDatagram): the largest that the link allows, the IP and UDP
+// headers taken off its MTU, if that is more than d, and never more than one send with
+// UDP_SEGMENT takes.
+func (oe *OverlayEngine) chunkBytes(d int) int {
+	if oe.linkChunks() {
+		d = max(d, min(oe.cfg.LinkMTU-packet.IPv4HeaderMinLen-udpHeaderLen, maxSegmentedBytes))
+	}
+	return d
+}
+
+// linkChunksFailed turns the chunks of the link's size off for good, and says so once, if err
+// says that datagrams that large do not fit the route: EINVAL for a send with UDP_SEGMENT
+// whose segments exceed the route's MTU, or EMSGSIZE. It reports whether it did. UDP_SEGMENT
+// itself stays on.
+func (oe *OverlayEngine) linkChunksFailed(err error) bool {
+	if !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.EMSGSIZE) {
+		return false
+	}
+	if oe.linkChunksOff.CompareAndSwap(false, true) {
+		fmt.Printf("[plaidd/overlay] chunks of the link MTU (%d) failed (%v): sending chunks of the segment size\n", oe.cfg.LinkMTU, err)
+	}
+	return true
+}
+
 // SendSuper sends frame, a TCP super-frame that h describes (packet.CheckTSO accepts
 // them), whole to the node that dstIP is routed to, as chunks (see the package comment).
 // The frames this batch holds go first, so that a flow keeps its order; then the chunks
@@ -316,7 +348,7 @@ func (tb *TxBatch) SendSuper(h packet.VnetHeader, frame *packet.EthernetFrame, d
 	}
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	return tb.sendChunks(ts, vni, addr, h, frame, d)
+	return tb.sendChunks(ts, vni, addr, h, frame, d, oe.chunkBytes(d))
 }
 
 // sendSuperRDMA sends a super-frame whole over the RDMA link to dstIP's node, after the
@@ -344,17 +376,19 @@ func (tb *TxBatch) sendSuperRDMA(h packet.VnetHeader, frame *packet.EthernetFram
 	return true
 }
 
-// sendChunks is SendSuper once the socket is locked.
-func (tb *TxBatch) sendChunks(ts *txSock, vni uint32, addr netip.AddrPort, h packet.VnetHeader, frame *packet.EthernetFrame, d int) (bool, error) {
+// sendChunks is SendSuper once the socket is locked. The segments' datagrams are d bytes,
+// the chunks' are c (see chunkBytes). If the first send fails because c does not fit the
+// route, the frame goes again with chunks of d.
+func (tb *TxBatch) sendChunks(ts *txSock, vni uint32, addr netip.AddrPort, h packet.VnetHeader, frame *packet.EthernetFrame, d, c int) (bool, error) {
 	oe, ip := tb.oe, frame.Payload
 	total := packet.EthernetHeaderLen + len(ip)
-	per := d - packet.VXLANHeaderLen - chunkHdrLen // frame bytes in a chunk; the first has the virtio header too
+	per := c - packet.VXLANHeaderLen - chunkHdrLen // frame bytes in a chunk; the first has the virtio header too
 	first := per - packet.VnetHeaderLen
 	chunks := 1
 	if total > first {
 		chunks += (total - first + per - 1) / per
 	}
-	perSend := min(maxSegments, maxSegmentedBytes/d)
+	perSend := min(maxSegments, maxSegmentedBytes/c)
 	id := ts.id
 	ts.id++
 	flags := oe.sendFlags | packet.VXLANFlagChunk
@@ -386,7 +420,7 @@ func (tb *TxBatch) sendChunks(ts *txSock, vni uint32, addr netip.AddrPort, h pac
 		}
 		var oob []byte
 		if n > 1 {
-			putSegmentSize(tb.oob[:], d)
+			putSegmentSize(tb.oob[:], c)
 			oob = tb.oob[:segmentOOBLen]
 		}
 		err := superSend(tb.io, ts, addr, 2*n, oob, want)
@@ -404,6 +438,9 @@ func (tb *TxBatch) sendChunks(ts *txSock, vni uint32, addr netip.AddrPort, h pac
 			// The start of the frame is on the wire, and the node will drop it.
 			oe.txErrors.Add(uint64(chunks - k))
 			return true, err
+		}
+		if c > d && oe.linkChunksFailed(err) {
+			return tb.sendChunks(ts, vni, addr, h, frame, d, d)
 		}
 		if n > 1 {
 			oe.segmentFailed(err)

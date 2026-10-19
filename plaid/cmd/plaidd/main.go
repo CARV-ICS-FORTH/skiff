@@ -12,6 +12,7 @@ import (
 	"plaid/pkg/netcfg"
 	"plaid/pkg/nodeport"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -72,6 +73,7 @@ type Config struct {
 	VXLANBind      string
 	OverlayHandoff string
 	OverlaySockets int
+	OverlayMTU     int
 	Offload        bool
 	// RDMA lets the overlay offer its RDMA transport (see vxlan.RDMAConfig) on RDMADevice,
 	// or, when that is empty, on the port behind RDMAInterface (the host's interface of the
@@ -129,6 +131,7 @@ func main() {
 	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address (with --overlay-handoff: the address the handed-over socket must be bound to)")
 	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP sockets, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
 	flag.IntVar(&cfg.OverlaySockets, "overlay-sockets", vxlan.DefaultSockets, "Receive sockets of the overlay (1 to 16), in one SO_REUSEPORT group, each read and processed by its own goroutines so that what a node receives is not limited to one core, and four times as many send sockets, so that the kernel of the receiving node spreads the flows over its sockets. Only when plaidd opens the VXLAN port itself: with --overlay-handoff the helper's --sockets decides. The wire format is the same for any number, and nodes with different numbers interoperate")
+	flag.IntVar(&cfg.OverlayMTU, "overlay-mtu", envInt("PLAID_OVERLAY_MTU", 0), "IP MTU of the links between the nodes, which the overlay's datagrams may fill (576 to 65535, and at least the pod MTU + 50): a pod's TCP super-frame crosses the overlay as datagrams of this size, minus the IP and UDP headers, even if the pod MTU is much smaller, which costs the sender less per byte. 0: they are as large as the datagrams of the pod's segments. If a send of them fails the overlay goes back to that for good (default: $PLAID_OVERLAY_MTU, else 0)")
 	flag.BoolVar(&cfg.Offload, "offload", true, "Use the kernel's offloads where it has them: checksum and TCP segmentation offload on the pods' and the bubble's TAPs, UDP_SEGMENT and UDP_GRO on the overlay sockets. Datagrams on the wire are the same and nodes with and without them interoperate; false is one frame and one datagram per system call, and a pod's TCP super-frames are cut instead of being written whole to the other pods and the bubble of this node or sent whole to other nodes (a node still receives the ones that arrive)")
 	flag.BoolVar(&cfg.RDMA, "rdma", envBool(EnvRDMA, true), "Offer the overlay's RDMA transport to the nodes plaidd has routes to, over reliable-connected queue pairs on an active InfiniBand port: what the overlay sends to a node that offers it too goes over RDMA, everything else over the UDP sockets as without it. false (or $"+EnvRDMA+"=false): UDP only, and the offers of other nodes are declined")
 	flag.StringVar(&cfg.RDMADevice, "rdma-device", os.Getenv(EnvRDMADevice), "The InfiniBand port of the RDMA transport, DEVICE or DEVICE:PORT (e.g. mlx5_0 or mlx5_0:1); empty: the port behind --rdma-interface if it is an active InfiniBand port, else the first active InfiniBand port (default: $"+EnvRDMADevice+")")
@@ -277,6 +280,9 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 	if err := netcfg.ValidateMTU(cfg.MTU); err != nil {
 		return nil, err
 	}
+	if m := cfg.OverlayMTU; m != 0 && (m < 576 || m > 65535 || m < cfg.MTU+50) {
+		return nil, fmt.Errorf("overlay-mtu %d: want 0, or 576 to 65535 and at least the pod MTU (%d) + 50", m, cfg.MTU)
+	}
 	if cfg.GatewayMode == "tap" {
 		if cfg.UplinkMTU, err = netcfg.UplinkMTU(cfg.UplinkMTU, cfg.MTU); err != nil {
 			return nil, err
@@ -352,6 +358,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		Sockets:     cfg.OverlaySockets,
 		Offload:     cfg.Offload,
 		Super:       cfg.Offload,
+		LinkMTU:     cfg.OverlayMTU,
 		RDMA:        rdmaConfig(&cfg),
 	}, routes, bridgeInjector{b})
 
@@ -986,7 +993,7 @@ func (d *PlaidDaemon) overlaySuper(st vxlan.Stats) *api.OverlaySuperStatus {
 	return &api.OverlaySuperStatus{
 		Enabled: st.SegmentOffload,
 		Tx:      st.SuperTx, TxChunks: st.SuperTxChunks, Rx: st.SuperRx,
-		Partial: st.SuperPartial, Invalid: st.SuperInvalid, Evicted: st.SuperEvicted, Peers: st.SuperPeers, TxFailed: st.SuperTxFailed,
+		Partial: st.SuperPartial, Invalid: st.SuperInvalid, Evicted: st.SuperEvicted, Peers: st.SuperPeers, TxFailed: st.SuperTxFailed, LinkMTU: st.LinkMTU,
 	}
 }
 
@@ -1037,4 +1044,12 @@ func (d *PlaidDaemon) tapPipeline() *api.TapPipelineStatus {
 	st.ReadInline, st.ReadQueued, st.ReadQueueFull = c.ReadInline, c.ReadQueued, c.ReadQueueFull
 	st.WriteInline, st.WriteQueued, st.WriteQueueFull = c.WriteInline, c.WriteQueued, c.WriteQueueFull
 	return st
+}
+
+// envInt is the value of the environment variable key as a number, or def if it is empty or not one.
+func envInt(key string, def int) int {
+	if n, err := strconv.Atoi(os.Getenv(key)); err == nil {
+		return n
+	}
+	return def
 }

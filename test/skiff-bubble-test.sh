@@ -173,6 +173,9 @@ grep -q -- "--env SKIFF_SLIRP_MTU=$SKIFF_SLIRP_MTU " "$FAKE_DIR/instance-run" ||
 # interface of the node's address, which plaidd cannot see from the bubble
 grep -q -- "--env PLAID_RDMA=true --env PLAID_RDMA_DEVICE= --env PLAID_RDMA_INTERFACE=ib0 " "$FAKE_DIR/instance-run" ||
     { cat "$FAKE_DIR/instance-run" >&2; fail "the bubble was not given plaidd's RDMA settings"; }
+# Plaid's overlay datagrams fill the link between the bubbles, whose MTU the entrypoint passes on as --overlay-mtu.
+[ "$SKIFF_UPLINK_MTU" -gt "$SKIFF_POD_MTU" ] || fail "the test does not tell the link between the bubbles from the pod MTU"
+grep -q -- "--env SKIFF_UPLINK_MTU=$SKIFF_UPLINK_MTU " "$FAKE_DIR/instance-run" || fail "the bubble was not told the MTU of the link between the bubbles"
 
 # The helper was started once, from the image, with the host address, the port and the
 # handoff socket in the scratch directory; the bubble was told where it is, got the
