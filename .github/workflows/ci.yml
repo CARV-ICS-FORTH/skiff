@@ -26,13 +26,18 @@ jobs:
       - name: Check gofmt
         run: make fmt-check
 
+      # plaidd's InfiniBand transport (plaid/pkg/rdma) is built with cgo against rdma-core's
+      # libibverbs, as in the builder image; without its headers go vet and the tests stop.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck libibverbs-dev
+
       - name: Run go vet
         run: make vet
 
       - name: Run ShellCheck
-        run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck
-          make check-shell
+        run: make check-shell
 
       - name: Run tests
         run: make test
