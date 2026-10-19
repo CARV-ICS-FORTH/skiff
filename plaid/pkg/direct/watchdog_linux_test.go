@@ -125,7 +125,9 @@ func TestWatchdogEndsTheContainerOfASupervisorThatDied(t *testing.T) {
 			if err := victim.Start(); err != nil {
 				t.Fatal(err)
 			}
-			defer func() { victim.Process.Kill(); victim.Wait() }()
+			waited := make(chan struct{})
+			go func() { victim.Wait(); close(waited) }()
+			defer func() { victim.Process.Kill(); <-waited }()
 			wd, err := startWatchdog()
 			if err != nil {
 				t.Fatal(err)
@@ -137,10 +139,8 @@ func TestWatchdogEndsTheContainerOfASupervisorThatDied(t *testing.T) {
 				wd.pipe.Close() // what the supervisor's death does
 				go wd.cmd.Wait()
 			}
-			killed := make(chan error, 1)
-			go func() { killed <- victim.Wait() }()
 			select {
-			case <-killed:
+			case <-waited:
 				if !tc.wantKilled {
 					t.Error("the launcher of a supervisor that was done was ended")
 				}

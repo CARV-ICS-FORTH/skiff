@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 )
@@ -17,6 +18,7 @@ type mockHandlers struct {
 	lastAddRoute *Request
 	lastDelRoute *Request
 	receivedFDs  []int
+	mu           sync.Mutex // for routes, which the test changes while the server runs
 	routes       []RouteInfo
 }
 
@@ -42,7 +44,15 @@ func (m *mockHandlers) HandleRemoveRoute(req *Request) error {
 }
 
 func (m *mockHandlers) HandleListRoutes() ([]RouteInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.routes, nil
+}
+
+func (m *mockHandlers) setRoutes(routes []RouteInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.routes = routes
 }
 
 func (m *mockHandlers) HandleGetStatus() (*Response, error) {
@@ -107,9 +117,10 @@ func TestAPIServerAndClient(t *testing.T) {
 	}
 
 	// A route is listed with the address of its node.
-	handlers.routes = []RouteInfo{{Subnet: "10.244.2.0/24", RemoteHostIP: "192.168.1.10"}}
+	want := []RouteInfo{{Subnet: "10.244.2.0/24", RemoteHostIP: "192.168.1.10"}}
+	handlers.setRoutes(want)
 	routes, err := client.ListRoutes()
-	if err != nil || len(routes) != 1 || routes[0] != handlers.routes[0] {
+	if err != nil || len(routes) != 1 || routes[0] != want[0] {
 		t.Fatalf("ListRoutes: %v, %v", routes, err)
 	}
 
