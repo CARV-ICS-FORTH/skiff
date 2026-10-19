@@ -107,8 +107,12 @@ e2e_log "Injecting $DAEMON_CLASS failure (PID ${TARGET_PID} on ${TARGET_NODE}, j
 runtime_kill_process "$TARGET_NODE" "$TARGET_PID" KILL
 
 # The policy is fail-the-job: a daemon failure ends its bubble and the job
-# 1. Verify job failure or termination within bounded deadline
-e2e_wait_condition 60 "job terminated" e2e_job_gone "$TARGET_JOB"
+# 1. Verify job failure or termination within bounded deadline. The bound is the shutdown's own:
+# the failed bubble gives Skifflet up to 25 s to stop its pods (DRAIN_WAIT in the entrypoint: all
+# of it when plaidd is the one gone, since the pods' network goes with it), the supervision
+# notices in a few of its 2 s intervals, and the other bubbles then stop theirs for up to 28 s
+# (bubble_drain). That came to 58-60 s for plaidd; 60 s was no bound.
+e2e_wait_condition 120 "job terminated" e2e_job_gone "$TARGET_JOB"
 result_path="${HOME}/.skiff/job-results/${TARGET_JOB}.exit"
 e2e_wait_condition 30 "authoritative batch exit result" "test -s '$result_path'"
 JOB_EXIT=$(cat "$result_path")
