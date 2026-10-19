@@ -8,7 +8,7 @@ script_dir=$(cd "$(dirname "$0")" && pwd)
 test_dir=$(mktemp -d)
 trap 'pkill -KILL -f "$test_dir/" 2>/dev/null || true; rm -rf "$test_dir"' EXIT
 real_bash=$(command -v bash)
-mkdir -p "$test_dir/bin" "$test_dir/repo/scripts" "$test_dir/work"
+mkdir -p "$test_dir/bin" "$test_dir/apptainer-bin" "$test_dir/repo/scripts" "$test_dir/work"
 cp "$script_dir/../scripts/skiff.sh" "$test_dir/repo/scripts/"
 echo "9.9.9-test" > "$test_dir/repo/VERSION"
 skiff="$test_dir/repo/scripts/skiff.sh"
@@ -39,18 +39,31 @@ mkdir -p "\$HOME/.skiff/tls"
 echo "id=\$1 pprof=\${PLAID_PPROF_SOCKET:-} other=\${TEST_OTHER:-}" >> "\$HOME/.skiff/bubble-passed"
 touch "\$HOME/.skiff/kubeconfig" "\$HOME/.skiff/tls/server-ca.crt"
 echo "stand-in bubble \$1 is up"
+[ ! -e "\$HOME/.skiff/bubble\$1-exits" ] || exit 9
 [ "\${TEST_BUBBLE:-run}" != early ] || exit 9
 while true; do
     if [ "\$(cut -d' ' -f1 "\$SKIFF_LEASE" 2>/dev/null)" = stop ]; then echo stopped-by-lease >> "\$HOME/.skiff/bubble-events"; exit 143; fi
     sleep 0.2
 done
 EOF
-cat > "$test_dir/bin/apptainer" <<'EOF'
+# Apptainer: says what it was asked; an instance stop answers as ~/.skiff/apptainer-stop says
+# (missing: the instance is gone, as when its bubble stopped it; fails: it cannot be stopped).
+cat > "$test_dir/apptainer-bin/apptainer" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$HOME/.skiff/apptainer-args"
+case "$1 $2:$(cat "$HOME/.skiff/apptainer-stop" 2>/dev/null)" in
+    "instance stop:missing")
+        echo 'Error for command "stop": no instance found' >&2
+        printf 'Usage:\n  apptainer [global options...] instance stop [stop options...] [instance]\n'
+        exit 255 ;;
+    "instance stop:fails")
+        echo 'FATAL:   while stopping the instance: permission denied' >&2
+        printf 'Usage:\n  apptainer [global options...] instance stop [stop options...] [instance]\n'
+        exit 255 ;;
+esac
 EOF
-chmod +x "$test_dir/bin/"* "$test_dir/fake-bubble"
-export PATH="$test_dir/bin:$PATH" SKIFF_TMP_DIR="$test_dir/scratch" SKIFF_LEASE_INTERVAL=1
+chmod +x "$test_dir/bin/"* "$test_dir/apptainer-bin/"* "$test_dir/fake-bubble"
+export PATH="$test_dir/bin:$test_dir/apptainer-bin:$PATH" SKIFF_TMP_DIR="$test_dir/scratch" SKIFF_LEASE_INTERVAL=1
 unset SKIFF_DEV
 
 new_home() {
@@ -192,18 +205,30 @@ rm -f "$test_dir/bin/busctl"
 
 # --- hosts over ssh ----------------------------------------------------------------------------
 # ssh runs the command here, as the host would (they share the home), with only the home and
-# PATH of the environment, as a login on the host has none of the caller's variables; a host
-# named unreachable refuses, as ssh without a key does.
+# the host's own PATH, as a login on the host has none of the caller's variables. The hosts have
+# no Apptainer of their own: it is in Skiff's tools on the home (where `skiff.sh download` puts
+# it), which the system's PATH does not name. A host named unreachable refuses, as ssh without a
+# key does.
+host_path=""
+IFS=: read -ra path_dirs <<< "$PATH"
+for d in "${path_dirs[@]}"; do [ -x "$d/apptainer" ] || host_path="${host_path:+$host_path:}$d"; done
 cat > "$test_dir/bin/ssh" <<EOF
 #!$real_bash
 while [ "\${1:-}" = -o ]; do shift 2; done
 host=\$1; shift
 echo "\$host" >> "\$HOME/.skiff/ssh-hosts"
 [ "\$host" != unreachable ] || { echo "\$host: Permission denied (publickey)." >&2; exit 255; }
-exec env -i HOME="\$HOME" PATH="\$PATH" bash -c "\$*"
+exec env -i HOME="\$HOME" PATH="$host_path" bash -c "\$*"
 EOF
 chmod +x "$test_dir/bin/ssh"
-new_home hosts
+machine=$(uname -m); [ "$machine" != arm64 ] || machine=aarch64
+new_hosts_home() {
+    new_home "$1"
+    mkdir -p "$HOME/.skiff/tools/$machine/bin"
+    cp "$test_dir/apptainer-bin/apptainer" "$HOME/.skiff/tools/$machine/bin/"
+}
+new_hosts_home hosts
+echo missing > "$HOME/.skiff/apptainer-stop"
 out=$(PLAID_PPROF_SOCKET=/scratch/plaidd-pprof.sock TEST_OTHER=kept-here run_skiff start h1 h2 2>&1) && rc=0 || rc=$?
 job=$(record_job)
 [ "$rc" -eq 0 ] && grep -q "^Started Skiff cluster job $job on h1 h2 (supervisor PID [0-9]* on $(hostname))" <<< "$out" && [ "$(sed -n 's/^nodes=//p' "$HOME/.skiff/launcher/cluster")" = "h1 h2" ] \
@@ -223,7 +248,30 @@ grep -q 'stand-in bubble 2 is up' "$test_dir/work/skiff-cluster-$job.out" && gre
 [ "$(cat "$HOME/.skiff/job-results/$job.exit" 2>/dev/null)" = 143 ] && [ -z "$(ls "$HOME/.skiff/launcher" 2>/dev/null)" ] \
     && pass "and the job ends with 143, leaving nothing in the launcher's directory" || fail "after stop (hosts): exit '$(cat "$HOME/.skiff/job-results/$job.exit" 2>&1)', left: $(ls "$HOME/.skiff/launcher")"
 grep -qx 'instance stop bubble1' "$HOME/.skiff/apptainer-args" && grep -qx 'instance stop bubble2' "$HOME/.skiff/apptainer-args" \
-    && pass "the sweep stops each host's bubble instance by name" || fail "the sweep (hosts): $(cat "$HOME/.skiff/apptainer-args" 2>&1)"
+    && pass "the sweep stops each host's bubble instance by name, with the Apptainer of Skiff's tools" || fail "the sweep (hosts): $(cat "$HOME/.skiff/apptainer-args" 2>&1)"
+if grep -q 'WARNING: the last sweep\|instance stop \[stop options\|no instance found' "$test_dir/work/skiff-cluster-$job.out"; then
+    fail "an instance already gone made the sweep say something: $(grep -i 'sweep\|instance' "$test_dir/work/skiff-cluster-$job.out")"
+else
+    pass "an instance its bubble has stopped already is nothing to say"
+fi
+# An instance that cannot be stopped is said, on one line for each host; a job that fails keeps
+# the bubbles' output files (bubble 2 ends at once, and the job with it).
+new_hosts_home sweepfails
+echo fails > "$HOME/.skiff/apptainer-stop"
+touch "$HOME/.skiff/bubble2-exits"
+out=$(run_skiff start h1 h2 2>&1) && rc=0 || rc=$?
+job=$(ls "$HOME/.skiff/launcher/"*.lease "$HOME/.skiff/job-results/"*.exit 2>/dev/null | sed -n 's|.*/\([0-9]*\)\.[a-z]*$|\1|p' | sed -n 1p || true)
+for i in $(seq 1 150); do [ -e "$HOME/.skiff/job-results/$job.exit" ] && break; sleep 0.1; done
+jobout="$test_dir/work/skiff-cluster-$job.out"
+host=$(hostname)
+[ "$(grep -c '^WARNING: the last sweep' "$jobout")" = 2 ] \
+    && grep -qx "WARNING: the last sweep could not stop the bubble's instance bubble1 on $host (apptainer instance stop bubble1: FATAL:   while stopping the instance: permission denied); it may still be running there" "$jobout" \
+    && grep -q "^WARNING: the last sweep could not stop the bubble's instance bubble2 on $host " "$jobout" && ! grep -q 'instance stop \[stop options' "$jobout" \
+    && pass "an instance the sweep cannot stop is said, on one line for each host" || fail "the sweep's failures (start: rc $rc, $out): $(grep -i 'sweep\|instance' "$jobout" 2>&1)"
+[ "$(cat "$HOME/.skiff/job-results/$job.exit" 2>/dev/null)" = 9 ] && grep -q 'stand-in bubble 1 is up' "$HOME/.skiff/launcher/$job.bubble1.out" 2>/dev/null \
+    && grep -q 'stand-in bubble 2 is up' "$HOME/.skiff/launcher/$job.bubble2.out" 2>/dev/null && [ -z "$(ls "$HOME/.skiff/launcher/"*.pid 2>/dev/null)" ] \
+    && grep -qF "The bubbles' own output is kept in $HOME/.skiff/launcher/$job.bubble*.out" "$jobout" \
+    && pass "a job that failed keeps its bubbles' output files, and says where" || fail "after a failed job: exit '$(cat "$HOME/.skiff/job-results/$job.exit" 2>&1)', left: $(ls "$HOME/.skiff/launcher" 2>&1); $(tail -3 "$jobout" 2>&1)"
 new_home unreachable
 out=$(run_skiff start h1 unreachable 2>&1) && rc=0 || rc=$?
 [ "$rc" -eq 1 ] && grep -q 'cannot run a command on unreachable over ssh without a password or a question (ssh says: unreachable: Permission denied (publickey).)' <<< "$out" && [ ! -e "$HOME/.skiff/launcher/cluster" ] \

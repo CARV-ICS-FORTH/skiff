@@ -1622,8 +1622,26 @@ _skiff_cluster_int() {
     exit $SKIFF_EXIT_CODE
 }
 
+# _skiff_sweep_bubble DIR JOB ID: the last sweep of a job's shutdown on a node, run there: the
+# process group of the bubble the launcher recorded in DIR (a bubble on another host, over ssh,
+# which the supervisor's kill does not reach) and the bubble instance that a killed bubble left
+# behind, by its name (the user may run other instances on the node). Normally each bubble has
+# stopped its own, and Apptainer then answers "no instance found" (with its usage text on
+# stdout): nothing of that belongs in the job's output. Any other failure leaves the bubble's
+# instance running (its daemons, its pods, its ports) and is said, on one line.
+_skiff_sweep_bubble() {
+    local pidfile="$1/$2.bubble$3.pid" name="bubble$3" err status=0
+    [ ! -s "$pidfile" ] || kill -KILL -- "-$(cat "$pidfile")" 2>/dev/null || true
+    err=$(apptainer instance stop "$name" 2>&1 >/dev/null) || status=$?
+    if [ "$status" -ne 0 ] && [[ "$err" != *"no instance found"* ]]; then
+        err=${err%%$'\n'*}
+        echo "WARNING: the last sweep could not stop the bubble's instance $name on $(hostname) (apptainer instance stop $name: ${err:-exit status $status}); it may still be running there"
+    fi
+    return 0
+}
+
 _skiff_cluster_cleanup() {
-    local original_status=$? wait_count=0 any_alive pid i
+    local original_status=$? wait_count=0 any_alive=0 pid i status
     trap - EXIT INT TERM
     if [ "$SKIFF_EXIT_CODE" -eq 0 ] && [ "$original_status" -ne 0 ]; then
         SKIFF_EXIT_CODE=$original_status
@@ -1659,13 +1677,19 @@ _skiff_cluster_cleanup() {
             kill -KILL "$pid" 2>/dev/null || true
         fi
     done
-    # A last sweep on each node: the process group of a bubble the launcher recorded (a bubble on
-    # another host, over ssh, which the kill above does not reach) and a bubble instance that a
-    # killed bubble left behind, by its name (the user may run other instances on the node).
-    # Normally each bubble has stopped its own, and Apptainer then answers "no instance found"
-    # with its usage text on stdout: nothing of it belongs in the job's output.
+    # A bubble that had to be killed did not act on its being told to stop: its output, which the
+    # launcher may have in a file of its own, is kept for finding out why, as it is when the job
+    # failed (see skiff_launch_end).
+    if [ "$any_alive" -eq 1 ] || { [ "$SKIFF_EXIT_CODE" -ne 0 ] && [ "$SKIFF_EXIT_CODE" -ne 143 ]; }; then
+        SKIFF_KEEP_BUBBLE_OUTPUT=1
+    fi
+    # A last sweep on each node (_skiff_sweep_bubble), in this script, so that it finds Apptainer
+    # where the bubble did. What the launcher itself says about it (a Slurm step that cannot
+    # start in a job that is ending, for one) is not the job's; a sweep that did not end is.
     for i in "${!SKIFF_NODES[@]}"; do
-        skiff_launch_run "${SKIFF_NODES[$i]}" 15 bash -c 'f=$1/$2.bubble$3.pid; [ ! -s "$f" ] || kill -KILL -- "-$(cat "$f")" 2>/dev/null; apptainer instance stop "bubble$3"' _ "$SKIFF_LAUNCHER_DIR" "${SKIFF_JOB_ID:-unknown}" "$((i + 1))" >/dev/null 2>&1 || true
+        status=0
+        skiff_launch_run "${SKIFF_NODES[$i]}" 15 bash -c 'source "$1"; shift; _skiff_sweep_bubble "$@"' _ "$SKIFF_SCRIPT" "$SKIFF_LAUNCHER_DIR" "${SKIFF_JOB_ID:-unknown}" "$((i + 1))" 2>/dev/null || status=$?
+        [ "$status" -ne 137 ] || echo "WARNING: the last sweep on ${SKIFF_NODES[$i]} did not end within 15 s: its bubble's instance (bubble$((i + 1))) may still be running there" >&2
     done
     rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
     wait 2>/dev/null || true
@@ -2085,7 +2109,13 @@ skiff_run() {
         if skiff_launcher_running && [ "$SKIFF_RUNNING_JOB" = "$SKIFF_JOB_ID" ]; then
             rm -f "$SKIFF_LAUNCHER_DIR/cluster"
         fi
-        rm -f "$SKIFF_LEASE" "${SKIFF_LAUNCHER_DIR:?}/${SKIFF_JOB_ID:?}".bubble*.out "${SKIFF_LAUNCHER_DIR:?}/${SKIFF_JOB_ID:?}".bubble*.pid
+        rm -f "$SKIFF_LEASE" "${SKIFF_LAUNCHER_DIR:?}/${SKIFF_JOB_ID:?}".bubble*.pid
+        # The bubbles' output files (with hosts) go with the job, unless the clean-up keeps them.
+        if [ -n "${SKIFF_KEEP_BUBBLE_OUTPUT:-}" ] && compgen -G "$SKIFF_LAUNCHER_DIR/$SKIFF_JOB_ID.bubble*.out" > /dev/null; then
+            echo "The bubbles' own output is kept in $SKIFF_LAUNCHER_DIR/$SKIFF_JOB_ID.bubble*.out (remove it when done)"
+        else
+            rm -f "${SKIFF_LAUNCHER_DIR:?}/${SKIFF_JOB_ID:?}".bubble*.out
+        fi
     }
     echo "Skiff cluster job $SKIFF_JOB_ID on ${SKIFF_NODES[*]} (supervisor PID $$ on $(hostname))"
     skiff_cluster
