@@ -183,7 +183,12 @@ attempts() {
     e2e_assert_contains "the follow saw the first attempt" "$(cat "$follow_out")" "attempt=1 seq=3 out"
     if grep -q 'attempt=2' "$follow_out"; then e2e_fail "the follow of the first attempt shows the second: $(cat "$follow_out")"; fi
 
-    local current previous
+    # The second attempt has started, but it may not have written yet (a record every 0.3 s).
+    local current previous i
+    for i in $(seq 1 30); do
+        logs e2e16-restart 2>/dev/null | e2e_grep_q 'attempt=2 seq=1 out' && break
+        sleep 0.5
+    done
     current=$(logs e2e16-restart)
     previous=$(logs e2e16-restart --previous)
     e2e_assert_contains "current logs are the second attempt's" "$current" "attempt=2 seq=1 out"
