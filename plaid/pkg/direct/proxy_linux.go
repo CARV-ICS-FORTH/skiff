@@ -238,12 +238,29 @@ func (p *localProxy) forward(c *net.TCPConn) {
 			c.Close()
 			return
 		}
-		_, _ = io.Copy(c, h)
+		_, _ = copyConn(c, h)
 		_ = c.CloseWrite()
 	}()
-	_, _ = io.Copy(h, c)
+	_, _ = copyConn(h, c)
 	_ = h.CloseWrite()
 	wg.Wait()
+}
+
+// copyBufferSize is the size of the buffer a connection is copied through.
+const copyBufferSize = 256 << 10
+
+var copyBuffers = sync.Pool{New: func() any { b := make([]byte, copyBufferSize); return &b }}
+
+// copyConn copies src to dst until src ends, in user space: through a buffer, not with
+// splice, which is what io.Copy does between two TCP connections. Measured on the cluster, one
+// stream from an unmarked client pod over the overlay to a marked server: with splice 3.3 to
+// 8.6 Gbit/s (median 6.9 in six runs; an explicit splice loop with a pipe of 64 KiB the same),
+// with the copy 8.1 to 8.6 (median 8.2; an unmarked server takes 8.5). Why splice does worse
+// was not found. The copy costs about a core at 8 Gbit/s (splice: half of one).
+func copyConn(dst, src net.Conn) (int64, error) {
+	buf := copyBuffers.Get().(*[]byte)
+	defer copyBuffers.Put(buf)
+	return io.CopyBuffer(struct{ io.Writer }{dst}, struct{ io.Reader }{src}, *buf) // (the wrappers hide ReadFrom and WriteTo)
 }
 
 // dial connects to the container's listener on the host's loopback: its IPv4 address for a

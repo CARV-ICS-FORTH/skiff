@@ -3,7 +3,9 @@
 package direct
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -354,5 +356,48 @@ func TestProxyStaysWhileTheContainerIsBoundAndNotListening(t *testing.T) {
 				t.Errorf("the connection of the pod's client after the listen was not carried:\n%s", o)
 			}
 		})
+	}
+}
+
+// A stream is carried whole, in both directions, through the copy of the proxy, and its end
+// (a half-close) is passed on.
+func TestCopyConnCarriesAStream(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, _ := l.Accept()
+		accepted <- c
+	}()
+	a, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b := <-accepted
+	defer b.Close()
+
+	want := make([]byte, 3<<20+17) // more than a buffer, and not a multiple of it
+	for i := range want {
+		want[i] = byte(i * 7)
+	}
+	go func() {
+		a.Write(want)
+		a.(*net.TCPConn).CloseWrite()
+	}()
+	var got bytes.Buffer
+	done := make(chan int64, 1)
+	pr, pw := net.Pipe() // the other side of the copy: anything that is a connection
+	go func() {
+		n, _ := copyConn(pw, b)
+		pw.Close()
+		done <- n
+	}()
+	io.Copy(&got, pr)
+	if n := <-done; n != int64(len(want)) || !bytes.Equal(got.Bytes(), want) {
+		t.Errorf("carried %d bytes, intact %t; want %d", n, bytes.Equal(got.Bytes(), want), len(want))
 	}
 }

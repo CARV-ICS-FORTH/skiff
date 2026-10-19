@@ -72,7 +72,9 @@ type Stats struct {
 // does not end its main thread, so a program that calls Start should keep its main
 // goroutine on the main thread (runtime.LockOSThread in init); otherwise the supervisor
 // may not learn that the command has gone, and Wait takes a second more. Use the
-// supervisor's Wait, not cmd's.
+// supervisor's Wait, not cmd's. A watchdog process ends the container if the supervisor is
+// killed (watchdog_linux.go); the program must call RunWatchdogIfRequested first thing in
+// main.
 func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 	if cfg.Factory == nil || cfg.Resolver == nil || !cfg.PodIP.Is4() || len(cfg.Key) == 0 {
 		return nil, fmt.Errorf("the direct path needs a socket factory, a resolver, a key and the pod's IPv4 address")
