@@ -25,13 +25,14 @@ e2e_cleanup_register "e2e_preserve_failure $NS"
 # of them: it was once given one CPU, and the node advertised one) and the memory Slurm offers
 # on it (RealMemory, which is what a job that asks for all of it, --mem=0, is granted: not
 # what the machine has, which Slurm is configured with less than; without Slurm, the
-# machine's), and room for pods.
+# machine's), and room for pods. Without Slurm the CPUs are those a process may run on
+# (nproc): a kernel's isolated CPUs (isolcpus) are not the node's to give.
 # ---------------------------------------------------------------------------
 node_capacity() {
     local node ip cpus mem_kb advertised_cpu advertised_mem_kb
     for node in $(e2e_all_nodes); do
         ip=$(runtime_node_ip "$node")
-        cpus=$(runtime_ssh_node "$ip" "nproc --all")
+        cpus=$(runtime_ssh_node "$ip" nproc)
         mem_kb=$(e2e_node_memory_kib "$node" "$ip")
         advertised_cpu=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.cpu}')
         advertised_mem_kb=$(e2e_kubectl get node "$node" -o jsonpath='{.status.capacity.memory}' | python3 -c '

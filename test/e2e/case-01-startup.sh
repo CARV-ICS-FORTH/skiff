@@ -166,9 +166,10 @@ for node in $(e2e_all_nodes); do
     if [ "$E2E_LAUNCHER" = slurm ]; then
         allocation=$(scontrol show job "$SKIFF_JOB_ID" -o)
     else
-        # Without Slurm the job has the machine: its CPUs and memory are the limit.
+        # Without Slurm the job has the machine: its CPUs and memory are the limit (the CPUs a
+        # process may run on: not a kernel's isolated ones).
         ip=$(runtime_node_ip "$node")
-        allocation="NumNodes=1 NumCPUs=$(runtime_ssh_node "$ip" "nproc --all") MinMemoryNode=$(e2e_node_memory_kib "$node" "$ip")K"
+        allocation="NumNodes=1 NumCPUs=$(runtime_ssh_node "$ip" nproc) MinMemoryNode=$(e2e_node_memory_kib "$node" "$ip")K"
     fi
     # (A job that asks for --mem=0 has all of the node's memory: its limit is the node's.)
     real_memory_mb=$(( $(e2e_node_memory_kib "$node" "$(runtime_node_ip "$node")") / 1024 ))
