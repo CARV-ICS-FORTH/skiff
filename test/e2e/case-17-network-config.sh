@@ -33,8 +33,8 @@ e2e_cleanup_register "e2e_preserve_failure $NS"
 # The MTU the job chose, from its own statement of it (skiff_config_print):
 # "  MTU:              pods N, bubble link M (source), slirp4netns link S".
 TARGET_JOB="${SKIFF_JOB_ID:-}"
-[[ "$TARGET_JOB" =~ ^[0-9]+$ ]] || e2e_die "Case 17 requires the exact Slurm job ID, to read the MTU the job chose"
-JOB_OUTPUT=$(scontrol show job "$TARGET_JOB" -o | sed -n 's/.*StdOut=\([^ ]*\).*/\1/p')
+[[ "$TARGET_JOB" =~ ^[0-9]+$ ]] || e2e_die "Case 17 requires the exact job ID, to read the MTU the job chose"
+JOB_OUTPUT=$(e2e_job_output "$TARGET_JOB")
 JOB_MTU=$(sed -n 's/^  MTU: *pods \([0-9]*\), bubble link \([0-9]*\) .*/\1 \2/p' "$JOB_OUTPUT" 2>/dev/null | sed -n 1p || true)
 [ -n "$JOB_MTU" ] || e2e_die "the output of job $TARGET_JOB ($JOB_OUTPUT) does not state its MTU"
 read -r POD_MTU LINK_MTU <<< "$JOB_MTU"
