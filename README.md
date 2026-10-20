@@ -66,7 +66,7 @@ A Slurm job starts a [K3s](https://k3s.io/) cluster of the nodes it is given, ea
 
 ## Problems
 
-The check in step 3 and the job's output name what is missing. If something does not work, open an issue on [GitHub](https://github.com/CARV-ICS-FORTH/skiff/issues), with the output of `skiff.sh check` on a compute node, the job's output, `~/.skiff/job-results/<job ID>.cause` if there is one, the operating system of the nodes, the version of Slurm, and what your administrator changed for Skiff.
+If a node lacks something Skiff needs, the check in step 3 says what it is, and so does the job's output. If something does not work, open an issue on [GitHub](https://github.com/CARV-ICS-FORTH/skiff/issues), with the output of `skiff.sh check` on a compute node, the job's output, `~/.skiff/job-results/<job ID>.cause` if there is one, the operating system of the nodes, the version of Slurm, and what your administrator changed for Skiff.
 
 ## Learn more
 
