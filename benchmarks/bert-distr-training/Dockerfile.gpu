@@ -1,0 +1,7 @@
+FROM pytorch/pytorch:2.7.1-cuda12.6-cudnn9-runtime
+COPY requirements.txt /tmp/requirements.txt
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt \
+    && python -m pip check \
+    && rm /tmp/requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
+WORKDIR /benchmark
