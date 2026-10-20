@@ -208,8 +208,8 @@ func TestCloseEndsEveryQueue(t *testing.T) {
 				if pipeline {
 					want = queues * 3 // and a processor and a writer
 				}
-				if got := goroutines() - before; got != want {
-					t.Errorf("%d goroutines, want %d", got, want)
+				if got := started(before); len(got) != want {
+					t.Errorf("%d goroutines, want %d:\n%s", len(got), want, stacks(got))
 				}
 				if (ep.queues[0].wq != nil) != pipeline || ep.Pipeline() != pipeline {
 					t.Errorf("writer queue %v", ep.queues[0].wq != nil)

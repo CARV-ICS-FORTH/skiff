@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -141,16 +142,66 @@ func readSegments(t testing.TB, pod *os.File, first uint32, n int, udp bool) {
 	}
 }
 
-func goroutines() int { return runtime.NumGoroutine() }
+// goroutines returns the goroutines that the package's code (not its tests) started and that
+// are running, by ID, with their stacks. It counts nothing else: the process has goroutines of
+// earlier tests, of the testing package and of the runtime, which end when they will, so a
+// count of all of them, before and after, is off by those. A goroutine's ID is never reused.
+func goroutines() map[string]string {
+	buf := make([]byte, 1<<20)
+	for {
+		if n := runtime.Stack(buf, true); n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	ours := map[string]string{}
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		// "goroutine 42 [select]:", the frames, then "created by plaid/pkg/tap.(*X).f in
+		// goroutine 7" and the file and line of the go statement.
+		id, _, _ := strings.Cut(strings.TrimPrefix(g, "goroutine "), " ")
+		_, creator, ok := strings.Cut(g, "\ncreated by ")
+		if !ok || !strings.HasPrefix(creator, "plaid/pkg/tap.") {
+			continue
+		}
+		if _, at, _ := strings.Cut(creator, "\n\t"); strings.Contains(at, "_test.go:") {
+			continue
+		}
+		ours[id] = g
+	}
+	return ours
+}
 
-// settle waits for the number of goroutines to be at most n.
-func settle(t testing.TB, n int) {
+// started returns the goroutines of the package's code that are running and were not in before.
+func started(before map[string]string) map[string]string {
+	now := goroutines()
+	for id := range before {
+		delete(now, id)
+	}
+	return now
+}
+
+// stacks lists the stacks of gs.
+func stacks(gs map[string]string) string {
+	var b strings.Builder
+	for _, g := range gs {
+		b.WriteString(g + "\n\n")
+	}
+	return b.String()
+}
+
+// settle waits for the goroutines that the package's code started after before to end; with
+// a nil before, for all of them.
+func settle(t testing.TB, before map[string]string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for goroutines() > n {
+	for {
+		left := started(before)
+		if len(left) == 0 {
+			return
+		}
 		if time.Now().After(deadline) {
-			buf := make([]byte, 1<<16)
-			t.Fatalf("%d goroutines, want %d:\n%s", goroutines(), n, buf[:runtime.Stack(buf, true)])
+			t.Fatalf("%d goroutines did not end:\n%s", len(left), stacks(left))
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -402,7 +453,10 @@ func TestReleasedWriterDropsItsFrame(t *testing.T) {
 func TestPipelinesStopWhileBusy(t *testing.T) {
 	for _, passthrough := range []bool{false, true} {
 		t.Run(fmt.Sprintf("passthrough=%v", passthrough), func(t *testing.T) {
-			before, held := goroutines(), inFlight.Load()
+			// The goroutines of earlier tests have ended and returned what they held: no one
+			// else takes or returns a buffer until this test is done.
+			settle(t, nil)
+			held := inFlight.Load()
 			for cycle := 0; cycle < 25; cycle++ {
 				a, b, aPod, bPod, br, start := passTaps(t, passOpts{pipeline: true, passthrough: passthrough, sndbuf: 16 << 10})
 				start()
@@ -461,7 +515,7 @@ func TestPipelinesStopWhileBusy(t *testing.T) {
 				_ = aPod.Close()
 				_ = bPod.Close()
 			}
-			settle(t, before)
+			settle(t, nil) // every buffer that a goroutine of the endpoints held is returned
 			if got := inFlight.Load(); got != held {
 				t.Errorf("%d pooled buffers were not returned", got-held)
 			}

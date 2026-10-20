@@ -78,6 +78,7 @@ func socketTapQueues(t testing.TB, o tapOpts) (*TapEndpoint, []*os.File) {
 		taps, pods = append(taps, a), append(pods, b)
 	}
 	ep := NewTapEndpointQueues(o.name, o.name, o.ip, o.mac, taps, false)
+	t.Cleanup(func() { _ = ep.Close() }) // stops the writers, which closing the files does not
 	if o.vnet {
 		for i, q := range ep.queues {
 			q.vw = newVnetWriter(taps[i])
