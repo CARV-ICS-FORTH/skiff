@@ -1,0 +1,66 @@
+{
+  "site": "knot-platform.eu",
+  "benchmark": "dask-matrix",
+  "platform": "skiff",
+  "date": null,
+  "slurm_allocation_id": "103",
+  "run_description": "Successful controlled rerun after rebuilding the stale client image",
+  "status": "Complete",
+  "client_exit_code": 0,
+  "nodes": [
+    "k8s-node1",
+    "k8s-node2",
+    "k8s-node3"
+  ],
+  "workers": 3,
+  "dask_threads_per_worker": 1,
+  "blas_threads_per_worker": 2,
+  "matrix_shape": [
+    8000,
+    8000
+  ],
+  "chunk_shape": [
+    4000,
+    4000
+  ],
+  "result_shape": [
+    8000,
+    8000
+  ],
+  "result_size_mib": 488.28,
+  "result_mean": 2000.165832,
+  "tasks_executed": 20,
+  "wall_seconds": 36.137,
+  "aggregate_task_compute_seconds": 33.018,
+  "aggregate_task_transfer_seconds": 47.584,
+  "worker_participation": [
+    {
+      "node": "k8s-node1",
+      "tasks": 8,
+      "compute_seconds": 12.332
+    },
+    {
+      "node": "k8s-node3",
+      "tasks": 7,
+      "compute_seconds": 11.58
+    },
+    {
+      "node": "k8s-node2",
+      "tasks": 5,
+      "compute_seconds": 9.106
+    }
+  ],
+  "worker_cpu_samples": 216,
+  "max_worker_cpu_percent": 279.7,
+  "mean_worker_cpu_percent": 79.0,
+  "pod_restarts": 0,
+  "observed_ooms": 0,
+  "software": {
+    "dask": "2024.1.0",
+    "distributed": "2024.1.0",
+    "helm_chart": "dask-2024.1.1"
+  },
+  "provenance": {
+    "retention": "Metrics transcribed from retained run notes and matching user-supplied output. Exact execution timestamp and a raw result file were not available during this review."
+  }
+}

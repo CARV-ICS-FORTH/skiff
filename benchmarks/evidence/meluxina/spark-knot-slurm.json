@@ -1,0 +1,915 @@
+{
+  "site": "MeluXina (login.lxp.lu)",
+  "benchmark": "spark-knot",
+  "platform": "native-slurm",
+  "date": "2026-10-19",
+  "slurm_job_id": "5358076",
+  "run_id": "5358076.8IZPUC",
+  "nodes": [
+    "mel0029",
+    "mel0039",
+    "mel0061",
+    "mel0178",
+    "mel0312",
+    "mel0316",
+    "mel0373",
+    "mel0426",
+    "mel0452",
+    "mel0466"
+  ],
+  "status": "COMPLETED",
+  "slurm_exit_code": "0:0",
+  "launcher_exit_code": 0,
+  "job_elapsed_seconds": 338,
+  "start_time_utc": "2026-10-19T10:48:12+00:00",
+  "end_time_utc": "2026-10-19T10:53:50+00:00",
+  "allocated_logical_cpus": 2560,
+  "phase_step_elapsed_seconds": {
+    "generate": 152,
+    "query": 136
+  },
+  "cpu_binding": "cores",
+  "spark_scratch": "tmpfs",
+  "minio_storage": "shared-home Lustre directory",
+  "configuration": {
+    "SPARK_SIF": "/home/users/u102006/kampadais/.skiff/images/analytics-spark-knot-4.0.4-amd64-r1.sif",
+    "SPARK_VERSION": "4.0.4",
+    "SCALE_FACTOR": "1",
+    "GENERATION_PARTITIONS": "24",
+    "SHUFFLE_PARTITIONS": "24",
+    "QUERY_SET": "original",
+    "QUERY_ITERATIONS": "3",
+    "DRIVER_CORES": "4",
+    "DRIVER_MEMORY": "4g",
+    "DRIVER_MEMORY_OVERHEAD": "1g",
+    "EXECUTOR_CORES": "4",
+    "EXECUTOR_MEMORY": "8g",
+    "EXECUTOR_MEMORY_OVERHEAD": "2g",
+    "MINIO_CORES": "4",
+    "MINIO_MEMORY": "8g",
+    "MINIO_BUCKET": "spark-knot",
+    "MINIO_DATA_ROOT": "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmark-data",
+    "SPARK_INTERFACE": "ib0",
+    "CPU_BIND": "cores",
+    "STARTUP_TIMEOUT_SECONDS": "120",
+    "GENERATION_TIMEOUT_SECONDS": "1800",
+    "QUERY_TIMEOUT_SECONDS": "3600",
+    "MASTER_PORT": "7077",
+    "MASTER_UI_PORT": "8080",
+    "WORKER_PORT": "7078",
+    "WORKER_UI_PORT": "8081",
+    "MINIO_PORT": "9000",
+    "MINIO_CONSOLE_PORT": "9001",
+    "QUERY_SELECTION": "q1,q10,q11,q12,q13,q14a,q14b,q15,q16,q17,q18,q19,q2,q20,q21,q22",
+    "EXPECTED_EXECUTORS": "10",
+    "EXPECTED_NODES": "mel0029 mel0039 mel0061 mel0178 mel0312 mel0316 mel0373 mel0426 mel0452 mel0466",
+    "SOURCE_DIR": "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot",
+    "DRIVER_STEP_MEMORY_MB": "5120",
+    "EXECUTOR_STEP_MEMORY_MB": "10240",
+    "MINIO_STEP_MEMORY_MB": "8192"
+  },
+  "source_and_image_sha256": {
+    "/home/users/u102006/kampadais/.skiff/images/analytics-spark-knot-4.0.4-amd64-r1.sif": "1519a28a7e1061e8b6893ec83ee7318140e8ca6c34fe833158a5dae24566d7fd",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/benchmark.py": "26927b9c84723f5631eac62c903a397b0cc56047ff1f1bffb65316ef4baea9e5",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q10.sql": "e0a6724140dc0a70ead171a0372bbe97e6cbbf07b51763b2781c5852124620a5",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q11.sql": "b07b68bb24a0187148d307f630aabd2a219c394f0582d721e7d4b5abdc385fd8",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q12.sql": "0ec0c7a7e38a8cb375bd2e78e6749a94a9e038a524b7eb3440beacb982a72c44",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q13.sql": "a4345546a85b1e21cc24a5697e0c566067e3e98ef2431763122ada7851ffa969",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q14a.sql": "b2556a03670619197c5b7ac1fa60534638e6a82a5a7d8f91d5f02dca4a1bb4d6",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q14b.sql": "af29afad9a2a9df8de186a4a8ac6161f5b70f7a3815846dc4dd39cbf63c8af1e",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q15.sql": "9108913da7116a7e1a347c46e1a12cae927519849de2093d07ae1974c759f5c2",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q16.sql": "b29a5f243280145b9231010cd0297c3d73caad9658fa8287168f5b1cbe423458",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q17.sql": "39e698d37e0551e4c42c1559eb660574ee1a18ec8d16cb7b444a7199493d3241",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q18.sql": "7a2d9ce21118c1e4b791c7cd8f8681ed48e4cd63fe9ee145614ef04cbc6e1c7b",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q19.sql": "210e3b91d3ccac7469427d14132d9de9ab9e24b365497ae205bae84bcc7d924d",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q1.sql": "2ea76e3a82a0f4fd62f43f51873ed19edb03cb5f7e457bde2c9060069a199774",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q20.sql": "147bc32735545df69dfecacbd866faae63ec9b89db21d8398474b4aac7a8ad7a",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q21.sql": "3986c1b15a138f387c829d126a3f512f5f941e0bd3af4a432b241db61ab39fe6",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q22.sql": "fa8806f08acbed08a5ced3cbe9a1afdbfdcf9dc0f56a626b8c0038aadf6c453b",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q23a.sql": "9f3765b3b8cb48ee7d0d54af4d2d10bb51edff5e38d2c642b561364fb753af24",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q23b.sql": "e97729404387637e56a4cce67875d2aec68fec1ace07f71b62faae8526269780",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q24a.sql": "86d78da37be30f34e920c721bc6d98f1967668449f7dbd707df63246f3831d7a",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q24b.sql": "f24701f20572c63934fc8d2609d9a62e1b1a42dca06d2cb29f0feb4f1926aeb7",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q25.sql": "411889da4a81a85e31ef0778d04bc807f9540985e9b295fba4905dc105b2c46a",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q26.sql": "fcbcf0269cbfc44f14f727f281c7b04517c173bb629f85b07273e0a3c43158ae",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q27.sql": "465bef509f856456f7e16603b7ac05114c7d9aac38389b7a2026a49793425f7f",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q28.sql": "6bfc0487bcc98ca2ace91c9542e876c35eafee46dc3d3b072818da2a358ec9b0",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q29.sql": "417b6fb37539f59faa0d1ed2c5f5e5279c676b37991b69e9a960ade91c411e50",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q2.sql": "d25352423f7fc7e6e4ff292fea89019219fa42de1cdc871b0c89eab0f3918180",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q30.sql": "363c292512f8efe65f2e0f6dee6afec9f8c0870564f0905c0e78094cf1648be3",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q31.sql": "74d886d6a128fc7ba0c8ceb2b2cc334e93f44efc21295a9830cd38e4f5af7bde",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q32.sql": "7b59729d93aab2d1ba7426fab35b7ad7d5e5e065273e3d88e326fdce4e0ceaef",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q33.sql": "dc9081694f034c731a6cb9129889d4e14bbb0a5419ea387d08863749d85e4626",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q34.sql": "4da54898926f17f330ba29c304ad5245136e456154ff14ecb06dbfeb9992e396",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q35.sql": "b04188d2a5079d693481897c7f7d1bfc75dfd50e810454e3dc838a4a8d099925",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q36.sql": "9919247afd2fded820d0121f1961c477705f11a67b8d27fa2fd325c6f6856ae8",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q37.sql": "cff2cd457ea10d7f98d03eaaaaccf39df301da0ea43b45feb71c51c6dcaada29",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q38.sql": "3b790e37fef1c6fec6c0e98ece0c39cb2bb6f309569f0de4975c9f60a347b95c",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q39a.sql": "bd6e88eebf2a4ae7bf976e1fe4e28b44dac13da43222c83563b001124569d309",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q39b.sql": "d3100752db66b4b37190de659e674a28f719d9f3e75a402438db097c4d52b87e",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q3.sql": "d1e439932c345b200bd7197b22c9c70a9e9d960717ca9d938df3c75632018516",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q40.sql": "7d4f3fc5a0ce30784d80f9b1d1bd38cda04f503a4551fb3d2a4eaab404224f16",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q41.sql": "6e6c8742e1994df8d08d996c05656902dbfdf2ba2180fc694b2623ce12eafaf4",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q42.sql": "9c7ac36f415fc4b2b54f6c2da4d9b7d30e88ea4cfd9a0e44fa25b127a18e9255",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q43.sql": "89fc87d9aceb582b7adb72b9a324255d52d55b6b05ca2f8ee6466d0e61d55b59",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q44.sql": "c504acb479fc93b8c25c5941f4e2d955025319ead946c1e9b1df8087a3009824",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q45.sql": "869ed7f4b2239694b150b3b59649a1a92f0a95b4a008d23f3db8051da9447d61",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q46.sql": "99c67538283437a0a157c543f947ba821c15aba5c13a6fbba32b0af32d7e18fb",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q47.sql": "21b86e16ce6aa6b79b767372c84da4944b974a8168ce1a12e6fb55899886b063",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q48.sql": "fdc9147f1f4e539fcf1daf9726a8450a1bbb10e58a8dd442da2e9037e3c14426",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q49.sql": "cad2eb1757980e7edcd7ac3c278b9b4cdbc3b7838bd9884b9619338638d5fa3b",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q4.sql": "afef81f86d76638c71c2ecf0d26782851e07a5fc0f97393cfe136220ceeaa2bb",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q50.sql": "e1867e6bbac5975b83341c0c78d3d6d1fe5d6c761add66d4058ba761eca418cf",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q51.sql": "56bddf50205d12fb37411d1d520cf15b22a039ca9f5c04381e4aa0cc1b059103",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q52.sql": "6805af15deebad62fdc87218390375a81148930a33b273f8501227a72701a3dc",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q53.sql": "0d87c24ab129b70e0516cf0415554bfa28660dbc07cdd598bb1823763fc83065",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q54.sql": "6edaac506c359d7e84f0d40634f2175ed1ca144fca45b8474e8ed6a7d6cf07f0",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q55.sql": "7295265056a98e04c75559bdb7c4551072a5e37ecc88fc58e27aadff2015c968",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q56.sql": "84b4a9d6a45c334e632fc640a3754be5da4d93bb3d539ae56d4274d25bd25706",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q57.sql": "ba37ddd48eac2b04a1599b0c38ce043e13ff1e287f884fabd2dd0ffcf189b2d2",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q58.sql": "14601b3a82b5e54aa0bfd8f0e10effbeb8e5a0c026fbb71b97b34ce73acac366",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q59.sql": "b06df4ee3b30e0151ec409306ae992f8f7c89163eb4543c12dcc7c6a59ddac6d",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q5.sql": "d694716a6ada3337a49768d0a2c7ba30ebccd227e97bef3d5f14b41a677eecc0",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q60.sql": "57b9f1dd3656d82908c163dc62805ed32d77fd9edc294666237eb068fb17d6c2",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q61.sql": "d41a630609939a35f453591a2c62d8565dcecd778be6033cb15ab84ccb328c49",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q62.sql": "57f1054db25a45d5af706627a1a37cbaaae0e9fa9dd231c56458eba18802baa7",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q63.sql": "be0c7159817c3f110080cbbe10b9b92a2dbf5863cf8f0771846708ce3039beaf",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q64.sql": "babcdd57ec4e997e154a1841c58096732c5ecef7e4a5de6161101d348c963ce9",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q65.sql": "a2137d05509595c07cfba2b5dc31b39731ba4edf0a03e1a7f24b9735e5fccfb9",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q66.sql": "3714471085c88e8c278e5ca81ce59db31b29b541da3d917567e2bba25c6eb3ce",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q67.sql": "65beb2ef0a082da4ecc2147b03e5aad138f858df4a0d1bb3dc8ba0e653fa095c",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q68.sql": "2c2c7859ab0571b1dfd3e6ba6b82467114ac71e881b109e3145bc0c2f4333908",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q69.sql": "292ca3e6f42313d53b7a1dae88d5fe3b7ec2c5adb9391eaf49eff2c566b1aebd",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q6.sql": "4297a89eebc8e4b923ad2b80aeefcc33142cf88e663be33794187a535f7e544d",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q70.sql": "bfe88a509e49d11094542cfbbc2492e66f82ca022836e053ba676c7cede6e80b",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q71.sql": "6b14f4f10b16ecbc0743adbb9d017ee885cd7698f93b83e0042ca54a6be0ea87",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q72.sql": "dc1ae406f55d34870c3ebc53d25664d1fb15a8827ed0158f3c0d7649d3e0c31a",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q73.sql": "bdb210e4f30202c06a5d365f5d34528bfaee1f9018a8c9733160d5c8f933b0bf",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q74.sql": "4593231ba66da2f7a17af6132ca6d857cc929d73a0475829de3da03224c65e59",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q75.sql": "d611650badc3716c58a376b91453804270efe2abcaf3d540814bf2d2c4f6de04",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q76.sql": "4abe7f4411b3738d2405e5537f307358bfc82d51a07281252d80ce1db31a2b81",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q77.sql": "388cf2c5d66f38be758336f27132853393ec86168232fab313a5056a38e731b7",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q78.sql": "a8f37182d57de41989a3cb86ed0361ed1f30d874a1824e96469fa51f15085874",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q79.sql": "d42ef6f7bb3aab8dcfee1ededeaaa6ec2b5326c6b46c9fa091ecc2a7b4df821c",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q7.sql": "7de4834cbfccb4e1faf84771e14ab177344919412a6138f546d8cffe648d3716",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q80.sql": "9340352ef6f57bb8f755048f5a1f2cd50a75c7d96f7a7fe07504073f7f5ad9ee",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q81.sql": "3d949e7f45d4c23923f5c6e40efc0235cb04c4583eed90589e7aefd1ab57a779",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q82.sql": "ca75ee0fb1ef990003f0db8c8661fa2e9efd35498094b3e083c8b35a4da66324",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q83.sql": "4d0bda97653d6486c6fcb11725b09cdd333fc61de7818996a849447287a57164",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q84.sql": "ea84574bd34f8bb0ea46e240951282f224c810eba09373fa6fb186a2c417014b",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q85.sql": "d921da77e7763e421063ff5a3d5a4145840770edf1418f361a416d722fb48e6d",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q86.sql": "8f26c02264ff5dd41761facb70972b641adcd852d8813bff88a5a39d90b0e8de",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q87.sql": "c80377a668278b49c47cc8340f9eddfb2bce7f9d97e6b56a6f3e0269cca2c2df",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q88.sql": "ef579ad3d5d5dc75c2bdeb9138d6c4e26ffcc241629346fa7dc2d3f1ddba5165",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q89.sql": "8a779bc2a1fcf3bc5a89504817775f70ad2ff5ee603ecc15bcfdee1b8d95291e",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q8.sql": "290be79b985dff56d75c633aa0b107677fd0db40ddbdd0fd4eb89497d4a2a69f",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q90.sql": "fbab8f1e9f9493b856bfb8d9de3d4d218b55da3f5b7df7489ebca02a1eaa3265",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q91.sql": "9fdf907b466dea997b633b316aeea178bd898a18a0839873a21db3f44c384a4d",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q92.sql": "6dff77e65fa717ed587ee48b19cff552ef615a656564559d688c425c61d1f2c4",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q93.sql": "8edb95bfdf9f8457304be20f2bb28c0d89f71b002d810441773289963a0ebbf6",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q94.sql": "4e19ae4610199254debdf77bee5cc3f21c8adfe11f35c4eba5e1b70bfda77e37",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q95.sql": "e8e30963446a0ce71d683f0dae41609dd9a6bc579ac2965a7fa46fb02fe18611",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q96.sql": "e6ee1de37c7fcd182689457d5216c384f333d25096b808ad555e12155e2b49cd",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q97.sql": "28f0102e020b272eccf1e8dabd40d5ef9568f9cd7dcd17f1d64dc0f95f7182a6",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q98.sql": "53397b7c56f06f763e130f3289e00eceafb124bf538fbbe9a31e006c52107725",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q99.sql": "9d813e81f38278430ce33a8814aa0e412578f40491df2ae0c70005a2c3c7e303",
+    "/mnt/tier2/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/analytics-spark/spark-knot/queries/q9.sql": "972b2508787044cabd544e5dc0393526c318e373d8fa45a9f171b11c1281405e",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/configuration.py": "45f818da60c61e2c3a1c293339398eb8e01cb77078285ce9ce4e756d53e34524",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/control.py": "c03df1a5ec7682e9b98aa821d5ce93bb668b7f12799ec44f1a5e46dd9038e917",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/driver.py": "999ae00aef2ea4f5d2e3bd4ee3407936b2f063225d8ff2a6841ba43833065940",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/results.py": "e0745726ab4f36452c8ef6d03a2929b3c36b6d05c99a8eced9ebd3bcdac57e82",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/preflight.sh": "2dd8cd97e9577a1d2f177c8750c9eeff3ec094d24551c825db05e73224a93ef5",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/role.sh": "d0095ffa48415374f2063b777642c9386d7663b215cd3a20f4d397a68031531b",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/run.sh": "8ea9b104d27cac85211bf586eef2c9612a20000917e2a2340e1f4243d1307545",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/validate-local.sh": "2a2718074016b604f5556fc30b7eac97b83349dc02a9e10031a333ae87b0468f",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/spark-defaults.conf": "df759aeb2a262d9d2690935643b88cfae0a6689324cf066a868f3d05fcd74ce6",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/analytics-spark.slurm": "f39898cb7fe3e9365413f7806a4c1e1747fdee35690c8c99ff99aa2bcdeadc50",
+    "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/benchmarks/slurm-benchmarks/analytics-spark/config.env": "e372c5219c427d1d8e1dbd9e9a9870fa74602e27aa9164444a50b2486c82bff7"
+  },
+  "generate": {
+    "status": "PASS",
+    "run_id": "5358076.8IZPUC",
+    "slurm_job_id": "5358076",
+    "application_id": "app-20261019104905-0000",
+    "spark_version": "4.0.4",
+    "python_version": "3.10.12",
+    "expected_executors": 10,
+    "executor_cores": 4,
+    "spark_configuration": {
+      "adaptive_query_execution": "true",
+      "driver_memory": "4g",
+      "executor_instances": "10",
+      "executor_memory": "8g",
+      "master": "spark://10.3.23.29:7077",
+      "shuffle_partitions": "24"
+    },
+    "total_duration_seconds": 141.638547,
+    "workload": "generate",
+    "scale_factor": 1,
+    "generation_partitions": 24,
+    "generated_tables": [
+      "call_center",
+      "catalog_page",
+      "catalog_returns",
+      "catalog_sales",
+      "customer",
+      "customer_address",
+      "customer_demographics",
+      "date_dim",
+      "household_demographics",
+      "income_band",
+      "inventory",
+      "item",
+      "promotion",
+      "reason",
+      "ship_mode",
+      "store",
+      "store_returns",
+      "store_sales",
+      "time_dim",
+      "warehouse",
+      "web_page",
+      "web_returns",
+      "web_sales",
+      "web_site"
+    ],
+    "spark_runtime_metrics": {
+      "source": "spark-ui-rest-api-v1",
+      "completed_stages": 25,
+      "task_totals": {
+        "executor_cpu_seconds": 147.116275,
+        "executor_run_seconds": 283.036,
+        "jvm_gc_seconds": 6.329,
+        "result_bytes": 850747,
+        "task_cpu_utilization_percent": 51.978
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.0,
+        "local_blocks_fetched": 0,
+        "local_bytes_read": 0,
+        "read_bytes": 0,
+        "read_records": 0,
+        "remote_blocks_fetched": 0,
+        "remote_bytes_read": 0,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 0,
+        "write_records": 0,
+        "write_seconds": 0.0
+      },
+      "io": {
+        "input_bytes": 0,
+        "input_records": 0,
+        "output_bytes": 372844717,
+        "output_records": 19555033
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      }
+    },
+    "executor_participation": [
+      {
+        "executor_id": "0",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 60,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.62:33757"
+      },
+      {
+        "executor_id": "1",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 60,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.58:35343"
+      },
+      {
+        "executor_id": "2",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 63,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.212:35037"
+      },
+      {
+        "executor_id": "3",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 63,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.198:40727"
+      },
+      {
+        "executor_id": "4",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 60,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.172:40013"
+      },
+      {
+        "executor_id": "5",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 62,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.119:40431"
+      },
+      {
+        "executor_id": "6",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 60,
+        "failed_tasks": 0,
+        "host_port": "10.3.23.61:44605"
+      },
+      {
+        "executor_id": "7",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 64,
+        "failed_tasks": 0,
+        "host_port": "10.3.23.39:37871"
+      },
+      {
+        "executor_id": "8",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 62,
+        "failed_tasks": 0,
+        "host_port": "10.3.23.29:43991"
+      },
+      {
+        "executor_id": "9",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 62,
+        "failed_tasks": 0,
+        "host_port": "10.3.23.178:40145"
+      }
+    ],
+    "provenance": {
+      "original_summary": "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/results/5358076.8IZPUC/generation-summary.json",
+      "original_summary_sha256": "fedc9f051e8d5ac583c384a8e06101b925e526ba4a79182a03fb6a48ca45d892",
+      "driver_log_sha256": "3bd6f30971c3c47d4afe17a7b6781cbdf38521f349f93289ae575e0926fb730a",
+      "retention": "Selected original metrics; stage traces omitted. Full results and executor logs retained in the local ignored collection."
+    }
+  },
+  "query": {
+    "status": "PASS",
+    "run_id": "5358076.8IZPUC",
+    "slurm_job_id": "5358076",
+    "application_id": "app-20261019105146-0001",
+    "spark_version": "4.0.4",
+    "python_version": "3.10.12",
+    "expected_executors": 10,
+    "executor_cores": 4,
+    "spark_configuration": {
+      "adaptive_query_execution": "true",
+      "driver_memory": "4g",
+      "executor_instances": "10",
+      "executor_memory": "8g",
+      "master": "spark://10.3.23.29:7077",
+      "shuffle_partitions": "24"
+    },
+    "total_duration_seconds": 117.940108,
+    "workload": "query",
+    "iterations": 3,
+    "query_count": 16,
+    "query_runs": 48,
+    "query_selection": "q1,q10,q11,q12,q13,q14a,q14b,q15,q16,q17,q18,q19,q2,q20,q21,q22",
+    "query_statistics": {
+      "q1": {
+        "maximum_seconds": 6.895271,
+        "median_seconds": 0.875907,
+        "minimum_seconds": 0.783701
+      },
+      "q10": {
+        "maximum_seconds": 3.969077,
+        "median_seconds": 1.940415,
+        "minimum_seconds": 1.709237
+      },
+      "q11": {
+        "maximum_seconds": 3.154824,
+        "median_seconds": 1.96451,
+        "minimum_seconds": 1.892866
+      },
+      "q12": {
+        "maximum_seconds": 0.374712,
+        "median_seconds": 0.127438,
+        "minimum_seconds": 0.117188
+      },
+      "q13": {
+        "maximum_seconds": 0.78654,
+        "median_seconds": 0.298979,
+        "minimum_seconds": 0.253339
+      },
+      "q14a": {
+        "maximum_seconds": 8.594681,
+        "median_seconds": 5.102415,
+        "minimum_seconds": 4.943878
+      },
+      "q14b": {
+        "maximum_seconds": 6.637471,
+        "median_seconds": 4.484831,
+        "minimum_seconds": 4.033836
+      },
+      "q15": {
+        "maximum_seconds": 1.672857,
+        "median_seconds": 1.225323,
+        "minimum_seconds": 0.763387
+      },
+      "q16": {
+        "maximum_seconds": 1.818525,
+        "median_seconds": 1.524765,
+        "minimum_seconds": 1.437353
+      },
+      "q17": {
+        "maximum_seconds": 3.11357,
+        "median_seconds": 2.953385,
+        "minimum_seconds": 2.706207
+      },
+      "q18": {
+        "maximum_seconds": 0.396407,
+        "median_seconds": 0.254676,
+        "minimum_seconds": 0.231355
+      },
+      "q19": {
+        "maximum_seconds": 1.2036,
+        "median_seconds": 0.984416,
+        "minimum_seconds": 0.774856
+      },
+      "q2": {
+        "maximum_seconds": 1.685312,
+        "median_seconds": 1.263961,
+        "minimum_seconds": 1.021012
+      },
+      "q20": {
+        "maximum_seconds": 0.155478,
+        "median_seconds": 0.117395,
+        "minimum_seconds": 0.090011
+      },
+      "q21": {
+        "maximum_seconds": 0.897569,
+        "median_seconds": 0.723739,
+        "minimum_seconds": 0.623442
+      },
+      "q22": {
+        "maximum_seconds": 2.215369,
+        "median_seconds": 1.73789,
+        "minimum_seconds": 1.618769
+      }
+    },
+    "spark_runtime_metrics": {
+      "source": "spark-ui-rest-api-v1",
+      "completed_stages": 452,
+      "task_totals": {
+        "executor_cpu_seconds": 221.830389,
+        "executor_run_seconds": 488.678,
+        "jvm_gc_seconds": 6.389,
+        "result_bytes": 229337421,
+        "task_cpu_utilization_percent": 45.394
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.142,
+        "local_blocks_fetched": 337,
+        "local_bytes_read": 601929038,
+        "read_bytes": 723351970,
+        "read_records": 46404351,
+        "remote_blocks_fetched": 523,
+        "remote_bytes_read": 121422932,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 579642814,
+        "write_records": 38148687,
+        "write_seconds": 1.164772
+      },
+      "io": {
+        "input_bytes": 1255242516,
+        "input_records": 252065295,
+        "output_bytes": 3600,
+        "output_records": 48
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      }
+    },
+    "executor_participation": [
+      {
+        "executor_id": "0",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 308,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.62:36935"
+      },
+      {
+        "executor_id": "1",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 321,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.58:42257"
+      },
+      {
+        "executor_id": "2",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 330,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.212:42249"
+      },
+      {
+        "executor_id": "3",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 327,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.198:42595"
+      },
+      {
+        "executor_id": "4",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 340,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.172:40719"
+      },
+      {
+        "executor_id": "5",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 340,
+        "failed_tasks": 0,
+        "host_port": "10.3.24.119:44229"
+      },
+      {
+        "executor_id": "6",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 289,
+        "failed_tasks": 0,
+        "host_port": "10.3.23.61:41571"
+      },
+      {
+        "executor_id": "7",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 313,
+        "failed_tasks": 0,
+        "host_port": "10.3.23.39:45449"
+      },
+      {
+        "executor_id": "8",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 277,
+        "failed_tasks": 0,
+        "host_port": "10.3.23.29:41709"
+      },
+      {
+        "executor_id": "9",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 349,
+        "failed_tasks": 0,
+        "host_port": "10.3.23.178:36233"
+      }
+    ],
+    "query_timings": [
+      {
+        "duration_seconds": 6.895271,
+        "iteration": 1,
+        "query": "q1",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 3.969077,
+        "iteration": 1,
+        "query": "q10",
+        "result_rows": 6
+      },
+      {
+        "duration_seconds": 3.154824,
+        "iteration": 1,
+        "query": "q11",
+        "result_rows": 94
+      },
+      {
+        "duration_seconds": 0.374712,
+        "iteration": 1,
+        "query": "q12",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.78654,
+        "iteration": 1,
+        "query": "q13",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 8.594681,
+        "iteration": 1,
+        "query": "q14a",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 6.637471,
+        "iteration": 1,
+        "query": "q14b",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.672857,
+        "iteration": 1,
+        "query": "q15",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.818525,
+        "iteration": 1,
+        "query": "q16",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 3.11357,
+        "iteration": 1,
+        "query": "q17",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.396407,
+        "iteration": 1,
+        "query": "q18",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 1.2036,
+        "iteration": 1,
+        "query": "q19",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.685312,
+        "iteration": 1,
+        "query": "q2",
+        "result_rows": 2513
+      },
+      {
+        "duration_seconds": 0.155478,
+        "iteration": 1,
+        "query": "q20",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.897569,
+        "iteration": 1,
+        "query": "q21",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 2.215369,
+        "iteration": 1,
+        "query": "q22",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 0.875907,
+        "iteration": 2,
+        "query": "q1",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.940415,
+        "iteration": 2,
+        "query": "q10",
+        "result_rows": 6
+      },
+      {
+        "duration_seconds": 1.96451,
+        "iteration": 2,
+        "query": "q11",
+        "result_rows": 94
+      },
+      {
+        "duration_seconds": 0.117188,
+        "iteration": 2,
+        "query": "q12",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.298979,
+        "iteration": 2,
+        "query": "q13",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 5.102415,
+        "iteration": 2,
+        "query": "q14a",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 4.484831,
+        "iteration": 2,
+        "query": "q14b",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.225323,
+        "iteration": 2,
+        "query": "q15",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.524765,
+        "iteration": 2,
+        "query": "q16",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 2.953385,
+        "iteration": 2,
+        "query": "q17",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.254676,
+        "iteration": 2,
+        "query": "q18",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.984416,
+        "iteration": 2,
+        "query": "q19",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.263961,
+        "iteration": 2,
+        "query": "q2",
+        "result_rows": 2513
+      },
+      {
+        "duration_seconds": 0.117395,
+        "iteration": 2,
+        "query": "q20",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.723739,
+        "iteration": 2,
+        "query": "q21",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.73789,
+        "iteration": 2,
+        "query": "q22",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 0.783701,
+        "iteration": 3,
+        "query": "q1",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.709237,
+        "iteration": 3,
+        "query": "q10",
+        "result_rows": 6
+      },
+      {
+        "duration_seconds": 1.892866,
+        "iteration": 3,
+        "query": "q11",
+        "result_rows": 94
+      },
+      {
+        "duration_seconds": 0.127438,
+        "iteration": 3,
+        "query": "q12",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.253339,
+        "iteration": 3,
+        "query": "q13",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 4.943878,
+        "iteration": 3,
+        "query": "q14a",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 4.033836,
+        "iteration": 3,
+        "query": "q14b",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 0.763387,
+        "iteration": 3,
+        "query": "q15",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.437353,
+        "iteration": 3,
+        "query": "q16",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 2.706207,
+        "iteration": 3,
+        "query": "q17",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.231355,
+        "iteration": 3,
+        "query": "q18",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.774856,
+        "iteration": 3,
+        "query": "q19",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.021012,
+        "iteration": 3,
+        "query": "q2",
+        "result_rows": 2513
+      },
+      {
+        "duration_seconds": 0.090011,
+        "iteration": 3,
+        "query": "q20",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.623442,
+        "iteration": 3,
+        "query": "q21",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.618769,
+        "iteration": 3,
+        "query": "q22",
+        "result_rows": 100
+      }
+    ],
+    "provenance": {
+      "original_summary": "/home/users/u102006/kampadais/analytics-spark-slurm-e1bad50/results/5358076.8IZPUC/query-summary.json",
+      "original_summary_sha256": "db67862c08500cc81759a8ffe26b16f2d13eb9ad390bf223d37e88bacc100008",
+      "driver_log_sha256": "5bb604246ec4573c4f2ec7aab57f81f510153bfb54ca9834c3bb746bd116d2f7",
+      "retention": "Selected original metrics; stage traces omitted. Full results and executor logs retained in the local ignored collection."
+    }
+  },
+  "role_cpu_affinity": {
+    "worker-mel0373-resources.txt": "0-1,128-129",
+    "query-mel0029-resources.txt": "5-6,133-134",
+    "minio-mel0029-resources.txt": "0-1,128-129",
+    "worker-mel0061-resources.txt": "0-1,128-129",
+    "worker-mel0178-resources.txt": "0-1,128-129",
+    "worker-mel0039-resources.txt": "0-1,128-129",
+    "worker-mel0452-resources.txt": "0-1,128-129",
+    "worker-mel0029-resources.txt": "2-3,130-131",
+    "worker-mel0426-resources.txt": "0-1,128-129",
+    "worker-mel0312-resources.txt": "0-1,128-129",
+    "master-mel0029-resources.txt": "4,132",
+    "worker-mel0316-resources.txt": "0-1,128-129",
+    "generate-mel0029-resources.txt": "5-6,133-134",
+    "worker-mel0466-resources.txt": "0-1,128-129"
+  },
+  "cleanup": {
+    "credentials_removed": true,
+    "minio_data_directory_removed": true,
+    "source_sha256": "25fe9ae87a4d869a0cb3728312dd5323dec1f03f816f5bdf46f684467c9f5b19"
+  },
+  "provenance": {
+    "git_commit": "e1bad5010a35bb8bb663c7ff7bd54013decc1217",
+    "local_raw_collection": "benchmarks/slurm-benchmarks/analytics-spark/results/meluxina-5358076-collection",
+    "collection_archive_sha256": "f963e47bb429c2356601b976d4ffcccf5dc07eca1c7359dceac48048dafc4eb5",
+    "accounting_json_sha256": "772220821e5e2fdcaf31258c75502e7d1cb90673d37abee1174f53b0c8c92a9c",
+    "configuration_sha256": "8880e44a6350ba985b7a14d48c11048d7f16290f4ec15d892e1029a8f6081dad",
+    "report_sha256": "ede1b81f173cab6bc915d5b743c8f76be5427b7953a83b75cfec08e37e9e58aa"
+  },
+  "inspection": {
+    "checks": "PASS: collection checksum; existing native result validator with local source-path mapping; driver JSON matches both summaries; ten active participating four-core executors on ten nodes; zero failed tasks; all 24 tables and 48 ordered query executions; original query statistics; source/query/image hashes; final accounting and cleanup evidence.",
+    "comparison_to_skiff": "Same Spark SIF, benchmark/query source, node count and workload/resources as Skiff job 5357975. Physical node identities differ; native Slurm binds CPUs to cores and uses the native ib0 network, while Skiff uses virtual networking. Native MinIO is backed by shared-home Lustre, whereas Skiff MinIO used node-local tmpfs. These individual runs do not isolate platform overhead or establish a controlled speedup.",
+    "worker_startup": "Worker logs contain initial master connection retries followed by successful registration on all ten nodes.",
+    "executor_termination_states_from_worker_logs": {
+      "KILLED, exit 143": 20
+    },
+    "service_step_accounting": "Both driver steps completed with exit 0:0. Long-running service steps record FAILED, exit 255:0, following launcher teardown; top-level allocation and launcher exited zero."
+  }
+}
