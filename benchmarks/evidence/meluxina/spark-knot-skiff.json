@@ -1,0 +1,820 @@
+{
+  "site": "MeluXina (login.lxp.lu)",
+  "benchmark": "spark-knot",
+  "platform": "skiff",
+  "date": "2026-10-19",
+  "nodes": [
+    "mel0066",
+    "mel0097",
+    "mel0128",
+    "mel0202",
+    "mel0217",
+    "mel0272",
+    "mel0303",
+    "mel0325",
+    "mel0375",
+    "mel0441"
+  ],
+  "slurm": {
+    "job_id": "5357975",
+    "state": "COMPLETED",
+    "exit_code": "0:0",
+    "benchmark_exit_code": 0,
+    "elapsed_seconds": 465,
+    "partition": "cpu",
+    "account": "p200528",
+    "qos": "short",
+    "exclusive_nodes": 10,
+    "allocated_logical_cpus": 2560,
+    "start_time_utc": "2026-10-19T10:12:32+00:00",
+    "end_time_utc": "2026-10-19T10:20:17+00:00",
+    "cleanup": "Cluster cleanup complete; long-running cluster steps were cancelled during the wrapper teardown after BENCHMARK_SUCCEEDED.",
+    "accounting_note": "slurm-final.txt was captured inside the exit trap while the batch job still reported RUNNING; final status comes from post-exit sacct."
+  },
+  "runtime": {
+    "skiff_version": "0.1.0-e1bad50",
+    "git_commit": "e1bad5010a35bb8bb663c7ff7bd54013decc1217",
+    "apptainer_version": "1.5.4",
+    "architecture": "amd64",
+    "logical_cpus_per_node": 256,
+    "memory_per_node": "480Gi",
+    "executor_memory_overhead": "2g",
+    "driver_cores": 4,
+    "driver_memory_overhead": "1g",
+    "spark_sif_sha256": "1519a28a7e1061e8b6893ec83ee7318140e8ca6c34fe833158a5dae24566d7fd",
+    "skiff_sif_sha256": "de1e59ef4eccf5d81343882bb2f4bc5aa6146832ba71ce2c1c420cc045c4ffa1",
+    "source_provenance": {
+      "git_commit": "e1bad5010a35bb8bb663c7ff7bd54013decc1217",
+      "platform": "linux/amd64",
+      "executor_instances": 10,
+      "scale_factor": 1,
+      "generation_partitions": 24,
+      "shuffle_partitions": 24,
+      "query_set": "original",
+      "query_iterations": 3,
+      "executor_cores": 4,
+      "executor_memory": "8g",
+      "source_hashes": {
+        "scripts/skiff.sh": "9b2eb7ccf7f9e2ce3efd54ad865edbd1cca7fe3566c897264e42b5318dc3ef01",
+        "scripts/skiff.slurm": "6fad8dae4b987fb21dd7cc01e074bdec2df1b46d4191b03013a07e4fa99b7f58",
+        "images/skiff/Dockerfile": "ac2a37e83aee2b02ea7ed9bd2398247fc9164e8b5395a35773ba177b5dd040bf",
+        "benchmarks/analytics-spark/spark-knot/Dockerfile": "5c6b71506274befdafcf17244a95b6be48fa8542d89a2bd7b23e970485f5fc21"
+      },
+      "staged_launcher_changes": "launcher-path.diff",
+      "host_compatibility": "private glibc and patched ELF interpreter in host tools only; image unchanged",
+      "images": {
+        "skiff": {
+          "inspect": "sha256:a6d51c11d32518fd3a5f37331c5c39b600e6483e34c3fdb0232957f97669866f linux/amd64 192333218",
+          "archive_sha256": "e3701ae1853d0b4c95d1211caae566459b34b9b301cb251db3bb5c9b123fde14"
+        },
+        "analytics-spark": {
+          "inspect": "sha256:3fefd1ac0dcd66686e78275262bb3fd68a4277c91f9abf2d9108720ef95e29f6 linux/amd64 1315973851",
+          "archive_sha256": "09ce8d5b1fef9b24fc0b3157a362d78ed69660478e3a870c2bb21a2e19c366c0"
+        }
+      },
+      "deployment_overrides": {
+        "spark.kubernetes.jars.avoidDownloadSchemes": "local",
+        "reason": "Avoid Spark 4 Kubernetes in-driver self-copy deleting its image-local TPC-DS JAR."
+      },
+      "host_python": "/apps/USE/easybuild/release/2025.1/software/Python/3.13.1-GCCcore-14.2.0/bin/python3"
+    }
+  },
+  "generate": {
+    "status": "PASS",
+    "run_id": "meluxina-5357975",
+    "application_id": "spark-22894f5a59ab4248977415dd9ef29555",
+    "spark_version": "4.0.4",
+    "python_version": "3.10.12",
+    "expected_executors": 10,
+    "executor_cores": 4,
+    "spark_configuration": {
+      "adaptive_query_execution": "true",
+      "driver_memory": "4g",
+      "executor_instances": "10",
+      "executor_memory": "8g",
+      "master": "k8s://https://10.43.0.1:443",
+      "shuffle_partitions": "24"
+    },
+    "total_duration_seconds": 92.908151,
+    "workload": "generate",
+    "scale_factor": 1,
+    "generation_partitions": 24,
+    "generated_tables": [
+      "call_center",
+      "catalog_page",
+      "catalog_returns",
+      "catalog_sales",
+      "customer",
+      "customer_address",
+      "customer_demographics",
+      "date_dim",
+      "household_demographics",
+      "income_band",
+      "inventory",
+      "item",
+      "promotion",
+      "reason",
+      "ship_mode",
+      "store",
+      "store_returns",
+      "store_sales",
+      "time_dim",
+      "warehouse",
+      "web_page",
+      "web_returns",
+      "web_sales",
+      "web_site"
+    ],
+    "spark_runtime_metrics": {
+      "source": "spark-ui-rest-api-v1",
+      "completed_stages": 25,
+      "task_totals": {
+        "executor_cpu_seconds": 136.718365,
+        "executor_run_seconds": 200.428,
+        "jvm_gc_seconds": 6.243,
+        "result_bytes": 848102,
+        "task_cpu_utilization_percent": 68.213
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.0,
+        "local_blocks_fetched": 0,
+        "local_bytes_read": 0,
+        "read_bytes": 0,
+        "read_records": 0,
+        "remote_blocks_fetched": 0,
+        "remote_bytes_read": 0,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 0,
+        "write_records": 0,
+        "write_seconds": 0.0
+      },
+      "io": {
+        "input_bytes": 0,
+        "input_records": 0,
+        "output_bytes": 372844717,
+        "output_records": 19555033
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      }
+    },
+    "executor_participation": [
+      {
+        "executor_id": "1",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 60,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "2",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 62,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "3",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 59,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "4",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 63,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "5",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 61,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "6",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 62,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "7",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 64,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "8",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 59,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "9",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 63,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "10",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 63,
+        "failed_tasks": 0
+      }
+    ],
+    "executor_placement": {
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-1": "mel0217",
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-10": "mel0202",
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-2": "mel0303",
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-3": "mel0272",
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-4": "mel0128",
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-5": "mel0325",
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-6": "mel0097",
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-7": "mel0066",
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-8": "mel0441",
+      "spark-knot-generate-meluxina-5357975-6e16f3a153a8d736-exec-9": "mel0375"
+    },
+    "application_completion": {
+      "state": "COMPLETED",
+      "submission_attempts": 1,
+      "execution_attempts": 1,
+      "driver_exit_code": 0,
+      "driver_restarts": 0,
+      "last_submission_attempt_time_utc": "2026-10-19T10:15:27Z",
+      "termination_time_utc": "2026-10-19T10:17:19Z",
+      "operator_executor_states": {
+        "FAILED": 10
+      }
+    },
+    "provenance": {
+      "original_summary": "/home/users/u102006/kampadais/skiff-e1bad50/results/meluxina-5357975/generation-summary.json",
+      "original_summary_sha256": "cb55e69bb44223fd71a04d0b0fc6cfa5646aeeaa848ca9a6206abac0bb67b4bf",
+      "driver_log_sha256": "3fd49d1e3113756926936652a94e1e366f17bf03c584551450c7cadcb558005d",
+      "sparkapplication_sha256": "2e2c392da7421fb38a64c40aacd31ad024fd68b380b4a16650a3ab7cd25bf525",
+      "retention": "Selected original fields; stage-level traces omitted. Full summaries and logs retained in the local ignored collection."
+    }
+  },
+  "query": {
+    "status": "PASS",
+    "run_id": "meluxina-5357975",
+    "application_id": "spark-edbf9990037f43338c6c0fe0d7310a1d",
+    "spark_version": "4.0.4",
+    "python_version": "3.10.12",
+    "expected_executors": 10,
+    "executor_cores": 4,
+    "spark_configuration": {
+      "adaptive_query_execution": "true",
+      "driver_memory": "4g",
+      "executor_instances": "10",
+      "executor_memory": "8g",
+      "master": "k8s://https://10.43.0.1:443",
+      "shuffle_partitions": "24"
+    },
+    "total_duration_seconds": 98.774787,
+    "workload": "query",
+    "iterations": 3,
+    "query_count": 16,
+    "query_runs": 48,
+    "query_selection": "q1,q10,q11,q12,q13,q14a,q14b,q15,q16,q17,q18,q19,q2,q20,q21,q22",
+    "query_statistics": {
+      "q1": {
+        "maximum_seconds": 3.997917,
+        "median_seconds": 0.63576,
+        "minimum_seconds": 0.539813
+      },
+      "q10": {
+        "maximum_seconds": 3.418215,
+        "median_seconds": 1.830701,
+        "minimum_seconds": 1.796987
+      },
+      "q11": {
+        "maximum_seconds": 2.697278,
+        "median_seconds": 1.665355,
+        "minimum_seconds": 1.660586
+      },
+      "q12": {
+        "maximum_seconds": 0.282032,
+        "median_seconds": 0.123023,
+        "minimum_seconds": 0.10188
+      },
+      "q13": {
+        "maximum_seconds": 0.41024,
+        "median_seconds": 0.191226,
+        "minimum_seconds": 0.162356
+      },
+      "q14a": {
+        "maximum_seconds": 6.247597,
+        "median_seconds": 4.447982,
+        "minimum_seconds": 3.861014
+      },
+      "q14b": {
+        "maximum_seconds": 5.086312,
+        "median_seconds": 4.109577,
+        "minimum_seconds": 4.018606
+      },
+      "q15": {
+        "maximum_seconds": 1.30803,
+        "median_seconds": 1.127893,
+        "minimum_seconds": 1.080524
+      },
+      "q16": {
+        "maximum_seconds": 1.453843,
+        "median_seconds": 1.244873,
+        "minimum_seconds": 1.231447
+      },
+      "q17": {
+        "maximum_seconds": 2.76788,
+        "median_seconds": 2.501241,
+        "minimum_seconds": 2.115989
+      },
+      "q18": {
+        "maximum_seconds": 0.249024,
+        "median_seconds": 0.196851,
+        "minimum_seconds": 0.166356
+      },
+      "q19": {
+        "maximum_seconds": 0.959533,
+        "median_seconds": 0.789871,
+        "minimum_seconds": 0.677649
+      },
+      "q2": {
+        "maximum_seconds": 1.110796,
+        "median_seconds": 0.979301,
+        "minimum_seconds": 0.894119
+      },
+      "q20": {
+        "maximum_seconds": 0.126705,
+        "median_seconds": 0.104836,
+        "minimum_seconds": 0.093209
+      },
+      "q21": {
+        "maximum_seconds": 0.99399,
+        "median_seconds": 0.671752,
+        "minimum_seconds": 0.664604
+      },
+      "q22": {
+        "maximum_seconds": 1.74065,
+        "median_seconds": 1.529678,
+        "minimum_seconds": 1.341415
+      }
+    },
+    "spark_runtime_metrics": {
+      "source": "spark-ui-rest-api-v1",
+      "completed_stages": 452,
+      "task_totals": {
+        "executor_cpu_seconds": 230.955707,
+        "executor_run_seconds": 369.415,
+        "jvm_gc_seconds": 4.927,
+        "result_bytes": 229349969,
+        "task_cpu_utilization_percent": 62.519
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.014,
+        "local_blocks_fetched": 324,
+        "local_bytes_read": 602677489,
+        "read_bytes": 723351767,
+        "read_records": 46404351,
+        "remote_blocks_fetched": 534,
+        "remote_bytes_read": 120674278,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 579642611,
+        "write_records": 38148687,
+        "write_seconds": 1.150878
+      },
+      "io": {
+        "input_bytes": 1255242516,
+        "input_records": 252065295,
+        "output_bytes": 3599,
+        "output_records": 48
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      }
+    },
+    "executor_participation": [
+      {
+        "executor_id": "1",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 340,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "2",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 321,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "3",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 294,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "4",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 329,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "5",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 317,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "6",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 298,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "7",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 304,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "8",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 329,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "9",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 317,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "10",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 345,
+        "failed_tasks": 0
+      }
+    ],
+    "executor_placement": {
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-1": "mel0217",
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-10": "mel0128",
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-2": "mel0303",
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-3": "mel0325",
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-4": "mel0441",
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-5": "mel0202",
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-6": "mel0097",
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-7": "mel0375",
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-8": "mel0272",
+      "spark-knot-query-meluxina-5357975-b44955a153aaa17e-exec-9": "mel0066"
+    },
+    "application_completion": {
+      "state": "COMPLETED",
+      "submission_attempts": 1,
+      "execution_attempts": 1,
+      "driver_exit_code": 0,
+      "driver_restarts": 0,
+      "last_submission_attempt_time_utc": "2026-10-19T10:17:24Z",
+      "termination_time_utc": "2026-10-19T10:19:21Z",
+      "operator_executor_states": {
+        "FAILED": 10
+      }
+    },
+    "provenance": {
+      "original_summary": "/home/users/u102006/kampadais/skiff-e1bad50/results/meluxina-5357975/query-summary.json",
+      "original_summary_sha256": "251c3b583396caaa415112508128e7c08d0d14e65aa64183c0b198df48c0bcd9",
+      "driver_log_sha256": "f1ea03c7a93d91c77c381de4b0dd0fbc24bfca7b0450e71aa5530bafb0e95986",
+      "sparkapplication_sha256": "52c795e8b157e52a2564522942a8a83c3deebf3f659af574d220ed8752578f1e",
+      "retention": "Selected original fields; stage-level traces omitted. Full summaries and logs retained in the local ignored collection."
+    },
+    "query_timings": [
+      {
+        "duration_seconds": 3.997917,
+        "iteration": 1,
+        "query": "q1",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 3.418215,
+        "iteration": 1,
+        "query": "q10",
+        "result_rows": 6
+      },
+      {
+        "duration_seconds": 2.697278,
+        "iteration": 1,
+        "query": "q11",
+        "result_rows": 94
+      },
+      {
+        "duration_seconds": 0.282032,
+        "iteration": 1,
+        "query": "q12",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.41024,
+        "iteration": 1,
+        "query": "q13",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 6.247597,
+        "iteration": 1,
+        "query": "q14a",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 5.086312,
+        "iteration": 1,
+        "query": "q14b",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.30803,
+        "iteration": 1,
+        "query": "q15",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.453843,
+        "iteration": 1,
+        "query": "q16",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 2.76788,
+        "iteration": 1,
+        "query": "q17",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.249024,
+        "iteration": 1,
+        "query": "q18",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.959533,
+        "iteration": 1,
+        "query": "q19",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.110796,
+        "iteration": 1,
+        "query": "q2",
+        "result_rows": 2513
+      },
+      {
+        "duration_seconds": 0.126705,
+        "iteration": 1,
+        "query": "q20",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.99399,
+        "iteration": 1,
+        "query": "q21",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.74065,
+        "iteration": 1,
+        "query": "q22",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 0.63576,
+        "iteration": 2,
+        "query": "q1",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.796987,
+        "iteration": 2,
+        "query": "q10",
+        "result_rows": 6
+      },
+      {
+        "duration_seconds": 1.660586,
+        "iteration": 2,
+        "query": "q11",
+        "result_rows": 94
+      },
+      {
+        "duration_seconds": 0.123023,
+        "iteration": 2,
+        "query": "q12",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.191226,
+        "iteration": 2,
+        "query": "q13",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 4.447982,
+        "iteration": 2,
+        "query": "q14a",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 4.018606,
+        "iteration": 2,
+        "query": "q14b",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.127893,
+        "iteration": 2,
+        "query": "q15",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.244873,
+        "iteration": 2,
+        "query": "q16",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 2.501241,
+        "iteration": 2,
+        "query": "q17",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.196851,
+        "iteration": 2,
+        "query": "q18",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.677649,
+        "iteration": 2,
+        "query": "q19",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 0.979301,
+        "iteration": 2,
+        "query": "q2",
+        "result_rows": 2513
+      },
+      {
+        "duration_seconds": 0.104836,
+        "iteration": 2,
+        "query": "q20",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.671752,
+        "iteration": 2,
+        "query": "q21",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.341415,
+        "iteration": 2,
+        "query": "q22",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 0.539813,
+        "iteration": 3,
+        "query": "q1",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.830701,
+        "iteration": 3,
+        "query": "q10",
+        "result_rows": 6
+      },
+      {
+        "duration_seconds": 1.665355,
+        "iteration": 3,
+        "query": "q11",
+        "result_rows": 94
+      },
+      {
+        "duration_seconds": 0.10188,
+        "iteration": 3,
+        "query": "q12",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.162356,
+        "iteration": 3,
+        "query": "q13",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 3.861014,
+        "iteration": 3,
+        "query": "q14a",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 4.109577,
+        "iteration": 3,
+        "query": "q14b",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.080524,
+        "iteration": 3,
+        "query": "q15",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.231447,
+        "iteration": 3,
+        "query": "q16",
+        "result_rows": 1
+      },
+      {
+        "duration_seconds": 2.115989,
+        "iteration": 3,
+        "query": "q17",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.166356,
+        "iteration": 3,
+        "query": "q18",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.789871,
+        "iteration": 3,
+        "query": "q19",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 0.894119,
+        "iteration": 3,
+        "query": "q2",
+        "result_rows": 2513
+      },
+      {
+        "duration_seconds": 0.093209,
+        "iteration": 3,
+        "query": "q20",
+        "result_rows": 0
+      },
+      {
+        "duration_seconds": 0.664604,
+        "iteration": 3,
+        "query": "q21",
+        "result_rows": 100
+      },
+      {
+        "duration_seconds": 1.529678,
+        "iteration": 3,
+        "query": "q22",
+        "result_rows": 100
+      }
+    ]
+  },
+  "inspection": {
+    "collection_date": "2026-10-19",
+    "checks": "PASS: archive integrity; driver-log re-extraction; both phase identities; all 24 tables; 48 ordered query runs; original per-query statistics; ten participating four-core executors and ten distinct physical nodes per phase; driver exit/restarts; single application attempts; post-exit Slurm success; cleanup marker.",
+    "operator_executor_state_discrepancy": "Both saved SparkApplications report COMPLETED, with all ten executorState entries FAILED. Spark summaries report all ten executors active at metric capture, completed tasks and zero failed tasks. Final executor pod exit codes/events/logs were not retained, so the cause cannot be confirmed; do not interpret this as clean executor shutdown.",
+    "runtime_limitations": "Skiff SecurityContextNotApplied events and single-ID namespace warnings were observed during deployment. These measurements establish workload execution, not enforcement of all Kubernetes security fields.",
+    "excluded_attempt": {
+      "slurm_job_id": "5357831",
+      "reason": "Pre-workload image-local JAR self-copy failure; no valid generation/query measurements."
+    },
+    "comparison_limit": "One ten-node MeluXina run; differing site, hardware, topology and runtime prevent attributing differences from Knot runs to platform overhead or speedup."
+  },
+  "provenance": {
+    "remote_deployment": "/home/users/u102006/kampadais/skiff-e1bad50",
+    "local_raw_collection": "benchmarks/analytics-spark/spark-knot/results/meluxina-5357975-collection",
+    "collection_archive_sha256": "0ff62c55de746568bba99b5abaa37a04b2ee0dcf14326477a5cff473c2ab20bd",
+    "accounting_json_sha256": "bf09a3253681c3374409b2ad68d819f732dee3d362d4b6e070841680074b0c0f",
+    "executor_placement_sha256": "1be340effb2c7b0d988ea9890fc1b74e8f129d3dca71dc1e8e68aa09a634b408",
+    "benchmark_log_sha256": "07032ad6ea7972494725c4cb589cc2f36e869257eedf85f73c102dff375278c4",
+    "cluster_log_sha256": "ee50625cf0e1d736797330469d4d6803acab095b43a371b89c0eb451734d28dd",
+    "source_provenance_sha256": "20dbb354f4f4cceb96fb8b8663450b8ce723a422dc64d8f5af61af2ce8ef6579",
+    "local_jars_diff_sha256": "7298cc7680d2c5d32738cf4a676c15e326dc526529babd32981729096d621c31"
+  }
+}

@@ -1,125 +1,194 @@
-# Distributed Fine-Tuning of BERT LLM for Sentiment Analysis with Kubeflow PyTorchJob
+# Distributed BERT training benchmark
 
-This notebook instructs how to refine a BERT language model (LLM) for analyzing text sentiment (positive/negative) using the Kubeflow PyTorchJob framework and a distributed training approach.
+One BERT/Yelp full-fine-tuning workload runs unchanged on Skiff or native
+Slurm. Shared training source, profiles, images, assets, metrics and result
+validation live in this directory. The `skiff/` and `slurm/` directories only
+adapt deployment and process startup.
 
-### **Key Technologies:**
+CPU is the default. Both adapters default to ten nodes and one training process
+per node. Optional GPU mode defaults to one GPU and one process per node, checks
+that CUDA is usable and never falls back to CPU. The notebook and command-line
+Skiff launcher use the same manifest renderer.
 
-Python libraries and dependencies:
-*   **Hugging Face Transformers:** Popular library providing pre-trained models (like BERT) and tools for working with them.
-*   **Datasets library:** Efficiently loads and processes the Yelp review dataset. 
-*   **AWS S3 (or MinIO):** Object storage library for saving the fine-tuned model.
-*   **BERT:** (Bidirectional Encoder Representations from Transformers) A state-of-the-art language model used for various natural language processing tasks.
+## Default CPU workload
 
-For the infrastructure:
-1.  **OpenEBS:** A software-defined storage solution for Kubernetes 
-    * to handle the storage requests from minio and jupyter servers(per user).
-2.  **MinIO:** An object storage system compatible with the AWS S3 API for storing models and data.
-3.  **JupyterHub:** A multi-user platform for interactive Jupyter Notebooks, a common tool for data science and machine learning development.
+| Setting | Default | Effect |
+| --- | ---: | --- |
+| `nodes` | 10 | Allocation and training-node count. |
+| `processes_per_node` | 1 | Local `torchrun` processes; multiplies world size. |
+| `samples` | 32000 | Total selected Yelp examples; primary length control. |
+| `validation_samples` | 3200 | Examples reserved for evaluation. |
+| `epochs` | 3 | Complete training passes; runtime grows approximately linearly. |
+| `max_sequence_length` | 128 | Token length; strongly affects compute and memory. |
+| `train_batch_size` | 8 | Per-process training batch. |
+| `eval_batch_size` | 16 | Per-process evaluation batch. |
+| `gradient_accumulation_steps` | 1 | Local batches accumulated before an optimizer step. |
+| `cpu_threads` | 32 | CPU threads per process. |
+| `memory_gib` | 64 | Memory requested per node. |
+| `tokenizer_processes` | 8 | Preprocessing subprocesses per training process. |
+| `dataloader_workers` | 4 | PyTorch data-loader workers per process. |
 
-4.   **Kubeflow:** A platform for managing machine learning workflows on Kubernetes.
-        * **Kubeflow Training Operator:** A Kubernetes component for managing the training of machine learning models.
-        * **PyTorchJob:** A Kubeflow (-Kubernetes) CRD for running PyTorch distributed training jobs.
+The complete profile also sets model, dataset, learning rate, weight decay,
+warmup ratio, seed, evaluation, model export, log frequency and collective
+startup timeout. Every field has a default in
+[`configs/cpu.json`](configs/cpu.json) and can be changed with a JSON profile or
+repeated `--set KEY=VALUE` arguments. See the resolved configuration without
+starting work:
 
+```bash
+python3 run.py show
+python3 run.py show --set samples=16000 --set epochs=2 --set nodes=5
+python3 run.py show --gpu --set gpus_per_node=2 --set processes_per_node=2
+```
 
-**Step-by-Step Setting up the infrastracture**
-> given that we already have an HPK instance running
+`samples` and `epochs` are the simplest duration controls. Sequence length and
+batch settings also change memory use and optimization behavior. Keep all
+settings identical when comparing Skiff with native Slurm.
 
-> there is a install.sh script that does all the following
+## One-hour sizing estimate
 
-1.  **Install OpenEBS**
+The default has 28,800 training examples, global batch 80 and 360 optimizer
+steps per epoch: 1,080 steps over three epochs. A retained earlier run used two
+CPU processes, four CPU threads each, global batch 16 and sequence length 128.
+Its first 225-step epoch plus evaluation took 55 minutes 49 seconds, or about
+14.7 seconds per optimizer step.
 
-2.  **Install MinIO**
+The ten-node default budgets 32 CPU threads per process. Assuming the larger
+per-process CPU budget makes a step roughly four times faster gives about 66
+minutes for 1,080 steps. Faster nodes could bring this below an hour; ten-node
+collectives, Skiff networking, preprocessing, evaluation and export can move it
+above an hour. Treat this as a starting estimate, not measured performance.
+After one complete Skiff run, adjust `samples` or `epochs` proportionally from
+the recorded `training_seconds` and `application_seconds`.
 
-3.  **Install Kubeflow Training Operator:**
-    *   Uses `kubectl apply` to install the Kubeflow Training Operator from its official GitHub repository (version 1.7.0).
+There is no application runtime cutoff. The Slurm submission helper defaults
+to a two-hour scheduler ceiling so the estimated one-hour workload has margin.
+Collective startup retains a bounded failure timeout; it does not limit healthy
+training.
 
-4.  **Install JupyterHub:**
-    *   Creates the `kubeflow` namespace. (!!)
-    *   Employs Helm to install (or upgrade) a JupyterHub instance named `my-jupyter`.
+## Prepare shared assets and images
 
-<!-- 5.  **Get MinIO Credentials:**
-    *   Retrieves the access key and secret key for the MinIO instance from a  Kubernetes secret named "myminio".
-    *   Displays these credentials to use them inside the notebook 
+Download the selected model, tokenizer and bounded dataset before allocating
+nodes. Training uses these local assets and performs no network download:
 
-6.  **Download and Configure MinIO Client (`mc`):**
-    *  Retrieves the internal MinIO service IP address (`ENDPOINT`) 
-    *  Sets up an `mc` alias named 'local' targeting the MinIO instance and using the retrieved credentials. -->
+```bash
+python3 -m venv .prepare-venv
+. .prepare-venv/bin/activate
+pip install torch==2.7.1 --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+python run.py prepare --output assets
+```
 
-<!-- 7.  **Create MinIO Bucket:**
-    *   Creates a bucket named 'kubeflow-examples' in MinIO. -->
+Build CPU and optional GPU images, then convert or publish them for the target
+runtime. Use the same resulting CPU SIF for the Skiff and native CPU runs:
 
-> also, modify the /etc/apptainer/apptainer.conf file, to increase the overlay storage to something like 32GB on the `sessiondir max size` field
+```bash
+docker build -t bert-training:cpu .
+docker build -f Dockerfile.gpu -t bert-training:gpu .
+```
 
-To create an alias for MinIO:
-> kubectl port-forward svc/myminio -n minio 9000:9000
+The shared benchmark directory, including `assets/`, must be visible on every
+node. Asset preparation and image construction are outside benchmark timing.
 
-then: 
-`MC_ACCESS_KEY=$(kubectl get secret myminio -n minio -o jsonpath="{.data.rootUser}" | base64 --decode)` 
+## Skiff
 
-and:  
-`MC_SECRET_KEY=$(kubectl get secret myminio -n minio -o jsonpath="{.data.rootPassword}" | base64 --decode)`
+Stage this directory below Skiff's shared state root and make the SIF available
+on every node. Inside an existing Skiff allocation, install the training
+operator once and submit the default CPU run:
 
-and:
-`./mc alias set local http://localhost:9000 $MC_ACCESS_KEY $MC_SECRET_KEY`
+```bash
+./skiff/install.sh
+./skiff/run.sh
+```
 
-and finally, create the bucket:
-`mc mb local/kubeflow-examples`.
+The launcher computes the SIF digest, renders a ten-node `PyTorchJob`, waits
+without a workload deadline and validates `result.json`. Defaults assume the
+host SIF is `$HOME/.skiff/images/bert-training-cpu.sif`, its bubble-visible path
+is `/root/.skiff/images/bert-training-cpu.sif`, and the staged benchmark is
+visible at `/root/.skiff/benchmarks/bert-distr-training`. Override
+`BERT_SIF`, `BERT_IMAGE`, `BERT_STORAGE`, `BERT_NAMESPACE`, `BERT_RUN_ID` or
+`BERT_RUN_DIR` when the deployment uses other paths.
 
-## **Notebook Structure**
+Pass workload changes directly to the shared renderer:
 
-1. **Import Libraries:** Load necessary libraries for model fine-tuning, data processing, distributed training, and S3 interaction.
-2. **Load Yelp Sample Data:** Fetch a subset of the Yelp reviews dataset from Hugging Face. 
-3. **Create Fine-Tuning Script:**  Define the `train_func` function, which encapsulates these core steps:
-    1. Download BERT model and tokenizer
-    2. Download Yelp dataset
-    3. Tokenize the text data for BERT
-    4. Distribute dataset across workers
-    5. Set up training arguments
-    6. Create the PyTorch Trainer
-    7. Fine-tune BERT
-    8. Worker with RANK=0 saves the model to S3  
+```bash
+./skiff/run.sh --set samples=16000 --set epochs=2
+./skiff/run.sh --gpu
+./skiff/run.sh --gpu --set nodes=4 --set gpus_per_node=2 --set processes_per_node=2
+```
 
-4. **Create PyTorchJob:**  Instantiate the PyTorchJob using the training function, specifying details like:
-    Number of workers (GPUs)
-    Resource allocation per worker
-    AWS S3 Bucket
-5. **Monitor Job:**  Check job status and wait for completion.
-6. **Get Logs:**  Fetch training logs from the worker pods.
-7. **Download Model:**  Retrieve the fine-tuned model from S3.
-8. **Test Model:**  Load the model and use the Hugging Face pipeline for sentiment analysis on sample text.
+Required pod anti-affinity places one training pod on each Kubernetes node.
+CPU resources are `cpu_threads * processes_per_node` per pod. GPU mode requests
+`gpus_per_node` devices per pod and requires `processes_per_node` not to exceed
+that count.
 
-**Details and Considerations**
+[`notebook/BERT-Distributed-Training.ipynb`](notebook/BERT-Distributed-Training.ipynb)
+offers the same settings and explicit submission step. Set `GPU = True` before
+building the preview to select GPU mode. The notebook environment needs this
+directory on `sys.path`, the Python Kubernetes client, cluster credentials and
+the `bert-notebook` service account from `skiff/notebook-rbac.yaml` when running
+in-cluster.
 
-*   **Customization:**  The `train_func` could be modified with more samples from Yelp dataset to further adjust the training time.
+## Native Slurm
 
+After the Skiff run, reuse the staged source, assets and exact CPU SIF for the
+native run. The output directory must be a new path inside this benchmark root:
 
+```bash
+python3 run.py submit \
+  --sif /shared/images/bert-training-cpu.sif \
+  --output results/slurm-cpu \
+  --partition your-partition --account your-account
+```
 
-**Key Concepts**
+The helper derives nodes, CPU, memory and GPU requests from the shared profile.
+It starts one Slurm task per node; each task invokes the shared `launch.py`,
+which starts the configured local processes and then the exact same `run.py
+train` entrypoint used by Skiff. Scheduler account, partition and QoS are
+optional and have no site-specific defaults.
 
-* **Distributed Data Parallel (DDP):** The core strategy used to train the model across multiple workers (optionally with multiple GPUs). Each worker gets a portion of the training data and maintains a local copy of the BERT model.  
-* **PyTorch Trainer:** The Pytorch `Trainer` handles much of the distribution complexity behind the scenes.
-* **Synchronization:** During training, workers need to periodically communicate and synchronize their model updates (gradients) to maintain consistency. 
+Set `BERT_HOST_PYTHON` if the host's default `python3` is older than Python 3.9;
+it is used only for final result validation outside the SIF.
 
-## **How Distribution Works (Simplified)**
+Inspect a submission without changing scheduler state:
 
-1.  **Dataset Splitting:** 
-    *   The full Yelp dataset is partitioned into smaller chunks.
-    *   The `split_dataset_by_node` function ensures each worker receives a unique, roughly equal portion of the data.
+```bash
+python3 run.py submit --sif /shared/images/bert-training-cpu.sif \
+  --output results/slurm-cpu --dry-run
+```
 
-2.  **Model Initialization:** Each worker initializes its own local copy of the BERT model. These local copies start with identical weights (parameters).
+GPU mode adds the profile's `--gpus-per-node` request and runs the SIF through
+Apptainer with `--nv`:
 
-3.  **Training Loop:**
+```bash
+python3 run.py submit --gpu --sif /shared/images/bert-training-gpu.sif \
+  --output results/slurm-gpu
+```
 
-    *   **Forward Pass:** Each worker processes its assigned data batch through its local BERT model.
-    *   **Loss Calculation:** Each worker computes the training loss (how well the model performed on its data batch).
-    *   **Backward Pass:** Each worker calculates gradients based on the loss. Gradients represent how the model's weights should change to improve performance.  
-    *   **Gradient Synchronization:**  Workers communicate and collectively average their gradients. This ensures a consistent view of model updates across all workers.
-    *   **Model Update:** Each worker applies the averaged gradients to update its local BERT model.
+## Results and local validation
 
-4.  **Repeating the Loop:**  The process repeats for multiple iterations (epochs) over the data.
+Both adapters write the same `result.json`: the complete profile and derived
+scale, asset identity, source hashes, dependency versions, rank/node/device
+placement, training and complete-application timings, Trainer metrics and the
+final epoch evaluation. Rank zero optionally exports the trained model beside
+the result. Validate retained output with:
 
-## Technical Difficulties
+```bash
+python3 run.py validate results/example/result.json
+```
 
-- Apptainer, by default, has a tiny overlay for read-write operations, so for jupyter server to download all the packages from Python, it needs a couple of gigabytes to store the libraries and the model.
+Run structural checks without downloading assets or contacting Kubernetes,
+Slurm or a remote machine:
 
-- Jupyterhub pings on its proxy server periodically so i needed to supply the full AAAAA hostname
+```bash
+./validate-local.sh
+```
+
+These checks cover configuration validation, CPU/GPU rendering, Slurm resource
+derivation, result-schema validation, notebook structure, Python syntax and
+shell syntax. They do not establish runtime duration, real distributed
+collectives, physical placement, GPU exposure or target-system compatibility.
+
+Historical interrupted-run evidence remains in
+[`benchmarks/results.md`](../results.md#bert-interrupted-after-epoch-1). It was a
+different two-node workload and is only a sizing input for these defaults.

@@ -1,0 +1,7 @@
+results
+*.tar
+*.sif
+__pycache__
+app/target
+*.out
+.git

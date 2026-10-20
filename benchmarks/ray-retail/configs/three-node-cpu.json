@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "seed": 731,
+  "expected_nodes": 3,
+  "device": "cpu",
+  "data": {"series": 2000, "days": 1000, "train_end": 700, "validation_end": 850, "blocks": 60},
+  "train": {"workers": 3, "cpus_per_worker": 12, "threads": 12, "batch_size": 1024, "epochs": 6, "hidden": 128, "lr": 0.001, "max_batches": 0},
+  "tune": {"trials": 6, "concurrency": 2, "epochs": 3, "adaptive": false},
+  "rl": {"env_runners": 24, "cpus_per_learner": 8, "iterations": 40, "batch_size": 8192, "minibatch_size": 512, "epochs": 4, "hidden": 128, "horizon": 84, "evaluation_episodes": 120},
+  "serve": {"replicas": 3, "cpus_per_replica": 2, "requests": 20000, "concurrency": 32, "batch_size": 32, "autoscale": false, "port": 18080},
+  "deadline_seconds": 9900
+}

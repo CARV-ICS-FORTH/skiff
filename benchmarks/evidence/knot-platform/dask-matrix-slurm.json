@@ -1,0 +1,65 @@
+{
+  "site": "knot-platform.eu",
+  "benchmark": "dask-matrix",
+  "platform": "native-slurm",
+  "date": "2026-10-13",
+  "slurm_job_id": "635",
+  "run_id": "635.ihEZ6O",
+  "status": "COMPLETED",
+  "slurm_exit_code": "0:0",
+  "launcher_exit_code": 0,
+  "job_elapsed_seconds": 33,
+  "nodes": [
+    "k8s-node1",
+    "k8s-node3"
+  ],
+  "workers": 2,
+  "dask_threads_per_worker": 1,
+  "blas_threads_per_worker": 2,
+  "matrix_shape": [
+    8000,
+    8000
+  ],
+  "chunk_shape": [
+    4000,
+    4000
+  ],
+  "result_shape": [
+    8000,
+    8000
+  ],
+  "result_size_mib": 488.28,
+  "result_mean": 2000.165832,
+  "tasks_executed": 20,
+  "wall_seconds": 21.948,
+  "aggregate_task_compute_seconds": 30.909,
+  "aggregate_task_transfer_seconds": 18.211,
+  "worker_participation": [
+    {
+      "node": "k8s-node1",
+      "tasks": 10,
+      "compute_seconds": 15.392
+    },
+    {
+      "node": "k8s-node3",
+      "tasks": 10,
+      "compute_seconds": 15.518
+    }
+  ],
+  "worker_cpu_samples": 90,
+  "max_worker_cpu_percent": 244.2,
+  "mean_worker_cpu_percent": 154.7,
+  "software": {
+    "python": "3.10.12",
+    "dask": "2024.1.0",
+    "distributed": "2024.1.0",
+    "numpy": "1.26.3"
+  },
+  "provenance": {
+    "original_run_directory": "/home/kampadais/skiff/benchmarks/slurm-benchmarks/dask-matrix/results/635.ihEZ6O",
+    "client_log_sha256": "32aac184ccf9c4f5d66e393c173c746580feda63f28283f35c2d054c8ab9bed4",
+    "final_status_sha256": "49ac29c16629b4873bc05cf0bad0292229c6330b6e5844d9b33818d328cfe5d4",
+    "configuration_sha256": "eed4a372ca88ad99f866538a397b4266527817d50f65cf28e7274d3d1acf33e4",
+    "retention": "Selected metrics from client.log and runtime.json; full diagnostics and HTML report omitted."
+  }
+}

@@ -1,0 +1,305 @@
+{
+  "site": "knot-platform.eu",
+  "benchmark": "spark-knot",
+  "platform": "native-slurm",
+  "date": "2026-10-14",
+  "nodes": [
+    "k8s-node1",
+    "k8s-node3"
+  ],
+  "status": "COMPLETED",
+  "slurm_exit_code": "0:0",
+  "launcher_exit_code": 0,
+  "job_elapsed_seconds": 503,
+  "phase_step_elapsed_seconds": {
+    "generate": 241,
+    "query": 229
+  },
+  "cpu_binding": "cores",
+  "spark_scratch": "tmpfs",
+  "minio_storage": "shared-home NFS directory",
+  "source_and_image_sha256": {
+    "/home/kampadais/.skiff/images/analytics-spark-knot-4.0.4-amd64-r1.sif": "2072863eca5634c8db905ef058754b0ac2ada9d3f4827525c6a2fdda85649fe2",
+    "/home/kampadais/skiff/benchmarks/analytics-spark/spark-knot/benchmark.py": "26927b9c84723f5631eac62c903a397b0cc56047ff1f1bffb65316ef4baea9e5"
+  },
+  "generate": {
+    "status": "PASS",
+    "run_id": "710.Ojpk9x",
+    "slurm_job_id": "710",
+    "application_id": "app-20261014105309-0000",
+    "spark_version": "4.0.4",
+    "python_version": "3.10.12",
+    "expected_executors": 2,
+    "executor_cores": 4,
+    "spark_configuration": {
+      "adaptive_query_execution": "true",
+      "driver_memory": "4g",
+      "executor_instances": "2",
+      "executor_memory": "8g",
+      "master": "spark://10.0.0.11:7077",
+      "shuffle_partitions": "24"
+    },
+    "total_duration_seconds": 225.440553,
+    "workload": "generate",
+    "scale_factor": 1,
+    "generation_partitions": 24,
+    "generated_tables": [
+      "call_center",
+      "catalog_page",
+      "catalog_returns",
+      "catalog_sales",
+      "customer",
+      "customer_address",
+      "customer_demographics",
+      "date_dim",
+      "household_demographics",
+      "income_band",
+      "inventory",
+      "item",
+      "promotion",
+      "reason",
+      "ship_mode",
+      "store",
+      "store_returns",
+      "store_sales",
+      "time_dim",
+      "warehouse",
+      "web_page",
+      "web_returns",
+      "web_sales",
+      "web_site"
+    ],
+    "spark_runtime_metrics": {
+      "source": "spark-ui-rest-api-v1",
+      "completed_stages": 25,
+      "task_totals": {
+        "executor_cpu_seconds": 258.966398,
+        "executor_run_seconds": 377.302,
+        "jvm_gc_seconds": 7.375,
+        "result_bytes": 804998,
+        "task_cpu_utilization_percent": 68.636
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.0,
+        "local_blocks_fetched": 0,
+        "local_bytes_read": 0,
+        "read_bytes": 0,
+        "read_records": 0,
+        "remote_blocks_fetched": 0,
+        "remote_bytes_read": 0,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 0,
+        "write_records": 0,
+        "write_seconds": 0.0
+      },
+      "io": {
+        "input_bytes": 0,
+        "input_records": 0,
+        "output_bytes": 372844717,
+        "output_records": 19555033
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      }
+    },
+    "executor_participation": [
+      {
+        "executor_id": "1",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 289,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "0",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 295,
+        "failed_tasks": 0
+      }
+    ],
+    "provenance": {
+      "original_summary": "/home/kampadais/skiff/benchmarks/slurm-benchmarks/analytics-spark/results/710.Ojpk9x/generation-summary.json",
+      "original_summary_sha256": "f77b1d6a3aa69395b486dc55aad0bb1fc79bba9088b0bf5719aac43fdcef1346",
+      "retention": "Selected fields from the successful original summary; stage-level traces omitted."
+    }
+  },
+  "query": {
+    "status": "PASS",
+    "run_id": "710.Ojpk9x",
+    "slurm_job_id": "710",
+    "application_id": "app-20261014105709-0001",
+    "spark_version": "4.0.4",
+    "python_version": "3.10.12",
+    "expected_executors": 2,
+    "executor_cores": 4,
+    "spark_configuration": {
+      "adaptive_query_execution": "true",
+      "driver_memory": "4g",
+      "executor_instances": "2",
+      "executor_memory": "8g",
+      "master": "spark://10.0.0.11:7077",
+      "shuffle_partitions": "24"
+    },
+    "total_duration_seconds": 214.305594,
+    "workload": "query",
+    "iterations": 3,
+    "query_count": 16,
+    "query_runs": 48,
+    "query_selection": "q1,q10,q11,q12,q13,q14a,q14b,q15,q16,q17,q18,q19,q2,q20,q21,q22",
+    "query_statistics": {
+      "q1": {
+        "maximum_seconds": 10.20018,
+        "median_seconds": 1.618931,
+        "minimum_seconds": 1.271435
+      },
+      "q10": {
+        "maximum_seconds": 7.984099,
+        "median_seconds": 4.931666,
+        "minimum_seconds": 4.566767
+      },
+      "q11": {
+        "maximum_seconds": 7.260679,
+        "median_seconds": 4.647084,
+        "minimum_seconds": 3.756585
+      },
+      "q12": {
+        "maximum_seconds": 0.77401,
+        "median_seconds": 0.231133,
+        "minimum_seconds": 0.188214
+      },
+      "q13": {
+        "maximum_seconds": 1.295328,
+        "median_seconds": 0.625633,
+        "minimum_seconds": 0.5177
+      },
+      "q14a": {
+        "maximum_seconds": 18.913027,
+        "median_seconds": 11.614525,
+        "minimum_seconds": 10.572852
+      },
+      "q14b": {
+        "maximum_seconds": 11.850719,
+        "median_seconds": 8.858962,
+        "minimum_seconds": 7.761515
+      },
+      "q15": {
+        "maximum_seconds": 2.779238,
+        "median_seconds": 2.375722,
+        "minimum_seconds": 2.106166
+      },
+      "q16": {
+        "maximum_seconds": 4.042312,
+        "median_seconds": 2.776843,
+        "minimum_seconds": 2.722955
+      },
+      "q17": {
+        "maximum_seconds": 5.58244,
+        "median_seconds": 4.064375,
+        "minimum_seconds": 4.014496
+      },
+      "q18": {
+        "maximum_seconds": 1.176026,
+        "median_seconds": 0.763714,
+        "minimum_seconds": 0.501727
+      },
+      "q19": {
+        "maximum_seconds": 2.333673,
+        "median_seconds": 1.910337,
+        "minimum_seconds": 1.734828
+      },
+      "q2": {
+        "maximum_seconds": 3.041611,
+        "median_seconds": 2.358509,
+        "minimum_seconds": 2.351001
+      },
+      "q20": {
+        "maximum_seconds": 0.318728,
+        "median_seconds": 0.241763,
+        "minimum_seconds": 0.191328
+      },
+      "q21": {
+        "maximum_seconds": 2.598187,
+        "median_seconds": 2.398756,
+        "minimum_seconds": 2.148075
+      },
+      "q22": {
+        "maximum_seconds": 4.791124,
+        "median_seconds": 4.32493,
+        "minimum_seconds": 4.231146
+      }
+    },
+    "spark_runtime_metrics": {
+      "source": "spark-ui-rest-api-v1",
+      "completed_stages": 452,
+      "task_totals": {
+        "executor_cpu_seconds": 328.763732,
+        "executor_run_seconds": 572.087,
+        "jvm_gc_seconds": 6.938,
+        "result_bytes": 229202929,
+        "task_cpu_utilization_percent": 57.467
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.033,
+        "local_blocks_fetched": 523,
+        "local_bytes_read": 639714150,
+        "read_bytes": 723351766,
+        "read_records": 46404351,
+        "remote_blocks_fetched": 335,
+        "remote_bytes_read": 83637616,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 579642610,
+        "write_records": 38148687,
+        "write_seconds": 2.687622
+      },
+      "io": {
+        "input_bytes": 1255242516,
+        "input_records": 252065295,
+        "output_bytes": 3605,
+        "output_records": 48
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      }
+    },
+    "executor_participation": [
+      {
+        "executor_id": "1",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 1590,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "0",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 1572,
+        "failed_tasks": 0
+      }
+    ],
+    "provenance": {
+      "original_summary": "/home/kampadais/skiff/benchmarks/slurm-benchmarks/analytics-spark/results/710.Ojpk9x/query-summary.json",
+      "original_summary_sha256": "bafcad378610382086bc272ac8bb5ab27cce546f0ba9f3dc218a4334f322326e",
+      "retention": "Selected fields from the successful original summary; stage-level traces omitted."
+    }
+  },
+  "cleanup": {
+    "credentials_removed": true,
+    "remaining_minio_data_directories": [],
+    "service_ports_after_completion": {
+      "10.0.0.11:7077": "closed",
+      "10.0.0.11:7078": "closed",
+      "10.0.0.11:8080": "closed",
+      "10.0.0.11:8081": "closed",
+      "10.0.0.11:9000": "closed",
+      "10.0.0.11:9001": "closed",
+      "10.0.0.11:4040": "closed",
+      "10.0.0.13:7078": "closed",
+      "10.0.0.13:8081": "closed"
+    }
+  },
+  "final_status_source_sha256": "7b31443cf17d2976a6a84bbbec1385aa9621b0ac6d0c8f08e77a7ed120be9636"
+}

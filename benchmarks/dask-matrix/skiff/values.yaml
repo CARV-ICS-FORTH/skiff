@@ -1,0 +1,58 @@
+scheduler:
+  image:
+    repository: __IMAGE_REPOSITORY__
+    tag: __IMAGE_TAG__
+    pullPolicy: Never
+  resources:
+    requests:
+      cpu: __SCHEDULER_CPU__
+      memory: __SCHEDULER_MEMORY__
+    limits:
+      cpu: __SCHEDULER_CPU__
+      memory: __SCHEDULER_MEMORY__
+
+worker:
+  image:
+    repository: __IMAGE_REPOSITORY__
+    tag: __IMAGE_TAG__
+    pullPolicy: Never
+  replicas: __WORKERS__
+  threads_per_worker: __WORKER_THREADS__
+  env:
+    - name: DASK_DISTRIBUTED__WORKER__USE_NANNY
+      value: "False"
+    - name: DASK_DISTRIBUTED__WORKER__MEMORY__TARGET
+      value: "False"
+    - name: DASK_DISTRIBUTED__WORKER__MEMORY__SPILL
+      value: "False"
+    - name: DASK_DISTRIBUTED__WORKER__MEMORY__PAUSE
+      value: "False"
+    - name: DASK_DISTRIBUTED__WORKER__MEMORY__TERMINATE
+      value: "False"
+    - name: OPENBLAS_NUM_THREADS
+      value: __BLAS_THREADS__
+    - name: OMP_NUM_THREADS
+      value: __BLAS_THREADS__
+    - name: MKL_NUM_THREADS
+      value: __BLAS_THREADS__
+  extraArgs:
+    - "--no-nanny"
+  resources:
+    requests:
+      cpu: __WORKER_CPU__
+      memory: __WORKER_MEMORY__
+    limits:
+      cpu: __WORKER_CPU__
+      memory: __WORKER_MEMORY__
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: component
+                operator: In
+                values: [worker]
+          topologyKey: kubernetes.io/hostname
+
+jupyter:
+  enabled: false

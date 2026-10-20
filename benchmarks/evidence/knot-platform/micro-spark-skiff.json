@@ -1,0 +1,118 @@
+{
+  "site": "knot-platform.eu",
+  "benchmark": "micro-spark",
+  "platform": "skiff",
+  "date": "2026-10-07",
+  "nodes": [
+    "k8s-node1",
+    "k8s-node2",
+    "k8s-node3"
+  ],
+  "summary": {
+    "status": "PASS",
+    "run_id": "20261007t111827-6a2be420z",
+    "application_id": "spark-887b0474a46c4081b47debdfbf99e944",
+    "spark_version": "3.5.3",
+    "python_version": "3.8.10",
+    "expected_executors": 3,
+    "spark_configuration": {
+      "driver_memory": "512m",
+      "executor_cores": "1",
+      "executor_instances": "3",
+      "executor_memory": "512m",
+      "master": "k8s://https://10.0.0.11:6443",
+      "shuffle_partitions": "3"
+    },
+    "total_duration_seconds": 36.683437,
+    "records": 100000,
+    "partitions": 3,
+    "repetitions": 3,
+    "query_seconds": [
+      1.938433,
+      0.97897,
+      1.009122
+    ],
+    "query_median_seconds": 1.009122,
+    "stage_seconds": {
+      "build_logical_plan": 4.583438,
+      "cache_cold_count": 6.453914,
+      "cache_warm_count": 0.363184,
+      "executor_probe": 3.355763,
+      "mllib_kmeans": 13.377735,
+      "rdd_partition_metrics": 0.554237
+    },
+    "model": {
+      "algorithm": "kmeans",
+      "cluster_counts": {
+        "0": 10700,
+        "1": 2700,
+        "2": 6600
+      },
+      "k": 3,
+      "training_cost": 11467800.837866873,
+      "training_records": 20000
+    },
+    "spark_runtime_metrics": {
+      "source": "spark-ui-rest-api-v1",
+      "completed_stages": 45,
+      "task_totals": {
+        "executor_cpu_seconds": 17.990428,
+        "executor_run_seconds": 25.027,
+        "jvm_gc_seconds": 0.225,
+        "result_bytes": 505534,
+        "task_cpu_utilization_percent": 71.884
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.0,
+        "local_blocks_fetched": 34,
+        "local_bytes_read": 1069724,
+        "read_bytes": 3162425,
+        "read_records": 102014,
+        "remote_blocks_fetched": 22,
+        "remote_bytes_read": 2092701,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 3289957,
+        "write_records": 401321,
+        "write_seconds": 0.102568
+      },
+      "io": {
+        "input_bytes": 29971484,
+        "input_records": 401602,
+        "output_bytes": 0,
+        "output_records": 0
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      }
+    },
+    "executor_participation": [
+      {
+        "executor_id": "3",
+        "active": true,
+        "total_cores": 1,
+        "completed_tasks": 48,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "2",
+        "active": true,
+        "total_cores": 1,
+        "completed_tasks": 19,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "1",
+        "active": true,
+        "total_cores": 1,
+        "completed_tasks": 22,
+        "failed_tasks": 0
+      }
+    ],
+    "provenance": {
+      "original_summary": "/home/kampadais/skiff/benchmarks/micro-spark/results/20261007t111827-6a2be420z/summary.json",
+      "original_summary_sha256": "15097a7032749a075bc83c296bd4217bde5b793f0c552e1fbfb769e29b2cea60",
+      "retention": "Selected fields from the successful original summary; stage-level traces omitted."
+    }
+  }
+}

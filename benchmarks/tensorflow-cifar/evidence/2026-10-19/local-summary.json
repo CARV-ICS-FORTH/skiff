@@ -1,0 +1,352 @@
+{
+  "contract_tests": 14,
+  "gpu_without_devices": "correctly rejected; no CPU fallback",
+  "integration": "PASS",
+  "runs": {
+    "full-1": {
+      "config": {
+        "coordination_timeout_seconds": 45,
+        "dataset": "synthetic",
+        "device": "cpu",
+        "epochs": 2,
+        "global_batch_size": 32,
+        "gpus_per_node": 1,
+        "learning_rate": 0.03,
+        "memory_gib": 32,
+        "momentum": 0.9,
+        "seed": 2026,
+        "steps_per_epoch": 0,
+        "test_samples": 32,
+        "threads": 2,
+        "timeout_seconds": 60,
+        "train_samples": 128,
+        "validation_samples": 32,
+        "width": 4
+      },
+      "machine": "arm64",
+      "metrics": {
+        "application_wall_seconds_chief": 1.5887915000203066,
+        "checkpoint_seconds": 0.024177459010388702,
+        "coordination_seconds": null,
+        "epoch_wall_seconds": null,
+        "evaluation": {
+          "export_seconds": 0.010258916998282075,
+          "reload_max_absolute_error": 0.0,
+          "reload_verify_seconds": 0.030910792003851384,
+          "seconds": 0.10586599999805912,
+          "test": {
+            "accuracy": 0.125,
+            "loss": 2.299724578857422,
+            "samples": 32,
+            "seconds": 0.005906792008318007
+          },
+          "validation": {
+            "accuracy": 0.125,
+            "loss": 2.29935359954834,
+            "samples": 32,
+            "seconds": 0.011264625005424023
+          }
+        },
+        "global_images_per_second": 766.9091660763642,
+        "input_wait_latency_seconds": {
+          "median": 0.00021318750805221498,
+          "p95": 0.002564958995208144,
+          "p99": 0.002564958995208144,
+          "samples": 8
+        },
+        "invocations": 2,
+        "process_cpu_seconds_sum": 1.488519814,
+        "process_peak_rss_bytes_max": 403783680,
+        "startup_phases_seconds_max": {
+          "data_load_verify_seconds": 0.007604125014040619,
+          "device_setup_seconds": 0.014473707997240126,
+          "model_build_restore_seconds": 0.04458154097665101,
+          "rendezvous_seconds": 0.002161041018553078,
+          "runtime_import_seconds": 1.3906170830014162,
+          "strategy_setup_seconds": 0.018069167039357126
+        },
+        "startup_seconds_max": 1.4810769169707783,
+        "step_latency_seconds": {
+          "median": 0.005813791009131819,
+          "p95": 0.00644629099406302,
+          "p99": 0.00644629099406302,
+          "samples": 7
+        },
+        "step_seconds_median": 0.005813791009131819,
+        "step_seconds_p95": 0.00644629099406302,
+        "training_seconds": 0.3338074589846656
+      },
+      "runtime": {
+        "grpcio": "1.84.0",
+        "h5py": "3.16.0",
+        "keras": "3.15.1",
+        "ml_dtypes": "0.6.0",
+        "numpy": "2.2.6",
+        "optree": "0.20.0",
+        "protobuf": "7.36.2",
+        "psutil": "7.0.0",
+        "tensorflow": "2.20.0"
+      },
+      "workers": 1
+    },
+    "full-2": {
+      "config": {
+        "coordination_timeout_seconds": 45,
+        "dataset": "synthetic",
+        "device": "cpu",
+        "epochs": 2,
+        "global_batch_size": 32,
+        "gpus_per_node": 1,
+        "learning_rate": 0.03,
+        "memory_gib": 32,
+        "momentum": 0.9,
+        "seed": 2026,
+        "steps_per_epoch": 0,
+        "test_samples": 32,
+        "threads": 2,
+        "timeout_seconds": 60,
+        "train_samples": 128,
+        "validation_samples": 32,
+        "width": 4
+      },
+      "machine": "arm64",
+      "metrics": {
+        "application_wall_seconds_chief": 2.3835703340009786,
+        "checkpoint_seconds": 0.022374916006810963,
+        "coordination_seconds": 0.2132949170190841,
+        "epoch_wall_seconds": 0.6153687509940937,
+        "evaluation": {
+          "export_seconds": 0.011876249976921827,
+          "reload_max_absolute_error": 0.0,
+          "reload_verify_seconds": 0.02949012495810166,
+          "seconds": 0.08423787500942126,
+          "test": {
+            "accuracy": 0.125,
+            "loss": 2.299724578857422,
+            "samples": 32,
+            "seconds": 0.006388042005710304
+          },
+          "validation": {
+            "accuracy": 0.125,
+            "loss": 2.29935359954834,
+            "samples": 32,
+            "seconds": 0.012088124989531934
+          }
+        },
+        "global_images_per_second": 531.6132047113227,
+        "input_wait_latency_seconds": {
+          "median": 0.0019535835017450154,
+          "p95": 0.11739366600522771,
+          "p99": 0.11739366600522771,
+          "samples": 16
+        },
+        "invocations": 1,
+        "process_cpu_seconds_sum": 3.974359678,
+        "process_peak_rss_bytes_max": 532791296,
+        "startup_phases_seconds_max": {
+          "data_load_verify_seconds": 0.027668583032209426,
+          "device_setup_seconds": 0.01516329200239852,
+          "model_build_restore_seconds": 0.06295341701479629,
+          "rendezvous_seconds": 0.11034420895157382,
+          "runtime_import_seconds": 1.4444818749907427,
+          "strategy_setup_seconds": 0.12589566595852375
+        },
+        "startup_seconds_max": 1.6807160000316799,
+        "step_latency_seconds": {
+          "median": 0.005070020502898842,
+          "p95": 0.00559170899214223,
+          "p99": 0.00559170899214223,
+          "samples": 14
+        },
+        "step_seconds_median": 0.005070020502898842,
+        "step_seconds_p95": 0.00559170899214223,
+        "training_seconds": 0.48155312496237457
+      },
+      "runtime": {
+        "grpcio": "1.84.0",
+        "h5py": "3.16.0",
+        "keras": "3.15.1",
+        "ml_dtypes": "0.6.0",
+        "numpy": "2.2.6",
+        "optree": "0.20.0",
+        "protobuf": "7.36.2",
+        "psutil": "7.0.0",
+        "tensorflow": "2.20.0"
+      },
+      "workers": 2
+    },
+    "repeated": {
+      "config": {
+        "coordination_timeout_seconds": 45,
+        "dataset": "synthetic",
+        "device": "cpu",
+        "epochs": 1,
+        "global_batch_size": 32,
+        "gpus_per_node": 1,
+        "learning_rate": 0.03,
+        "memory_gib": 32,
+        "momentum": 0.9,
+        "seed": 2026,
+        "steps_per_epoch": 7,
+        "test_samples": 32,
+        "threads": 2,
+        "timeout_seconds": 60,
+        "train_samples": 128,
+        "validation_samples": 32,
+        "width": 4
+      },
+      "machine": "arm64",
+      "metrics": {
+        "application_wall_seconds_chief": 2.3014435000368394,
+        "checkpoint_seconds": 0.013542249973397702,
+        "coordination_seconds": 0.10522108298027888,
+        "epoch_wall_seconds": 0.4441371249849908,
+        "evaluation": {
+          "export_seconds": 0.01133999996818602,
+          "reload_max_absolute_error": 0.0,
+          "reload_verify_seconds": 0.043649124971125275,
+          "seconds": 0.10652887501055375,
+          "test": {
+            "accuracy": 0.09375,
+            "loss": 2.2999227046966553,
+            "samples": 32,
+            "seconds": 0.0067566249636001885
+          },
+          "validation": {
+            "accuracy": 0.09375,
+            "loss": 2.2996840476989746,
+            "samples": 32,
+            "seconds": 0.013909416971728206
+          }
+        },
+        "global_images_per_second": 687.9569904131735,
+        "input_wait_latency_seconds": {
+          "median": 0.0019368540088180453,
+          "p95": 0.014450084010604769,
+          "p99": 0.014450084010604769,
+          "samples": 14
+        },
+        "invocations": 1,
+        "process_cpu_seconds_sum": 3.8357241239999995,
+        "process_peak_rss_bytes_max": 532840448,
+        "startup_phases_seconds_max": {
+          "data_load_verify_seconds": 0.007086041965521872,
+          "device_setup_seconds": 0.015981583041138947,
+          "model_build_restore_seconds": 0.06098195898812264,
+          "rendezvous_seconds": 0.10793841700069606,
+          "runtime_import_seconds": 1.4352360000484623,
+          "strategy_setup_seconds": 0.11755933298263699
+        },
+        "startup_seconds_max": 1.6410541249788366,
+        "step_latency_seconds": {
+          "median": 0.0049330829933751374,
+          "p95": 0.005726250004954636,
+          "p99": 0.005726250004954636,
+          "samples": 12
+        },
+        "step_seconds_median": 0.0049330829933751374,
+        "step_seconds_p95": 0.005726250004954636,
+        "training_seconds": 0.3256017499952577
+      },
+      "runtime": {
+        "grpcio": "1.84.0",
+        "h5py": "3.16.0",
+        "keras": "3.15.1",
+        "ml_dtypes": "0.6.0",
+        "numpy": "2.2.6",
+        "optree": "0.20.0",
+        "protobuf": "7.36.2",
+        "psutil": "7.0.0",
+        "tensorflow": "2.20.0"
+      },
+      "workers": 2
+    },
+    "resume": {
+      "config": {
+        "coordination_timeout_seconds": 45,
+        "dataset": "synthetic",
+        "device": "cpu",
+        "epochs": 2,
+        "global_batch_size": 32,
+        "gpus_per_node": 1,
+        "learning_rate": 0.03,
+        "memory_gib": 32,
+        "momentum": 0.9,
+        "seed": 2026,
+        "steps_per_epoch": 0,
+        "test_samples": 32,
+        "threads": 2,
+        "timeout_seconds": 60,
+        "train_samples": 128,
+        "validation_samples": 32,
+        "width": 4
+      },
+      "machine": "arm64",
+      "metrics": {
+        "application_wall_seconds_chief": 2.2173532500164583,
+        "checkpoint_seconds": 0.03187404101481661,
+        "coordination_seconds": 0.21093100000871345,
+        "epoch_wall_seconds": 0.8672646239283495,
+        "evaluation": {
+          "export_seconds": 0.010977750003803521,
+          "reload_max_absolute_error": 0.0,
+          "reload_verify_seconds": 0.030124666984193027,
+          "seconds": 0.08291254204232246,
+          "test": {
+            "accuracy": 0.125,
+            "loss": 2.299724578857422,
+            "samples": 32,
+            "seconds": 0.007082833966705948
+          },
+          "validation": {
+            "accuracy": 0.125,
+            "loss": 2.29935359954834,
+            "samples": 32,
+            "seconds": 0.01205841702176258
+          }
+        },
+        "global_images_per_second": 409.60936659297136,
+        "input_wait_latency_seconds": {
+          "median": 0.0021371045149862766,
+          "p95": 0.016514624992851168,
+          "p99": 0.016514624992851168,
+          "samples": 16
+        },
+        "invocations": 2,
+        "process_cpu_seconds_sum": 3.8809482710000003,
+        "process_peak_rss_bytes_max": 522174464,
+        "startup_phases_seconds_max": {
+          "data_load_verify_seconds": 0.006080250022932887,
+          "device_setup_seconds": 0.015352874994277954,
+          "model_build_restore_seconds": 0.07474237499991432,
+          "rendezvous_seconds": 0.10659104096703231,
+          "runtime_import_seconds": 1.4777975829783827,
+          "strategy_setup_seconds": 0.11620295798638836
+        },
+        "startup_seconds_max": 1.6962769170058891,
+        "step_latency_seconds": {
+          "median": 0.004986396001186222,
+          "p95": 0.005309334024786949,
+          "p99": 0.005309334024786949,
+          "samples": 12
+        },
+        "step_seconds_median": 0.004986396001186222,
+        "step_seconds_p95": 0.005309334024786949,
+        "training_seconds": 0.6249857080401853
+      },
+      "runtime": {
+        "grpcio": "1.84.0",
+        "h5py": "3.16.0",
+        "keras": "3.15.1",
+        "ml_dtypes": "0.6.0",
+        "numpy": "2.2.6",
+        "optree": "0.20.0",
+        "protobuf": "7.36.2",
+        "psutil": "7.0.0",
+        "tensorflow": "2.20.0"
+      },
+      "workers": 2
+    }
+  },
+  "scope": "macOS same-host synthetic behavioral smoke; not HPC facility performance or GPU evidence"
+}

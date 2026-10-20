@@ -1,0 +1,287 @@
+{
+  "site": "knot-platform.eu",
+  "benchmark": "spark-knot",
+  "platform": "skiff",
+  "date": "2026-10-07",
+  "nodes": [
+    "k8s-node1",
+    "k8s-node2",
+    "k8s-node3"
+  ],
+  "generate": {
+    "status": "PASS",
+    "run_id": "20261007t144200-c1c1f3a9z",
+    "application_id": "spark-d04e03aad26a405ab7a951efcd6d8125",
+    "spark_version": "4.0.4",
+    "python_version": "3.10.12",
+    "expected_executors": 3,
+    "executor_cores": 4,
+    "spark_configuration": {
+      "adaptive_query_execution": "true",
+      "driver_memory": "4g",
+      "executor_instances": "3",
+      "executor_memory": "8g",
+      "master": "k8s://https://10.0.0.11:6443",
+      "shuffle_partitions": "24"
+    },
+    "total_duration_seconds": 231.965703,
+    "workload": "generate",
+    "scale_factor": 1,
+    "generation_partitions": 24,
+    "generated_tables": [
+      "call_center",
+      "catalog_page",
+      "catalog_returns",
+      "catalog_sales",
+      "customer",
+      "customer_address",
+      "customer_demographics",
+      "date_dim",
+      "household_demographics",
+      "income_band",
+      "inventory",
+      "item",
+      "promotion",
+      "reason",
+      "ship_mode",
+      "store",
+      "store_returns",
+      "store_sales",
+      "time_dim",
+      "warehouse",
+      "web_page",
+      "web_returns",
+      "web_sales",
+      "web_site"
+    ],
+    "spark_runtime_metrics": {
+      "source": "spark-ui-rest-api-v1",
+      "completed_stages": 25,
+      "task_totals": {
+        "executor_cpu_seconds": 286.838083,
+        "executor_run_seconds": 345.255,
+        "jvm_gc_seconds": 2.769,
+        "result_bytes": 811650,
+        "task_cpu_utilization_percent": 83.08
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.0,
+        "local_blocks_fetched": 0,
+        "local_bytes_read": 0,
+        "read_bytes": 0,
+        "read_records": 0,
+        "remote_blocks_fetched": 0,
+        "remote_bytes_read": 0,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 0,
+        "write_records": 0,
+        "write_seconds": 0.0
+      },
+      "io": {
+        "input_bytes": 0,
+        "input_records": 0,
+        "output_bytes": 372844717,
+        "output_records": 19555033
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      }
+    },
+    "executor_participation": [
+      {
+        "executor_id": "3",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 200,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "2",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 205,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "1",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 183,
+        "failed_tasks": 0
+      }
+    ],
+    "provenance": {
+      "original_summary": "/home/kampadais/skiff/benchmarks/analytics-spark/spark-knot/results/20261007t144200-c1c1f3a9z/generation-summary.json",
+      "original_summary_sha256": "3d1e73afe6327f1fa0b15d8024209ea60a4fd2faf0f0d05ead0e1bece5dee46d",
+      "retention": "Selected fields from the successful original summary; stage-level traces omitted."
+    }
+  },
+  "query": {
+    "status": "PASS",
+    "run_id": "20261007t144200-c1c1f3a9z",
+    "application_id": "spark-281bfa40a6a54051a68583562bd4b510",
+    "spark_version": "4.0.4",
+    "python_version": "3.10.12",
+    "expected_executors": 3,
+    "executor_cores": 4,
+    "spark_configuration": {
+      "adaptive_query_execution": "true",
+      "driver_memory": "4g",
+      "executor_instances": "3",
+      "executor_memory": "8g",
+      "master": "k8s://https://10.0.0.11:6443",
+      "shuffle_partitions": "24"
+    },
+    "total_duration_seconds": 201.499849,
+    "workload": "query",
+    "iterations": 3,
+    "query_count": 16,
+    "query_runs": 48,
+    "query_selection": "q1,q10,q11,q12,q13,q14a,q14b,q15,q16,q17,q18,q19,q2,q20,q21,q22",
+    "query_statistics": {
+      "q1": {
+        "maximum_seconds": 7.181191,
+        "median_seconds": 1.317577,
+        "minimum_seconds": 1.196203
+      },
+      "q10": {
+        "maximum_seconds": 7.252401,
+        "median_seconds": 5.255656,
+        "minimum_seconds": 4.79556
+      },
+      "q11": {
+        "maximum_seconds": 6.884786,
+        "median_seconds": 4.456983,
+        "minimum_seconds": 4.2053
+      },
+      "q12": {
+        "maximum_seconds": 0.619205,
+        "median_seconds": 0.226875,
+        "minimum_seconds": 0.218973
+      },
+      "q13": {
+        "maximum_seconds": 0.888693,
+        "median_seconds": 0.592237,
+        "minimum_seconds": 0.433644
+      },
+      "q14a": {
+        "maximum_seconds": 13.222083,
+        "median_seconds": 10.256056,
+        "minimum_seconds": 9.646687
+      },
+      "q14b": {
+        "maximum_seconds": 9.838238,
+        "median_seconds": 8.986122,
+        "minimum_seconds": 8.855109
+      },
+      "q15": {
+        "maximum_seconds": 2.649428,
+        "median_seconds": 2.641396,
+        "minimum_seconds": 2.278123
+      },
+      "q16": {
+        "maximum_seconds": 4.161132,
+        "median_seconds": 3.723196,
+        "minimum_seconds": 3.614019
+      },
+      "q17": {
+        "maximum_seconds": 5.079506,
+        "median_seconds": 5.074057,
+        "minimum_seconds": 4.797397
+      },
+      "q18": {
+        "maximum_seconds": 0.913679,
+        "median_seconds": 0.687722,
+        "minimum_seconds": 0.390956
+      },
+      "q19": {
+        "maximum_seconds": 2.292807,
+        "median_seconds": 2.210562,
+        "minimum_seconds": 2.075069
+      },
+      "q2": {
+        "maximum_seconds": 2.390148,
+        "median_seconds": 2.270108,
+        "minimum_seconds": 2.227002
+      },
+      "q20": {
+        "maximum_seconds": 0.314861,
+        "median_seconds": 0.211168,
+        "minimum_seconds": 0.204383
+      },
+      "q21": {
+        "maximum_seconds": 2.016281,
+        "median_seconds": 1.588135,
+        "minimum_seconds": 1.533921
+      },
+      "q22": {
+        "maximum_seconds": 3.674271,
+        "median_seconds": 3.355194,
+        "minimum_seconds": 3.337484
+      }
+    },
+    "spark_runtime_metrics": {
+      "source": "spark-ui-rest-api-v1",
+      "completed_stages": 452,
+      "task_totals": {
+        "executor_cpu_seconds": 348.289112,
+        "executor_run_seconds": 596.376,
+        "jvm_gc_seconds": 2.719,
+        "result_bytes": 229412714,
+        "task_cpu_utilization_percent": 58.401
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.03,
+        "local_blocks_fetched": 483,
+        "local_bytes_read": 684947190,
+        "read_bytes": 723351766,
+        "read_records": 46404351,
+        "remote_blocks_fetched": 375,
+        "remote_bytes_read": 38404576,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 579642610,
+        "write_records": 38148687,
+        "write_seconds": 3.017305
+      },
+      "io": {
+        "input_bytes": 1255242516,
+        "input_records": 252065295,
+        "output_bytes": 3605,
+        "output_records": 48
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      }
+    },
+    "executor_participation": [
+      {
+        "executor_id": "3",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 1022,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "2",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 1050,
+        "failed_tasks": 0
+      },
+      {
+        "executor_id": "1",
+        "active": true,
+        "total_cores": 4,
+        "completed_tasks": 1094,
+        "failed_tasks": 0
+      }
+    ],
+    "provenance": {
+      "original_summary": "/home/kampadais/skiff/benchmarks/analytics-spark/spark-knot/results/20261007t144200-c1c1f3a9z/query-summary.json",
+      "original_summary_sha256": "6770161074ebad1a274f8e4fec004605995bb14190bf516e24460fa675bfc881",
+      "retention": "Selected fields from the successful original summary; stage-level traces omitted."
+    }
+  }
+}

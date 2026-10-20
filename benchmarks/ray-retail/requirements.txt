@@ -1,0 +1,11 @@
+# Python 3.11. CPU wheels on macOS; see README for Linux CPU/GPU installation.
+ray[data,train,tune,rllib,serve,default]==2.49.2
+torch==2.8.0
+numpy==2.2.6
+pandas==2.2.3
+pyarrow==20.0.0
+gymnasium==1.1.1
+psutil==7.0.0
+requests==2.32.5
+# Ray 2.49 Serve accesses FieldDescriptor.label, removed in protobuf 7.
+protobuf==6.33.5
