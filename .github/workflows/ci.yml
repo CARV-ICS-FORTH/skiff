@@ -5,6 +5,8 @@ on:
     branches: [ main, master, develop, plaid, plaid-dev, 'release/**' ]
   pull_request:
     branches: [ main, master, develop, plaid, plaid-dev, 'release/**' ]
+  # The release workflow runs these checks first.
+  workflow_call:
 
 jobs:
   ci:

@@ -438,4 +438,15 @@ The suite starts clusters of `--nodes N` nodes (default 2) and its cases use all
 
 ## Releases
 
-`make publish` makes a release of the current commit, on a clean tree only. Its version is `VERSION` when the commit is tagged with it (`0.1.0` or `v0.1.0`), and otherwise `VERSION` and the first 7 hexadecimal digits of the commit (`0.1.0-ff69203`). It builds the image for `linux/amd64` and `linux/arm64` and pushes it to Docker Hub as `carvicsforth/skiff:<version>` alone (no `latest`, and no build metadata); a version that is published already is refused, so the image of a version never changes. Then it makes the package, `dist/skiff-<version>/` and `dist/skiff-<version>.tar.gz`: the README, the license, the scripts and a `VERSION` file with the version they run. The package is what users download (the README's first step); `dist/` is not part of the repository.
+`make publish` makes a release of the current commit, on a clean tree only. Its version is `VERSION` when the commit is tagged with it (`v0.1.0`, or `0.1.0`), and otherwise `VERSION` and the first 7 hexadecimal digits of the commit (`0.1.0-ff69203`). It builds the image for `linux/amd64` and `linux/arm64` and pushes it to Docker Hub as `carvicsforth/skiff:<version>` alone (no `latest`, and no build metadata); a version that is published already is refused, so the image of a version never changes. Then it makes the package, `dist/skiff-<version>/` and `dist/skiff-<version>.tar.gz`: the README, the license, the scripts and a `VERSION` file with the version they run. The package is what users download (the README's first step); `dist/` is not part of the repository.
+
+GitHub Actions runs it (`.github/workflows/release.yml`, with the repository's secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`), after the checks of CI. To release the version in `VERSION`, tag the commit with an annotated tag whose message is the release's notes, and push the tag:
+
+```bash
+git tag -a v0.1.0 -F notes.md
+git push origin v0.1.0
+```
+
+The workflow refuses a tag that does not name `VERSION` and a lightweight tag. It publishes the image, then creates the GitHub Release `v0.1.0` with the package attached; its notes are the tag's message, the image with its digest, and a link to the README. If only the release fails, re-run the failed job: the image is published already. Afterwards, raise `VERSION` (for example to `0.2.0`), so that commits after the release do not carry its version.
+
+Between releases, run the workflow by hand (Actions, Release, Run workflow) on a branch: it publishes that commit's version (`0.1.0-ff69203`), keeps the package with the run (its artifacts), and makes no tag or GitHub Release. The image takes about an hour to build there: the arm64 half is emulated.

@@ -1,0 +1,145 @@
+name: Release
+
+# A version tag (v0.1.0, matching VERSION) publishes that version: the image on Docker Hub and a
+# GitHub Release with the package, whose notes are the tag's message. Run by hand on a branch,
+# it publishes the commit's version (VERSION and its first 7 hexadecimal digits), whose package
+# is kept with the run, without a tag or a GitHub Release. `make publish` does the work, and
+# refuses a version that is on Docker Hub already.
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish the image and the package
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # A tag must be annotated (its message is the release's notes) and name VERSION.
+      - name: Version
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          base=$(tr -d '[:space:]' < VERSION)
+          if [ "$REF_TYPE" = tag ]; then
+            # The checkout leaves an annotated tag as a lightweight one: fetch it as it is.
+            git fetch --depth=1 --force origin "+refs/tags/$TAG:refs/tags/$TAG"
+            if [ "$(git cat-file -t "refs/tags/$TAG")" != tag ]; then
+              echo "::error::$TAG is a lightweight tag: a release needs an annotated tag, whose message is its notes (git tag -a $TAG)"
+              exit 1
+            fi
+            if [ "$TAG" != "v$base" ]; then
+              echo "::error::the tag $TAG does not name the version in VERSION ($base): it should be v$base"
+              exit 1
+            fi
+            version=$base
+          else
+            version=$base-$(git rev-parse HEAD | cut -c1-7)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Version: $version"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Publish
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: make publish VERSION="$VERSION"
+
+      - name: Check the published image
+        id: image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          image=docker.io/carvicsforth/skiff:$VERSION
+          index=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}')
+          platforms=$(jq -r '[.manifests[].platform | .os + "/" + .architecture] | sort | join(" ")' <<< "$index")
+          if [ "$platforms" != "linux/amd64 linux/arm64" ]; then
+            echo "::error::$image has the platforms '$platforms', not linux/amd64 and linux/arm64"
+            exit 1
+          fi
+          digest=$(jq -r .digest <<< "$index")
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "Published \`$image\` (linux/amd64, linux/arm64), index digest \`$digest\`."
+            echo
+            echo "The package, \`skiff-$VERSION.tar.gz\`, is among this run's artifacts."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: skiff-${{ steps.version.outputs.version }}
+          path: dist/skiff-${{ steps.version.outputs.version }}.tar.gz
+          if-no-files-found: error
+
+  # A job of its own, so that a failure here, after the image is pushed, is repeated alone
+  # ("Re-run failed jobs"): `make publish` would refuse the version a second time.
+  release:
+    name: Create the GitHub Release
+    needs: publish
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fetch the package
+        uses: actions/download-artifact@v4
+        with:
+          name: skiff-${{ needs.publish.outputs.version }}
+          path: dist
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.publish.outputs.version }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          git fetch --depth=1 --force origin "+refs/tags/$TAG:refs/tags/$TAG"
+          {
+            git for-each-ref --format='%(contents:subject)' "refs/tags/$TAG"
+            body=$(git for-each-ref --format='%(contents:body)' "refs/tags/$TAG")
+            if [ -n "$body" ]; then echo; echo "$body"; fi
+            echo
+            echo "---"
+            echo
+            echo "Image: \`docker.io/carvicsforth/skiff:$VERSION\` (linux/amd64, linux/arm64), index digest \`$DIGEST\`."
+            echo
+            echo "Getting started: [README](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/README.md)."
+          } > notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Skiff $VERSION" --notes-file notes.md "dist/skiff-$VERSION.tar.gz"
