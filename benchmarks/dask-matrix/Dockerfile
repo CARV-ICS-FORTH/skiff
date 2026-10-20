@@ -1,19 +1,13 @@
 FROM python:3.10.12-slim
 
-RUN pip install \
-    beautifulsoup4 \
-    bokeh==3.3.4 \
-    dask==2024.1.0 \
-    distributed==2024.1.0 \
-    numpy==1.26.3 \
-    cloudpickle==3.0.0 \
-    tornado==6.3.3 \
-    toolz==0.12.0 \
-    pandas==2.1.4 \
-    lz4==4.3.3 \
-    msgpack==1.0.7
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONUNBUFFERED=1
 
-WORKDIR /app
-COPY benchmark.py /app/benchmark.py
+WORKDIR /opt/dask-matrix
+COPY requirements.txt /opt/dask-matrix/requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip check
 
-ENTRYPOINT ["python", "benchmark.py"]
+COPY benchmark.py /opt/dask-matrix/benchmark.py
+
+CMD ["python", "/opt/dask-matrix/benchmark.py"]
