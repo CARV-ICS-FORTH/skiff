@@ -1,0 +1,108 @@
+apiVersion: sparkoperator.k8s.io/v1beta2
+kind: SparkApplication
+metadata:
+  name: __APP_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: analytics-spark-knot
+    spark-knot/phase: generation
+    spark-knot/run-id: __RUN_ID__
+spec:
+  type: Python
+  mode: cluster
+  sparkVersion: __SPARK_VERSION__
+  image: __SPARK_IMAGE__
+  imagePullPolicy: __IMAGE_PULL_POLICY__
+  mainApplicationFile: __MAIN_APPLICATION_FILE__
+  arguments:
+    - generate
+    - --mode
+    - __BENCHMARK_MODE__
+    - --profile
+    - __WORKLOAD_PROFILE__
+    - --run-id
+    - __RUN_ID__
+    - --dataset-uri
+    - __DATASET_URI__
+    - --scale-factor
+    - __SCALE_FACTOR__
+    - --partitions
+    - __GENERATION_PARTITIONS__
+    - --expected-executors
+    - "__EXECUTOR_INSTANCES__"
+    - --executor-cores
+    - "__EXECUTOR_CORES__"
+  restartPolicy:
+    type: Never
+  sparkConf: &sparkConf
+    "spark.kubernetes.jars.avoidDownloadSchemes": "local"
+    "spark.jars": "local:///opt/spark/work-dir/spark-knot-tpcds.jar"
+    "spark.default.parallelism": __SHUFFLE_PARTITIONS__
+    "spark.sql.shuffle.partitions": __SHUFFLE_PARTITIONS__
+    "spark.task.cpus": "1"
+    "spark.dynamicAllocation.enabled": "false"
+    "spark.sql.adaptive.enabled": "true"
+    "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
+    "spark.ui.enabled": "true"
+    "spark.ui.retainedJobs": __UI_RETAINED_JOBS__
+    "spark.ui.retainedStages": __UI_RETAINED_STAGES__
+    "spark.local.dir": "/dev/shm"
+    "spark.kubernetes.executor.podTemplateFile": "/opt/spark/operator-pod-templates/executor-pod-template.yaml"
+    "spark.kubernetes.driver.secretKeyRef.AWS_ACCESS_KEY_ID": __ACCESS_KEY_REF__
+    "spark.kubernetes.driver.secretKeyRef.AWS_SECRET_ACCESS_KEY": __SECRET_KEY_REF__
+    "spark.kubernetes.executor.secretKeyRef.AWS_ACCESS_KEY_ID": __ACCESS_KEY_REF__
+    "spark.kubernetes.executor.secretKeyRef.AWS_SECRET_ACCESS_KEY": __SECRET_KEY_REF__
+    "spark.kubernetes.driverEnv.POD_NAME": __DRIVER_POD_NAME__
+    "spark.kubernetes.driverEnv.POD_NAMESPACE": __NAMESPACE__
+    "spark.executorEnv.POD_NAMESPACE": __NAMESPACE__
+    "spark.kubernetes.driverEnv.SPARK_LOCAL_DIRS": "/dev/shm"
+    "spark.executorEnv.SPARK_LOCAL_DIRS": "/dev/shm"
+    "spark.hadoop.fs.s3a.endpoint": __S3_ENDPOINT__
+    "spark.hadoop.fs.s3a.endpoint.region": "us-east-1"
+    "spark.hadoop.fs.s3a.connection.ssl.enabled": "false"
+    "spark.hadoop.fs.s3a.path.style.access": "true"
+    "spark.hadoop.fs.s3a.aws.credentials.provider": "software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider"
+    "spark.hadoop.fs.s3a.fast.upload": "true"
+    "spark.hadoop.fs.s3a.connection.maximum": "64"
+    "spark.hadoop.fs.s3a.threads.max": "32"
+    "spark.hadoop.fs.s3a.multipart.size": "67108864"
+    "spark.hadoop.fs.s3a.committer.name": "magic"
+    "spark.hadoop.fs.s3a.committer.magic.enabled": "true"
+    "spark.hadoop.mapreduce.outputcommitter.factory.scheme.s3a": "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+  driver:
+    cores: __DRIVER_CORES__
+    coreLimit: __DRIVER_CORE_LIMIT__
+    memory: __DRIVER_MEMORY__
+    memoryOverhead: __DRIVER_MEMORY_OVERHEAD__
+    serviceAccount: __SERVICE_ACCOUNT__
+    labels:
+      app.kubernetes.io/name: analytics-spark-knot
+      spark-knot/role: driver
+      spark-knot/phase: generation
+      spark-knot/run-id: __RUN_ID__
+    securityContext:
+      runAsUser: 185
+      runAsGroup: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
+  executor:
+    instances: __EXECUTOR_INSTANCES__
+    cores: __EXECUTOR_CORES__
+    coreLimit: __EXECUTOR_CORE_LIMIT__
+    memory: __EXECUTOR_MEMORY__
+    memoryOverhead: __EXECUTOR_MEMORY_OVERHEAD__
+    serviceAccount: __SERVICE_ACCOUNT__
+    labels:
+      app.kubernetes.io/name: analytics-spark-knot
+      spark-knot/role: executor
+      spark-knot/phase: generation
+      spark-knot/run-id: __RUN_ID__
+    securityContext:
+      runAsUser: 185
+      runAsGroup: 185
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: ["ALL"]
