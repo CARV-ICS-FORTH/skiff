@@ -1,0 +1,15 @@
+{
+  "dataset": "synthetic",
+  "train_samples": 128,
+  "validation_samples": 32,
+  "test_samples": 32,
+  "global_batch_size": 32,
+  "epochs": 2,
+  "width": 4,
+  "learning_rate": 0.03,
+  "momentum": 0.9,
+  "seed": 2026,
+  "threads": 2,
+  "timeout_seconds": 60,
+  "coordination_timeout_seconds": 45
+}

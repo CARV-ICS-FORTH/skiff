@@ -1,0 +1,6 @@
+# Optional CUDA runtime; use the exact same resulting SIF for both backends.
+FROM tensorflow/tensorflow:2.20.0-gpu
+COPY requirements.txt requirements.lock /tmp/
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt -c /tmp/requirements.lock && rm /tmp/requirements.*
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /benchmark

@@ -1,0 +1,19 @@
+{
+  "dataset": "cifar10",
+  "train_samples": 45000,
+  "validation_samples": 5000,
+  "test_samples": 10000,
+  "global_batch_size": 1280,
+  "epochs": 10,
+  "width": 64,
+  "learning_rate": 0.03,
+  "momentum": 0.9,
+  "seed": 2026,
+  "threads": 32,
+  "timeout_seconds": 0,
+  "coordination_timeout_seconds": 600,
+  "device": "gpu",
+  "gpus_per_node": 1,
+  "memory_gib": 32,
+  "steps_per_epoch": 2000
+}

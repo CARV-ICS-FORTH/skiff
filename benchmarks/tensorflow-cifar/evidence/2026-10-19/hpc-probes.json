@@ -1,0 +1,38 @@
+{
+  "cpu": {
+    "allocation_elapsed_seconds": 33,
+    "exit_code": 0,
+    "probe_elapsed_seconds": 15.536540486034937,
+    "python": "3.10.12",
+    "result_device": "CPU:0",
+    "status": "COMPLETED",
+    "tensorflow": "2.13.0",
+    "visible_gpus": []
+  },
+  "gpu": {
+    "attempts": 2,
+    "executed": false,
+    "final_status": "CANCELLED_WHILE_PENDING",
+    "gpus_requested_per_node": 1,
+    "observed_queue_reasons": [
+      "AssocGrpGRESMinutes",
+      "Priority",
+      "None"
+    ]
+  },
+  "identifiers": "facility, account, user, job IDs, hostnames and filesystem paths omitted",
+  "jobs_remaining": 0,
+  "limits": {
+    "command_timeout_seconds": 50,
+    "cpus_per_probe": 2,
+    "nodes_per_probe": 1,
+    "slurm_walltime_seconds": 60,
+    "termination_grace_seconds": 5
+  },
+  "scheduler_inventory": {
+    "gpu_model": "A100",
+    "gpus_per_node": 4,
+    "usable_gpu_execution_verified": false
+  },
+  "scope": "sanitized HPC facility capability probes; not the benchmark pipeline or performance calibration"
+}
