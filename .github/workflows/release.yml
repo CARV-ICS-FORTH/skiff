@@ -3,8 +3,9 @@ name: Release
 # A version tag (v0.1.0, matching VERSION) publishes that version: the image on Docker Hub and a
 # GitHub Release with the package, whose notes are the tag's message. Run by hand on a branch,
 # it publishes the commit's version (VERSION and its first 7 hexadecimal digits), whose package
-# is kept with the run, without a tag or a GitHub Release. `make publish` does the work, and
-# refuses a version that is on Docker Hub already.
+# is kept with the run, without a tag or a GitHub Release. The Makefile's publish steps do the
+# work (each platform on a runner of its architecture), and refuse a version that is on Docker
+# Hub already.
 on:
   push:
     tags: [ 'v*' ]
@@ -21,14 +22,12 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
-  publish:
-    name: Publish the image and the package
+  version:
+    name: Version
     needs: ci
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
-      digest: ${{ steps.image.outputs.digest }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -59,8 +58,64 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Version: $version"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+  # Each platform is built on a machine of its own architecture (no emulation) and pushed by
+  # its digest alone; the publish job then names the two the version.
+  build:
+    name: Build for ${{ matrix.platform }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push by digest
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: make publish-platform PLATFORM="$PLATFORM" VERSION="$VERSION"
+
+      - name: Keep the digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.arch }}
+          path: dist/digests-${{ needs.version.outputs.version }}/linux-${{ matrix.arch }}.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish the image and the package
+    needs: [ version, build ]
+    runs-on: ubuntu-24.04
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Fetch the digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: digest-*
+          merge-multiple: true
+          path: dist/digests-${{ needs.version.outputs.version }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -73,13 +128,13 @@ jobs:
 
       - name: Publish
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: make publish VERSION="$VERSION"
+          VERSION: ${{ needs.version.outputs.version }}
+        run: make publish-index VERSION="$VERSION"
 
       - name: Check the published image
         id: image
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           image=docker.io/carvicsforth/skiff:$VERSION
           index=$(docker buildx imagetools inspect "$image" --format '{{json .Manifest}}')
@@ -99,17 +154,17 @@ jobs:
       - name: Keep the package
         uses: actions/upload-artifact@v7
         with:
-          name: skiff-${{ steps.version.outputs.version }}
-          path: dist/skiff-${{ steps.version.outputs.version }}.tar.gz
+          name: skiff-${{ needs.version.outputs.version }}
+          path: dist/skiff-${{ needs.version.outputs.version }}.tar.gz
           if-no-files-found: error
 
   # A job of its own, so that a failure here, after the image is pushed, is repeated alone
-  # ("Re-run failed jobs"): `make publish` would refuse the version a second time.
+  # ("Re-run failed jobs"): publishing would refuse the version a second time.
   release:
     name: Create the GitHub Release
-    needs: publish
+    needs: [ version, publish ]
     if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -119,14 +174,14 @@ jobs:
       - name: Fetch the package
         uses: actions/download-artifact@v8
         with:
-          name: skiff-${{ needs.publish.outputs.version }}
+          name: skiff-${{ needs.version.outputs.version }}
           path: dist
 
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-          VERSION: ${{ needs.publish.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
           DIGEST: ${{ needs.publish.outputs.digest }}
         run: |
           git fetch --depth=1 --force origin "+refs/tags/$TAG:refs/tags/$TAG"

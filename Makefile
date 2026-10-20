@@ -31,7 +31,7 @@ BUILD_ARGS = --build-arg VERSION="$(VERSION)" --build-arg GIT_COMMIT="$(GIT_COMM
 
 export GOFLAGS ?= -buildvcs=false
 
-.PHONY: all build build-skifflet build-plaid vet test test-race clean builder image publish develop e2e-images fmt fmt-check check-shell
+.PHONY: all build build-skifflet build-plaid vet test test-race clean builder image publish publish-check publish-platform publish-index develop e2e-images fmt fmt-check check-shell
 
 all: build
 
@@ -105,16 +105,37 @@ image:
 # scripts of a release run the image of their own version; a version that is already published
 # is refused, so it never changes), without build metadata; then the package for users in
 # dist/skiff-<version>: the README, the license, the scripts and the version they run.
+#
+# Each platform is built and pushed on its own, by digest and without a tag (publish-platform),
+# so that each can be built on a machine of its own architecture (GitHub's release workflow
+# does); publish-index then names the two the version and makes the package. Here, publish
+# does the three in turn, with whatever emulation this machine's Docker has for the other.
 DIST := dist/skiff-$(VERSION)
+DIGESTS := dist/digests-$(VERSION)
 
 publish:
+	$(MAKE) publish-platform PLATFORM=linux/amd64 VERSION=$(VERSION)
+	$(MAKE) publish-platform PLATFORM=linux/arm64 VERSION=$(VERSION)
+	$(MAKE) publish-index VERSION=$(VERSION)
+
+publish-check:
 	@test -z "$$(git -c core.fsmonitor=false status --porcelain)" || { echo "publish: the tree has changes; a release is made of a commit" >&2; exit 1; }
 	@if docker buildx imagetools inspect $(IMAGE):$(VERSION) >/dev/null 2>&1; then echo "publish: $(IMAGE):$(VERSION) is published already" >&2; exit 1; fi
-	@echo "Building and pushing the multi-arch skiff image (Version: $(VERSION))..."
-	docker buildx build --platform linux/amd64,linux/arm64 --provenance=false $(BUILD_ARGS) \
-		-t $(IMAGE):$(VERSION) \
-		--push \
+
+publish-platform: publish-check
+	@test -n "$(PLATFORM)" || { echo "publish-platform: set PLATFORM (linux/amd64 or linux/arm64)" >&2; exit 1; }
+	@echo "Building and pushing the skiff image for $(PLATFORM) (Version: $(VERSION))..."
+	@mkdir -p $(DIGESTS)
+	docker buildx build --platform $(PLATFORM) --provenance=false $(BUILD_ARGS) \
+		--output type=image,name=$(IMAGE),push-by-digest=true,name-canonical=true,push=true \
+		--metadata-file $(DIGESTS)/$(subst /,-,$(PLATFORM)).json \
 		-f images/skiff/Dockerfile .
+
+publish-index: publish-check
+	@for platform in linux-amd64 linux-arm64; do test -s $(DIGESTS)/$$platform.json || { echo "publish-index: no image for $$platform in $(DIGESTS): run publish-platform for it first" >&2; exit 1; }; done
+	@echo "Naming the images of both platforms $(IMAGE):$(VERSION)..."
+	docker buildx imagetools create -t $(IMAGE):$(VERSION) \
+		$$(sed -n 's|.*"containerimage.digest": *"\(sha256:[0-9a-f]*\)".*|$(IMAGE)@\1|p' $(DIGESTS)/linux-amd64.json $(DIGESTS)/linux-arm64.json)
 	@echo "Making the package $(DIST).tar.gz..."
 	rm -rf $(DIST) $(DIST).tar.gz
 	mkdir -p $(DIST)/scripts
