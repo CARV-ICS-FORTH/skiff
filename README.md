@@ -89,3 +89,9 @@ bash skiff.sh stop
 ```
 
 `start` says the job and its output file (`skiff-cluster-<job ID>.out` in the current folder); use the cluster as in step 5. The cluster assumes the machines are yours alone; the [guide](https://github.com/CARV-ICS-FORTH/skiff/blob/main/GUIDE.md#without-slurm) has the details.
+
+## Acknowledgements
+
+Skiff builds upon the legacy of previous projects that have explored the integration of Kubernetes in HPC from different viewpoints: [KNoC](https://github.com/carv-ics-forth/knoc), [HPK](https://github.com/CARV-ICS-FORTH/HPK), and [hpktainer](https://github.com/carv-ics-forth/hpktainer). Check them out if you are interested in the history that led to the current design.
+
+The developers also acknowledge the use of generative AI tools (Gemini by Google, Sol and Astra by OpenAI, and most recently Claude Sonnet and Opus by Anthropic) for assistance during the development of this software.
