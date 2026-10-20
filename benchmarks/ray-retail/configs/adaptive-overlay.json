@@ -1,0 +1,5 @@
+{
+  "train": {"use_tuned": true},
+  "tune": {"adaptive": true},
+  "serve": {"autoscale": true}
+}

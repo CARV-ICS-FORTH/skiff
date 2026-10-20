@@ -1,0 +1,304 @@
+{
+  "adaptive_mode_smoke": {
+    "comparison_refusal_verified": true,
+    "config_sha256": "3e9147ccfae9656a361caba77651443e2d13682697c04d826255044d479c9c71",
+    "executed_source_sha256": "d722b99b20604b9b64609e0be33347153fe6c5db432e3991b0abab0ea4d6e859",
+    "phase_seconds": {
+      "batch": 2.669,
+      "data": 2.781,
+      "evaluation": 1.609,
+      "policy": 5.193,
+      "recovery": 1.017,
+      "serve": 6.666,
+      "train": 5.075,
+      "tune": 2.664
+    },
+    "scale_transition_qualified": false,
+    "serve_autoscale_configured": true,
+    "status": "complete",
+    "tune_adaptive": true
+  },
+  "date": "2026-10-15",
+  "final_source_sha256": "d722b99b20604b9b64609e0be33347153fe6c5db432e3991b0abab0ea4d6e859",
+  "images_built": false,
+  "knot_accessed": false,
+  "qualification": "local macOS ARM64 only; no platform or GPU qualification",
+  "real_artifact_copy_comparison_verified": true,
+  "resume_preserves_invocation_and_sampling_history": true,
+  "runs": {
+    "final_smoke": {
+      "checkpoint_restore_verified": true,
+      "config_sha256": "055fa9bc7791586e2f4050ecae5492804157939afe94788dd671d3b9d3e87722",
+      "environment": {
+        "architecture": "arm64",
+        "packages": {
+          "grpcio": "1.84.0",
+          "gymnasium": "1.1.1",
+          "numpy": "2.2.6",
+          "pandas": "2.2.3",
+          "protobuf": "6.33.5",
+          "psutil": "7.0.0",
+          "pyarrow": "20.0.0",
+          "pydantic": "2.14.1",
+          "ray": "2.49.2",
+          "torch": "2.8.0"
+        },
+        "python": "3.11.17",
+        "system": "Darwin",
+        "train_api": "0"
+      },
+      "executed_source_sha256": "d722b99b20604b9b64609e0be33347153fe6c5db432e3991b0abab0ea4d6e859",
+      "forecast": {
+        "artifacts": [],
+        "mae": 23.03509204015136,
+        "rows": 240,
+        "seasonal_mae": 6.941666755204399,
+        "wape": 1.0732716144170025
+      },
+      "generated_rows": 864,
+      "http_errors": 0,
+      "http_requests": 24,
+      "inventory": {
+        "forecast_base_stock": {
+          "cost_std": 27.89849906356968,
+          "episodes": 4,
+          "fill_rate": 1.0,
+          "mean_cost": 253.3
+        },
+        "ppo": {
+          "cost_std": 82.9061630700638,
+          "episodes": 4,
+          "fill_rate": 1.0,
+          "mean_cost": 1190.925
+        },
+        "reorder_point": {
+          "cost_std": 86.05379404041418,
+          "episodes": 4,
+          "fill_rate": 0.8312534317324214,
+          "mean_cost": 642.6125000000001
+        }
+      },
+      "phase_seconds": {
+        "batch": 2.711,
+        "data": 2.793,
+        "evaluation": 1.621,
+        "policy": 5.281,
+        "recovery": 1.003,
+        "serve": 7.277,
+        "train": 5.298,
+        "tune": 2.678
+      },
+      "recovered_ledger_total": 18,
+      "sampled_ppo_steps": 512,
+      "served_inference_verified": true,
+      "status": "complete",
+      "train_ranks": 1
+    },
+    "larger_local_cpu": {
+      "checkpoint_restore_verified": true,
+      "config_sha256": "65c36778bdc73bc904808bc798830e6f9b28c202980dff4937bb2bc0cbc290cc",
+      "environment": {
+        "architecture": "arm64",
+        "packages": {
+          "grpcio": "1.84.0",
+          "gymnasium": "1.1.1",
+          "numpy": "2.2.6",
+          "pandas": "2.2.3",
+          "protobuf": "6.33.5",
+          "psutil": "7.0.0",
+          "pyarrow": "20.0.0",
+          "pydantic": "2.14.1",
+          "ray": "2.49.2",
+          "torch": "2.8.0"
+        },
+        "python": "3.11.17",
+        "system": "Darwin",
+        "train_api": "0"
+      },
+      "executed_source_sha256": "79d819045175982bc090356acdd806d7d3ab9bfe5d251eddb0c0db9c1e4b8525",
+      "forecast": {
+        "artifacts": [],
+        "mae": 4.833154361069543,
+        "rows": 16640,
+        "seasonal_mae": 9.05330526976076,
+        "wape": 0.1391962377157106
+      },
+      "generated_rows": 86272,
+      "http_errors": 0,
+      "http_requests": 1000,
+      "inventory": {
+        "forecast_base_stock": {
+          "cost_std": 1127.3979123510196,
+          "episodes": 32,
+          "fill_rate": 0.8293025177761548,
+          "mean_cost": 2400.84375
+        },
+        "ppo": {
+          "cost_std": 242.2714731033918,
+          "episodes": 32,
+          "fill_rate": 0.9929833106817921,
+          "mean_cost": 586.64375
+        },
+        "reorder_point": {
+          "cost_std": 1163.905011762665,
+          "episodes": 32,
+          "fill_rate": 0.8006860430648088,
+          "mean_cost": 2590.65
+        }
+      },
+      "phase_seconds": {
+        "batch": 3.283,
+        "data": 70.371,
+        "evaluation": 1.869,
+        "policy": 14.603,
+        "recovery": 1.008,
+        "serve": 26.805,
+        "train": 8.189,
+        "tune": 3.729
+      },
+      "recovered_ledger_total": 18,
+      "sampled_ppo_steps": 65536,
+      "served_inference_verified": true,
+      "status": "complete",
+      "train_ranks": 2
+    },
+    "local_external_head_adapter": {
+      "checkpoint_restore_verified": true,
+      "config_sha256": "055fa9bc7791586e2f4050ecae5492804157939afe94788dd671d3b9d3e87722",
+      "environment": {
+        "architecture": "arm64",
+        "packages": {
+          "grpcio": "1.84.0",
+          "gymnasium": "1.1.1",
+          "numpy": "2.2.6",
+          "pandas": "2.2.3",
+          "protobuf": "6.33.5",
+          "psutil": "7.0.0",
+          "pyarrow": "20.0.0",
+          "pydantic": "2.14.1",
+          "ray": "2.49.2",
+          "torch": "2.8.0"
+        },
+        "python": "3.11.17",
+        "system": "Darwin",
+        "train_api": "0"
+      },
+      "executed_source_sha256": "5addd40102d7a185c4834b5df789585b6a7da9f70868d95e351d0e8dbcfd7725",
+      "forecast": {
+        "artifacts": [],
+        "mae": 23.03509204015136,
+        "rows": 240,
+        "seasonal_mae": 6.941666755204399,
+        "wape": 1.0732716144170025
+      },
+      "generated_rows": 864,
+      "http_errors": 0,
+      "http_requests": 24,
+      "inventory": {
+        "forecast_base_stock": {
+          "cost_std": 27.89849906356968,
+          "episodes": 4,
+          "fill_rate": 1.0,
+          "mean_cost": 253.3
+        },
+        "ppo": {
+          "cost_std": 82.9061630700638,
+          "episodes": 4,
+          "fill_rate": 1.0,
+          "mean_cost": 1190.925
+        },
+        "reorder_point": {
+          "cost_std": 86.05379404041418,
+          "episodes": 4,
+          "fill_rate": 0.8312534317324214,
+          "mean_cost": 642.6125000000001
+        }
+      },
+      "phase_seconds": {
+        "batch": 2.599,
+        "data": 3.08,
+        "evaluation": 1.569,
+        "policy": 5.077,
+        "recovery": 1.009,
+        "serve": 7.374,
+        "train": 5.198,
+        "tune": 2.767
+      },
+      "recovered_ledger_total": 18,
+      "sampled_ppo_steps": 512,
+      "served_inference_verified": true,
+      "status": "complete",
+      "train_ranks": 1
+    },
+    "two_rank_partial_resume": {
+      "checkpoint_restore_verified": true,
+      "config_sha256": "4783e6928bc3032b5b4f3039ed904c89984dbd84dbfa7f4ab531475444f15bf9",
+      "environment": {
+        "architecture": "arm64",
+        "packages": {
+          "grpcio": "1.84.0",
+          "gymnasium": "1.1.1",
+          "numpy": "2.2.6",
+          "pandas": "2.2.3",
+          "protobuf": "6.33.5",
+          "psutil": "7.0.0",
+          "pyarrow": "20.0.0",
+          "pydantic": "2.14.1",
+          "ray": "2.49.2",
+          "torch": "2.8.0"
+        },
+        "python": "3.11.17",
+        "system": "Darwin",
+        "train_api": "0"
+      },
+      "executed_source_sha256": "aeb9b3ca312c23de36a68c9df55bfbe1552a157c38534387de05f7689bbd99ea",
+      "forecast": {
+        "artifacts": [],
+        "mae": 32.910675673931834,
+        "rows": 240,
+        "seasonal_mae": 6.941666755204399,
+        "wape": 1.5334036413028849
+      },
+      "generated_rows": 864,
+      "http_errors": 0,
+      "http_requests": 24,
+      "inventory": {
+        "forecast_base_stock": {
+          "cost_std": 20.977532624214764,
+          "episodes": 4,
+          "fill_rate": 1.0,
+          "mean_cost": 356.47499999999997
+        },
+        "ppo": {
+          "cost_std": 114.90757903093146,
+          "episodes": 4,
+          "fill_rate": 1.0,
+          "mean_cost": 1579.8625000000002
+        },
+        "reorder_point": {
+          "cost_std": 86.05379404041418,
+          "episodes": 4,
+          "fill_rate": 0.8312534317324214,
+          "mean_cost": 642.6125000000001
+        }
+      },
+      "phase_seconds": {
+        "batch": 2.416,
+        "data": 3.076,
+        "evaluation": 1.599,
+        "policy": 5.152,
+        "recovery": 1.016,
+        "serve": 6.497,
+        "train": 5.378,
+        "tune": 2.693
+      },
+      "recovered_ledger_total": 18,
+      "sampled_ppo_steps": 512,
+      "served_inference_verified": true,
+      "status": "complete",
+      "train_ranks": 2
+    }
+  },
+  "schema_version": 1,
+  "tests_passed": 21
+}

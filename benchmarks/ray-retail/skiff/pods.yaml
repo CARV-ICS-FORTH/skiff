@@ -1,0 +1,103 @@
+# Deployment template, NOT a qualified Knot runbook. Replace image and shared paths.
+# All three Ray pods use the same application and retail.cluster_node adapter.
+apiVersion: v1
+kind: Service
+metadata:
+  name: retail-head
+spec:
+  selector: {app: ray-retail, role: head}
+  ports:
+    - {name: gcs, port: 16379, targetPort: 16379}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: retail-head
+  labels: {app: ray-retail, role: head}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: ray
+      image: /root/.skiff/images/REPLACE-ray-retail.sif
+      resources:
+        requests: {cpu: "20", memory: 80Gi}
+        limits: {cpu: "20", memory: 80Gi}
+      env:
+        - name: POD_IP
+          valueFrom: {fieldRef: {fieldPath: status.podIP}}
+        - {name: RETAIL_CONTAINER_SHA256, value: REPLACE_WITH_SIF_SHA256}
+      command: [/bin/bash, -ec]
+      args:
+        - >-
+          cd /benchmark;
+          exec python3 -u -m retail.cluster_node head
+          --head-ip "$POD_IP" --node-ip "$POD_IP"
+          --output /report --config configs/three-node-cpu.json
+          --backend skiff --token REPLACE_UNIQUE_RUN_TOKEN
+          --cpus 20
+          --object-store-dir /object-store
+      volumeMounts:
+        - {name: source, mountPath: /benchmark, readOnly: true}
+        - {name: report, mountPath: /report}
+        - {name: objects, mountPath: /object-store}
+  volumes:
+    - name: source
+      hostPath: {path: /root/.skiff/benchmarks/ray-retail}
+    - name: report
+      hostPath: {path: /root/.skiff/benchmarks/ray-retail-results/REPLACE_UNIQUE_RUN}
+    # Deliberately no claim that medium: Memory would create tmpfs in Skiff.
+    # Replace with a verified equivalent RAM-backed location for performance runs.
+    - name: objects
+      emptyDir: {}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: retail-workers
+spec:
+  parallelism: 2
+  completions: 2
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {app: ray-retail, role: worker}
+    spec:
+      restartPolicy: Never
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: {app: ray-retail}
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: ray
+          image: /root/.skiff/images/REPLACE-ray-retail.sif
+          resources:
+            requests: {cpu: "20", memory: 80Gi}
+            limits: {cpu: "20", memory: 80Gi}
+          env:
+            - name: POD_IP
+              valueFrom: {fieldRef: {fieldPath: status.podIP}}
+            - {name: RETAIL_CONTAINER_SHA256, value: REPLACE_WITH_SIF_SHA256}
+          command: [/bin/bash, -ec]
+          args:
+            - >-
+              cd /benchmark;
+              HEAD_IP=$(python3 -c 'import socket; print(socket.gethostbyname("retail-head"))');
+              exec python3 -u -m retail.cluster_node worker
+              --head-ip "$HEAD_IP" --node-ip "$POD_IP"
+              --output /report --config configs/three-node-cpu.json
+              --backend skiff --token REPLACE_UNIQUE_RUN_TOKEN
+              --cpus 20
+              --object-store-dir /object-store
+          volumeMounts:
+            - {name: source, mountPath: /benchmark, readOnly: true}
+            - {name: report, mountPath: /report}
+            - {name: objects, mountPath: /object-store}
+      volumes:
+        - name: source
+          hostPath: {path: /root/.skiff/benchmarks/ray-retail}
+        - name: report
+          hostPath: {path: /root/.skiff/benchmarks/ray-retail-results/REPLACE_UNIQUE_RUN}
+        - name: objects
+          emptyDir: {}

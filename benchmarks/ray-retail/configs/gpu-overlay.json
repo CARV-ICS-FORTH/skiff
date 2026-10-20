@@ -1,0 +1,6 @@
+{
+  "device": "cuda",
+  "train": {"cpus_per_worker": 4, "threads": 4},
+  "tune": {"concurrency": 1},
+  "rl": {"cpus_per_learner": 4}
+}
