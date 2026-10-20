@@ -5,6 +5,7 @@ package vxlan
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -307,9 +308,20 @@ func TestRDMAPortDownAndUp(t *testing.T) {
 	checkOrder(t, n.recB, 1, 4)
 }
 
+// sendsOutstanding is how many of the engine's send slots are posted and not yet taken back
+// from their completions: its sends in flight, on all its QPs.
+func sendsOutstanding(oe *OverlayEngine) int {
+	t := oe.rd.Load()
+	return cap(t.sendFree) - len(t.sendFree)
+}
+
 // A receiver that holds its buffers runs out of posted receives (its lane says it ran low);
 // the sender's QP then holds MaxInFlight sends and drops the rest, counted, without waiting.
 // When the receiver lets the buffers go, what was in flight arrives.
+//
+// A send counts against the cap until the sender's lane takes its completion back, which a
+// loaded host may do late: so the first sends fill B's receives, and the rest go once A has
+// taken those back. They then find no receive, nothing completes, and the counts are exact.
 func TestRDMAInFlightCapDropsWithoutWaiting(t *testing.T) {
 	a, b := smallRDMA("fa"), smallRDMA("fb")
 	b.RecvSlots = 4
@@ -320,25 +332,61 @@ func TestRDMAInFlightCapDropsWithoutWaiting(t *testing.T) {
 	n.recB.hold = true
 	n.recB.mu.Unlock()
 	h, raw := tsoFrame(false, 30000, 9000, 1)
-	tb := n.a.NewBatch()
-	defer tb.Release()
-	start := time.Now()
-	for i := 0; i < 40; i++ {
-		frame, _ := packet.ParseEthernet(append([]byte(nil), raw...))
-		if sent, err := tb.SendSuper(h, frame, net.ParseIP("10.244.2.4")); !sent || err != nil {
-			t.Fatalf("SendSuper %d: %v %v", i, sent, err)
-		}
+	// sendSupers sends count copies of the super-frame (one flow: one QP, one lane of B) and
+	// says how long they took; a sender that waited for the receiver would not be done.
+	// (The goroutine does not report to t itself: it may return after the test, when the
+	// engines' close ends a wait.)
+	type result struct {
+		took time.Duration
+		err  string
 	}
-	if d := time.Since(start); d > time.Second {
+	sendSupers := func(what string, count int) time.Duration {
+		t.Helper()
+		done := make(chan result, 1)
+		go func() {
+			tb := n.a.NewBatch()
+			defer tb.Release()
+			start := time.Now()
+			for i := 0; i < count; i++ {
+				frame, _ := packet.ParseEthernet(append([]byte(nil), raw...))
+				if sent, err := tb.SendSuper(h, frame, net.ParseIP("10.244.2.4")); !sent || err != nil {
+					done <- result{err: fmt.Sprintf("SendSuper %d: %v %v", i, sent, err)}
+					return
+				}
+			}
+			done <- result{took: time.Since(start)}
+		}()
+		var r result
+		waitFor(t, what, func() bool {
+			select {
+			case r = <-done:
+				return true
+			default:
+				return false
+			}
+		})
+		if r.err != "" {
+			t.Fatal(r.err)
+		}
+		return r.took
+	}
+	sendSupers("the sends that fill B's receives", 4)
+	waitFor(t, "B to hold its 4 buffers", func() bool { return n.recB.superCount() == 4 })
+	waitFor(t, "B's lane to say it ran low", func() bool { return n.b.Stats().RDMA.RxLow > 0 })
+	waitFor(t, "A to take back the sends B received", func() bool { return sendsOutstanding(n.a) == 0 })
+	if d := sendSupers("the sends that find no receive", 40); d > time.Second {
 		t.Errorf("40 sends took %v: the sender waited for the receiver", d)
 	}
-	waitFor(t, "B to hold its 4 buffers", func() bool { return n.recB.superCount() == 4 })
-	if st := n.a.Stats().RDMA; st.TxFull == 0 {
-		t.Errorf("no drop counted at the in-flight cap: %+v", st)
+	if st := n.a.Stats().RDMA; st.TxMessages != uint64(4+a.MaxInFlight) || st.TxFull != uint64(40-a.MaxInFlight) || st.TxNoSlot != 0 {
+		t.Errorf("A sent %d messages and dropped %d at the in-flight cap and %d for want of a slot; want %d, %d and 0",
+			st.TxMessages, st.TxFull, st.TxNoSlot, 4+a.MaxInFlight, 40-a.MaxInFlight)
 	}
-	waitFor(t, "B's lane to say it ran low", func() bool { return n.b.Stats().RDMA.RxLow > 0 })
+	if got := sendsOutstanding(n.a); got != a.MaxInFlight {
+		t.Errorf("%d sends in flight, want %d", got, a.MaxInFlight)
+	}
 	n.recB.releaseHeld()
 	waitFor(t, "what was in flight", func() bool { return n.recB.superCount() == 4+a.MaxInFlight })
+	waitFor(t, "A to take back what was in flight", func() bool { return sendsOutstanding(n.a) == 0 })
 }
 
 // Closing an engine destroys the transport in the verbs' order (the fake reports any other,
