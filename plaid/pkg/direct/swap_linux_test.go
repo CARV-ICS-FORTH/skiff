@@ -483,6 +483,93 @@ func TestDirectBlockingAccept(t *testing.T) {
 	}
 }
 
+// pollserve FAMILY PORT N: what iperf3 and many C servers do, on a blocking listener of
+// the family (4 or 6): wait with poll until it is readable, then accept (blocking), read
+// once and close, N times. It prints, for each connection, the bytes it carried and the
+// peer's address.
+func init() {
+	helpers["pollserve"] = func(args []string) int {
+		family, port, n := unix.AF_INET, 0, 0
+		if args[0] == "6" {
+			family = unix.AF_INET6
+		}
+		port, _ = strconv.Atoi(args[1])
+		n, _ = strconv.Atoi(args[2])
+		fd, _ := unix.Socket(family, unix.SOCK_STREAM, 0)
+		var sa unix.Sockaddr = &unix.SockaddrInet4{Port: port}
+		if family == unix.AF_INET6 {
+			sa = &unix.SockaddrInet6{Port: port}
+		}
+		if err := unix.Bind(fd, sa); err != nil {
+			fmt.Println("error bind", err)
+			return 2
+		}
+		unix.Listen(fd, 8)
+		fmt.Println("listening")
+		for i := 0; i < n; i++ {
+			unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, 10000)
+			nfd, peer, err := unix.Accept4(fd, unix.SOCK_CLOEXEC)
+			if err != nil {
+				fmt.Println("error accept", err)
+				return 2
+			}
+			buf := make([]byte, 16)
+			got, _ := unix.Read(nfd, buf)
+			unix.Close(nfd)
+			fmt.Printf("conn %d bytes=%d peer=%s\n", i, got, addrPortOf(peer))
+		}
+		return 0
+	}
+}
+
+// A connection that the supervisor turns away, with nothing else waiting, is answered with
+// a connection that has closed, not with a wait for the next one (a server that polled
+// its blocking listener would stand in accept, and so would its timers) and not with an
+// error (a server that does not expect one would end): the server reads end of file, as
+// from a client that went away, and the next connection is the real client's.
+func TestATurnedAwayConnectionIsAnsweredWithAClosedOne(t *testing.T) {
+	for _, family := range []string{"4", "6"} {
+		t.Run("IPv"+family, func(t *testing.T) {
+			if l, err := net.Listen("tcp"+family, map[string]string{"4": "127.0.0.1:0", "6": "[::1]:0"}[family]); err != nil {
+				t.Skipf("no IPv%s loopback on the host: %v", family, err)
+			} else {
+				l.Close()
+			}
+			port := freePort(t)
+			p := strconv.Itoa(port)
+			vip := "10.43.0.77:" + p
+			marked := Ports{uint16(port): {}}
+			server, out := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "pollserve", family, p, "3")
+			out.waitFor(t, "listening")
+			time.Sleep(300 * time.Millisecond) // in accept, and held
+
+			// Something that is not a preamble, and a direct client that has gone.
+			forged(t, p, func(pre *Preamble, key *[]byte) { *key = nil }).Close()
+			time.Sleep(300 * time.Millisecond)
+			forged(t, p, func(pre *Preamble, key *[]byte) {}).Close()
+			time.Sleep(300 * time.Millisecond)
+
+			resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+			client, clientOut := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", vip, "4")
+			if err := client.Wait(); err != nil {
+				t.Fatalf("client: %v\n%s", err, clientOut)
+			}
+			if err := server.Wait(); err != nil {
+				t.Fatalf("server: %v\n%s", err, out)
+			}
+			text := out.String()
+			for i, want := range []string{"bytes=0 peer=127.0.0.1:", "bytes=0 peer=127.0.0.1:", "bytes=4 peer=10.244.1.9:"} {
+				if !strings.Contains(text, fmt.Sprintf("conn %d %s", i, want)) {
+					t.Errorf("connection %d: want %q\n%s", i, want, text)
+				}
+			}
+			if r := server.Stats().Rejected.Snapshot(); r["not-a-preamble"] != 1 || r["client-gone"] != 1 {
+				t.Errorf("rejections: %v", r)
+			}
+		})
+	}
+}
+
 // admit on its own, on a listener of the test's: a direct client that closes before the
 // container accepts is not handed over, and the others are acknowledged.
 func TestAdmit(t *testing.T) {

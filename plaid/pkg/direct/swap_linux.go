@@ -521,7 +521,23 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 		// accepted. EAGAIN is for the kernel to say: an edge-triggered epoll would not wake
 		// again for the connections that are queued.
 		s.reject(reason, "%v", err)
+		peer := peerOf(conn, listener.Family)
 		unix.Close(conn)
+		if !nonblock && !pollReadable(dup, 0) {
+			// Nothing else is queued, and a blocking accept cannot be told so. Waiting for
+			// the next connection would leave a server that polled the listener and then
+			// called accept standing here with whatever else it has to do (iperf3 in the
+			// middle of a test), and an error would end a server that does not expect one
+			//. The kernel returns the connection that was polled for: a
+			// client that went away, or whatever it was. This is one that has.
+			if conn, err = s.closedConnection(listener.Family); err == nil {
+				pre = Preamble{Client: peer, Backend: netip.AddrPortFrom(s.cfg.PodIP, listener.Local.Port())}
+				s.logf("accept: a closed connection from %s in place of the one turned away", peer)
+				break
+			}
+			s.stats.Errors.Add(1)
+			s.logf("accept: no closed connection to hand over: %v", err)
+		}
 	}
 	defer unix.Close(conn)
 	if flags&unix.SOCK_NONBLOCK != 0 {
@@ -555,6 +571,52 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	s.stats.Accepted.Add(1)
 	s.logConn("accept: fd %d of %s, from %s", newfd, listener.Local, pre.Client)
 	return reply{answered: true}
+}
+
+// peerOf is the address the other end of a socket of the family has, or the family's
+// unspecified address if the socket cannot say.
+func peerOf(fd, family int) netip.AddrPort {
+	if sa, err := unix.Getpeername(fd); err == nil {
+		if ap := addrPortOf(sa); ap.IsValid() {
+			return ap
+		}
+	}
+	return netip.AddrPortFrom(unspecifiedFor(family), 0)
+}
+
+// closedConnection is an accepted TCP socket of the family whose other end has closed, one
+// that the container reads end of file from and nobody else has: the supervisor connects a
+// host socket to a listener of its own on the host's loopback and closes it.
+func (s *Supervisor) closedConnection(family int) (int, error) {
+	lo := netip.MustParseAddr("127.0.0.1")
+	if family == unix.AF_INET6 {
+		lo = netip.IPv6Loopback()
+	}
+	listener, err := s.cfg.Factory.Socket(family)
+	if err != nil {
+		return -1, err
+	}
+	defer unix.Close(listener)
+	if err := unix.Bind(listener, sockaddrFor(netip.AddrPortFrom(lo, 0), family)); err != nil {
+		return -1, err
+	}
+	if err := unix.Listen(listener, 1); err != nil {
+		return -1, err
+	}
+	sa, err := unix.Getsockname(listener)
+	if err != nil {
+		return -1, err
+	}
+	client, err := s.cfg.Factory.Socket(family)
+	if err != nil {
+		return -1, err
+	}
+	defer unix.Close(client)
+	if err := unix.Connect(client, sockaddrFor(addrPortOf(sa), family)); err != nil {
+		return -1, err
+	}
+	conn, _, err := unix.Accept4(listener, unix.SOCK_CLOEXEC)
+	return conn, err
 }
 
 // admit decides whether the connection that was accepted on the listener is a client
