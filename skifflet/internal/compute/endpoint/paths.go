@@ -41,7 +41,7 @@ import (
 //	job/resolv.conf      the pod's /etc/resolv.conf, mounted into every container
 //	job/hosts            the pod's /etc/hosts
 //	job/<container>.env  the container's environment, given to Apptainer
-//	job/<container>.direct.log  the log of its supervisor of the direct path (see DirectPorts)
+//	job/<container>.direct.log  the log of its supervisor of the direct path (see DirectConnectPortsAnnotation)
 //	volumes/<volume>     the pod's volumes
 //	logs/                container logs (see ContainerPath)
 //	tmp/                 the pod's Apptainer temporary directory (see TmpDir)

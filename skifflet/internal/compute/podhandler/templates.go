@@ -75,19 +75,28 @@ type Container struct {
 	Command       []string
 	Args          []string
 	ExecutionMode string
-	// DirectPorts are the TCP ports the container marks for the direct path (see
-	// DirectPortsEnv), and PodIP is the address of its pod, which it keeps on that path.
-	// With no ports the container is as any other.
-	DirectPorts string
-	PodIP       string
+	// DirectConnectPorts and DirectListenPorts are the TCP ports the container marks for the
+	// direct path (see DirectConnectPortsAnnotation), and PodIP is the address of its pod,
+	// which it keeps on that path. With no ports the container is as any other.
+	DirectConnectPorts string
+	DirectListenPorts  string
+	PodIP              string
 }
 
-// DirectPortsEnv is the environment variable with which a container marks the TCP ports that
-// take the direct path: a comma separated list, "5201,5203". Connections of the container to a
-// Service on one of them, and its servers' ports among them, run on sockets of the node's
-// network namespace and not through Plaid's overlay, with the addresses the pod network gives.
-// See plaid/pkg/direct for what that is and what it costs.
-const DirectPortsEnv = "PLAID_DIRECT_PORTS"
+// The annotations of a pod that mark the TCP ports that take the direct path, each a comma
+// separated list ("5201,5203"). A pod's annotation applies to all of its containers: each
+// one's connects to a Service on a port of the first list, and its servers on a port of the
+// second, run on sockets of the node's network namespace and not through Plaid's overlay,
+// with the addresses the pod network gives. They are read when a container starts. See
+// plaid/pkg/direct for what that is and what it costs.
+const (
+	// DirectConnectPortsAnnotation lists the ports of the Services the pod's containers
+	// connect to (the Service's port, not its targetPort).
+	DirectConnectPortsAnnotation = "plaid.skiff.io/direct-connect-ports"
+	// DirectListenPortsAnnotation lists the ports its containers listen on (what the
+	// Services' targetPorts name).
+	DirectListenPortsAnnotation = "plaid.skiff.io/direct-listen-ports"
+)
 
 // NoMounts are what Apptainer would mount into a container by default and Skiff does not:
 // the user's home, the paths the site configured, the node's /tmp and /var/tmp (a
@@ -118,10 +127,15 @@ const NoMounts = "home,bind-paths,tmp,cwd"
 // volume there itself.
 func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, attempt int) []string {
 	args := []string{"--host-networking", c.ExecutionMode}
-	if c.DirectPorts != "" && c.PodIP != "" {
+	if (c.DirectConnectPorts != "" || c.DirectListenPorts != "") && c.PodIP != "" {
 		// (plaidtainer's own options follow its command, not the global ones before it)
-		args = append(args, "--direct-ports", c.DirectPorts, "--pod-ip", c.PodIP,
-			"--direct-log", podDir.Container(c.Name).DirectLogPath())
+		if c.DirectConnectPorts != "" {
+			args = append(args, "--direct-connect-ports", c.DirectConnectPorts)
+		}
+		if c.DirectListenPorts != "" {
+			args = append(args, "--direct-listen-ports", c.DirectListenPorts)
+		}
+		args = append(args, "--pod-ip", c.PodIP, "--direct-log", podDir.Container(c.Name).DirectLogPath())
 	}
 	args = append(args,
 		"--pid",

@@ -1329,7 +1329,7 @@ skiff_bubble() {
     OVERLAY_HANDOFF="$SKIFF_OVERLAY_HANDOFF"
     OVERLAY_PORT=8472
     OVERLAY_HELPER_PID=""
-    # The direct path's sockets (containers that mark ports in PLAID_DIRECT_PORTS): TCP sockets
+    # The direct path's sockets (containers of pods that mark ports with the plaid.skiff.io/direct-* annotations): TCP sockets
     # of the physical host, made by a factory that runs there and stays, for the containers'
     # supervisors in the bubble to ask for. Same directory as the handoff, same reasons.
     DIRECT_SOCKET="$SKIFF_DIRECT_SOCKET"

@@ -290,31 +290,20 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 			}
 			return ""
 		}(),
-		EnvFilePath:   containerPath.EnvFilePath(),
-		Binds:         binds,
-		GPUs:          minors(devices),
-		Command:       kubecontainer.ExpandContainerCommand(container.Command, resolvedEnvs),
-		Args:          kubecontainer.ExpandContainerCommand(container.Args, resolvedEnvs),
-		ExecutionMode: executionMode,
-		DirectPorts:   directPortsOf(resolvedEnvs),
+		EnvFilePath:        containerPath.EnvFilePath(),
+		Binds:              binds,
+		GPUs:               minors(devices),
+		Command:            kubecontainer.ExpandContainerCommand(container.Command, resolvedEnvs),
+		Args:               kubecontainer.ExpandContainerCommand(container.Args, resolvedEnvs),
+		ExecutionMode:      executionMode,
+		DirectConnectPorts: strings.TrimSpace(h.Pod.GetAnnotations()[DirectConnectPortsAnnotation]),
+		DirectListenPorts:  strings.TrimSpace(h.Pod.GetAnnotations()[DirectListenPortsAnnotation]),
 	}
 	if h.lifecycle != nil {
 		c.PodIP = h.lifecycle.GetPodStatus().PodIP
 	}
 
 	return c, nil
-}
-
-// directPortsOf is the ports the container marks for the direct path (DirectPortsEnv), as
-// written: plaidtainer reads the list, and runs the container as any other if it is not one.
-func directPortsOf(envs []corev1.EnvVar) string {
-	ports := ""
-	for _, env := range envs {
-		if env.Name == DirectPortsEnv {
-			ports = strings.TrimSpace(env.Value)
-		}
-	}
-	return ports
 }
 
 // subPathInside resolves path (below the volume at root) with its symlinks, and says whether it
