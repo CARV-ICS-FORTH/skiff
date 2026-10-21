@@ -10,15 +10,15 @@ import (
 	"plaid/pkg/api"
 )
 
-// Backend is where a Service address leads: the pod that will serve the connection, and the
+// Backend is where a Service or pod address leads: the pod that will serve the connection, and the
 // host socket address on its node that the connection goes to (see HostPort).
 type Backend struct {
 	Pod  netip.AddrPort // the pod's address and port
 	Host netip.AddrPort // the node's address and the port the pod's server listens on there
 }
 
-// Resolver finds the backend of a Service address. It says false for an address that is no
-// Service's (or that has no backend that can take a connection), and the connect goes the
+// Resolver finds the backend of a Service or pod address. It says false for an address that
+// is neither (or that has no backend that can take a connection), and the connect goes the
 // way it would have without the supervisor.
 type Resolver interface {
 	Resolve(dst netip.AddrPort) (Backend, bool)
@@ -36,16 +36,16 @@ type PlaidAPI interface {
 	ListRoutes() ([]api.RouteInfo, error)
 }
 
-// refreshAfter is how old plaidd's tables may be when a Service address is looked up. A
-// miss refreshes them sooner (a Service made a moment ago), but plaidd is asked no more
-// often than missRefresh, so that a container that connects to an address that is no
-// Service's does not make plaidd list its table for every connect.
+// refreshAfter is how old plaidd's tables may be when an address is looked up. A miss
+// refreshes them sooner (a Service made a moment ago), but plaidd is asked no more often
+// than missRefresh, so that a container that connects to an address that is neither a
+// Service's nor a pod's does not make plaidd list its table for every connect.
 const (
 	refreshAfter = 2 * time.Second
 	missRefresh  = 250 * time.Millisecond
 )
 
-// APIResolver resolves Service addresses with the Service table and the routes of plaidd.
+// APIResolver resolves Service and pod addresses with the Service table and the routes of plaidd.
 // It keeps a copy of both for a short time.
 type APIResolver struct {
 	client PlaidAPI
@@ -78,21 +78,37 @@ func NewAPIResolver(client PlaidAPI, localHost netip.Addr, portBase int) *APIRes
 	return &APIResolver{client: client, local: localHost, base: portBase, now: time.Now, pick: rand.IntN}
 }
 
-// Resolve implements Resolver. The backend is one of the Service's eligible ones, picked
-// at random for each connection; its pod is on this node (its subnet is the node's) or on
-// the node its subnet is routed to, and the connection goes to the same port there.
+// Resolve implements Resolver. A Service address leads to one of the Service's eligible
+// backends, picked at random for each connection. A pod's address leads to that pod, whose
+// subnet is this node's or the node's it is routed to; the Service CIDR and the pod networks
+// are different ranges, so the address says which it is. The connection goes to the pod's
+// port, which the backend's target port or the destination itself names.
 func (r *APIResolver) Resolve(dst netip.AddrPort) (Backend, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.now().Sub(r.loaded) >= refreshAfter {
 		r.load()
 	}
-	backends, ok := r.services[dst]
-	if !ok && r.load() {
-		backends, ok = r.services[dst]
+	b, known, ok := r.lookup(dst)
+	if !known && r.load() {
+		b, _, ok = r.lookup(dst)
 	}
+	return b, ok
+}
+
+// lookup resolves dst from the copy of the tables. known says that dst is a Service's
+// address or in a pod network the routes lead to; a refresh may change the answer for an
+// address that is not.
+func (r *APIResolver) lookup(dst netip.AddrPort) (b Backend, known, ok bool) {
+	if node, ok := r.nodeOf(dst.Addr()); ok {
+		if port, ok := r.hostPort(node, dst); ok {
+			return Backend{Pod: dst, Host: netip.AddrPortFrom(node.host, port)}, true, true
+		}
+		return Backend{}, true, false
+	}
+	backends, ok := r.services[dst]
 	if !ok {
-		return Backend{}, false
+		return Backend{}, false, false
 	}
 	// Those on a node that is not known are left out; a Service whose backends are all
 	// unknown is not one for the direct path.
@@ -105,9 +121,9 @@ func (r *APIResolver) Resolve(dst netip.AddrPort) (Backend, bool) {
 		}
 	}
 	if len(usable) == 0 {
-		return Backend{}, false
+		return Backend{}, true, false
 	}
-	return usable[r.pick(len(usable))], true
+	return usable[r.pick(len(usable))], true, true
 }
 
 // HostOf implements Resolver.

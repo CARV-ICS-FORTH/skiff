@@ -10,7 +10,7 @@ import (
 type Kind int
 
 const (
-	KindClient   Kind = iota + 1 // connected to a backend; the peer is the Service address
+	KindClient   Kind = iota + 1 // connected to a backend; the peer is the address dialled
 	KindListener                 // bound on the host; the address is what the container bound
 	KindAccepted                 // taken from a listener; the peer is the client's pod address
 )

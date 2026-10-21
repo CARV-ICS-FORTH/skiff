@@ -25,7 +25,7 @@ type Config struct {
 	AckTimeout time.Duration
 	// Factory makes the host sockets.
 	Factory *FactoryClient
-	// Resolver finds the backends of Service addresses.
+	// Resolver finds the backends of Service and pod addresses.
 	Resolver Resolver
 	// Report, when set, is given the counters (their totals so far) now and then when they
 	// have changed, and the last time, with ended true, when the supervisor ends.

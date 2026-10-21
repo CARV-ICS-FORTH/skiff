@@ -6,8 +6,8 @@ import "golang.org/x/sys/unix"
 
 // getsockname and getpeername of a socket that was put in place: the container is told the
 // addresses of the pod network, not of the host socket. A client sees itself as its pod IP
-// and its peer as the Service address it connected to (as it would behind kube-proxy's
-// DNAT); a server sees itself as its pod IP and port and its peer as the client's pod IP
+// and its peer as the address it connected to, a Service's or a pod's (as it would behind
+// kube-proxy's DNAT); a server sees itself as its pod IP and port and its peer as the client's pod IP
 // and port. Any other socket is let through.
 func (s *Supervisor) name(n *notif, tl *timeline) reply {
 	if s.table.Len() == 0 {

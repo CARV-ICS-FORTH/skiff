@@ -346,6 +346,42 @@ func TestDirectConnectionBetweenPods(t *testing.T) {
 	}
 }
 
+// A connect to a pod's own address on a marked port takes the direct path as one to a
+// Service does: the client's peer is the pod address it dialled, and the server sees the
+// client's pod address.
+func TestDirectConnectionToAPodAddress(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	pod := "10.244.5.4:" + p
+	marked := Ports{uint16(port): {}}
+
+	server, serverOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "serve", p)
+	serverOut.waitFor(t, "listening")
+	resolver := fakeResolver{pod: {Pod: netip.MustParseAddrPort(pod), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+	client, clientOut := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", pod, "1000")
+	if err := client.Wait(); err != nil {
+		t.Fatalf("client: %v\n%s", err, clientOut)
+	}
+	if err := server.Wait(); err != nil {
+		t.Fatalf("server: %v\n%s", err, serverOut)
+	}
+	cl, so := clientOut.String(), serverOut.String()
+	clientLocal := field(t, cl, "dialed", "local")
+	for _, key := range []string{"remote", "rawremote"} {
+		if got := field(t, cl, "dialed", key); got != pod {
+			t.Errorf("client %s = %s, want the pod address %s", key, got, pod)
+		}
+	}
+	for _, key := range []string{"remote", "rawremote"} {
+		if got := field(t, so, "accepted", key); got != clientLocal || !strings.HasPrefix(got, "10.244.1.9:") {
+			t.Errorf("server %s = %s, want the client %s", key, got, clientLocal)
+		}
+	}
+	if server.Stats().Accepted.Load() != 1 || client.Stats().Swapped() != 1 {
+		t.Errorf("accepted %d, swapped %d; want 1, 1", server.Stats().Accepted.Load(), client.Stats().Swapped())
+	}
+}
+
 // forged connects to the server's host port as a client would and sends it a preamble
 // that is true of the connection, changed by edit (and signed with the key, which edit may
 // change; none is a message that is no preamble at all).

@@ -105,6 +105,64 @@ func TestResolveSkipsWhatCannotTakeAConnection(t *testing.T) {
 	}
 }
 
+func TestResolvePodAddress(t *testing.T) {
+	f := &fakePlaid{
+		status: exampleStatus(),
+		services: []api.ServiceEntry{{VIP: "10.43.0.80", Port: 80, Protocol: "tcp",
+			Backends: []api.BackendEntry{{IP: "10.244.5.4", Port: 8080, Eligible: true}}}},
+		routes: []api.RouteInfo{{Subnet: "10.244.5.0/24", RemoteHostIP: "10.0.1.13"}, {Subnet: "10.250.0.0/16", RemoteHostIP: "10.0.9.9"}},
+	}
+	r, now := newTestResolver(f)
+	for dst, want := range map[string]Backend{
+		// A pod of another node: its own port, on the node it is routed to (20000 + 4*16 + 8080 mod 16).
+		"10.244.5.4:8080": {Pod: netip.MustParseAddrPort("10.244.5.4:8080"), Host: netip.MustParseAddrPort("10.0.1.13:20064")},
+		// A pod of this node: on the node's own address (20000 + 7*16 + 5201 mod 16).
+		"10.244.1.7:5201": {Pod: netip.MustParseAddrPort("10.244.1.7:5201"), Host: netip.MustParseAddrPort("10.0.1.11:20113")},
+	} {
+		if got, ok := r.Resolve(netip.MustParseAddrPort(dst)); !ok || got != want {
+			t.Errorf("%s: %v, %v; want %v", dst, got, ok, want)
+		}
+	}
+	// A Service is still resolved to its backend's target port.
+	if got, ok := r.Resolve(netip.MustParseAddrPort("10.43.0.80:80")); !ok || got.Pod.String() != "10.244.5.4:8080" {
+		t.Errorf("the Service: %v, %v", got, ok)
+	}
+	// Addresses that are not a pod's: the node's own, a network no route leads to, a route
+	// that is too wide for host ports (a pod network larger than a /24). Only the first two
+	// may be a Service or a pod that is new, so only they make plaidd list its tables again.
+	*now = now.Add(missRefresh)
+	asked := f.asked
+	if got, ok := r.Resolve(netip.MustParseAddrPort("10.250.3.4:5201")); ok || f.asked != asked {
+		t.Errorf("a pod of a wide route: %v, %v, %d requests", got, ok, f.asked-asked)
+	}
+	for _, dst := range []string{"10.0.1.11:5201", "10.244.9.9:5201"} {
+		*now = now.Add(missRefresh)
+		asked = f.asked
+		if got, ok := r.Resolve(netip.MustParseAddrPort(dst)); ok || f.asked != asked+1 {
+			t.Errorf("%s: %v, %v, %d requests", dst, got, ok, f.asked-asked)
+		}
+	}
+}
+
+func TestResolvePodOfANewNode(t *testing.T) {
+	f := &fakePlaid{status: exampleStatus()}
+	r, now := newTestResolver(f)
+	dst := netip.MustParseAddrPort("10.244.6.4:5201")
+	if _, ok := r.Resolve(dst); ok {
+		t.Fatal("resolved before the node existed")
+	}
+	// The node joins: a miss asks again, but not before missRefresh has passed.
+	f.routes = []api.RouteInfo{{Subnet: "10.244.6.0/24", RemoteHostIP: "10.0.1.14"}}
+	*now = now.Add(missRefresh)
+	if got, ok := r.Resolve(dst); !ok || got.Host.String() != "10.0.1.14:20065" {
+		t.Errorf("after the node joined: %v, %v", got, ok)
+	}
+	asked := f.asked
+	if _, ok := r.Resolve(dst); !ok || f.asked != asked {
+		t.Errorf("a hit asked plaidd: %d requests", f.asked-asked)
+	}
+}
+
 func TestResolveRefreshesAndSurvivesPlaidd(t *testing.T) {
 	f := &fakePlaid{status: exampleStatus(), routes: []api.RouteInfo{{Subnet: "10.244.5.0/24", RemoteHostIP: "10.0.1.13"}}}
 	r, now := newTestResolver(f)
