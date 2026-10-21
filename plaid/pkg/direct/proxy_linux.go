@@ -195,7 +195,14 @@ func (s *Supervisor) hostPortFree(family int, port uint16) bool {
 }
 
 // forward carries one connection that came to the pod-side socket to the container's
-// listener on the host and back.
+// listener on the host and back. The two directions are copied with io.Copy, which splices
+// between two TCP connections, in the kernel. (A copy through a buffer in user space was
+// used for a while: one stream from an unmarked client pod over the overlay to a marked
+// server looked steadier with it, but the dips of that comparison were the server standing
+// still in accept, see admit, and not the copy. Measured again without them, ten to fifteen
+// runs each: over the overlay 8.4 Gbit/s (7.7 to 8.7) with splice, which took 65 % of a core,
+// and 8.2 (7.9 to 8.4) with the copy at 90 %; on the pod's loopback, where the proxy is the
+// limit, 17 to 21 Gbit/s with splice at a core and 13 to 14 with the copy at 108 %.)
 func (p *localProxy) forward(c *net.TCPConn) {
 	defer c.Close()
 	peer := c.RemoteAddr().(*net.TCPAddr).AddrPort()
@@ -238,32 +245,12 @@ func (p *localProxy) forward(c *net.TCPConn) {
 			c.Close()
 			return
 		}
-		_, _ = copyConn(c, h)
+		_, _ = io.Copy(c, h)
 		_ = c.CloseWrite()
 	}()
-	_, _ = copyConn(h, c)
+	_, _ = io.Copy(h, c)
 	_ = h.CloseWrite()
 	wg.Wait()
-}
-
-// copyBufferSize is the size of the buffer a connection is copied through.
-const copyBufferSize = 256 << 10
-
-var copyBuffers = sync.Pool{New: func() any { b := make([]byte, copyBufferSize); return &b }}
-
-// copyConn copies src to dst until src ends, in user space: through a buffer, not with
-// splice, which is what io.Copy does between two TCP connections. Measured on the cluster, one
-// stream from an unmarked client pod over the overlay to a marked server, the two builds
-// taking turns in one session, ten runs each: with splice a median of 5.9 Gbit/s (3.1 to 9.6),
-// with the copy 7.8 (3.5 to 8.5); an unmarked server takes 8.6 to 8.9. Both dip to 3 or 4
-// Gbit/s now and then, and in other sessions the medians were 7.0 and 8.2: the copy is better by
-// a Gbit/s or so, not steady, and an explicit splice loop with a pipe of 64 KiB was no
-// steadier. Why the stream into the container does worse than the one that goes through a
-// relay in the pod was not found. The copy costs about a core at 8 Gbit/s (splice: half of one).
-func copyConn(dst, src net.Conn) (int64, error) {
-	buf := copyBuffers.Get().(*[]byte)
-	defer copyBuffers.Put(buf)
-	return io.CopyBuffer(struct{ io.Writer }{dst}, struct{ io.Reader }{src}, *buf) // (the wrappers hide ReadFrom and WriteTo)
 }
 
 // dial connects to the container's listener on the host's loopback: its IPv4 address for a
