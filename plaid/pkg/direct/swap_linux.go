@@ -530,7 +530,7 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 			// middle of a test), and an error would end a server that does not expect one
 			//. The kernel returns the connection that was polled for: a
 			// client that went away, or whatever it was. This is one that has.
-			if conn, err = s.closedConnection(listener.Family); err == nil {
+			if conn, err = s.closedConnection(); err == nil {
 				pre = Preamble{Client: peer, Backend: netip.AddrPortFrom(s.cfg.PodIP, listener.Local.Port())}
 				s.logf("accept: a closed connection from %s in place of the one turned away", peer)
 				break
@@ -584,20 +584,19 @@ func peerOf(fd, family int) netip.AddrPort {
 	return netip.AddrPortFrom(unspecifiedFor(family), 0)
 }
 
-// closedConnection is an accepted TCP socket of the family whose other end has closed, one
-// that the container reads end of file from and nobody else has: the supervisor connects a
-// host socket to a listener of its own on the host's loopback and closes it.
-func (s *Supervisor) closedConnection(family int) (int, error) {
-	lo := netip.MustParseAddr("127.0.0.1")
-	if family == unix.AF_INET6 {
-		lo = netip.IPv6Loopback()
-	}
-	listener, err := s.cfg.Factory.Socket(family)
+// closedConnection is an accepted TCP socket whose other end has closed, one that the
+// container reads end of file from and nobody else has: the supervisor connects a host
+// socket to a listener of its own on the host's IPv4 loopback and closes it. It is an IPv4
+// socket also for an IPv6 listener, because the host may have no ::1 (or no IPv6 on its
+// loopback at all); the container is told the addresses of the listener's family, as for
+// every connection it is handed (the table, getsockname, the address accept writes).
+func (s *Supervisor) closedConnection() (int, error) {
+	listener, err := s.cfg.Factory.Socket(unix.AF_INET)
 	if err != nil {
 		return -1, err
 	}
 	defer unix.Close(listener)
-	if err := unix.Bind(listener, sockaddrFor(netip.AddrPortFrom(lo, 0), family)); err != nil {
+	if err := unix.Bind(listener, &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
 		return -1, err
 	}
 	if err := unix.Listen(listener, 1); err != nil {
@@ -607,12 +606,12 @@ func (s *Supervisor) closedConnection(family int) (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	client, err := s.cfg.Factory.Socket(family)
+	client, err := s.cfg.Factory.Socket(unix.AF_INET)
 	if err != nil {
 		return -1, err
 	}
 	defer unix.Close(client)
-	if err := unix.Connect(client, sockaddrFor(addrPortOf(sa), family)); err != nil {
+	if err := unix.Connect(client, sa); err != nil {
 		return -1, err
 	}
 	conn, _, err := unix.Accept4(listener, unix.SOCK_CLOEXEC)

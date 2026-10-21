@@ -515,8 +515,12 @@ func init() {
 			}
 			buf := make([]byte, 16)
 			got, _ := unix.Read(nfd, buf)
+			// What the container is told about the connection, by accept and by the calls
+			// that ask for the names: the listener's family, whatever socket it is.
+			sock, _ := unix.Getsockname(nfd)
+			peerName, _ := unix.Getpeername(nfd)
 			unix.Close(nfd)
-			fmt.Printf("conn %d bytes=%d peer=%s\n", i, got, addrPortOf(peer))
+			fmt.Printf("conn %d bytes=%d peer=%s family=%T sockname=%s peername=%s\n", i, got, addrPortOf(peer), peer, addrPortOf(sock), addrPortOf(peerName))
 		}
 		return 0
 	}
@@ -529,44 +533,87 @@ func init() {
 // from a client that went away, and the next connection is the real client's.
 func TestATurnedAwayConnectionIsAnsweredWithAClosedOne(t *testing.T) {
 	for _, family := range []string{"4", "6"} {
-		t.Run("IPv"+family, func(t *testing.T) {
-			if l, err := net.Listen("tcp"+family, map[string]string{"4": "127.0.0.1:0", "6": "[::1]:0"}[family]); err != nil {
-				t.Skipf("no IPv%s loopback on the host: %v", family, err)
-			} else {
-				l.Close()
-			}
-			port := freePort(t)
-			p := strconv.Itoa(port)
-			vip := "10.43.0.77:" + p
-			marked := Ports{uint16(port): {}}
-			server, out := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "pollserve", family, p, "3")
-			out.waitFor(t, "listening")
-			time.Sleep(300 * time.Millisecond) // in accept, and held
+		t.Run("IPv"+family, func(t *testing.T) { turnedAway(t, family) })
+	}
+}
 
-			// Something that is not a preamble, and a direct client that has gone.
-			forged(t, p, func(pre *Preamble, key *[]byte) { *key = nil }).Close()
-			time.Sleep(300 * time.Millisecond)
-			forged(t, p, func(pre *Preamble, key *[]byte) {}).Close()
-			time.Sleep(300 * time.Millisecond)
+// An IPv6 listener on a host that has no ::1 (IPv6 disabled on its loopback: the sockets
+// work, the address is not there) is answered with a closed connection as well. The test
+// runs the IPv6 case again as a host of that kind: a network namespace of its own, with a
+// loopback that has no IPv6 (DIRECT_TEST_NO_LOOPBACK6, see TestMain).
+func TestATurnedAwayConnectionOnAHostWithoutIPv6Loopback(t *testing.T) {
+	requireLoopback(t)
+	if os.Getenv("DIRECT_TEST_NO_LOOPBACK6") == "" {
+		cmd := helperCmd("", true)
+		cmd.Env = append(os.Environ(), "DIRECT_TEST_NO_LOOPBACK6=1")
+		cmd.Args = append(cmd.Args, "-test.run=^"+t.Name()+"$", "-test.v")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%v\n%s", err, out)
+		}
+		if strings.Contains(string(out), "SKIP:") {
+			t.Skipf("cannot run as that host:\n%s", out)
+		}
+		return
+	}
+	if l, err := net.Listen("tcp6", "[::1]:0"); err == nil {
+		l.Close()
+		t.Fatal("the host has ::1")
+	}
+	turnedAway(t, "6")
+}
 
-			resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
-			client, clientOut := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", vip, "4")
-			if err := client.Wait(); err != nil {
-				t.Fatalf("client: %v\n%s", err, clientOut)
+func turnedAway(t *testing.T, family string) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	vip := "10.43.0.77:" + p
+	marked := Ports{uint16(port): {}}
+	server, out := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "pollserve", family, p, "3")
+	out.waitFor(t, "listening")
+	time.Sleep(300 * time.Millisecond) // in accept, and held
+
+	// Something that is not a preamble, and a direct client that has gone.
+	forged(t, p, func(pre *Preamble, key *[]byte) { *key = nil }).Close()
+	time.Sleep(300 * time.Millisecond)
+	forged(t, p, func(pre *Preamble, key *[]byte) {}).Close()
+	time.Sleep(300 * time.Millisecond)
+
+	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+	client, clientOut := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", vip, "4")
+	if err := client.Wait(); err != nil {
+		t.Fatalf("client: %v\n%s", err, clientOut)
+	}
+	if err := server.Wait(); err != nil {
+		t.Fatalf("server: %v\n%s", err, out)
+	}
+	// The socket the container is handed is of its listener's family and says the pod's
+	// addresses, the closed ones with the peer of the connection that was turned away.
+	text := out.String()
+	sock := "*unix.SockaddrInet4"
+	if family == "6" {
+		sock = "*unix.SockaddrInet6"
+	}
+	for i, peer := range []string{"127.0.0.1:", "127.0.0.1:", "10.244.1.9:"} {
+		line := ""
+		for _, l := range strings.Split(text, "\n") {
+			if strings.HasPrefix(l, fmt.Sprintf("conn %d ", i)) {
+				line = l
 			}
-			if err := server.Wait(); err != nil {
-				t.Fatalf("server: %v\n%s", err, out)
+		}
+		fields := map[string]string{}
+		for _, f := range strings.Fields(line) {
+			if k, v, ok := strings.Cut(f, "="); ok {
+				fields[k] = v
 			}
-			text := out.String()
-			for i, want := range []string{"bytes=0 peer=127.0.0.1:", "bytes=0 peer=127.0.0.1:", "bytes=4 peer=10.244.1.9:"} {
-				if !strings.Contains(text, fmt.Sprintf("conn %d %s", i, want)) {
-					t.Errorf("connection %d: want %q\n%s", i, want, text)
-				}
-			}
-			if r := server.Stats().Rejected.Snapshot(); r["not-a-preamble"] != 1 || r["client-gone"] != 1 {
-				t.Errorf("rejections: %v", r)
-			}
-		})
+		}
+		wantBytes := map[bool]string{true: "0", false: "4"}[i < 2]
+		if fields["bytes"] != wantBytes || !strings.HasPrefix(fields["peer"], peer) || fields["peername"] != fields["peer"] ||
+			fields["sockname"] != "10.244.5.4:"+p || !strings.HasSuffix(sock, fields["family"]) {
+			t.Errorf("connection %d: want %s bytes, a peer from %s named alike by accept and getpeername, the pod's address as sockname and %s\n%s", i, wantBytes, peer, sock, text)
+		}
+	}
+	if r := server.Stats().Rejected.Snapshot(); r["not-a-preamble"] != 1 || r["client-gone"] != 1 {
+		t.Errorf("rejections: %v", r)
 	}
 }
 

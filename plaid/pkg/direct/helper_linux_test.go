@@ -3,6 +3,7 @@
 package direct
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -21,6 +22,17 @@ func TestMain(m *testing.M) {
 	if name := os.Getenv("DIRECT_TEST_HELPER"); name != "" {
 		time.AfterFunc(20*time.Second, func() { os.Exit(99) }) // a scenario that waits for what never comes
 		os.Exit(helpers[name](os.Args[1:]))
+	}
+	if os.Getenv("DIRECT_TEST_NO_LOOPBACK6") != "" {
+		// This run is a host whose loopback has no IPv6 address.
+		if err := loUp(); err != nil {
+			fmt.Println("SKIP: lo:", err)
+			os.Exit(0)
+		}
+		if err := os.WriteFile("/proc/sys/net/ipv6/conf/lo/disable_ipv6", []byte("1"), 0); err != nil {
+			fmt.Println("SKIP: sysctl:", err)
+			os.Exit(0)
+		}
 	}
 	os.Exit(m.Run())
 }
