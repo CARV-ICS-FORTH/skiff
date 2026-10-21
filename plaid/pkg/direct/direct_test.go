@@ -120,9 +120,9 @@ func TestPorts(t *testing.T) {
 }
 
 func TestTableKeepsTheRecentlyUsed(t *testing.T) {
-	tab := NewTable(2)
+	tab := NewTable(2, 2)
 	tab.Add(1, Socket{Kind: KindClient})
-	tab.Add(2, Socket{Kind: KindListener})
+	tab.Add(2, Socket{Kind: KindAccepted})
 	tab.Get(1) // 2 is now the least recently used
 	tab.Add(3, Socket{Kind: KindAccepted})
 	if _, ok := tab.Get(2); ok {
@@ -137,5 +137,30 @@ func TestTableKeepsTheRecentlyUsed(t *testing.T) {
 	tab.Add(1, Socket{Kind: KindAccepted}) // replaced, not duplicated
 	if s, _ := tab.Get(1); s.Kind != KindAccepted || tab.Len() != 2 {
 		t.Errorf("replace: %v, %d entries", s, tab.Len())
+	}
+}
+
+// The connections that come and go do not push out a listener that nothing has asked
+// about for a while; listeners are kept in a bounded table of their own.
+func TestTableKeepsListenersWhileConnectionsChurn(t *testing.T) {
+	tab := NewTable(2, 2)
+	tab.Add(100, Socket{Kind: KindListener})
+	for i := uint64(1); i <= 50; i++ {
+		tab.Add(i, Socket{Kind: KindAccepted})
+	}
+	if s, ok := tab.Get(100); !ok || s.Kind != KindListener {
+		t.Errorf("the listener was pushed out by connections: %v, %v", s, ok)
+	}
+	tab.Add(101, Socket{Kind: KindListener})
+	tab.Get(100) // 101 is the least recently used listener
+	tab.Add(102, Socket{Kind: KindListener})
+	if _, ok := tab.Get(101); ok {
+		t.Error("a third listener did not push out the least recently used one")
+	}
+	if _, ok := tab.Get(100); !ok {
+		t.Error("the listener that was used was dropped")
+	}
+	if tab.Len() != 4 {
+		t.Errorf("%d entries, want 2 connections and 2 listeners", tab.Len())
 	}
 }

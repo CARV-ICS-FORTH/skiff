@@ -113,7 +113,7 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 		cmd:      cmd,
 		listener: r.listener,
 		targets:  newTargets(),
-		table:    NewTable(DefaultTableSize),
+		table:    NewTable(0, 0),
 		stop:     make(chan struct{}),
 		loopDone: make(chan struct{}),
 		watchdog: wd,
