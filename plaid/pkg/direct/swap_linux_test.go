@@ -507,6 +507,10 @@ func init() {
 		}
 		unix.Listen(fd, 8)
 		fmt.Println("listening")
+		if len(args) > 3 { // wait before the first accept, with the listener open: connections queue up
+			d, _ := strconv.Atoi(args[3])
+			time.Sleep(time.Duration(d) * time.Millisecond)
+		}
 		for i := 0; i < n; i++ {
 			unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, 10000)
 			nfd, peer, err := unix.Accept4(fd, unix.SOCK_CLOEXEC)
@@ -569,15 +573,14 @@ func turnedAway(t *testing.T, family string) {
 	p := strconv.Itoa(port)
 	vip := "10.43.0.77:" + p
 	marked := Ports{uint16(port): {}}
-	server, out := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "pollserve", family, p, "3")
+	// The server waits 800 ms before its first accept, so that the two connections it turns
+	// away are both in the queue, and the second one's client has closed, when the supervisor
+	// looks at them: something that is not a preamble, and a direct client that has gone.
+	server, out := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "pollserve", family, p, "2", "800")
 	out.waitFor(t, "listening")
-	time.Sleep(300 * time.Millisecond) // in accept, and held
-
-	// Something that is not a preamble, and a direct client that has gone.
 	forged(t, p, func(pre *Preamble, key *[]byte) { *key = nil }).Close()
-	time.Sleep(300 * time.Millisecond)
 	forged(t, p, func(pre *Preamble, key *[]byte) {}).Close()
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond) // the server has accepted: nothing is queued, and it was handed a closed connection
 
 	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
 	client, clientOut := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", vip, "4")
@@ -594,7 +597,7 @@ func turnedAway(t *testing.T, family string) {
 	if family == "6" {
 		sock = "*unix.SockaddrInet6"
 	}
-	for i, peer := range []string{"127.0.0.1:", "127.0.0.1:", "10.244.1.9:"} {
+	for i, peer := range []string{"127.0.0.1:", "10.244.1.9:"} {
 		line := ""
 		for _, l := range strings.Split(text, "\n") {
 			if strings.HasPrefix(l, fmt.Sprintf("conn %d ", i)) {
@@ -607,7 +610,7 @@ func turnedAway(t *testing.T, family string) {
 				fields[k] = v
 			}
 		}
-		wantBytes := map[bool]string{true: "0", false: "4"}[i < 2]
+		wantBytes := map[bool]string{true: "0", false: "4"}[i < 1]
 		if fields["bytes"] != wantBytes || !strings.HasPrefix(fields["peer"], peer) || fields["peername"] != fields["peer"] ||
 			fields["sockname"] != "10.244.5.4:"+p || !strings.HasSuffix(sock, fields["family"]) {
 			t.Errorf("connection %d: want %s bytes, a peer from %s named alike by accept and getpeername, the pod's address as sockname and %s\n%s", i, wantBytes, peer, sock, text)
