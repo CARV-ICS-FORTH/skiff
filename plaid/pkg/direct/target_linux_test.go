@@ -3,6 +3,7 @@
 package direct
 
 import (
+	"sync"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -115,4 +116,67 @@ func TestInEpollFollowsTheProcess(t *testing.T) {
 		t.Error("a descriptor that is no epoll instance any more was read as one")
 	}
 	unix.Close(c)
+}
+
+// A read of the directory of descriptors that returns fewer entries than fit is not its end:
+// procfs does that when a descriptor is replaced or closed while it is read, and a listing
+// that stopped there would miss the descriptors above, an epoll instance among them.
+func TestListDescriptorsWhileTheyChange(t *testing.T) {
+	var churned []int
+	for i := 0; i < 16; i++ {
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unix.Close(fd)
+		churned = append(churned, fd)
+	}
+	marker, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0) // above the others
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(marker)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	for _, fd := range churned {
+		wg.Add(1)
+		go func(fd int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if s, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0); err == nil {
+					unix.Dup3(s, fd, 0)
+					unix.Close(s)
+				}
+			}
+		}(fd)
+	}
+	missed := 0
+	for i := 0; i < 100000 && missed == 0; i++ {
+		d, err := unix.Open("/proc/self/fd", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nums, _, err := listDescriptors(d)
+		unix.Close(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, n := range nums {
+			found = found || n == marker
+		}
+		if !found {
+			missed++
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if missed != 0 {
+		t.Errorf("a listing of the descriptors lacked descriptor %d, which is open all the time", marker)
+	}
 }

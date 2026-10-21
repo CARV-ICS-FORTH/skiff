@@ -213,7 +213,9 @@ func (ts *targets) inEpoll(tid, fd int) (bool, error) {
 }
 
 // listDescriptors reads the directory of a process's descriptors (/proc/<pid>/fd, open as d):
-// their numbers, and a hash of them.
+// their numbers, and a hash of them. A read of a directory that returns fewer entries than
+// fit has not reached its end (procfs does that while the process opens and closes
+// descriptors): only a read that returns nothing has.
 func listDescriptors(d int) (nums []int, sig uint64, err error) {
 	buf := make([]byte, 4096)
 	sig = 14695981039346656037 // FNV-1a
@@ -225,7 +227,6 @@ func listDescriptors(d int) (nums []int, sig uint64, err error) {
 		if n == 0 {
 			return nums, sig, nil
 		}
-		complete := len(buf)-n >= 64 // what fits is all there is if a whole entry would have fitted too
 		// linux_dirent64: ino (8), off (8), reclen (2), type (1), the name and a NUL.
 		for b := buf[:n]; len(b) >= 19; {
 			reclen := int(b[16]) | int(b[17])<<8
@@ -241,9 +242,6 @@ func listDescriptors(d int) (nums []int, sig uint64, err error) {
 				sig = (sig ^ uint64(num)) * 1099511628211
 			}
 			b = b[reclen:]
-		}
-		if complete {
-			return nums, sig, nil
 		}
 	}
 }
