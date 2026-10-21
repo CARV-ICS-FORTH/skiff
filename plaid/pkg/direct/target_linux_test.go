@@ -57,6 +57,24 @@ func TestTargetsForgetAThreadThatEnded(t *testing.T) {
 	}
 }
 
+func inodeOf(t testing.TB, fd int) uint64 {
+	t.Helper()
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		t.Fatal(err)
+	}
+	return st.Ino
+}
+
+func entriesOf(t testing.TB, ts *targets, tid, fd int) []epollEntry {
+	t.Helper()
+	entries, err := ts.epollEntries(tid, fd, inodeOf(t, fd))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
 // The epoll look follows the process: a registration made or removed, an instance made
 // after the look was kept, and a descriptor that was an instance and became something else.
 func TestInEpollFollowsTheProcess(t *testing.T) {
@@ -72,11 +90,7 @@ func TestInEpollFollowsTheProcess(t *testing.T) {
 	}
 	in := func(fd int) bool {
 		t.Helper()
-		registered, err := ts.inEpoll(tid, fd)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return registered
+		return len(entriesOf(t, ts, tid, fd)) > 0
 	}
 	add := func(ep, fd int) {
 		if err := unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.EPOLLIN}); err != nil {
@@ -116,6 +130,69 @@ func TestInEpollFollowsTheProcess(t *testing.T) {
 		t.Error("a descriptor that is no epoll instance any more was read as one")
 	}
 	unix.Close(c)
+}
+
+// The look reads what the registration was made with (the events with their flags, the
+// data), in each instance, and does not take another file's entry of the same number (a
+// descriptor that was closed without being removed from the set) for the socket's.
+func TestEpollEntriesAreWhatWasRegistered(t *testing.T) {
+	ts := newTargets()
+	defer ts.closeAll()
+	tid := unix.Gettid()
+	sock := func() int {
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fd
+	}
+	a := sock()
+	defer unix.Close(a)
+	ev := func(events uint32, data uint64) *unix.EpollEvent {
+		return &unix.EpollEvent{Events: events, Fd: int32(data), Pad: int32(data >> 32)}
+	}
+	ep1, _ := unix.EpollCreate1(0)
+	ep2, _ := unix.EpollCreate1(0)
+	defer unix.Close(ep1)
+	defer unix.Close(ep2)
+	const flags = unix.EPOLLET | unix.EPOLLIN | unix.EPOLLRDHUP
+	if err := unix.EpollCtl(ep1, unix.EPOLL_CTL_ADD, a, ev(flags, 0xfeed00000000c0de)); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.EpollCtl(ep2, unix.EPOLL_CTL_ADD, a, ev(unix.EPOLLOUT|unix.EPOLLONESHOT, 7)); err != nil {
+		t.Fatal(err)
+	}
+	got := map[int]epollEntry{}
+	for _, e := range entriesOf(t, ts, tid, a) {
+		got[e.epfd] = e
+	}
+	if len(got) != 2 {
+		t.Fatalf("entries %+v, want one in each instance", got)
+	}
+	if e := got[ep1]; e.events&flags != flags || e.data != 0xfeed00000000c0de {
+		t.Errorf("first instance: %+v", e)
+	}
+	if e := got[ep2]; e.events&(unix.EPOLLOUT|unix.EPOLLONESHOT) != unix.EPOLLOUT|unix.EPOLLONESHOT || e.data != 7 {
+		t.Errorf("second instance: %+v", e)
+	}
+	// A descriptor that was closed without being removed (another file has its entry on)
+	// and whose number the socket took.
+	c := sock()
+	d, err := unix.Dup(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unix.EpollCtl(ep1, unix.EPOLL_CTL_ADD, c, ev(unix.EPOLLIN, 1))
+	unix.Close(c) // the entry stays: d keeps the file
+	e := sock()   // takes the number of c
+	if e != c {
+		t.Skipf("the number was not reused: %d, %d", e, c)
+	}
+	defer unix.Close(e)
+	defer unix.Close(d)
+	if es := entriesOf(t, ts, tid, e); len(es) != 0 {
+		t.Errorf("an entry of another file under the same number was taken for the socket's: %+v", es)
+	}
 }
 
 // A read of the directory of descriptors that returns fewer entries than fit is not its end:

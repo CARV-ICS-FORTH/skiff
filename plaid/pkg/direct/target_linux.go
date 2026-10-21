@@ -156,12 +156,22 @@ type epollSet struct {
 	sig uint64 // of the numbers of all the process's descriptors then
 }
 
-// inEpoll says whether descriptor fd of the thread's process is registered in an epoll
-// instance of the process. Swapping the socket behind the descriptor would leave the
-// registration with the old one, which is closed by it, and no event would ever arrive: a
-// runtime that registers a socket before it connects or binds it (the ones that do not,
-// register it after the call returns) must keep its own. It finds the process's epoll
-// instances and reads the registrations of each (`tfd:` lines of their fdinfo).
+// epollEntry is a registration of a socket in an epoll instance of the container: the
+// instance's descriptor in the container's table, and what epoll_ctl was given.
+type epollEntry struct {
+	epfd   int
+	events uint32 // as the instance keeps them: EPOLLONESHOT, EPOLLET and EPOLLEXCLUSIVE are in them
+	data   uint64
+}
+
+// epollEntries finds the registrations of descriptor fd (whose socket has inode number
+// ino) of the thread's process in the process's epoll instances. A socket that is
+// registered cannot have another one put in its place: the instance keeps the old file under
+// the descriptor's number, the replacement closes it, and no event would ever arrive. A runtime that registers a socket before it connects or
+// binds it (the ones that do not, register it after the call returns) is one that has them.
+// It finds the process's epoll instances and reads the registrations of each (`tfd:` lines
+// of their fdinfo); an entry of the same number for another file is a stale one, of a
+// descriptor that was closed without being removed, and is not the socket's.
 //
 // Finding the instances is a readlink for each descriptor of the process, and is not
 // repeated while the process has the same descriptors (their numbers, from one read of the
@@ -169,20 +179,20 @@ type epollSet struct {
 // see is an instance made since the last look that has the number of a descriptor that was
 // closed since: between two connects, and only a registration of the socket made before
 // the connect would then be missed.
-func (ts *targets) inEpoll(tid, fd int) (bool, error) {
+func (ts *targets) epollEntries(tid, fd int, ino uint64) ([]epollEntry, error) {
 	t, err := ts.lookup(tid, false)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	dir := "/proc/" + strconv.Itoa(t.tgid)
 	d, err := unix.Open(dir+"/fd", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer unix.Close(d)
 	nums, sig, err := listDescriptors(d)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	ts.mu.Lock()
 	known, ok := ts.epolls[t.tgid]
@@ -204,12 +214,18 @@ func (ts *targets) inEpoll(tid, fd int) (bool, error) {
 		ts.epolls[t.tgid] = known
 		ts.mu.Unlock()
 	}
+	var entries []epollEntry
 	for _, n := range known.fds {
-		if registered, err := epollHas(dir+"/fdinfo/"+strconv.Itoa(n), fd); err != nil || registered {
-			return registered, err
+		es, err := epollRegistrations(dir+"/fdinfo/"+strconv.Itoa(n), fd, ino)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range es {
+			e.epfd = n
+			entries = append(entries, e)
 		}
 	}
-	return false, nil
+	return entries, nil
 }
 
 // listDescriptors reads the directory of a process's descriptors (/proc/<pid>/fd, open as d):
@@ -265,11 +281,13 @@ func areEpolls(d int, fds []int) bool {
 	return true
 }
 
-// epollHas says whether the fdinfo of an epoll instance lists descriptor fd as registered.
-func epollHas(path string, fd int) (bool, error) {
+// epollRegistrations reads the fdinfo of an epoll instance (at path) for the registrations
+// of descriptor fd whose file has inode number ino: `tfd: N events: E data: D pos:P ino:I
+// sdev:S`, the numbers in hexadecimal but the descriptor's.
+func epollRegistrations(path string, fd int, ino uint64) ([]epollEntry, error) {
 	f, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	defer unix.Close(f)
 	want := []byte(strconv.Itoa(fd))
@@ -280,13 +298,14 @@ func epollHas(path string, fd int) (bool, error) {
 		}
 		n, err := unix.Read(f, data[len(data):cap(data)])
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		if n == 0 {
 			break
 		}
 		data = data[:len(data)+n]
 	}
+	var found []epollEntry
 	for rest := data; len(rest) > 0; {
 		line := rest
 		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
@@ -294,13 +313,57 @@ func epollHas(path string, fd int) (bool, error) {
 		} else {
 			rest = nil
 		}
-		if v, ok := bytes.CutPrefix(line, []byte("tfd:")); ok {
-			if f := bytes.Fields(v); len(f) > 0 && bytes.Equal(f[0], want) {
-				return true, nil
-			}
+		v, ok := bytes.CutPrefix(line, []byte("tfd:"))
+		if !ok {
+			continue
+		}
+		fields := bytes.Fields(v)
+		if len(fields) == 0 || !bytes.Equal(fields[0], want) {
+			continue
+		}
+		e, thisIno, err := parseEpollEntry(fields)
+		if err != nil {
+			return nil, err
+		}
+		if thisIno == ino {
+			found = append(found, e)
 		}
 	}
-	return false, nil
+	return found, nil
+}
+
+// parseEpollEntry reads the fields that follow "tfd:": N events: E data: D pos:P ino:I sdev:S.
+func parseEpollEntry(fields [][]byte) (e epollEntry, ino uint64, err error) {
+	var haveEvents, haveData, haveIno bool
+	for i := 1; i < len(fields); i++ {
+		name, value, _ := bytes.Cut(fields[i], []byte(":"))
+		if len(value) == 0 && i+1 < len(fields) && (string(name) == "events" || string(name) == "data") {
+			i++
+			value = fields[i]
+		}
+		switch string(name) {
+		case "events":
+			var v uint64
+			if v, err = strconv.ParseUint(string(value), 16, 32); err != nil {
+				return
+			}
+			e.events, haveEvents = uint32(v), true
+		case "data":
+			if e.data, err = strconv.ParseUint(string(value), 16, 64); err != nil {
+				return
+			}
+			haveData = true
+		case "ino":
+			if ino, err = strconv.ParseUint(string(value), 16, 64); err != nil {
+				return
+			}
+			haveIno = true
+		}
+	}
+	if !haveEvents || !haveData || !haveIno {
+		err = fmt.Errorf("an epoll entry that is not understood: %q", bytes.Join(fields, []byte(" ")))
+	}
+	return
 }
 
 // readRemote reads len(buf) bytes at addr of thread tid's process.

@@ -997,9 +997,10 @@ func BenchmarkInEpoll(b *testing.B) {
 			ts := newTargets()
 			defer ts.closeAll()
 			tid := unix.Gettid()
+			inode := inodeOf(b, fds[len(fds)-1])
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := ts.inEpoll(tid, fds[len(fds)-1]); err != nil {
+				if _, err := ts.epollEntries(tid, fds[len(fds)-1], inode); err != nil {
 					b.Fatal(err)
 				}
 			}

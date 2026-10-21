@@ -191,7 +191,7 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	tl.mark(phInspect)
 	epollFirst := s.epollFirst.Load()
 	if epollFirst {
-		if s.inEpoll(tid, fd) {
+		if s.inEpoll(tid, fd, held) {
 			return s.fallback("epoll", "connect %s: the socket is in an epoll set already", dst)
 		}
 		tl.mark(phEpoll)
@@ -221,7 +221,7 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	}
 	tl.mark(phFlags)
 	if !epollFirst {
-		if s.inEpoll(tid, fd) {
+		if s.inEpoll(tid, fd, held) {
 			s.epollFirst.Store(true)
 			return s.fallback("epoll", "connect %s: the socket is in an epoll set already", dst)
 		}
@@ -366,16 +366,21 @@ func (s *Supervisor) reject(reason, format string, args ...any) {
 }
 
 // inEpoll says whether the container's socket is registered in an epoll set (see
-// targets.inEpoll); if that cannot be told it is taken to be, as swapping it would be the
+// targets.epollEntries); if that cannot be told it is taken to be, as swapping it would be the
 // mistake that cannot be seen.
-func (s *Supervisor) inEpoll(tid, fd int) bool {
-	registered, err := s.targets.inEpoll(tid, fd)
+func (s *Supervisor) inEpoll(tid, fd int, held *heldSocket) bool {
+	var st unix.Stat_t
+	err := unix.Fstat(held.dup, &st)
+	var entries []epollEntry
+	if err == nil {
+		entries, err = s.targets.epollEntries(tid, fd, st.Ino)
+	}
 	if err != nil {
 		s.stats.Errors.Add(1)
 		s.logf("looking for descriptor %d of thread %d in epoll sets: %v", fd, tid, err)
 		return true
 	}
-	return registered
+	return len(entries) > 0
 }
 
 func (s *Supervisor) putFailed(call string, err error) reply {
@@ -414,7 +419,7 @@ func (s *Supervisor) bind(n *notif) reply {
 		}
 		return letThrough
 	}
-	if s.inEpoll(tid, fd) {
+	if s.inEpoll(tid, fd, held) {
 		return s.fallback("epoll", "bind %s: the socket is in an epoll set already", want)
 	}
 	if sa, err := unix.Getsockname(held.dup); err == nil && addrPortOf(sa).Port() != 0 {
