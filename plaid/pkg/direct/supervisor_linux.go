@@ -362,8 +362,8 @@ func (s *Supervisor) answer(n *notif, tl *timeline) {
 }
 
 // reply is a decision: let the call run, give it a result, or fail it; or, answered, that
-// the kernel has been told already (an accept returns the new descriptor in the same step
-// that puts it in place).
+// the kernel has been told already (an accept puts the new descriptor in place and answers
+// with its number itself).
 type reply struct {
 	through  bool
 	val      int64

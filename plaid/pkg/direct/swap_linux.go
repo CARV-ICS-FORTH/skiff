@@ -567,8 +567,14 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	if !ioctlValid(s.listener, n.ID) {
 		return cancelled
 	}
-	// The descriptor is added and the call answered with its number in one step.
-	a := notifAddfd{ID: n.ID, Flags: unix.SECCOMP_ADDFD_FLAG_SEND, Srcfd: uint32(conn)}
+	// The descriptor is added, and then the call is answered with its number. (Adding it with
+	// SECCOMP_ADDFD_FLAG_SEND answers in the same step, and does it with one call fewer, but on
+	// the 6.8 kernel of the test cluster a Tomcat acceptor that was accepting at about 5000
+	// connections a second was now and then given the result 0, once in some 100000 accepts,
+	// which it took for its new socket: it called getsockname on its descriptor 0, got ENOTSOCK,
+	// and closed it. The connection was lost, and so was the container's stdin, so every
+	// descriptor that followed was handed out as 0 until the container ended.)
+	a := notifAddfd{ID: n.ID, Srcfd: uint32(conn)}
 	if flags&unix.SOCK_CLOEXEC != 0 {
 		a.NewfdFlags = unix.O_CLOEXEC
 	}
@@ -579,6 +585,13 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 			return cancelled
 		}
 		return failWith(errnoOf(err))
+	}
+	if err := ioctlSend(s.listener, &notifResp{ID: n.ID, Val: int64(newfd)}); err != nil {
+		// The task was interrupted between the two: it was told nothing, and the descriptor
+		// stays in its table, which nothing here can undo.
+		s.stats.Errors.Add(1)
+		s.logf("accept: the answer of thread %d (descriptor %d): %v", n.Pid, newfd, err)
+		return cancelled
 	}
 	tl.mark(phAcceptFD)
 	tl.finish(phAdmit)
