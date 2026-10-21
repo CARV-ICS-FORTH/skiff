@@ -599,12 +599,20 @@ func (s *Supervisor) admit(conn int, listener Socket, tl *timeline) (pre Preambl
 	default:
 		return pre, "not-a-preamble", fmt.Errorf("kind %d", pre.Kind)
 	}
-	// The client waits for the ack before it goes on, and gives up after a while: a client
-	// that has given up has closed its end, and the container should not be handed that.
+	// A direct client waits for the ack before it goes on, and gives up after a while and
+	// takes the overlay: it has closed its end, and the container should not be handed that
+	// connection as well as the one it makes there. A local connection is the pod-side
+	// proxy's, for a client of the pod that does not wait for anything (a readiness probe
+	// connects and closes at once), and the kernel hands the container such a connection,
+	// which reads end of file: turned away, it would leave a server that had polled its
+	// blocking listener and calls accept waiting there for another connection, which in
+	// the case of a probe is seconds off.
 	tl.mark(phChecks)
-	var probe [1]byte
-	if m, _, err := unix.Recvfrom(conn, probe[:], unix.MSG_PEEK|unix.MSG_DONTWAIT); err == nil && m == 0 {
-		return pre, "client-gone", errors.New("the client closed it while it waited")
+	if pre.Kind == PreambleDirect {
+		var probe [1]byte
+		if m, _, err := unix.Recvfrom(conn, probe[:], unix.MSG_PEEK|unix.MSG_DONTWAIT); err == nil && m == 0 {
+			return pre, "client-gone", errors.New("the client closed it while it waited")
+		}
 	}
 	ack := pre.Ack(s.cfg.Key)
 	if _, err := unix.Write(conn, ack[:]); err != nil {

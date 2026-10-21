@@ -447,7 +447,7 @@ func TestDirectBlockingAccept(t *testing.T) {
 	}
 }
 
-// admit on its own, on a listener of the test's: a client that closes before the
+// admit on its own, on a listener of the test's: a direct client that closes before the
 // container accepts is not handed over, and the others are acknowledged.
 func TestAdmit(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -509,6 +509,12 @@ func TestAdmit(t *testing.T) {
 	defer c.Close()
 	if _, reason, err := admit(); reason != "" {
 		t.Errorf("a local connection from the loopback: %q, %v", reason, err)
+	}
+	// A local one whose client has closed is handed over all the same (a probe of the pod).
+	c, _ = connect(PreambleLocal, "127.0.0.1:"+p)
+	c.Close()
+	if _, reason, err := admit(); reason != "" {
+		t.Errorf("a local connection whose client closed: %q, %v", reason, err)
 	}
 }
 

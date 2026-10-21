@@ -122,6 +122,49 @@ func init() {
 		}
 		return 0
 	}
+	// selectserve PORT: what iperf3 and many C servers do, on a blocking listener: wait with
+	// poll until it is readable, then accept (blocking) and read to the end. A client of its
+	// pod connects and goes away at once, as a probe does, and another comes after a second
+	// and a half with a word. It prints, for each of the two connections it is handed, the
+	// bytes it carried and when it was accepted (ms from the start).
+	helpers["selectserve"] = func(args []string) int {
+		if err := loUp(); err != nil {
+			return 2
+		}
+		port, _ := strconv.Atoi(args[0])
+		fd, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		if err := unix.Bind(fd, &unix.SockaddrInet4{Port: port}); err != nil {
+			fmt.Println("error bind", err)
+			return 2
+		}
+		unix.Listen(fd, 8)
+		fmt.Println("listening")
+		start := time.Now()
+		go func() {
+			if c, err := net.Dial("tcp", "127.0.0.1:"+args[0]); err == nil {
+				c.Close()
+			}
+			time.Sleep(1500 * time.Millisecond)
+			if c, err := net.Dial("tcp", "127.0.0.1:"+args[0]); err == nil {
+				c.Write([]byte("hello"))
+				c.Close()
+			}
+		}()
+		for i := 0; i < 2; i++ {
+			unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, 10000)
+			nfd, _, err := unix.Accept4(fd, unix.SOCK_CLOEXEC)
+			if err != nil {
+				fmt.Println("error accept", err)
+				return 2
+			}
+			at := time.Since(start).Milliseconds()
+			buf := make([]byte, 16)
+			n, _ := unix.Read(nfd, buf)
+			unix.Close(nfd)
+			fmt.Printf("conn %d bytes=%d at=%d\n", i, n, at)
+		}
+		return 0
+	}
 	// twolisteners PORT: an IPv4 and an IPv6-only listener at one port, as a server that
 	// listens on every address of the host often has (Python's asyncio).
 	helpers["twolisteners"] = func(args []string) int {
@@ -432,5 +475,30 @@ func TestCopyConnCarriesAStream(t *testing.T) {
 	io.Copy(&got, pr)
 	if n := <-done; n != int64(len(want)) || !bytes.Equal(got.Bytes(), want) {
 		t.Errorf("carried %d bytes, intact %t; want %d", n, bytes.Equal(got.Bytes(), want), len(want))
+	}
+}
+
+// A connection of a client of the pod that has closed before the container accepts it is
+// handed over, as the kernel would: a server that polls its blocking listener and then
+// accepts is not left in accept, waiting for a connection that does not come, because the
+// supervisor turned away the one that made the poll return (a readiness probe is such a
+// connection, every few seconds).
+func TestAClosedLocalConnectionIsHandedOver(t *testing.T) {
+	requireLoopback(t)
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	cfg := podConfig(t, "10.244.5.4", Ports{uint16(port): {}}, fakeResolver{})
+	server, out := runPod(t, cfg, "selectserve", p)
+	if err := server.Wait(); err != nil {
+		t.Fatalf("server: %v\n%s", err, out)
+	}
+	text := out.String()
+	if !strings.Contains(text, "conn 0 bytes=0 at=") || !strings.Contains(text, "conn 1 bytes=5 at=") {
+		t.Fatalf("the server was not handed the closed connection and then the one with data:\n%s", text)
+	}
+	var first int
+	fmt.Sscanf(text[strings.Index(text, "conn 0 bytes=0 at=")+len("conn 0 bytes=0 at="):], "%d", &first)
+	if first > 1000 {
+		t.Errorf("the closed connection was handed over after %d ms: the server waited for the next one\n%s", first, text)
 	}
 }
