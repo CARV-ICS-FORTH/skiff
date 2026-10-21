@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,28 @@ func loUp() error {
 	ifr.SetUint16(unix.IFF_UP)
 	return unix.IoctlIfreq(fd, unix.SIOCSIFFLAGS, ifr)
 }
+
+// requireLoopback skips the test where a user and network namespace of an unprivileged
+// user cannot bring up its loopback interface: it is made but has no capabilities in it,
+// as under Ubuntu's AppArmor restriction of unprivileged user namespaces.
+func requireLoopback(t testing.TB) {
+	t.Helper()
+	requireNamespaces(t)
+	loopbackOnce.Do(func() {
+		out, err := helperCmd("loup", true).CombinedOutput()
+		if err != nil {
+			loopbackErr = fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		}
+	})
+	if loopbackErr != nil {
+		t.Skipf("the loopback of an unprivileged network namespace cannot be brought up: %v", loopbackErr)
+	}
+}
+
+var (
+	loopbackOnce sync.Once
+	loopbackErr  error
+)
 
 // localDial connects to the listener of the "container" from inside its network namespace,
 // writes a word and closes.
@@ -71,6 +94,13 @@ func waitForFile(path string) {
 }
 
 func init() {
+	helpers["loup"] = func([]string) int {
+		if err := loUp(); err != nil {
+			fmt.Println(err)
+			return 1
+		}
+		return 0
+	}
 	// serveboth PORT: a server that takes a connection from a client of another pod and one
 	// from a client in its own pod, on the loopback.
 	helpers["serveboth"] = func(args []string) int {
@@ -198,6 +228,7 @@ func (s *Supervisor) proxyCount() int {
 // the pod on the loopback is carried to it with its real address, next to a client of
 // another pod that came the direct way.
 func TestSwappedListenerIsReachableInThePod(t *testing.T) {
+	requireLoopback(t)
 	port := freePort(t)
 	p := strconv.Itoa(port)
 	marked := Ports{uint16(port): {}}
@@ -264,6 +295,7 @@ func tokenOf(line, key string) string {
 // it the proxy goes (it is noticed within a few seconds), and a container that binds the
 // port again at once, before it is noticed, is not told the port is taken.
 func TestProxyEndsWithTheListener(t *testing.T) {
+	requireLoopback(t)
 	for _, tc := range []struct {
 		name    string
 		prompt  bool // bind again before the proxy has been noticed to be out of date
@@ -326,6 +358,7 @@ func TestEachListenerOfAPortHasItsProxy(t *testing.T) {
 // its listener: the pod-side socket stays, however long it takes and whoever tries the port
 // meanwhile, and carries the connection that comes after the listen.
 func TestProxyStaysWhileTheContainerIsBoundAndNotListening(t *testing.T) {
+	requireLoopback(t)
 	for _, tc := range []struct {
 		name string
 		dial bool // a client of the pod finds the port refused while it is bound
