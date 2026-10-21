@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"plaid/pkg/api"
 	"plaid/pkg/direct"
@@ -69,6 +70,11 @@ func launchHostNetworking(apptainerBin string, args []string, opts PlaidOptions)
 		// Apptainer ended of a signal (it raises on itself the one that killed the
 		// container's process): so does plaidtainer, which is how the one who started it reads it.
 		signal.Reset()
+		// The Go runtime keeps handlers of its own for the signals of a crash (SIGSEGV,
+		// SIGILL, SIGABRT...) that answer with a dump of plaidtainer's goroutines in the
+		// container's log: the default action is put back.
+		var dfl [4]uintptr // the kernel's struct sigaction, all zero: SIG_DFL
+		_, _, _ = syscall.RawSyscall6(syscall.SYS_RT_SIGACTION, uintptr(sig), uintptr(unsafe.Pointer(&dfl)), 0, 8, 0, 0)
 		_ = syscall.Kill(os.Getpid(), sig)
 		time.Sleep(time.Second) // a signal that does nothing, or is not delivered at once
 	}

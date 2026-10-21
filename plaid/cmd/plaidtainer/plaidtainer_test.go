@@ -569,6 +569,22 @@ func TestLaunchDirectEndsAsTheContainerDoes(t *testing.T) {
 	}
 }
 
+// A container that crashes (SIGSEGV, SIGILL, SIGABRT...) ends the launcher of the same
+// signal and nothing else: the Go runtime's own handlers of those signals would print a
+// dump of the launcher's goroutines into the container's log.
+func TestLaunchDirectEndsOfACrashWithoutADump(t *testing.T) {
+	writeKubeconfig(t, "a private key")
+	for _, sig := range []syscall.Signal{syscall.SIGSEGV, syscall.SIGILL, syscall.SIGABRT, syscall.SIGBUS, syscall.SIGFPE} {
+		cmd, _, stderr := launchDirect(t, writeScript(t, "kill -"+strconv.Itoa(int(sig))+" $$\n"), 0)
+		if ws := cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != sig {
+			t.Errorf("%v: ended %v, want killed by the signal", sig, ws)
+		}
+		if strings.Contains(stderr, "goroutine") {
+			t.Errorf("%v: the launcher printed a dump:\n%s", sig, stderr)
+		}
+	}
+}
+
 // A signal to the process group reaches the container; the launcher stays until it has
 // finished its graceful work, as the one that started the launcher expects.
 func TestLaunchDirectWaitsForTheContainerToTerminate(t *testing.T) {
