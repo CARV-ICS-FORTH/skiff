@@ -31,11 +31,12 @@ func init() {
 
 // launchHostNetworking runs a container that shares the network namespace it was given
 // (the pod's, by --netns-path): plaidtainer is replaced by Apptainer, so that the one who
-// started it watches Apptainer's own life. A container that marks direct ports is the
-// exception: plaidtainer stays, as the supervisor that decides the container's connect,
-// bind, accept and address calls (see plaid/pkg/direct), and ends as Apptainer ends.
+// started it watches Apptainer's own life. A container that marks direct ports, to connect
+// to or to listen on, is the exception: plaidtainer stays, as the supervisor that decides
+// the container's connect, bind, accept and address calls (see plaid/pkg/direct), and ends
+// as Apptainer ends.
 func launchHostNetworking(apptainerBin string, args []string, opts PlaidOptions) int {
-	if opts.DirectPorts == "" {
+	if opts.DirectConnectPorts == "" && opts.DirectListenPorts == "" {
 		return execPassthroughCommand(apptainerBin, args)
 	}
 	cfg, err := directConfig(opts)
@@ -128,9 +129,13 @@ func clusterKey(path string) ([]byte, error) {
 
 // directConfig is what the supervisor of a container needs, from its options.
 func directConfig(opts PlaidOptions) (direct.Config, error) {
-	ports, err := direct.ParsePorts(opts.DirectPorts)
+	connectPorts, err := direct.ParsePorts(opts.DirectConnectPorts)
 	if err != nil {
-		return direct.Config{}, fmt.Errorf("--direct-ports: %w", err)
+		return direct.Config{}, fmt.Errorf("--direct-connect-ports: %w", err)
+	}
+	listenPorts, err := direct.ParsePorts(opts.DirectListenPorts)
+	if err != nil {
+		return direct.Config{}, fmt.Errorf("--direct-listen-ports: %w", err)
 	}
 	podIP, err := netip.ParseAddr(opts.PodIP)
 	if err != nil || !podIP.Is4() {
@@ -170,12 +175,13 @@ func directConfig(opts PlaidOptions) (direct.Config, error) {
 	client := api.NewClient(opts.Socket)
 	resolver := direct.NewAPIResolver(client, hostIP, portBase)
 	cfg := direct.Config{
-		Ports:      ports,
-		PodIP:      podIP,
-		Key:        key,
-		AckTimeout: ackTimeout,
-		Factory:    direct.NewFactoryClient(opts.DirectSocket),
-		Resolver:   resolver,
+		ConnectPorts: connectPorts,
+		ListenPorts:  listenPorts,
+		PodIP:        podIP,
+		Key:          key,
+		AckTimeout:   ackTimeout,
+		Factory:      direct.NewFactoryClient(opts.DirectSocket),
+		Resolver:     resolver,
 	}
 	cfg.Report = counterReporter(client, directName(opts.DirectLog), func(format string, args ...any) {
 		if cfg.Logf != nil {

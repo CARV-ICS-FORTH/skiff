@@ -9,10 +9,12 @@ import (
 
 // Config is what a supervisor needs to know.
 type Config struct {
-	// Ports are the ports the container marks: connections to a Service port in the set,
-	// and binds of a port in it, take the direct path. (One list serves both roles; they are
-	// different things in general, the Service's port and the container's.)
-	Ports Ports
+	// ConnectPorts are the destination ports the container dials that take the direct path:
+	// the ports of the Services it connects to (not the targetPorts they lead to).
+	ConnectPorts Ports
+	// ListenPorts are the ports the container binds that take the direct path: its own
+	// ports, the ones its Services' targetPorts name.
+	ListenPorts Ports
 	// PodIP is the pod's address, which the container is told for its own sockets.
 	PodIP netip.Addr
 	// Key authenticates the preambles and acks (DeriveKey): the same on every node of the

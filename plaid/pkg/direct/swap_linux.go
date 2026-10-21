@@ -170,7 +170,7 @@ func unspecifiedFor(family int) netip.Addr {
 func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	tl.mark(phDispatch)
 	dst, ok := sockaddrArg(n)
-	if !ok || !s.cfg.Ports.Has(dst.Port()) {
+	if !ok || !s.cfg.ConnectPorts.Has(dst.Port()) {
 		return letThrough
 	}
 	backend, ok := s.cfg.Resolver.Resolve(dst)
@@ -381,7 +381,7 @@ func (s *Supervisor) putFailed(call string, err error) reply {
 // find no ack at the host port and fall back to the overlay.
 func (s *Supervisor) bind(n *notif) reply {
 	want, ok := sockaddrArg(n)
-	if !ok || !s.cfg.Ports.Has(want.Port()) {
+	if !ok || !s.cfg.ListenPorts.Has(want.Port()) {
 		return letThrough
 	}
 	if !want.Addr().IsUnspecified() && want.Addr() != s.cfg.PodIP {

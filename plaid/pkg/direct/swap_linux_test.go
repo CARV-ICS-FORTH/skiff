@@ -254,10 +254,12 @@ func runPod(t testing.TB, cfg Config, name string, args ...string) (*Supervisor,
 	return s, out
 }
 
+// podConfig is the configuration of a pod that marks ports for both roles (the Service
+// ports it connects to and the ports it listens on are the same numbers).
 func podConfig(t testing.TB, ip string, ports Ports, backends Resolver) Config {
 	cfg := testConfig(t)
 	cfg.PodIP = netip.MustParseAddr(ip)
-	cfg.Ports = ports
+	cfg.ConnectPorts, cfg.ListenPorts = ports, ports
 	cfg.Resolver = backends
 	return cfg
 }
@@ -932,5 +934,70 @@ func TestSupervisorsReportTheirCounters(t *testing.T) {
 				t.Errorf("%s: a report after the last one", name)
 			}
 		}
+	}
+}
+
+// The Service's port is not the pod's: the client marks the port it dials (80), the server
+// the one it listens on (the Service's targetPort), and each side derives its host port from
+// the port of its own end, the backend's for the client and the listener's for the server.
+func TestServicePortIsNotTheListenPort(t *testing.T) {
+	port, hostPort := freePort(t), freePort(t)
+	p := strconv.Itoa(port)
+	vip := "10.43.0.77:80"
+
+	scfg := podConfig(t, "10.244.5.4", nil, hostPorts{fakeResolver{}, map[uint16]uint16{uint16(port): uint16(hostPort)}})
+	scfg.ListenPorts = Ports{uint16(port): {}}
+	server, serverOut := runPod(t, scfg, "serve", p)
+	serverOut.waitFor(t, "listening")
+
+	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", hostPort))}}
+	ccfg := podConfig(t, "10.244.1.9", nil, resolver)
+	ccfg.ConnectPorts = Ports{80: {}}
+	client, clientOut := runPod(t, ccfg, "dial", vip, "1000")
+	if err := client.Wait(); err != nil {
+		t.Fatalf("client: %v\n%s", err, clientOut)
+	}
+	if err := server.Wait(); err != nil {
+		t.Fatalf("server: %v\n%s", err, serverOut)
+	}
+	if got := field(t, clientOut.String(), "dialed", "remote"); got != vip {
+		t.Errorf("client's peer is %s, want the Service address %s", got, vip)
+	}
+	if got := field(t, serverOut.String(), "accepted", "local"); got != "10.244.5.4:"+p {
+		t.Errorf("server is %s, want its pod address and listen port", got)
+	}
+	if server.Stats().Binds.Load() != 1 || client.Stats().Connects.Load() != 1 {
+		t.Errorf("binds %d, connects %d; want 1, 1", server.Stats().Binds.Load(), client.Stats().Connects.Load())
+	}
+}
+
+// The two lists are not one: a port a pod listens on is not one it connects to, and the
+// other way round.
+func TestConnectAndListenPortsAreSeparate(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	marked := Ports{uint16(port): {}}
+
+	// Marked to connect to only: a server on that port stays a socket of the pod network.
+	cfg := podConfig(t, "10.244.5.4", nil, fakeResolver{})
+	cfg.ConnectPorts = marked
+	server, out := runPod(t, cfg, "serve", p)
+	out.waitFor(t, "listening")
+	server.cmd.Process.Kill()
+	server.Wait()
+	if server.Stats().Binds.Load() != 0 {
+		t.Errorf("a port marked to connect to was bound on the host")
+	}
+
+	// Marked to listen on only: a connect to a Service on that port is not held.
+	resolver := fakeResolver{"10.43.0.77:" + p: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+	cfg = podConfig(t, "10.244.1.9", nil, resolver)
+	cfg.ListenPorts = marked
+	client, cout := runPod(t, cfg, "rawdial", "10.43.0.77:"+p)
+	if err := client.Wait(); err != nil {
+		t.Fatalf("client: %v\n%s", err, cout)
+	}
+	if client.Stats().Connects.Load() != 0 || !strings.Contains(cout.String(), "connect network is unreachable") {
+		t.Errorf("a port marked to listen on was connected on the host: %s", cout)
 	}
 }

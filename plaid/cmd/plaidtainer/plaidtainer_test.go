@@ -420,10 +420,10 @@ func TestResolveNetworkParams_StandaloneResolverAndOverrides(t *testing.T) {
 
 func TestParseDirectPathOptions(t *testing.T) {
 	opts, flags, image, workload := parseWrapperArgs([]string{
-		"--direct-ports", "5201,5203", "--pod-ip=10.244.1.9", "--direct-socket", "/tmp/f.sock", "--direct-log=/tmp/d.log",
+		"--direct-connect-ports", "80,5203", "--direct-listen-ports=8080", "--pod-ip=10.244.1.9", "--direct-socket", "/tmp/f.sock", "--direct-log=/tmp/d.log",
 		"--pid", "--no-init", "--netns-path", "/proc/12/ns/net", "img.sif", "iperf3", "-s", "--pod-ip", "x",
 	})
-	if opts.DirectPorts != "5201,5203" || opts.PodIP != "10.244.1.9" || opts.DirectSocket != "/tmp/f.sock" || opts.DirectLog != "/tmp/d.log" {
+	if opts.DirectConnectPorts != "80,5203" || opts.DirectListenPorts != "8080" || opts.PodIP != "10.244.1.9" || opts.DirectSocket != "/tmp/f.sock" || opts.DirectLog != "/tmp/d.log" {
 		t.Errorf("options: %+v", opts)
 	}
 	if strings.Join(flags, " ") != "--pid --no-init --netns-path /proc/12/ns/net" {
@@ -434,7 +434,7 @@ func TestParseDirectPathOptions(t *testing.T) {
 		t.Errorf("image %q, workload %q", image, workload)
 	}
 	merged := mergePlaidOptions(PlaidOptions{DirectSocket: "/g.sock"}, opts)
-	if merged.DirectSocket != "/tmp/f.sock" || merged.DirectPorts != "5201,5203" {
+	if merged.DirectSocket != "/tmp/f.sock" || merged.DirectConnectPorts != "80,5203" || merged.DirectListenPorts != "8080" {
 		t.Errorf("merged: %+v", merged)
 	}
 	t.Setenv("PLAID_DIRECT_SOCKET", "/env.sock")
@@ -463,15 +463,16 @@ func writeKubeconfig(t *testing.T, key string) string {
 
 func TestDirectConfigRefusals(t *testing.T) {
 	writeKubeconfig(t, "a private key")
-	good := PlaidOptions{DirectPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/tmp/f.sock", Socket: "/tmp/plaidd.sock"}
+	good := PlaidOptions{DirectConnectPorts: "80", DirectListenPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/tmp/f.sock", Socket: "/tmp/plaidd.sock"}
 	if _, err := directConfig(good); err != nil {
 		t.Fatalf("a complete configuration was refused: %v", err)
 	}
 	for name, mutate := range map[string]func(*PlaidOptions){
-		"bad port":   func(o *PlaidOptions) { o.DirectPorts = "http" },
-		"no pod IP":  func(o *PlaidOptions) { o.PodIP = "" },
-		"IPv6 pod":   func(o *PlaidOptions) { o.PodIP = "fd00::1" },
-		"no factory": func(o *PlaidOptions) { o.DirectSocket = "" },
+		"bad connect port": func(o *PlaidOptions) { o.DirectConnectPorts = "http" },
+		"bad listen port":  func(o *PlaidOptions) { o.DirectListenPorts = "0" },
+		"no pod IP":        func(o *PlaidOptions) { o.PodIP = "" },
+		"IPv6 pod":         func(o *PlaidOptions) { o.PodIP = "fd00::1" },
+		"no factory":       func(o *PlaidOptions) { o.DirectSocket = "" },
 	} {
 		o := good
 		mutate(&o)
@@ -538,7 +539,7 @@ func TestLaunchDirectHelper(t *testing.T) {
 	if os.Getenv("PLAID_TEST_DIRECT") != "1" {
 		t.Skip("a helper of the tests below")
 	}
-	opts := PlaidOptions{DirectPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/nonexistent/factory.sock", Socket: "/nonexistent/plaidd.sock"}
+	opts := PlaidOptions{DirectListenPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/nonexistent/factory.sock", Socket: "/nonexistent/plaidd.sock"}
 	os.Exit(launchHostNetworking("/bin/sh", []string{os.Getenv("PLAID_TEST_SCRIPT")}, opts))
 }
 

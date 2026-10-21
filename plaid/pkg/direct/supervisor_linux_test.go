@@ -29,12 +29,13 @@ func init() {
 func testConfig(t testing.TB) Config {
 	t.Helper()
 	return Config{
-		Ports:    Ports{5201: {}},
-		PodIP:    netip.MustParseAddr("10.244.1.9"),
-		Key:      testKey,
-		Factory:  startFactory(t),
-		Resolver: fakeResolver{},
-		Logf:     t.Logf,
+		ConnectPorts: Ports{5201: {}},
+		ListenPorts:  Ports{5201: {}},
+		PodIP:        netip.MustParseAddr("10.244.1.9"),
+		Key:          testKey,
+		Factory:      startFactory(t),
+		Resolver:     fakeResolver{},
+		Logf:         t.Logf,
 	}
 }
 

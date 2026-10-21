@@ -46,13 +46,14 @@ type PlaidOptions struct {
 	MTU            int
 	ReadinessFile  string
 
-	// The direct path (see plaid/pkg/direct): the ports the container marks, the pod's
-	// address, the socket factory and a file for the supervisor's log. With no ports a
-	// container runs as it always did.
-	DirectPorts  string
-	PodIP        string
-	DirectSocket string
-	DirectLog    string
+	// The direct path (see plaid/pkg/direct): the ports the container marks (the Service
+	// ports it connects to, the ports it listens on), the pod's address, the socket factory
+	// and a file for the supervisor's log. With no ports a container runs as it always did.
+	DirectConnectPorts string
+	DirectListenPorts  string
+	PodIP              string
+	DirectSocket       string
+	DirectLog          string
 }
 
 // EnsureDefaults sets default socket and binary paths if not explicitly configured.
@@ -105,8 +106,11 @@ func mergePlaidOptions(base, override PlaidOptions) PlaidOptions {
 	if override.ReadinessFile != "" {
 		res.ReadinessFile = override.ReadinessFile
 	}
-	if override.DirectPorts != "" {
-		res.DirectPorts = override.DirectPorts
+	if override.DirectConnectPorts != "" {
+		res.DirectConnectPorts = override.DirectConnectPorts
+	}
+	if override.DirectListenPorts != "" {
+		res.DirectListenPorts = override.DirectListenPorts
 	}
 	if override.PodIP != "" {
 		res.PodIP = override.PodIP
@@ -225,8 +229,12 @@ func parseWrapperArgs(args []string) (opts PlaidOptions, apptainerFlags []string
 		}
 
 		// The direct path's options
-		if v, ok := optionValue(args, &i, "--direct-ports"); ok {
-			opts.DirectPorts = v
+		if v, ok := optionValue(args, &i, "--direct-connect-ports"); ok {
+			opts.DirectConnectPorts = v
+			continue
+		}
+		if v, ok := optionValue(args, &i, "--direct-listen-ports"); ok {
+			opts.DirectListenPorts = v
 			continue
 		}
 		if v, ok := optionValue(args, &i, "--pod-ip"); ok {
