@@ -320,6 +320,20 @@ func waitConnected(sock int, timeout time.Duration) error {
 	}
 }
 
+// connectWithin connects a host socket to sa and waits for the connection, at most timeout.
+// The socket is made non-blocking: a blocking connect in a Go program is cut short with EINTR
+// by the runtime's own signals (the ones that preempt a goroutine), and the connection goes
+// on in the kernel, so it is the wait that finishes it.
+func connectWithin(sock int, sa unix.Sockaddr, timeout time.Duration) error {
+	if err := unix.SetNonblock(sock, true); err != nil {
+		return err
+	}
+	if err := unix.Connect(sock, sa); err != nil && err != unix.EINPROGRESS && err != unix.EINTR {
+		return err
+	}
+	return waitConnected(sock, timeout)
+}
+
 // connLogFirst is how many connections (made and accepted) the log has a line for; the stats
 // have them all. A line for every connection of a container that runs for days is a log of
 // its own, and a write for it in the middle of every connect.
@@ -611,7 +625,7 @@ func (s *Supervisor) closedConnection() (int, error) {
 		return -1, err
 	}
 	defer unix.Close(client)
-	if err := unix.Connect(client, sa); err != nil {
+	if err := connectWithin(client, sa, connectTimeout); err != nil {
 		return -1, err
 	}
 	conn, _, err := unix.Accept4(listener, unix.SOCK_CLOEXEC)

@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/signal"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1175,5 +1176,54 @@ func TestConnectAndListenPortsAreSeparate(t *testing.T) {
 	}
 	if client.Stats().Connects.Load() != 0 || !strings.Contains(cout.String(), "connect network is unreachable") {
 		t.Errorf("a port marked to listen on was connected on the host: %s", cout)
+	}
+}
+
+// A connect that has to wait is cut short by the signals the Go runtime sends its threads;
+// connectWithin goes on waiting for it, and ends with the timeout, not with EINTR.
+func TestConnectWithinIsNotCutShortBySignals(t *testing.T) {
+	// A listener with no room: its backlog is full, so the next connect's SYN is not
+	// answered and the connect waits.
+	l, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(l)
+	lo := &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}
+	if err := unix.Bind(l, lo); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Listen(l, 0); err != nil {
+		t.Fatal(err)
+	}
+	sa, _ := unix.Getsockname(l)
+	for i := 0; i < 4; i++ { // fill the queue; these are not waited for
+		c, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_NONBLOCK, 0)
+		defer unix.Close(c)
+		_ = unix.Connect(c, sa)
+	}
+	sock, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+	defer unix.Close(sock)
+
+	result := make(chan error, 1)
+	tid := make(chan int, 1)
+	go func() {
+		runtime.LockOSThread()
+		tid <- unix.Gettid()
+		result <- connectWithin(sock, sa, 400*time.Millisecond)
+	}()
+	id := <-tid
+	stop := time.After(300 * time.Millisecond)
+signals:
+	for {
+		select {
+		case <-stop:
+			break signals
+		case <-time.After(5 * time.Millisecond):
+			_ = unix.Tgkill(unix.Getpid(), id, unix.SIGURG)
+		}
+	}
+	if err := <-result; err != unix.ETIMEDOUT {
+		t.Errorf("connectWithin: %v, want a timeout", err)
 	}
 }

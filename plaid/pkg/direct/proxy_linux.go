@@ -272,14 +272,11 @@ func (p *localProxy) dial() (*net.TCPConn, netip.AddrPort, error) {
 			last = err
 			continue
 		}
-		timeout := unix.NsecToTimeval(int64(connectTimeout))
-		_ = unix.SetsockoptTimeval(sock, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &timeout)
-		if err := unix.Connect(sock, sockaddrFor(netip.AddrPortFrom(addr, p.hostPort), family)); err != nil {
+		if err := connectWithin(sock, sockaddrFor(netip.AddrPortFrom(addr, p.hostPort), family), connectTimeout); err != nil {
 			unix.Close(sock)
 			last = fmt.Errorf("connect to %s: %w", netip.AddrPortFrom(addr, p.hostPort), err)
 			continue
 		}
-		_ = unix.SetsockoptTimeval(sock, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &unix.Timeval{})
 		sa, err := unix.Getsockname(sock)
 		if err != nil {
 			unix.Close(sock)
