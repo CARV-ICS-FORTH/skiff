@@ -34,6 +34,11 @@ func (s *Supervisor) name(n *notif, tl *timeline) reply {
 		}
 		addr = sock.Peer
 	}
+	t := s.threads.lock(int(n.Pid)) // see threadLocks
+	defer s.threads.unlock(int(n.Pid), t)
+	if !ioctlValid(s.listener, n.ID) {
+		return cancelled
+	}
 	if err := writeAddr(int(n.Pid), n.Args[1], n.Args[2], addr, sock.Family); err != nil {
 		return failWith(unix.EFAULT)
 	}

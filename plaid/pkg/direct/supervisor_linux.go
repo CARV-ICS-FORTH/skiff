@@ -24,6 +24,7 @@ type Supervisor struct {
 	cmd        *exec.Cmd
 	listener   int
 	targets    *targets
+	threads    threadLocks // orders the answers to a task's calls against what is written to its memory
 	table      *Table
 	stop       chan struct{}
 	loopDone   chan struct{}
@@ -346,7 +347,10 @@ func (s *Supervisor) answer(n *notif, tl *timeline) {
 	if r.through {
 		resp.Flags = flagContinue
 	}
-	if err := ioctlSend(s.listener, &resp); err != nil && err != unix.ENOENT {
+	t := s.threads.lock(int(n.Pid))
+	err := ioctlSend(s.listener, &resp)
+	s.threads.unlock(int(n.Pid), t)
+	if err != nil && err != unix.ENOENT {
 		s.logf("answering call %d of thread %d: %v", n.Nr, n.Pid, err)
 		return
 	}

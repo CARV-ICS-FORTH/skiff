@@ -610,6 +610,13 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	if flags&unix.SOCK_NONBLOCK != 0 {
 		_ = unix.SetNonblock(conn, true)
 	}
+	// The address is written, and the call answered, under the task's lock and only if the
+	// call is still held (see threadLocks).
+	t := s.threads.lock(int(n.Pid))
+	defer s.threads.unlock(int(n.Pid), t)
+	if !ioctlValid(s.listener, n.ID) {
+		return cancelled
+	}
 	if n.Args[1] != 0 && n.Args[2] != 0 {
 		if err := writeAddr(int(n.Pid), n.Args[1], n.Args[2], pre.Client, listener.Family); err != nil {
 			return failWith(unix.EFAULT)
@@ -617,9 +624,6 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	}
 	tl.mark(phWriteAddr)
 	cookie := cookieOf(conn)
-	if !ioctlValid(s.listener, n.ID) {
-		return cancelled
-	}
 	// The descriptor is added, and then the call is answered with its number. (Adding it with
 	// SECCOMP_ADDFD_FLAG_SEND answers in the same step, and does it with one call fewer, but on
 	// the 6.8 kernel of the test cluster a Tomcat acceptor that was accepting at about 5000

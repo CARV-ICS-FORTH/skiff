@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 	"plaid/pkg/api"
@@ -986,6 +987,80 @@ func TestEpollGuardDoesNotConnectTwice(t *testing.T) {
 	}
 	if accepted > 1 {
 		t.Errorf("the backend's node accepted %d connections for two connects that were not swapped, want at most the one started before the look", accepted)
+	}
+}
+
+func init() {
+	// stalewait PORT: a blocking listener (C style) on a marked port whose accept is made on a
+	// thread of its own, with a buffer for the peer's address that another goroutine watches. It
+	// interrupts that thread with a signal while the supervisor still decides the call (the Go
+	// runtime's own signal, which the call is restarted after), and then says whether the
+	// address was written into the buffer, which the restarted call has not answered yet.
+	helpers["stalewait"] = func(args []string) int {
+		port, _ := strconv.Atoi(args[0])
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		if err != nil {
+			return 2
+		}
+		unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+		if err := unix.Bind(fd, &unix.SockaddrInet4{Port: port}); err != nil {
+			fmt.Println("bind", err)
+			return 2
+		}
+		unix.Listen(fd, 8)
+		buf := make([]byte, 128)
+		addrlen := uint32(len(buf))
+		tids := make(chan int)
+		go func() {
+			runtime.LockOSThread()
+			tids <- unix.Gettid()
+			_, _, errno := unix.Syscall6(unix.SYS_ACCEPT4, uintptr(fd), uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&addrlen)), 0, 0, 0)
+			fmt.Println("accept returned", errno)
+		}()
+		tid := <-tids
+		fmt.Println("accepting")
+		time.Sleep(400 * time.Millisecond)
+		unix.Tgkill(os.Getpid(), tid, unix.SIGURG)
+		fmt.Println("interrupted")
+		time.Sleep(600 * time.Millisecond)
+		if addrlen != uint32(len(buf)) || !bytes.Equal(buf, make([]byte, len(buf))) {
+			fmt.Println("buffer written, length", addrlen)
+		} else {
+			fmt.Println("buffer untouched")
+		}
+		return 0
+	}
+}
+
+// What the supervisor writes for a held accept is written for that call. The call is given up
+// when a signal interrupts the thread (it is restarted, and held again), and a supervisor that
+// was still deciding the first would write the peer's address into a buffer that is no longer
+// the call's: the stack of whatever the thread does next. Here the client is slow with its
+// preamble, the thread is interrupted meanwhile, and the buffer must stay as it was.
+func TestAnInterruptedAcceptWritesNothingLate(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	marked := Ports{uint16(port): {}}
+	server, out := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "stalewait", p)
+	out.waitFor(t, "accepting")
+	c, err := net.Dial("tcp", "127.0.0.1:"+p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	time.Sleep(700 * time.Millisecond) // the thread is interrupted at 400 ms
+	host := c.LocalAddr().(*net.TCPAddr).AddrPort()
+	pre, _ := NewPreamble(PreambleDirect, netip.AddrPortFrom(netip.MustParseAddr("10.244.1.9"), host.Port()),
+		netip.MustParseAddrPort("10.244.5.4:"+p), host)
+	wire := pre.Marshal(testKey)
+	if _, err := c.Write(wire[:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Wait(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out.String(), "interrupted") || !strings.Contains(out.String(), "buffer untouched") {
+		t.Errorf("the address was written into the buffer of a call that had been given up:\n%s", out)
 	}
 }
 
