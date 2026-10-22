@@ -164,9 +164,9 @@ func unspecifiedFor(family int) netip.Addr {
 // TCP one and has its options, and what is left to check about the container's socket (its
 // flags, the epoll look, that it is unused) is done while the handshake is on its way. A
 // check that fails then closes a connection that has been started: the server's supervisor
-// sees one that never sent a preamble. That happens only for a container whose runtime
-// registers its sockets in epoll before it connects them, and its supervisor then looks
-// before it connects (epollFirst).
+// sees one that never sent a preamble. For the epoll look that happens only for a container
+// whose sockets are in an epoll set before the connect and that cannot be moved to the host
+// socket (see armed), and its supervisor then looks before it connects (epollFirst).
 func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	tl.mark(phDispatch)
 	dst, ok := sockaddrArg(n)
@@ -190,9 +190,11 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	defer held.close()
 	tl.mark(phInspect)
 	epollFirst := s.epollFirst.Load()
+	var entries []epollEntry
 	if epollFirst {
-		if s.inEpoll(tid, fd, held) {
-			return s.fallback("epoll", "connect %s: the socket is in an epoll set already", dst)
+		var ok bool
+		if entries, ok = s.registrations(tid, fd, held); !ok {
+			return s.fallback("epoll", "connect %s: the socket is in an epoll set that it cannot be taken out of", dst)
 		}
 		tl.mark(phEpoll)
 	}
@@ -221,9 +223,10 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	}
 	tl.mark(phFlags)
 	if !epollFirst {
-		if s.inEpoll(tid, fd, held) {
+		var ok bool
+		if entries, ok = s.registrations(tid, fd, held); !ok {
 			s.epollFirst.Store(true)
-			return s.fallback("epoll", "connect %s: the socket is in an epoll set already", dst)
+			return s.fallback("epoll", "connect %s: the socket is in an epoll set that it cannot be taken out of", dst)
 		}
 		tl.mark(phEpoll)
 	}
@@ -267,7 +270,13 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 		_ = unix.IoctlSetPointerInt(sock, fionbio, 0)
 	}
 	cookie := cookieOf(sock)
+	undo, err := s.moveRegistrations(tid, fd, held, sock, entries)
+	if err != nil {
+		return s.fallback("epoll", "connect %s: %v", dst, err)
+	}
+	tl.mark(phMove)
 	if err := s.put(n, fd, sock, held.cloexec); err != nil {
+		undo()
 		return s.putFailed("connect", err)
 	}
 	tl.mark(phAddfd)
@@ -365,22 +374,50 @@ func (s *Supervisor) reject(reason, format string, args ...any) {
 	}
 }
 
-// inEpoll says whether the container's socket is registered in an epoll set (see
-// targets.epollEntries); if that cannot be told it is taken to be, as swapping it would be the
-// mistake that cannot be seen.
-func (s *Supervisor) inEpoll(tid, fd int, held *heldSocket) bool {
+// registrations finds where the container's socket is registered in epoll sets (see
+// targets.epollEntries). Not ok means that swapping the socket is not for the supervisor to
+// do: that cannot be told, or an entry cannot be made again for another socket (see
+// epollEntry.armed). A socket that is in no set has no entries, and is ok.
+func (s *Supervisor) registrations(tid, fd int, held *heldSocket) (entries []epollEntry, ok bool) {
 	var st unix.Stat_t
 	err := unix.Fstat(held.dup, &st)
-	var entries []epollEntry
 	if err == nil {
 		entries, err = s.targets.epollEntries(tid, fd, st.Ino)
 	}
 	if err != nil {
 		s.stats.Errors.Add(1)
 		s.logf("looking for descriptor %d of thread %d in epoll sets: %v", fd, tid, err)
-		return true
+		return nil, false
 	}
-	return len(entries) > 0
+	for _, e := range entries {
+		if !e.armed() {
+			return nil, false
+		}
+	}
+	return entries, true
+}
+
+// moveRegistrations moves the entries from the container's socket to sock (see moveEntries),
+// and returns what moves them back, for a swap that fails after it. If it fails nothing has
+// moved.
+func (s *Supervisor) moveRegistrations(tid, fd int, held *heldSocket, sock int, entries []epollEntry) (undo func(), err error) {
+	if len(entries) == 0 {
+		return func() {}, nil
+	}
+	back := func() error { return s.targets.moveEntries(tid, fd, sock, held.dup, entries) }
+	if err := s.targets.moveEntries(tid, fd, held.dup, sock, entries); err != nil {
+		if berr := back(); berr != nil {
+			s.logf("the epoll registrations of descriptor %d could not be moved back: %v", fd, berr)
+		}
+		s.stats.Errors.Add(1)
+		return nil, fmt.Errorf("moving the epoll registrations: %w", err)
+	}
+	return func() {
+		if err := back(); err != nil {
+			s.stats.Errors.Add(1)
+			s.logf("the epoll registrations of descriptor %d could not be moved back: %v", fd, err)
+		}
+	}, nil
 }
 
 func (s *Supervisor) putFailed(call string, err error) reply {
@@ -419,8 +456,9 @@ func (s *Supervisor) bind(n *notif) reply {
 		}
 		return letThrough
 	}
-	if s.inEpoll(tid, fd, held) {
-		return s.fallback("epoll", "bind %s: the socket is in an epoll set already", want)
+	entries, ok := s.registrations(tid, fd, held)
+	if !ok {
+		return s.fallback("epoll", "bind %s: the socket is in an epoll set that it cannot be taken out of", want)
 	}
 	if sa, err := unix.Getsockname(held.dup); err == nil && addrPortOf(sa).Port() != 0 {
 		return letThrough // bound already: the kernel says EINVAL
@@ -445,6 +483,13 @@ func (s *Supervisor) bind(n *notif) reply {
 		}
 		return s.fallback(reason, "bind %s: on the host at %s: %v", want, host, err)
 	}
+	// The registrations of the container's socket in epoll sets go to the host's, and are
+	// out of the old one's hands before it is put in the pod's network, so that no set of
+	// the container reports a connection to it.
+	undo, err := s.moveRegistrations(tid, fd, held, sock, entries)
+	if err != nil {
+		return s.fallback("epoll", "bind %s: %v", want, err)
+	}
 	// The container's own socket, which the host's is about to replace, stays in the pod's
 	// network at the address it asked for (see the proxy). A port that the pod's network
 	// has taken is what the container would have been told. A proxy of an earlier listener
@@ -452,9 +497,11 @@ func (s *Supervisor) bind(n *notif) reply {
 	// again: the host port was free, so it is out of date.
 	s.dropProxy(want, nil)
 	if err := unix.Bind(held.dup, sockaddrFor(want, held.family)); err != nil {
+		undo()
 		return failWith(errnoOf(err))
 	}
 	if err := unix.Listen(held.dup, proxyBacklog); err != nil {
+		undo()
 		return failWith(errnoOf(err))
 	}
 	if held.nonblock {
@@ -462,6 +509,7 @@ func (s *Supervisor) bind(n *notif) reply {
 	}
 	cookie := cookieOf(sock)
 	if err := s.put(n, fd, sock, held.cloexec); err != nil {
+		undo()
 		return s.putFailed("bind", err)
 	}
 	s.table.Add(cookie, Socket{Kind: KindListener, Family: held.family, Local: want})

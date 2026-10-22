@@ -28,6 +28,7 @@ type targets struct {
 	known   map[int]target
 	epolls  map[int]epollSet // by process
 	maxSize int
+	mover   mover // the thread that moves epoll registrations (epoll_linux.go)
 }
 
 type target struct{ tgid, pidfd int }
@@ -104,6 +105,7 @@ func (ts *targets) drop(tid int) {
 }
 
 func (ts *targets) closeAll() {
+	ts.mover.close()
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	for tid, t := range ts.known {
@@ -164,10 +166,18 @@ type epollEntry struct {
 	data   uint64
 }
 
+// armed says whether the entry has events to report. An EPOLLONESHOT entry that has
+// reported is disabled: the instance keeps no event bits of it, and epoll_ctl cannot make
+// another disabled one (EPOLLERR and EPOLLHUP are always added to what it is given).
+func (e epollEntry) armed() bool {
+	return e.events&^(unix.EPOLLET|unix.EPOLLONESHOT|unix.EPOLLEXCLUSIVE|unix.EPOLLWAKEUP) != 0
+}
+
 // epollEntries finds the registrations of descriptor fd (whose socket has inode number
 // ino) of the thread's process in the process's epoll instances. A socket that is
-// registered cannot have another one put in its place: the instance keeps the old file under
-// the descriptor's number, the replacement closes it, and no event would ever arrive. A runtime that registers a socket before it connects or
+// registered cannot have another one put in its place without them: the instance keeps the
+// old file under the descriptor's number, the replacement closes it, and no event would
+// ever arrive (see moveEntries). A runtime that registers a socket before it connects or
 // binds it (the ones that do not, register it after the call returns) is one that has them.
 // It finds the process's epoll instances and reads the registrations of each (`tfd:` lines
 // of their fdinfo); an entry of the same number for another file is a stale one, of a

@@ -7,10 +7,17 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func init() {
+	// As in plaidtainer: threads of the supervisor that change what is theirs (a filter, a
+	// descriptor table) must not be the main thread, which the runtime never ends.
+	runtime.LockOSThread()
+}
 
 // The tests run their "containers" as copies of the test binary: with DIRECT_TEST_HELPER
 // set, TestMain runs the named scenario instead of the tests. A scenario prints what it

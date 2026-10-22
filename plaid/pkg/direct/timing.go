@@ -30,6 +30,7 @@ const (
 	phDial                  // the wait for the connection to be made, what is left of it
 	phPreamble              // the preamble is made and written
 	phAck                   // the wait for the server's ack
+	phMove                  // the container's epoll registrations of the socket are moved to the host socket
 	phAddfd                 // the host socket is put in the container's table
 	phReply                 // the table of swapped sockets, the closes and the answer
 	phConnect               // all of it, from the call's receipt
@@ -53,7 +54,7 @@ const (
 
 var phaseNames = [numPhases]string{
 	phDispatch: "dispatch", phResolve: "resolve", phInspect: "inspect", phFactory: "factory", phOptions: "options",
-	phStart: "start", phFlags: "flags", phEpoll: "epoll", phState: "state", phDial: "dial", phPreamble: "preamble", phAck: "ack",
+	phStart: "start", phFlags: "flags", phEpoll: "epoll", phState: "state", phDial: "dial", phPreamble: "preamble", phAck: "ack", phMove: "move",
 	phAddfd: "addfd", phReply: "reply", phConnect: "total",
 	phAccept: "wait", phReadPre: "read-preamble", phVerify: "verify", phChecks: "checks", phAckWrite: "write-ack",
 	phWriteAddr: "addr", phAcceptFD: "addfd", phAdmit: "total",

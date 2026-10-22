@@ -837,17 +837,30 @@ func TestHostPortInUse(t *testing.T) {
 }
 
 func init() {
-	// epoll ORDER CALL ADDR: a non-blocking socket that is added to an epoll set before
-	// (or after) the connect (or bind) that the supervisor may swap.
+	// epoll ORDER CALL ADDR EVENTS: a non-blocking socket that is added to an epoll set before
+	// (or after) the connect (or bind) that the supervisor may swap, with the events (names
+	// joined by ",") and the data 0x1122334455667788. It then waits for the set to report the
+	// socket (a connected one is writable; a listener that is bound and has listened is
+	// readable when the helper connects to it), and changes and removes the entry by the
+	// socket's number as a runtime does.
 	helpers["epoll"] = func(args []string) int {
 		order, call, ap := args[0], args[1], netip.MustParseAddrPort(args[2])
+		var events uint32
+		for _, name := range strings.Split(args[3], ",") {
+			events |= map[string]uint32{"in": unix.EPOLLIN, "out": unix.EPOLLOUT, "et": unix.EPOLLET, "exclusive": unix.EPOLLEXCLUSIVE, "rdhup": unix.EPOLLRDHUP}[name]
+		}
+		const data = 0x1122334455667788
+		ev := func(events uint32, data uint64) *unix.EpollEvent {
+			return &unix.EpollEvent{Events: events, Fd: int32(data), Pad: int32(data >> 32)}
+		}
+		_ = loUp() // the pod's own client reaches the pod-side socket by the loopback
 		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_NONBLOCK, 0)
 		if err != nil {
 			return 2
 		}
 		ep, _ := unix.EpollCreate1(0)
 		add := func() {
-			if err := unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.EPOLLIN | unix.EPOLLOUT}); err != nil {
+			if err := unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, ev(events, data)); err != nil {
 				fmt.Println("error epoll_ctl", err)
 			}
 		}
@@ -855,6 +868,7 @@ func init() {
 			add()
 		}
 		if call == "bind" {
+			unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
 			err = unix.Bind(fd, sockaddrFor(ap, unix.AF_INET))
 		} else {
 			err = unix.Connect(fd, sockaddrFor(ap, unix.AF_INET))
@@ -862,22 +876,60 @@ func init() {
 		if order == "after" {
 			add()
 		}
-		if err == unix.EINPROGRESS {
-			// Whether the swapped socket is connected is what the epoll set says.
-			events := make([]unix.EpollEvent, 1)
-			n, _ := unix.EpollWait(ep, events, 1000)
-			fmt.Println("epoll events", n)
-		}
 		local, _ := unix.Getsockname(fd)
 		fmt.Println(call, err, "local", addrPortOf(local))
+		if call == "bind" {
+			if err := unix.Listen(fd, 8); err != nil {
+				fmt.Println("listen", err)
+				return 2
+			}
+			// A client in the pod's own network: its connection reaches the pod-side
+			// socket, which the supervisor carries to the listener.
+			c, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_NONBLOCK, 0)
+			defer unix.Close(c)
+			_ = unix.Connect(c, sockaddrFor(netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), ap.Port()), unix.AF_INET))
+		}
+		// What the set holds of the socket's number: one entry, for the socket that is there.
+		info, _ := os.ReadFile("/proc/self/fdinfo/" + strconv.Itoa(ep))
+		var st unix.Stat_t
+		unix.Fstat(fd, &st)
+		mine, others := 0, 0
+		for _, line := range strings.Split(string(info), "\n") {
+			if f := strings.Fields(line); len(f) > 0 && f[0] == "tfd:" {
+				if f[1] == strconv.Itoa(fd) && strings.Contains(line, fmt.Sprintf("ino:%x ", st.Ino)) {
+					mine++
+				} else {
+					others++
+				}
+			}
+		}
+		fmt.Println("entries", mine, "others", others)
+		got := make([]unix.EpollEvent, 4)
+		n, _ := unix.EpollWait(ep, got, 3000)
+		for i := 0; i < n; i++ {
+			fmt.Printf("epoll event data %x events %x\n", uint64(uint32(got[i].Fd))|uint64(uint32(got[i].Pad))<<32, got[i].Events&(unix.EPOLLIN|unix.EPOLLOUT))
+		}
+		fmt.Println("epoll events", n)
+		if call == "bind" {
+			conn, _, err := unix.Accept4(fd, unix.SOCK_NONBLOCK)
+			fmt.Println("accept", err)
+			if err == nil {
+				unix.Close(conn)
+			}
+		}
+		// An entry that is there is modified (not an exclusive one: the kernel refuses that,
+		// with another error than that the entry is not there).
+		fmt.Println("mod", unix.EpollCtl(ep, unix.EPOLL_CTL_MOD, fd, ev(events, data+1)))
+		fmt.Println("del", unix.EpollCtl(ep, unix.EPOLL_CTL_DEL, fd, nil))
 		return 0
 	}
 }
 
 func init() {
-	// epolltwice ADDR: two sockets that are added to an epoll set before they are connected,
-	// one after the other.
-	helpers["epolltwice"] = func(args []string) int {
+	// epolloneshot ADDR: two sockets that are added to an epoll set before they are connected,
+	// one after the other, as one-shot entries that have reported: an entry that has no
+	// events left cannot be made again for another socket.
+	helpers["epolloneshot"] = func(args []string) int {
 		ap := netip.MustParseAddrPort(args[0])
 		ep, _ := unix.EpollCreate1(0)
 		for i := 0; i < 2; i++ {
@@ -885,7 +937,8 @@ func init() {
 			if err != nil {
 				return 2
 			}
-			unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.EPOLLIN | unix.EPOLLOUT})
+			unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, &unix.EpollEvent{Events: unix.EPOLLOUT | unix.EPOLLONESHOT})
+			unix.EpollWait(ep, make([]unix.EpollEvent, 1), 1000) // a new socket is writable: reported, now disabled
 			fmt.Println("connect", unix.Connect(fd, sockaddrFor(ap, unix.AF_INET)))
 		}
 		return 0
@@ -893,8 +946,9 @@ func init() {
 }
 
 // The connection to the backend is started before the container's socket has been looked at
-// all the way; a container whose socket is in an epoll set pays for that with a connection
-// that never sends a preamble, once: its supervisor looks first from then on.
+// all the way; a container whose socket is in an epoll set that it cannot be taken out of
+// pays for that with a connection that never sends a preamble, once: its supervisor looks
+// first from then on.
 func TestEpollGuardDoesNotConnectTwice(t *testing.T) {
 	port := freePort(t)
 	p := strconv.Itoa(port)
@@ -920,7 +974,7 @@ func TestEpollGuardDoesNotConnectTwice(t *testing.T) {
 	}()
 	vip := "10.43.0.77:" + p
 	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
-	client, out := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "epolltwice", vip)
+	client, out := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "epolloneshot", vip)
 	if err := client.Wait(); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -935,41 +989,58 @@ func TestEpollGuardDoesNotConnectTwice(t *testing.T) {
 	}
 }
 
-// A socket that is in an epoll set when the container connects or binds it is not swapped
-// (the set would keep the old one), and one that is added afterwards is.
-func TestEpollGuard(t *testing.T) {
+// A socket that is in an epoll set when the container connects or binds it is swapped and
+// its registrations go with it: the set reports the new socket with the entry's data, and
+// the container's epoll_ctl by its own descriptor number finds the entry.
+func TestEpollRegistrationsGoWithTheSwap(t *testing.T) {
 	port := freePort(t)
 	p := strconv.Itoa(port)
 	vip := "10.43.0.77:" + p
 	marked := Ports{uint16(port): {}}
-	server, serverOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "serve", p)
-	serverOut.waitFor(t, "listening")
 	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
-
-	cfg := podConfig(t, "10.244.1.9", marked, resolver)
-	before, beforeOut := runPod(t, cfg, "epoll", "before", "connect", vip)
-	if err := before.Wait(); err != nil {
-		t.Fatalf("%v\n%s", err, beforeOut)
+	wantEntry := func(t *testing.T, out *syncBuffer, event, events string) {
+		t.Helper()
+		mod := "mod <nil>"
+		if strings.Contains(events, "exclusive") {
+			mod = "mod invalid argument"
+		}
+		for _, want := range []string{"entries 1 others 0\n", "epoll event data 1122334455667788 events " + event, "epoll events 1\n", mod, "del <nil>"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("no %q in:\n%s", want, out)
+			}
+		}
 	}
-	if got := before.Stats().Fallbacks.Snapshot(); got["epoll"] != 1 || before.Stats().Swapped() != 0 || !strings.Contains(beforeOut.String(), "network is unreachable") {
-		t.Errorf("registered before connect: fallbacks %v, swapped %d: %s", got, before.Stats().Swapped(), beforeOut)
+	for _, order := range []string{"before", "after"} {
+		for _, events := range []string{"in,out", "in,out,et", "in,out,et,rdhup"} {
+			t.Run("connect/"+order+"/"+events, func(t *testing.T) {
+				server, serverOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "serve", p)
+				serverOut.waitFor(t, "listening")
+				client, out := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "epoll", order, "connect", vip, events)
+				if err := client.Wait(); err != nil {
+					t.Fatalf("%v\n%s", err, out)
+				}
+				if client.Stats().Swapped() != 1 || len(client.Stats().Fallbacks.Snapshot()) != 0 || !strings.Contains(out.String(), "local 10.244.1.9:") {
+					t.Errorf("swapped %d, fallbacks %v: %s", client.Stats().Swapped(), client.Stats().Fallbacks.Snapshot(), out)
+				}
+				wantEntry(t, out, "4", events) // EPOLLOUT: connected
+				server.cmd.Process.Kill()
+				server.Wait()
+			})
+		}
 	}
-	after, afterOut := runPod(t, cfg, "epoll", "after", "connect", vip)
-	if err := after.Wait(); err != nil {
-		t.Fatalf("%v\n%s", err, afterOut)
-	}
-	if after.Stats().Swapped() != 1 || len(after.Stats().Fallbacks.Snapshot()) != 0 || !strings.Contains(afterOut.String(), "local 10.244.1.9:") {
-		t.Errorf("registered after connect: swapped %d: %s", after.Stats().Swapped(), afterOut)
-	}
-	server.cmd.Process.Kill()
-	server.Wait()
-
-	b, bOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "epoll", "before", "bind", "0.0.0.0:"+p)
-	if err := b.Wait(); err != nil {
-		t.Fatalf("%v\n%s", err, bOut)
-	}
-	if got := b.Stats().Fallbacks.Snapshot(); got["epoll"] != 1 || b.Stats().Swapped() != 0 || !strings.Contains(bOut.String(), "bind <nil> local 0.0.0.0:"+p) {
-		t.Errorf("registered before bind: fallbacks %v, swapped %d: %s", got, b.Stats().Swapped(), bOut)
+	for _, order := range []string{"before", "after"} {
+		for _, events := range []string{"in", "in,et", "in,exclusive", "in,exclusive,et"} {
+			t.Run("bind/"+order+"/"+events, func(t *testing.T) {
+				b, bOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "epoll", order, "bind", "0.0.0.0:"+p, events)
+				if err := b.Wait(); err != nil {
+					t.Fatalf("%v\n%s", err, bOut)
+				}
+				if b.Stats().Binds.Load() != 1 || len(b.Stats().Fallbacks.Snapshot()) != 0 || b.Stats().Accepted.Load() != 1 || !strings.Contains(bOut.String(), "accept <nil>") {
+					t.Errorf("binds %d, accepts %d, fallbacks %v: %s", b.Stats().Binds.Load(), b.Stats().Accepted.Load(), b.Stats().Fallbacks.Snapshot(), bOut)
+				}
+				wantEntry(t, bOut, "1", events) // EPOLLIN: a connection is waiting
+			})
+		}
 	}
 }
 
@@ -997,10 +1068,9 @@ func BenchmarkInEpoll(b *testing.B) {
 			ts := newTargets()
 			defer ts.closeAll()
 			tid := unix.Gettid()
-			inode := inodeOf(b, fds[len(fds)-1])
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := ts.epollEntries(tid, fds[len(fds)-1], inode); err != nil {
+				if _, err := ts.epollEntries(tid, fds[len(fds)-1], 0); err != nil {
 					b.Fatal(err)
 				}
 			}
