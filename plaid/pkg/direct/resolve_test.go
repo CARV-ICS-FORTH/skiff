@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,11 +36,12 @@ func (f *fakePlaid) ListServices() (*api.Response, error) {
 
 func (f *fakePlaid) ListRoutes() ([]api.RouteInfo, error) { return f.routes, f.err }
 
-func newTestResolver(f *fakePlaid) (*APIResolver, *time.Time) {
+func newTestResolver(t testing.TB, f *fakePlaid) (*APIResolver, *time.Time) {
 	now := time.Unix(1000, 0)
 	r := NewAPIResolver(f, netip.MustParseAddr("10.0.1.11"), DefaultPortBase)
 	r.now = func() time.Time { return now }
 	r.pick = func(int) int { return 0 }
+	t.Cleanup(r.Close)
 	return r, &now
 }
 
@@ -55,7 +58,7 @@ func TestResolveBackendOnAnotherNode(t *testing.T) {
 		}},
 		routes: []api.RouteInfo{{Subnet: "10.244.5.0/24", RemoteHostIP: "10.0.1.13"}, {Subnet: "10.244.0.0/16", RemoteHostIP: "10.0.9.9"}},
 	}
-	r, _ := newTestResolver(f)
+	r, _ := newTestResolver(t, f)
 	got, ok := r.Resolve(netip.MustParseAddrPort("10.43.0.77:5201"))
 	// 20000 + 4*16 + 5201 mod 16
 	want := Backend{Pod: netip.MustParseAddrPort("10.244.5.4:5201"), Host: netip.MustParseAddrPort("10.0.1.13:20065")}
@@ -72,7 +75,7 @@ func TestResolveUsesTargetPortAndLocalNode(t *testing.T) {
 			Backends: []api.BackendEntry{{IP: "10.244.1.7", Port: 8080, Eligible: true}},
 		}},
 	}
-	r, _ := newTestResolver(f)
+	r, _ := newTestResolver(t, f)
 	got, ok := r.Resolve(netip.MustParseAddrPort("10.43.0.80:80"))
 	// The pod is on this node, the node's own address; the pod's port is the Service's target
 	// port, and the host port follows from the pod's address and that: 20000 + 7*16 + 8080 mod 16.
@@ -93,7 +96,7 @@ func TestResolveSkipsWhatCannotTakeAConnection(t *testing.T) {
 		},
 		routes: []api.RouteInfo{{Subnet: "10.244.5.0/24", RemoteHostIP: "10.0.1.13"}},
 	}
-	r, _ := newTestResolver(f)
+	r, _ := newTestResolver(t, f)
 	for _, dst := range []string{"10.43.0.1:53", "10.43.0.2:80", "10.43.0.3:80", "10.43.0.99:80", "10.43.0.4:81"} {
 		if b, ok := r.Resolve(netip.MustParseAddrPort(dst)); ok {
 			t.Errorf("%s resolved to %v", dst, b)
@@ -112,7 +115,7 @@ func TestResolvePodAddress(t *testing.T) {
 			Backends: []api.BackendEntry{{IP: "10.244.5.4", Port: 8080, Eligible: true}}}},
 		routes: []api.RouteInfo{{Subnet: "10.244.5.0/24", RemoteHostIP: "10.0.1.13"}, {Subnet: "10.250.0.0/16", RemoteHostIP: "10.0.9.9"}},
 	}
-	r, now := newTestResolver(f)
+	r, now := newTestResolver(t, f)
 	for dst, want := range map[string]Backend{
 		// A pod of another node: its own port, on the node it is routed to (20000 + 4*16 + 8080 mod 16).
 		"10.244.5.4:8080": {Pod: netip.MustParseAddrPort("10.244.5.4:8080"), Host: netip.MustParseAddrPort("10.0.1.13:20064")},
@@ -146,7 +149,7 @@ func TestResolvePodAddress(t *testing.T) {
 
 func TestResolvePodOfANewNode(t *testing.T) {
 	f := &fakePlaid{status: exampleStatus()}
-	r, now := newTestResolver(f)
+	r, now := newTestResolver(t, f)
 	dst := netip.MustParseAddrPort("10.244.6.4:5201")
 	if _, ok := r.Resolve(dst); ok {
 		t.Fatal("resolved before the node existed")
@@ -165,7 +168,7 @@ func TestResolvePodOfANewNode(t *testing.T) {
 
 func TestResolveRefreshesAndSurvivesPlaidd(t *testing.T) {
 	f := &fakePlaid{status: exampleStatus(), routes: []api.RouteInfo{{Subnet: "10.244.5.0/24", RemoteHostIP: "10.0.1.13"}}}
-	r, now := newTestResolver(f)
+	r, now := newTestResolver(t, f)
 	vip := netip.MustParseAddrPort("10.43.0.5:80")
 	if _, ok := r.Resolve(vip); ok {
 		t.Fatal("resolved before the Service existed")
@@ -197,7 +200,7 @@ func TestHostOfPods(t *testing.T) {
 		status: exampleStatus(),
 		routes: []api.RouteInfo{{Subnet: "10.244.5.0/24", RemoteHostIP: "10.0.1.13"}},
 	}
-	r, _ := newTestResolver(f)
+	r, _ := newTestResolver(t, f)
 	for pod, want := range map[string]string{"10.244.1.7": "10.0.1.11", "10.244.5.4": "10.0.1.13"} {
 		if got, ok := r.HostOf(netip.MustParseAddr(pod)); !ok || got.String() != want {
 			t.Errorf("%s: %v, %v; want %s", pod, got, ok, want)
@@ -256,7 +259,7 @@ func TestResolveSaysOnceThatAPodNetworkHasNoHostPorts(t *testing.T) {
 			Backends: []api.BackendEntry{{IP: "10.244.8.4", Port: 80, Eligible: true}}}},
 		routes: []api.RouteInfo{{Subnet: "10.244.8.0/22", RemoteHostIP: "10.0.1.13"}},
 	}
-	r, now := newTestResolver(f)
+	r, now := newTestResolver(t, f)
 	var lines []string
 	r.Logf = func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
 	for i := 0; i < 3; i++ {
@@ -271,4 +274,117 @@ func TestResolveSaysOnceThatAPodNetworkHasNoHostPorts(t *testing.T) {
 	if len(lines) != 1 || !strings.Contains(lines[0], "10.244.8.0/22") {
 		t.Errorf("log: %q", lines)
 	}
+}
+
+// gatedPlaid answers like fakePlaid, safely for goroutines, and can hold its answers back.
+type gatedPlaid struct {
+	status api.Response
+	asked  atomic.Int32 // requests of GetStatus, the first of the three of a refresh
+
+	mu       sync.Mutex
+	services []api.ServiceEntry
+	gate     chan struct{} // when set, the answers wait until it is closed
+}
+
+func (p *gatedPlaid) GetStatus() (*api.Response, error) {
+	p.asked.Add(1)
+	p.mu.Lock()
+	gate := p.gate
+	p.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	r := p.status
+	return &r, nil
+}
+
+func (p *gatedPlaid) ListServices() (*api.Response, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return &api.Response{Services: append([]api.ServiceEntry(nil), p.services...)}, nil
+}
+
+func (p *gatedPlaid) ListRoutes() ([]api.RouteInfo, error) { return nil, nil }
+
+func (p *gatedPlaid) hold() chan struct{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.gate = make(chan struct{})
+	return p.gate
+}
+
+func waitUntil(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	for i := 0; i < 500; i++ {
+		if ok() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("%s did not happen", what)
+}
+
+func plaidWith(vip string) *gatedPlaid {
+	return &gatedPlaid{status: exampleStatus(), services: []api.ServiceEntry{{VIP: vip, Port: 80, Protocol: "tcp",
+		Backends: []api.BackendEntry{{IP: "10.244.1.7", Port: 80, Eligible: true}}}}}
+}
+
+// A lookup of an address the tables have does not wait for plaidd, which a refresh in the
+// background is asking (slowly); the lookups that miss wait for the one asking, and do not
+// ask again.
+func TestLookupsDoNotWaitForARefresh(t *testing.T) {
+	p := plaidWith("10.43.0.5")
+	r := NewAPIResolver(p, netip.MustParseAddr("10.0.1.11"), DefaultPortBase)
+	t.Cleanup(r.Close)
+	vip := netip.MustParseAddrPort("10.43.0.5:80")
+	if _, ok := r.Resolve(vip); !ok {
+		t.Fatal("not resolved")
+	}
+	time.Sleep(missRefresh + 50*time.Millisecond) // a miss may ask now
+	gate := p.hold()
+	go r.reload(0) // what the background does every refreshEvery
+	waitUntil(t, "the refresh", func() bool { return p.asked.Load() == 2 })
+
+	start := time.Now()
+	for i := 0; i < 100; i++ {
+		if _, ok := r.Resolve(vip); !ok {
+			t.Fatal("a hit was lost during the refresh")
+		}
+		if _, ok := r.HostOf(netip.MustParseAddr("10.244.1.7")); !ok {
+			t.Fatal("a pod was lost during the refresh")
+		}
+	}
+	if took := time.Since(start); took > 100*time.Millisecond {
+		t.Errorf("200 lookups took %v while plaidd was being asked", took)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); r.Resolve(netip.MustParseAddrPort("10.43.0.99:80")) }()
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(gate)
+	wg.Wait()
+	if got := p.asked.Load(); got != 2 {
+		t.Errorf("plaidd was asked %d times, want the one refresh that was on its way and no more", got)
+	}
+}
+
+// The tables are asked for again without a lookup, and the answer is the next lookup's.
+func TestTablesAreRefreshedInTheBackground(t *testing.T) {
+	p := plaidWith("10.43.0.5")
+	r := NewAPIResolver(p, netip.MustParseAddr("10.0.1.11"), DefaultPortBase)
+	r.every = 10 * time.Millisecond
+	t.Cleanup(r.Close)
+	if _, ok := r.Resolve(netip.MustParseAddrPort("10.43.0.5:80")); !ok {
+		t.Fatal("not resolved")
+	}
+	p.mu.Lock()
+	p.services = append(p.services, plaidWith("10.43.0.6").services...)
+	p.mu.Unlock()
+	waitUntil(t, "the refresh", func() bool {
+		_, ok := r.loaded.Load().services[netip.MustParseAddrPort("10.43.0.6:80")]
+		return ok
+	})
 }
