@@ -9,9 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"sort"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -410,12 +408,12 @@ Commands:
 // containers the counters of each running supervisor.
 func printDirect(w io.Writer, d *api.DirectStatus, containers bool) {
 	fmt.Fprintf(w, "Direct path:  %d supervisors running, %d ended: %s\n", d.Running, d.Ended, directCounters(d.Total))
-	fmt.Fprintf(w, "              fallbacks to the overlay or the pod network: %s\n", orNone(reasonCounts(d.Total.Fallbacks)))
-	fmt.Fprintf(w, "              connections turned away: %s\n", orNone(reasonCounts(d.Total.Rejected)))
+	fmt.Fprintf(w, "              fallbacks to the overlay or the pod network: %s\n", orNone(direct.FormatReasons(d.Total.Fallbacks)))
+	fmt.Fprintf(w, "              connections turned away: %s\n", orNone(direct.FormatReasons(d.Total.Rejected)))
 	if containers {
 		for _, c := range d.Containers {
 			fmt.Fprintf(w, "  - %s (pid %d): %s; fallbacks: %s; turned away: %s\n", c.Name, c.PID, directCounters(c.Counters),
-				orNone(reasonCounts(c.Counters.Fallbacks)), orNone(reasonCounts(c.Counters.Rejected)))
+				orNone(direct.FormatReasons(c.Counters.Fallbacks)), orNone(direct.FormatReasons(c.Counters.Rejected)))
 		}
 	}
 }
@@ -423,16 +421,6 @@ func printDirect(w io.Writer, d *api.DirectStatus, containers bool) {
 func directCounters(c api.DirectCounters) string {
 	return fmt.Sprintf("connects=%d binds=%d accepts=%d, proxied=%d (failed %d), errors=%d",
 		c.Connects, c.Binds, c.Accepts, c.Proxied, c.ProxyFailed, c.Errors)
-}
-
-// reasonCounts is "reason=n" words, in the order of the reasons.
-func reasonCounts(counts map[string]uint64) string {
-	words := make([]string, 0, len(counts))
-	for reason, n := range counts {
-		words = append(words, fmt.Sprintf("%s=%d", reason, n))
-	}
-	sort.Strings(words)
-	return strings.Join(words, " ")
 }
 
 func orNone(s string) string {

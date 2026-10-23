@@ -48,8 +48,11 @@ func (r *Reasons) Snapshot() map[string]uint64 {
 }
 
 // String is the counts as "reason=n" words, in the order of the reasons.
-func (r *Reasons) String() string {
-	counts := r.Snapshot()
+func (r *Reasons) String() string { return FormatReasons(r.Snapshot()) }
+
+// FormatReasons is counts (a Reasons' snapshot, as plaidd reports them) as "reason=n" words,
+// in the order of the reasons.
+func FormatReasons(counts map[string]uint64) string {
 	words := make([]string, 0, len(counts))
 	for reason, n := range counts {
 		words = append(words, fmt.Sprintf("%s=%d", reason, n))
