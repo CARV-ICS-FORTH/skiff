@@ -35,6 +35,12 @@ type Supervisor struct {
 	timings    Timings
 	connLogged atomic.Uint64 // connections logged so far (logConn)
 
+	holding     holding                      // the calls that hold a connection, by thread
+	accepts     kept[uint64, Preamble]       // connections that an accept gave up, by listener (see accept)
+	dials       kept[connectKey, Backend]    // connections that a connect gave up, by call (see connect)
+	podBound    kept[uint64, netip.AddrPort] // the container's sockets that a bind gave up after it had bound them in the pod, by socket (see bind)
+	acceptLocks [16]sync.Mutex               // by listener: see acceptReady
+
 	connecting atomic.Int32 // connects being decided
 	epollFirst atomic.Bool  // a socket of the container was in an epoll set before its connect, and not one that can be moved
 	lastAnswer atomic.Int64 // when a call was last answered, in unix nanoseconds
@@ -83,6 +89,16 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 	if cfg.AckTimeout <= 0 {
 		cfg.AckTimeout = DefaultAckTimeout
 	}
+	if cfg.PreambleTimeout <= 0 {
+		cfg.PreambleTimeout = DefaultPreambleTimeout
+	}
+	if own, shared := cfg.ListenPorts.Exclusive(); len(shared) > 0 {
+		if cfg.Logf != nil {
+			cfg.Logf("direct-listen-ports %v are served at the same host ports (equal modulo %d): none of them is swapped, they stay on the pod network", shared, PodPortsPerPod)
+		}
+		cfg.ListenPorts = own
+	}
+	runtimeDescriptors() // while no descriptor of the container's is in the table
 	// The watchdog is started here, on a thread that is not filtered, before the filter's.
 	wd, err := startWatchdog()
 	if err != nil && cfg.Logf != nil {
@@ -119,6 +135,12 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 		loopDone: make(chan struct{}),
 		watchdog: wd,
 	}
+	s.accepts.maxAge, s.accepts.perKey = keptAcceptAge, keptAcceptMax
+	s.accepts.expired = func(pre Preamble) {
+		s.reject("unaccepted", "from %s, kept for the next accept of %s and not accepted", pre.Client, pre.Backend)
+	}
+	s.dials.maxAge, s.dials.perKey = keptDialAge, 1
+	s.podBound.maxAge, s.podBound.perKey = keptBindAge, 1
 	go s.serve()
 	go s.report()
 	return s, nil
@@ -201,6 +223,9 @@ func (s *Supervisor) Wait() error {
 	}
 	s.handlers.Wait()
 	s.closeProxies()
+	s.accepts.closeAll()
+	s.dials.closeAll()
+	s.podBound.closeAll()
 	s.targets.closeAll()
 	unix.Close(s.listener)
 	s.logf("ended, %s", s.stats.summary())

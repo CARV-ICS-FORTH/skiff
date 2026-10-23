@@ -4,8 +4,10 @@ package direct
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -359,6 +361,71 @@ func TestMoveEntriesThatFailLeavesThem(t *testing.T) {
 	}
 }
 
+// The mover's table keeps the Go runtime's netpoller descriptors and 0, 1 and 2: a move of
+// a descriptor that has one of those numbers is refused, before the look at the registrations
+// (the call is left to the pod network) and by the thread, and the registrations stay.
+func TestMoveOfAKeptNumberIsRefused(t *testing.T) {
+	kept := runtimeDescriptors()
+	t.Logf("kept descriptors: %v", kept)
+	for _, fd := range []int{0, 1, 2} {
+		if !slices.Contains(kept, fd) {
+			t.Errorf("descriptor %d is not kept: %v", fd, kept)
+		}
+	}
+	if len(kept) < 5 {
+		t.Errorf("the runtime's epoll instance and eventfd are not among the kept descriptors: %v", kept)
+	}
+	ts := newTargets()
+	defer ts.closeAll()
+	tid := unix.Getpid()
+	sock := func() int {
+		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_NONBLOCK, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fd
+	}
+	ep, _ := unix.EpollCreate1(0)
+	defer unix.Close(ep)
+	old, fresh := sock(), sock()
+	defer unix.Close(old)
+	defer unix.Close(fresh)
+	if err := unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, old, &unix.EpollEvent{Events: unix.EPOLLIN, Fd: 7}); err != nil {
+		t.Fatal(err)
+	}
+	entries := entriesOf(t, ts, tid, old)
+	if len(entries) != 1 {
+		t.Fatalf("entries %+v", entries)
+	}
+	for _, fd := range kept {
+		if err := ts.moveEntries(tid, fd, old, fresh, entries); err == nil {
+			t.Errorf("a move under the kept number %d was made", fd)
+		}
+	}
+	if es := entriesOf(t, ts, tid, old); len(es) != 1 || es[0].data != 7 {
+		t.Errorf("the registrations after the refused moves: %+v", es)
+	}
+	if es, _ := ts.epollEntries(tid, old, inodeOf(t, fresh)); len(es) != 0 {
+		t.Errorf("a refused move left entries for the new file: %+v", es)
+	}
+	// The look at the registrations leaves such a socket to the pod network, and not another.
+	s := &Supervisor{targets: ts}
+	if _, ok := s.registrations(tid, old, &heldSocket{dup: old}); !ok {
+		t.Error("a socket under a number that is not kept was refused")
+	}
+	more := newTargets() // (its mover has not started: the list can be changed)
+	defer more.closeAll()
+	more.mover.keep = append(slices.Clone(more.mover.keep), old)
+	slices.Sort(more.mover.keep)
+	s = &Supervisor{targets: more}
+	if _, ok := s.registrations(tid, old, &heldSocket{dup: old}); ok {
+		t.Error("a socket in an epoll set under a kept number was not refused")
+	}
+	if entries, ok := s.registrations(tid, fresh, &heldSocket{dup: fresh}); !ok || len(entries) != 0 {
+		t.Errorf("a socket in no epoll set: %+v, %v", entries, ok)
+	}
+}
+
 // Moves asked for by many goroutines at once are made one after the other, each on its own
 // descriptor number, and the thread's table is empty again after each.
 func TestMoveEntriesAtOnce(t *testing.T) {
@@ -476,5 +543,25 @@ func TestListDescriptorsWhileTheyChange(t *testing.T) {
 	wg.Wait()
 	if missed != 0 {
 		t.Errorf("a listing of the descriptors lacked descriptor %d, which is open all the time", marker)
+	}
+}
+
+// Memory the process cannot write is not written for it (EFAULT), as the kernel's own copy
+// to a task's memory would not either; a page it can write is.
+func TestWriteRemoteHonoursPagePermissions(t *testing.T) {
+	mem, err := unix.Mmap(-1, 0, unix.Getpagesize(), unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Munmap(mem)
+	addr := uint64(uintptr(unsafe.Pointer(&mem[0])))
+	if err := writeRemote(unix.Getpid(), addr, []byte("ok")); err != nil || string(mem[:2]) != "ok" {
+		t.Fatalf("a writable page: %v, %q", err, mem[:2])
+	}
+	if err := unix.Mprotect(mem, unix.PROT_READ); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRemote(unix.Getpid(), addr, []byte("no")); err == nil || string(mem[:2]) != "ok" {
+		t.Fatalf("a read-only page: %v, %q", err, mem[:2])
 	}
 }

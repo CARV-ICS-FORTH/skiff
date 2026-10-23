@@ -28,7 +28,8 @@ func randomID(prefix string) string {
 }
 
 func main() {
-	direct.RunWatchdogIfRequested() // a supervisor's watchdog is this program started again
+	direct.RunWatchdogIfRequested()  // a supervisor's watchdog is this program started again
+	direct.PlaceRuntimeDescriptors() // before anything opens a file: see the package
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)

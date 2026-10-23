@@ -36,7 +36,7 @@ type target struct{ tgid, pidfd int }
 const maxTargets = 4096
 
 func newTargets() *targets {
-	return &targets{known: make(map[int]target), epolls: make(map[int]epollSet), maxSize: maxTargets}
+	return &targets{known: make(map[int]target), epolls: make(map[int]epollSet), maxSize: maxTargets, mover: mover{keep: runtimeDescriptors()}}
 }
 
 // getfd duplicates descriptor fd of thread tid's process into this process.
@@ -393,8 +393,9 @@ func readRemote(tid int, addr uint64, buf []byte) error {
 	return nil
 }
 
-// writeRemote writes buf at addr of thread tid's process. Where process_vm_writev refuses
-// (a page that is not writable to it) the process's memory is written through /proc.
+// writeRemote writes buf at addr of thread tid's process. Memory the process cannot write
+// is EFAULT, as it is for the kernel's own copy to the process (a write through
+// /proc/<tid>/mem would succeed on it: it forces the page's permissions).
 func writeRemote(tid int, addr uint64, buf []byte) error {
 	if len(buf) == 0 {
 		return nil
@@ -402,15 +403,10 @@ func writeRemote(tid int, addr uint64, buf []byte) error {
 	local := []unix.Iovec{{Base: &buf[0], Len: uint64(len(buf))}}
 	remote := []unix.RemoteIovec{{Base: uintptr(addr), Len: len(buf)}}
 	n, err := unix.ProcessVMWritev(tid, local, remote, 0)
-	if err == nil && n == len(buf) {
-		return nil
+	if err != nil {
+		return err
 	}
-	f, ferr := os.OpenFile("/proc/"+strconv.Itoa(tid)+"/mem", os.O_WRONLY, 0)
-	if ferr != nil {
-		return unix.EFAULT
-	}
-	defer f.Close()
-	if _, werr := f.WriteAt(buf, int64(addr)); werr != nil {
+	if n != len(buf) {
 		return unix.EFAULT
 	}
 	return nil

@@ -21,3 +21,6 @@ func (*Supervisor) Wait() error { return errors.New("no supervisor") }
 
 // RunWatchdogIfRequested does nothing here: there is no watchdog.
 func RunWatchdogIfRequested() {}
+
+// PlaceRuntimeDescriptors does nothing where there is no supervisor.
+func PlaceRuntimeDescriptors() {}

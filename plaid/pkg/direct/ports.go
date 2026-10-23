@@ -56,8 +56,9 @@ func (p Ports) String() string {
 //	host port = base + (pod address - first address of the node's pod network) * 16 + pod port mod 16
 //
 // A node's pod network of up to a /24 gives its pods 4096 ports from base. Two ports of one
-// pod that are equal modulo 16 get the same host port; the second bind finds it in use and
-// stays a socket of the pod network.
+// pod that are equal modulo 16 get the same host port, which SO_REUSEPORT (copied from the
+// container's socket, for the servers that run workers on one port) would let both bind
+// without a word; so neither is swapped (see Ports.Exclusive).
 const (
 	// DefaultPortBase is where the host ports start: below the ephemeral range of Linux
 	// (32768 and up), where the nodes of the test cluster have nothing listening.
@@ -73,6 +74,26 @@ func CheckPortBase(base int) error {
 		return fmt.Errorf("the port base %d must be between 1024 and %d", base, 65536-HostPorts)
 	}
 	return nil
+}
+
+// Exclusive splits the set into the ports that have a host port of their own and the ports
+// that share one with another port of the set (equal modulo PodPortsPerPod, whatever the pod
+// and the base), which are listed in order.
+func (p Ports) Exclusive() (own Ports, shared []uint16) {
+	byHostPort := make(map[uint16]int)
+	for port := range p {
+		byHostPort[port%PodPortsPerPod]++
+	}
+	own = Ports{}
+	for port := range p {
+		if byHostPort[port%PodPortsPerPod] > 1 {
+			shared = append(shared, port)
+		} else {
+			own[port] = struct{}{}
+		}
+	}
+	sort.Slice(shared, func(i, j int) bool { return shared[i] < shared[j] })
+	return own, shared
 }
 
 // HostPort is the host port that serves port pod of a pod on a node whose pods have

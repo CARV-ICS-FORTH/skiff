@@ -23,6 +23,10 @@ type Config struct {
 	// AckTimeout is how long a client waits for the server's ack before its connect is left
 	// to the pod network (DefaultAckTimeout if zero).
 	AckTimeout time.Duration
+	// PreambleTimeout is how long a server's accept waits for the preamble of a connection
+	// to a listener of the container's, which holds the container's accept (DefaultPreambleTimeout
+	// if zero).
+	PreambleTimeout time.Duration
 	// Factory makes the host sockets.
 	Factory *FactoryClient
 	// Resolver finds the backends of Service and pod addresses.

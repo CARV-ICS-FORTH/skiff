@@ -75,8 +75,9 @@ type localProxy struct {
 	suspect  chan struct{} // a connection could not be carried: the listener may be gone
 }
 
-// startProxy takes over the container's own socket (held.dup, already bound to the address
-// the container asked for and listening) and accepts on it, and watches for the container's
+// startProxy takes over the container's own socket (held.dup, which the host's has replaced
+// in the container's descriptor table, already bound to the address the container asked for
+// in the pod's network and listening) and accepts on it, and watches for the container's
 // listener to go.
 func (s *Supervisor) startProxy(held *heldSocket, addr netip.AddrPort, hostPort uint16, owner descriptor) error {
 	f := os.NewFile(uintptr(held.dup), "pod-side listener")
@@ -125,12 +126,14 @@ func (s *Supervisor) closeProxies() {
 	}
 }
 
-// close ends the proxy: the pod-side socket goes, and with it the port in the pod's network.
-// The connections in flight run on.
+// close ends the proxy: the pod-side socket goes, and with it the port in the pod's network,
+// and the connections that an accept of the listener gave up (see accept) are closed: nobody
+// accepts on it any more. The connections in flight run on.
 func (p *localProxy) close() {
 	p.once.Do(func() {
 		close(p.done)
 		p.ln.Close()
+		p.s.accepts.drop(p.owner.cookie)
 		if p.owner.pidfd >= 0 {
 			unix.Close(p.owner.pidfd)
 		}

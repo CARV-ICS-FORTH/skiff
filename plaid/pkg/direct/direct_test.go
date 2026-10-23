@@ -1,6 +1,7 @@
 package direct
 
 import (
+	"fmt"
 	"net/netip"
 	"syscall"
 	"testing"
@@ -116,6 +117,26 @@ func TestPorts(t *testing.T) {
 	}
 	if p, err := ParsePorts(""); err != nil || len(p) != 0 {
 		t.Errorf("empty list: %v, %v", p, err)
+	}
+}
+
+// Ports of a pod that are equal modulo 16 are served at one host port: they are told apart
+// from the ports that have one of their own, and the set is not changed.
+func TestPortsThatShareAHostPort(t *testing.T) {
+	p, _ := ParsePorts("8080,5201,8096,5202,40000")
+	own, shared := p.Exclusive()
+	if own.String() != "5201,5202" || fmt.Sprint(shared) != "[8080 8096 40000]" || p.String() != "5201,5202,8080,8096,40000" {
+		t.Errorf("own %s, shared %v, set %s", own, shared, p)
+	}
+	for _, port := range []uint16{8080, 8096} {
+		a, _ := HostPort(DefaultPortBase, netip.MustParsePrefix("10.244.1.0/24"), netip.AddrPortFrom(netip.MustParseAddr("10.244.1.9"), port))
+		b, _ := HostPort(DefaultPortBase, netip.MustParsePrefix("10.244.1.0/24"), netip.AddrPortFrom(netip.MustParseAddr("10.244.1.9"), 8080))
+		if a != b {
+			t.Errorf("port %d is served at %d, 8080 at %d", port, a, b)
+		}
+	}
+	if own, shared := (Ports{}).Exclusive(); len(own) != 0 || len(shared) != 0 {
+		t.Errorf("the empty set: %v, %v", own, shared)
 	}
 }
 

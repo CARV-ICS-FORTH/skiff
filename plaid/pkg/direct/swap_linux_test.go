@@ -636,7 +636,7 @@ func TestAdmit(t *testing.T) {
 	}
 	defer lf.Close()
 	p := strconv.Itoa(l.Addr().(*net.TCPAddr).Port)
-	s := &Supervisor{cfg: Config{PodIP: netip.MustParseAddr("10.244.5.4"), Key: testKey, Resolver: fakeResolver{}}}
+	s := &Supervisor{cfg: Config{PodIP: netip.MustParseAddr("10.244.5.4"), Key: testKey, Resolver: fakeResolver{}, PreambleTimeout: DefaultPreambleTimeout}}
 	listener := Socket{Kind: KindListener, Local: netip.MustParseAddrPort("[::]:" + p)}
 
 	// connect makes a client that sends a preamble of kind; admit decides it on the accepted end.
@@ -859,6 +859,13 @@ func init() {
 		if err != nil {
 			return 2
 		}
+		// The socket's number is a high one: a low one can be the number of a descriptor that
+		// the supervisor's mover keeps for itself (see runtimeDescriptors), which depends on
+		// the program the supervisor is in, and such a socket is left to the pod network.
+		if high, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD, 200); err == nil {
+			unix.Close(fd)
+			fd = high
+		}
 		ep, _ := unix.EpollCreate1(0)
 		add := func() {
 			if err := unix.EpollCtl(ep, unix.EPOLL_CTL_ADD, fd, ev(events, data)); err != nil {
@@ -991,14 +998,19 @@ func TestEpollGuardDoesNotConnectTwice(t *testing.T) {
 }
 
 func init() {
-	// stalewait PORT: a blocking listener (C style) on a marked port whose accept is made on a
-	// thread of its own, with a buffer for the peer's address that another goroutine watches. It
-	// interrupts that thread with a signal while the supervisor still decides the call (the Go
-	// runtime's own signal, which the call is restarted after), and then says whether the
-	// address was written into the buffer, which the restarted call has not answered yet.
+	// stalewait PORT MODE: a listener (C style, MODE block or nonblock) on a marked port whose
+	// accept is made on a thread of its own, with a buffer for the peer's address (a
+	// non-blocking one is called when a connection is queued). It interrupts that thread with
+	// a signal while the supervisor still decides the call (the Go runtime's own signal, which
+	// the call is restarted after), and says what the restarted call returned, and the
+	// address in the buffer.
 	helpers["stalewait"] = func(args []string) int {
 		port, _ := strconv.Atoi(args[0])
-		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		typ, wait := unix.SOCK_STREAM, time.Duration(0)
+		if args[1] == "nonblock" {
+			typ, wait = typ|unix.SOCK_NONBLOCK, 300*time.Millisecond
+		}
+		fd, err := unix.Socket(unix.AF_INET, typ, 0)
 		if err != nil {
 			return 2
 		}
@@ -1011,44 +1023,60 @@ func init() {
 		buf := make([]byte, 128)
 		addrlen := uint32(len(buf))
 		tids := make(chan int)
+		returned := make(chan struct{})
 		go func() {
 			runtime.LockOSThread()
 			tids <- unix.Gettid()
-			_, _, errno := unix.Syscall6(unix.SYS_ACCEPT4, uintptr(fd), uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&addrlen)), 0, 0, 0)
-			fmt.Println("accept returned", errno)
+			time.Sleep(wait)
+			nfd, _, errno := unix.Syscall6(unix.SYS_ACCEPT4, uintptr(fd), uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&addrlen)), 0, 0, 0)
+			fmt.Println("accept returned", errno, "fd", int(nfd) > 0, "length", addrlen, "peer",
+				netip.AddrPortFrom(netip.AddrFrom4([4]byte(buf[4:8])), uint16(buf[2])<<8|uint16(buf[3])))
+			close(returned)
 		}()
 		tid := <-tids
 		fmt.Println("accepting")
-		time.Sleep(400 * time.Millisecond)
+		time.Sleep(wait + 400*time.Millisecond)
 		unix.Tgkill(os.Getpid(), tid, unix.SIGURG)
 		fmt.Println("interrupted")
-		time.Sleep(600 * time.Millisecond)
-		if addrlen != uint32(len(buf)) || !bytes.Equal(buf, make([]byte, len(buf))) {
-			fmt.Println("buffer written, length", addrlen)
-		} else {
-			fmt.Println("buffer untouched")
+		select {
+		case <-returned:
+		case <-time.After(3 * time.Second):
+			fmt.Println("accept did not return")
 		}
 		return 0
 	}
 }
 
-// What the supervisor writes for a held accept is written for that call. The call is given up
-// when a signal interrupts the thread (it is restarted, and held again), and a supervisor that
-// was still deciding the first would write the peer's address into a buffer that is no longer
-// the call's: the stack of whatever the thread does next. Here the client is slow with its
-// preamble, the thread is interrupted meanwhile, and the buffer must stay as it was.
-func TestAnInterruptedAcceptWritesNothingLate(t *testing.T) {
+// A blocking accept that is interrupted (the thread is signalled, and the kernel makes the
+// call again) while the supervisor holds a connection that it is waiting to hear the preamble
+// of is not answered, and the buffer of its address is not written for it: the call that is
+// made again is, with the connection, which was acked meanwhile (the client is slow with its
+// preamble, so the thread is interrupted while the first call waits). The client's connection
+// is the one the container accepts, and stays open. A non-blocking listener is told EAGAIN by
+// the call that is made again if it does not wait for the first (Go and other event loops
+// would then wait for a readiness that does not come).
+func TestAnInterruptedAcceptKeepsItsConnection(t *testing.T) {
+	for _, mode := range []string{"block", "nonblock"} {
+		t.Run(mode, func(t *testing.T) { interruptedAccept(t, mode) })
+	}
+}
+
+func interruptedAccept(t *testing.T, mode string) {
 	port := freePort(t)
 	p := strconv.Itoa(port)
 	marked := Ports{uint16(port): {}}
-	server, out := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "stalewait", p)
+	cfg := podConfig(t, "10.244.5.4", marked, fakeResolver{})
+	cfg.PreambleTimeout = 2 * time.Second // the client is slow: the supervisor waits for it
+	server, out := runPod(t, cfg, "stalewait", p, mode)
 	out.waitFor(t, "accepting")
 	c, err := net.Dial("tcp", "127.0.0.1:"+p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	time.Sleep(700 * time.Millisecond) // the thread is interrupted at 400 ms
+	// The thread is interrupted 400 ms after its call (at once for a blocking one, after
+	// 300 ms for a non-blocking one, which is made when a connection is queued).
+	time.Sleep(map[string]time.Duration{"block": 700, "nonblock": 1000}[mode] * time.Millisecond)
 	host := c.LocalAddr().(*net.TCPAddr).AddrPort()
 	pre, _ := NewPreamble(PreambleDirect, netip.AddrPortFrom(netip.MustParseAddr("10.244.1.9"), host.Port()),
 		netip.MustParseAddrPort("10.244.5.4:"+p), host)
@@ -1056,11 +1084,20 @@ func TestAnInterruptedAcceptWritesNothingLate(t *testing.T) {
 	if _, err := c.Write(wire[:]); err != nil {
 		t.Fatal(err)
 	}
+	ack := make([]byte, AckSize)
+	c.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(c, ack); err != nil {
+		t.Fatalf("no ack: %v", err)
+	}
 	if err := server.Wait(); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	if !strings.Contains(out.String(), "interrupted") || !strings.Contains(out.String(), "buffer untouched") {
-		t.Errorf("the address was written into the buffer of a call that had been given up:\n%s", out)
+	want := fmt.Sprintf("accept returned errno 0 fd true length 16 peer 10.244.1.9:%d", host.Port())
+	if !strings.Contains(out.String(), "interrupted") || !strings.Contains(out.String(), want) {
+		t.Errorf("want %q:\n%s", want, out)
+	}
+	if server.Stats().Accepted.Load() != 1 || len(server.Stats().Rejected.Snapshot()) != 0 {
+		t.Errorf("accepted %d, rejected %v", server.Stats().Accepted.Load(), server.Stats().Rejected.Snapshot())
 	}
 }
 
