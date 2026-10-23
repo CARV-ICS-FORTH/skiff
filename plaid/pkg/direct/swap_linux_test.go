@@ -1143,6 +1143,7 @@ func TestEpollRegistrationsGoWithTheSwap(t *testing.T) {
 	for _, order := range []string{"before", "after"} {
 		for _, events := range []string{"in", "in,et", "in,exclusive", "in,exclusive,et"} {
 			t.Run("bind/"+order+"/"+events, func(t *testing.T) {
+				requireLoopback(t) // the helper's client dials the pod-side listener on the pod's loopback
 				b, bOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "epoll", order, "bind", "0.0.0.0:"+p, events)
 				if err := b.Wait(); err != nil {
 					t.Fatalf("%v\n%s", err, bOut)
