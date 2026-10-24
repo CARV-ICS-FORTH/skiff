@@ -40,7 +40,11 @@ func launchHostNetworking(apptainerBin string, args []string, opts PlaidOptions)
 	if opts.DirectConnectPorts == "" && opts.DirectListenPorts == "" {
 		return execPassthroughCommand(apptainerBin, args)
 	}
-	cfg, err := directConfig(opts)
+	var cfg direct.Config
+	err := checkPtraceScope(yamaPtraceScopeFile)
+	if err == nil {
+		cfg, err = directConfig(opts)
+	}
 	if err != nil {
 		// The container is worth more running than not running: without the direct path
 		// its connections are on the pod network, which is where they were.
@@ -131,6 +135,29 @@ func clusterKey(path string) ([]byte, error) {
 		}
 	}
 	return nil, errors.New("no client-key-data for the current context's user")
+}
+
+// yamaPtraceScopeFile is where the kernel says how far Yama restricts ptrace; the file is
+// not there where Yama is not in the kernel.
+const yamaPtraceScopeFile = "/proc/sys/kernel/yama/ptrace_scope"
+
+// checkPtraceScope says whether the supervisor will be allowed to look into the container: it
+// reads the container's descriptors (pidfd_getfd) and memory (process_vm_readv and writev),
+// which is ptrace access, and has it as the container's ancestor under Yama's scope 1 (the
+// nodes' setting) or none. Scope 2 gives it to a process with CAP_SYS_PTRACE only, which
+// plaidtainer does not have, and scope 3 to none. Without the check every call would fail
+// to be looked into, and the container would be left with a supervisor that cannot decide
+// anything. A file that is not there, cannot be read or says something else is no Yama that
+// is known to refuse.
+func checkPtraceScope(path string) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	if scope, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && scope >= 2 {
+		return fmt.Errorf("Yama's ptrace_scope is %d (%s): the supervisor must be allowed to trace the container as its parent, which takes 1 or 0", scope, path)
+	}
+	return nil
 }
 
 // directConfig is what the supervisor of a container needs, from its options.

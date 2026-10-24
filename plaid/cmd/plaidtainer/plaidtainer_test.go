@@ -461,6 +461,33 @@ func writeKubeconfig(t *testing.T, key string) string {
 	return path
 }
 
+// Yama's scope 2 and 3 turn the direct path off, naming the setting; 0 and 1, a missing file
+// (no Yama) and a file that is not understood do not.
+func TestPtraceScopeOfYama(t *testing.T) {
+	dir := t.TempDir()
+	check := func(content string) error {
+		path := filepath.Join(dir, "ptrace_scope")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return checkPtraceScope(path)
+	}
+	for _, ok := range []string{"0\n", "1\n", "1", "\n", "restricted\n"} {
+		if err := check(ok); err != nil {
+			t.Errorf("scope %q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"2\n", "3\n", "3"} {
+		err := check(bad)
+		if err == nil || !strings.Contains(err.Error(), "ptrace_scope is "+strings.TrimSpace(bad)) {
+			t.Errorf("scope %q: %v, want one that names the setting", bad, err)
+		}
+	}
+	if err := checkPtraceScope(filepath.Join(dir, "absent")); err != nil {
+		t.Errorf("no Yama: %v", err)
+	}
+}
+
 func TestDirectConfigRefusals(t *testing.T) {
 	writeKubeconfig(t, "a private key")
 	good := PlaidOptions{DirectConnectPorts: "80", DirectListenPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/tmp/f.sock", Socket: "/tmp/plaidd.sock"}
