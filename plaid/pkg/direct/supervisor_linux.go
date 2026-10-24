@@ -36,7 +36,7 @@ type Supervisor struct {
 	connLogged atomic.Uint64 // connections logged so far (logConn)
 
 	holding     holding                      // the calls that hold a connection, by thread
-	accepts     kept[uint64, Preamble]       // connections that an accept gave up, by listener (see accept)
+	accepts     kept[uint64, keptAccept]     // connections that an accept gave up, by listener (see accept)
 	dials       kept[connectKey, Backend]    // connections that a connect gave up, by call (see connect)
 	podBound    kept[uint64, netip.AddrPort] // the container's sockets that a bind gave up after it had bound them in the pod, by socket (see bind)
 	acceptLocks [16]sync.Mutex               // by listener: see acceptReady
@@ -137,8 +137,12 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 	}
 	s.table.SetLiveness(cfg.Factory.LiveCookies, s.logf)
 	s.accepts.maxAge, s.accepts.perKey = keptAcceptAge, keptAcceptMax
-	s.accepts.expired = func(pre Preamble) {
-		s.reject("unaccepted", "from %s, kept for the next accept of %s and not accepted", pre.Client, pre.Backend)
+	s.accepts.expired = func(k keptAccept) {
+		if k.tgid != 0 {
+			s.reject("unaccepted", "from %s, kept for the next accept of %s and not accepted; it stays in the container as descriptor %d of process %d, which the supervisor cannot close", k.pre.Client, k.pre.Backend, k.fd, k.tgid)
+			return
+		}
+		s.reject("unaccepted", "from %s, kept for the next accept of %s and not accepted", k.pre.Client, k.pre.Backend)
 	}
 	s.dials.maxAge, s.dials.perKey = keptDialAge, 1
 	s.podBound.maxAge, s.podBound.perKey = keptBindAge, 1
@@ -372,6 +376,9 @@ func (s *Supervisor) answer(n *notif, tl *timeline) {
 	resp := notifResp{ID: n.ID, Val: r.val, Errno: r.errno}
 	if r.through {
 		resp.Flags = flagContinue
+	}
+	if hook := s.cfg.beforeSend; hook != nil {
+		hook(int(n.Pid), int(n.Nr), func() bool { return ioctlValid(s.listener, n.ID) })
 	}
 	t := s.threads.lock(int(n.Pid))
 	err := ioctlSend(s.listener, &resp)

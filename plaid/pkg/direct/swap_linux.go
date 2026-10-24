@@ -189,6 +189,9 @@ func unspecifiedFor(family int) netip.Addr {
 // If the container gives the connect up after the server has acked (a signal: the thread
 // makes the call again), the connection is kept for the call that is made again, which is
 // answered with it and does not make a second one for the server to accept (see connectKey).
+// If it gives the call up after the socket was put in place, the descriptor already is the
+// connected host socket, which the table knows: the call that is made again is answered with
+// success.
 func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	tl.mark(phDispatch)
 	dst, ok := sockaddrArg(n)
@@ -217,7 +220,14 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 		return cancelled
 	}
 	defer leave()
-	key := connectKey{tid: tid, fd: fd, cookie: cookieOf(held.dup), dst: dst}
+	cookie := cookieOf(held.dup)
+	if sock, ok := s.table.Get(cookie); ok && sock.Kind == KindClient && sock.Peer == dst {
+		// This connect was made, and its answer was given up (a signal came between the socket's
+		// being put in place and the answer): the thread makes it again. The descriptor is the
+		// host socket, connected to the backend, and the kernel would say EISCONN.
+		return succeed()
+	}
+	key := connectKey{tid: tid, fd: fd, cookie: cookie, dst: dst}
 	sock, madeBefore, reused := s.dials.take(key)
 	if reused {
 		backend = madeBefore
@@ -313,7 +323,7 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	if !held.nonblock {
 		_ = unix.IoctlSetPointerInt(sock, fionbio, 0)
 	}
-	cookie := cookieOf(sock)
+	hostCookie := cookieOf(sock)
 	undo, err := s.moveRegistrations(tid, fd, held, sock, entries)
 	if err != nil {
 		return s.fallback("epoll", "connect %s: %v", dst, err)
@@ -326,7 +336,7 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 		return s.putFailed("connect", err)
 	}
 	tl.mark(phAddfd)
-	s.table.Add(cookie, Socket{Kind: KindClient, Family: held.family, Local: local, Peer: dst})
+	s.table.Add(hostCookie, Socket{Kind: KindClient, Family: held.family, Local: local, Peer: dst})
 	s.stats.Connects.Add(1)
 	s.logConn("connect %s: on the host, %s to %s, as %s", dst, addrPortOf(sa), backend.Host, local)
 	return succeed()
@@ -645,6 +655,14 @@ func (s *Supervisor) ownerOf(tid, fd int, cookie uint64) descriptor {
 // non-blocking server that does not make the call again (a signal that its runtime does not
 // restart a call after) is given the connection by its next accept, without a new readiness
 // event: the connection is no longer in the kernel's queue.
+//
+// The call is answered in two steps, the descriptor's being added and then the answer with its
+// number, and the call may be given up between them. The connection is then in the container's
+// table already, at a number the container was never told: it is kept with that number (see
+// keptAccept), and the next accept of the listener that takes it answers with the number if the
+// process still has the connection there, and does not add it a second time. A connection that
+// is not accepted again leaves its descriptor in the container's table, which nothing here can
+// close, and is counted as one that was not accepted.
 func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	tid, fd := int(n.Pid), int(n.Args[0])
 	dup, err := s.targets.getfd(tid, fd)
@@ -670,7 +688,8 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	valid := func() bool { return ioctlValid(s.listener, n.ID) }
 	var conn int
 	var pre Preamble
-	var leave func() // the thread's turn, while the call holds a connection (see holding)
+	var had keptAccept // what was kept with the connection, if it was taken from the queue
+	var leave func()   // the thread's turn, while the call holds a connection (see holding)
 	defer func() {
 		if leave != nil {
 			leave()
@@ -691,7 +710,7 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 			}
 		}
 		queued := false
-		if conn, pre, queued = s.accepts.take(cookie); !queued {
+		if conn, had, queued = s.accepts.take(cookie); !queued {
 			if conn, err = s.acceptReady(dup, cookie, nonblock); err != nil {
 				if err == unix.EINTR || (err == unix.EAGAIN && !nonblock) {
 					leave() // nothing is held while it waits again
@@ -704,6 +723,7 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 		tl.mark(phAccept)
 		tl.restart()
 		if queued {
+			pre = had.pre
 			break
 		}
 		var reason string
@@ -732,6 +752,7 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 			s.logf("accept: no closed connection to hand over: %v", err)
 		}
 	}
+	had.pre = pre
 	keep := false
 	defer func() {
 		if !keep {
@@ -739,12 +760,13 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 		}
 	}()
 	// The call has been given up with the connection in hand, which the client has been told
-	// is accepted: it is kept for the next accept (the connection is not the container's yet).
+	// is accepted: it is kept for the next accept (the connection is not the container's yet,
+	// unless had says where it is).
 	giveUp := func() reply {
-		if flags&unix.SOCK_NONBLOCK != 0 {
+		if had.tgid == 0 && flags&unix.SOCK_NONBLOCK != 0 {
 			_ = unix.SetNonblock(conn, false)
 		}
-		if keep = s.accepts.put(cookie, conn, pre); !keep {
+		if keep = s.accepts.put(cookie, conn, had); !keep {
 			s.reject("queue-full", "from %s, %d are kept for %s", pre.Client, keptAcceptMax, listener.Local)
 		}
 		return cancelled
@@ -756,12 +778,87 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	if !valid() {
 		return giveUp()
 	}
+	// A connection that an earlier accept put in this process's table is there still if the
+	// process has the same socket at the same number, and is not added again. It is added
+	// again, as for any connection that was kept, if the process closed the number or made
+	// another socket of it, or if another process accepts (the descriptor in the first stays,
+	// which is rare enough to be left to its end).
+	reuse := s.installedAt(tid, had, conn, flags)
+	if !reuse {
+		if had.tgid != 0 {
+			_ = unix.SetNonblock(conn, false) // the flags of the descriptor that stays were not these
+		}
+		had = keptAccept{pre: pre}
+	}
 	if n.Args[1] != 0 && n.Args[2] != 0 {
 		if err := writeAddr(int(n.Pid), n.Args[1], n.Args[2], pre.Client, listener.Family); err != nil {
 			return failWith(unix.EFAULT)
 		}
 	}
 	tl.mark(phWriteAddr)
+	newfd := had.fd
+	if !reuse {
+		newfd, err = s.install(n, conn, flags, listener, pre)
+		if err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				return giveUp()
+			}
+			return failWith(errnoOf(err))
+		}
+	}
+	if hook := s.cfg.beforeSend; hook != nil {
+		hook(tid, int(n.Nr), valid)
+	}
+	if err := ioctlSend(s.listener, &notifResp{ID: n.ID, Val: int64(newfd)}); err != nil {
+		// The task was interrupted between the two: it was told nothing, and the descriptor
+		// stays in its table, which nothing here can undo. The connection is kept with its
+		// number for the call that is made again.
+		s.stats.Errors.Add(1)
+		s.logf("accept: the answer of thread %d (descriptor %d): %v", n.Pid, newfd, err)
+		if target, terr := s.targets.lookup(tid, false); terr == nil && errors.Is(err, unix.ENOENT) {
+			had = keptAccept{pre: pre, tgid: target.tgid, fd: newfd, flags: flags}
+			giveUp()
+		}
+		return cancelled
+	}
+	tl.mark(phAcceptFD)
+	tl.finish(phAdmit)
+	s.stats.Accepted.Add(1)
+	s.logConn("accept: fd %d of %s, from %s", newfd, listener.Local, pre.Client)
+	return reply{answered: true}
+}
+
+// keptAccept is a connection that an accept gave up, with what it has done to the container: if
+// tgid is not zero the connection is in that process's table at descriptor fd, added with the
+// flags of an accept4 (a number the call that was given up was not told).
+type keptAccept struct {
+	pre   Preamble
+	tgid  int
+	fd    int
+	flags int
+}
+
+// installedAt says whether the connection that k says is in the table of the process of
+// thread tid is still where it was put: the same process, the same flags, and the same socket
+// (by its cookie) at the same number.
+func (s *Supervisor) installedAt(tid int, k keptAccept, conn, flags int) bool {
+	if k.tgid == 0 || k.flags != flags {
+		return false
+	}
+	if t, err := s.targets.lookup(tid, false); err != nil || t.tgid != k.tgid {
+		return false
+	}
+	dup, err := s.targets.getfd(tid, k.fd)
+	if err != nil {
+		return false
+	}
+	defer unix.Close(dup)
+	return cookieOf(dup) == cookieOf(conn)
+}
+
+// install puts the accepted connection in the table of the process of the held call, and
+// returns its number there. The call is not answered with it yet.
+func (s *Supervisor) install(n *notif, conn, flags int, listener Socket, pre Preamble) (int, error) {
 	if flags&unix.SOCK_NONBLOCK != 0 {
 		_ = unix.SetNonblock(conn, true)
 	}
@@ -777,25 +874,7 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 		a.NewfdFlags = unix.O_CLOEXEC
 	}
 	s.table.Add(cookieOf(conn), Socket{Kind: KindAccepted, Family: listener.Family, Local: pre.Backend, Peer: pre.Client})
-	newfd, err := ioctlAddfd(s.listener, &a)
-	if err != nil {
-		if errors.Is(err, unix.ENOENT) {
-			return giveUp()
-		}
-		return failWith(errnoOf(err))
-	}
-	if err := ioctlSend(s.listener, &notifResp{ID: n.ID, Val: int64(newfd)}); err != nil {
-		// The task was interrupted between the two: it was told nothing, and the descriptor
-		// stays in its table, which nothing here can undo.
-		s.stats.Errors.Add(1)
-		s.logf("accept: the answer of thread %d (descriptor %d): %v", n.Pid, newfd, err)
-		return cancelled
-	}
-	tl.mark(phAcceptFD)
-	tl.finish(phAdmit)
-	s.stats.Accepted.Add(1)
-	s.logConn("accept: fd %d of %s, from %s", newfd, listener.Local, pre.Client)
-	return reply{answered: true}
+	return ioctlAddfd(s.listener, &a)
 }
 
 // acceptReady accepts a connection from the container's listener. A blocking listener is

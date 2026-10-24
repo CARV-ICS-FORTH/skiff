@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,7 +42,8 @@ func signals(tid int) (stop func()) {
 }
 
 func init() {
-	// sigdial ADDR: a blocking connect on a thread that is signalled while the call is held.
+	// sigdial ADDR [quiet]: a blocking connect on a thread that is signalled while the call is
+	// held (not by the helper if it is quiet: the test signals it).
 	helpers["sigdial"] = func(args []string) int {
 		ap := netip.MustParseAddrPort(args[0])
 		fd, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
@@ -56,9 +59,40 @@ func init() {
 			close(done)
 		}()
 		tid := <-tids
-		time.Sleep(100 * time.Millisecond)
-		unix.Tgkill(os.Getpid(), tid, unix.SIGURG)
+		if len(args) < 2 {
+			time.Sleep(100 * time.Millisecond)
+			unix.Tgkill(os.Getpid(), tid, unix.SIGURG)
+		}
 		<-done
+		return 0
+	}
+	// sigaccept PORT: a blocking accept on a listener, which the test signals once the
+	// connection is in the table (the test's hook), with the descriptors the process has
+	// before and after it, and the lowest number that was free before.
+	helpers["sigaccept"] = func(args []string) int {
+		port, _ := strconv.Atoi(args[0])
+		fd, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		if err := unix.Bind(fd, &unix.SockaddrInet4{Port: port}); err != nil {
+			fmt.Println("error bind", err)
+			return 2
+		}
+		unix.Listen(fd, 8)
+		fmt.Println("listening")
+		runtime.LockOSThread()
+		before := openFds()
+		free := 0
+		for slices.Contains(before, free) {
+			free++
+		}
+		nfd, from, err := unix.Accept4(fd, unix.SOCK_CLOEXEC)
+		after := openFds()
+		if err != nil {
+			fmt.Println("error accept", err)
+			return 2
+		}
+		var buf [5]byte
+		n, _ := unix.Read(nfd, buf[:])
+		fmt.Println("accepted fd", nfd, "free", free, "fds", len(before), len(after), "from", addrPortOf(from), "read", string(buf[:n]))
 		return 0
 	}
 	// sigbind PORT N: N binds of a marked port, each listener closed after, on a thread that
@@ -183,6 +217,43 @@ func init() {
 		fmt.Println("accepted", <-got)
 		time.Sleep(300 * time.Millisecond)
 		return 0
+	}
+}
+
+// openFds is the descriptors this process has, from /proc/self/fd (the one it reads them with
+// is not among them).
+func openFds() []int {
+	d, err := unix.Open("/proc/self/fd", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil
+	}
+	defer unix.Close(d)
+	nums, _, _ := listDescriptors(d)
+	return slices.DeleteFunc(nums, func(n int) bool { return n == d })
+}
+
+// interruptOnce is a Config.beforeSend that interrupts the first call of system call nr that is
+// answered, with SIGURG (which the Go runtime handles, and the kernel then makes the call
+// again), and returns when the call is no longer held: the answer that follows finds it gone.
+func interruptOnce(t *testing.T, nr int, fired *atomic.Int32) func(tid, nr int, valid func() bool) {
+	return func(tid, got int, valid func() bool) {
+		if got != nr || !fired.CompareAndSwap(0, 1) {
+			return
+		}
+		tgid, err := tgidOf(tid)
+		if err == nil {
+			err = unix.Tgkill(tgid, tid, unix.SIGURG)
+		}
+		if err != nil {
+			t.Errorf("signalling thread %d: %v", tid, err)
+			return
+		}
+		for i := 0; i < 2000 && valid(); i++ {
+			time.Sleep(time.Millisecond)
+		}
+		if valid() {
+			t.Errorf("the call of thread %d is held after the signal", tid)
+		}
 	}
 }
 
@@ -427,5 +498,153 @@ func TestPortsThatShareAHostPortAreNotSwapped(t *testing.T) {
 	}
 	if said != 2 { // once for each supervisor, which logs it at its start
 		t.Errorf("the ports were named %d times in %q", said, logs)
+	}
+}
+
+// A connect that the container gives up after the socket was put in place, before it was
+// answered (the signal comes between the two), is made again with a descriptor that is the
+// connected host socket: it is answered with success, and does not make a second connection
+// for the server to accept, nor is it told that it is connected.
+func TestAConnectInterruptedAfterTheSwapIsAnsweredWhenMadeAgain(t *testing.T) {
+	requireNamespaces(t)
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	l, err := net.Listen("tcp", "127.0.0.1:"+p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	var accepted atomic.Int32
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			accepted.Add(1)
+			go func() {
+				defer c.Close()
+				var buf [PreambleSize]byte
+				if _, err := io.ReadFull(c, buf[:]); err != nil {
+					return
+				}
+				pre, err := ParsePreamble(buf[:], testKey)
+				if err != nil {
+					return
+				}
+				ack := pre.Ack(testKey)
+				c.Write(ack[:])
+				io.Copy(io.Discard, c)
+			}()
+		}
+	}()
+	vip := "10.43.0.77:" + p
+	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+	var fired atomic.Int32
+	cfg := podConfig(t, "10.244.1.9", Ports{uint16(port): {}}, resolver)
+	cfg.beforeSend = interruptOnce(t, unix.SYS_CONNECT, &fired)
+	client, out := runPod(t, cfg, "sigdial", vip, "quiet")
+	if err := client.Wait(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out.String(), "connect <nil> local 10.244.1.9:") || !strings.Contains(out.String(), "peer "+vip) {
+		t.Errorf("client: %s", out)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := accepted.Load(); fired.Load() != 1 || got != 1 || client.Stats().Connects.Load() != 1 || len(client.Stats().Fallbacks.Snapshot()) != 0 {
+		t.Errorf("interrupted %d times; the server accepted %d connections, connects %d, fallbacks %v; want one connection", fired.Load(), got, client.Stats().Connects.Load(), client.Stats().Fallbacks.Snapshot())
+	}
+}
+
+// An accept that the container gives up after the connection was added to its table, before it
+// was answered with the number, is made again and is answered with the same number: the
+// connection is not added a second time (the container has no descriptor more than the
+// connection), and the container reads what the client sent.
+func TestAnAcceptInterruptedAfterTheDescriptorWasAddedIsAnsweredWhenMadeAgain(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	var fired atomic.Int32
+	cfg := podConfig(t, "10.244.5.4", Ports{uint16(port): {}}, fakeResolver{})
+	cfg.beforeSend = interruptOnce(t, unix.SYS_ACCEPT4, &fired)
+	server, out := runPod(t, cfg, "sigaccept", p)
+	out.waitFor(t, "listening")
+	c := forged(t, p, func(*Preamble, *[]byte) {})
+	defer c.Close()
+	c.Write([]byte("hello"))
+	if err := server.Wait(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	line := ""
+	for _, l := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(l, "accepted ") {
+			line = l
+		}
+	}
+	var fd, free, before, after int
+	var from, read string
+	if _, err := fmt.Sscanf(line, "accepted fd %d free %d fds %d %d from %s read %s", &fd, &free, &before, &after, &from, &read); err != nil {
+		t.Fatalf("the container's line %q: %v\n%s", line, err, out)
+	}
+	if fd != free || after != before+1 || read != "hello" || !strings.HasPrefix(from, "10.244.1.9:") {
+		t.Errorf("accepted descriptor %d where %d was free, descriptors %d before and %d after, from %s, read %q", fd, free, before, after, from, read)
+	}
+	if fired.Load() != 1 || server.Stats().Accepted.Load() != 1 || len(server.Stats().Rejected.Snapshot()) != 0 {
+		t.Errorf("interrupted %d times, accepts %d, rejected %v", fired.Load(), server.Stats().Accepted.Load(), server.Stats().Rejected.Snapshot())
+	}
+}
+
+// A connection that a given-up accept installed is taken for the restarted call only where the
+// process still has it at its number: the same process, the same flags, the same socket.
+func TestAnInstalledConnectionIsRecognised(t *testing.T) {
+	if b, err := os.ReadFile("/proc/sys/kernel/yama/ptrace_scope"); err == nil && strings.TrimSpace(string(b)) != "0" && strings.TrimSpace(string(b)) != "1" {
+		t.Skip("the supervisor cannot look into its child under this Yama ptrace_scope")
+	}
+	theirs, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mine, err := unix.Dup(theirs) // the same socket, as the supervisor's descriptor of the container's
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(mine)
+	other, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(other)
+	otherDup, err := unix.Dup(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirFiles := []*os.File{os.NewFile(uintptr(theirs), "theirs"), os.NewFile(uintptr(otherDup), "other")} // its 3 and 4
+	cmd := exec.Command("sleep", "30")
+	cmd.ExtraFiles = theirFiles
+	err = cmd.Start()
+	for _, f := range theirFiles {
+		f.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	s := &Supervisor{targets: newTargets()}
+	defer s.targets.closeAll()
+	pid := cmd.Process.Pid
+	at := func(k keptAccept, conn, flags int) bool { return s.installedAt(pid, k, conn, flags) }
+	if !at(keptAccept{tgid: pid, fd: 3, flags: 7}, mine, 7) {
+		t.Error("the connection is at its number and was not recognised")
+	}
+	for name, ok := range map[string]bool{
+		"not installed":   at(keptAccept{fd: 3, flags: 7}, mine, 7),
+		"another process": at(keptAccept{tgid: pid + 1, fd: 3, flags: 7}, mine, 7),
+		"another number":  at(keptAccept{tgid: pid, fd: 4, flags: 7}, mine, 7),
+		"no such number":  at(keptAccept{tgid: pid, fd: 9, flags: 7}, mine, 7),
+		"another socket":  at(keptAccept{tgid: pid, fd: 3, flags: 7}, other, 7),
+		"different flags": at(keptAccept{tgid: pid, fd: 3, flags: 7}, mine, 5),
+	} {
+		if ok {
+			t.Errorf("a connection that is not there (%s) was recognised", name)
+		}
 	}
 }

@@ -38,4 +38,9 @@ type Config struct {
 	// container's own output is not the place for them): the first connections, the
 	// fallbacks, the counters and where the time of a connect goes.
 	Logf func(format string, args ...any)
+
+	// beforeSend, for the tests, is called with the thread and the system call number of a held
+	// call just before the supervisor answers it (an accept: between adding the descriptor and
+	// the answer), and says whether the call is still held. Nil in a program.
+	beforeSend func(tid, nr int, valid func() bool)
 }
