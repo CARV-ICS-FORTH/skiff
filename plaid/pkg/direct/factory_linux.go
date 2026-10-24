@@ -4,8 +4,10 @@ package direct
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"sync"
@@ -24,8 +26,22 @@ import (
 //
 // One request is one byte, '4' or '6' for the family; the reply is one byte, '+' with a new
 // TCP socket in a control message, or '-'. A connection serves any number of requests.
+//
+// The request 'L' asks which TCP sockets of the host exist (what the supervisor's table needs
+// to drop the sockets that the container has closed, see Table): the reply is '+', the
+// number of cookies as 4 bytes, and the cookies as 8 bytes each, all little endian, or '-' if
+// the kernel's list could not be had. A factory that does not know the request says '-' to
+// it, as it does to any byte that is not a family, so a supervisor and a factory of different
+// ages keep working: the supervisor only does not sweep.
 
 const factoryTimeout = 5 * time.Second
+
+// cookiesTimeout is how long the list of the host's sockets may take, which on a host with
+// very many of them is longer than a request for one socket.
+const cookiesTimeout = 30 * time.Second
+
+// maxCookies is the most that a client takes in one list: a count beyond it is not a host's.
+const maxCookies = 1 << 24
 
 // ServeFactory serves the socket factory on the Unix socket at path until ctx ends. Only
 // the user that runs it may connect (mode 0600 and the peer's credentials, as the handoff
@@ -72,6 +88,12 @@ func serveFactoryConn(conn *net.UnixConn) {
 		if _, err := conn.Read(req[:]); err != nil {
 			return
 		}
+		if req[0] == 'L' {
+			if !serveCookies(conn) {
+				return
+			}
+			continue
+		}
 		domain := unix.AF_INET
 		if req[0] == '6' {
 			domain = unix.AF_INET6
@@ -92,6 +114,25 @@ func serveFactoryConn(conn *net.UnixConn) {
 			return
 		}
 	}
+}
+
+// serveCookies answers a request for the cookies of the host's TCP sockets, and says whether
+// the connection is still good.
+func serveCookies(conn *net.UnixConn) bool {
+	cookies, err := liveTCPCookies()
+	if err != nil {
+		_, err := conn.Write([]byte{'-'})
+		return err == nil
+	}
+	reply := make([]byte, 5, 5+8*len(cookies))
+	reply[0] = '+'
+	binary.LittleEndian.PutUint32(reply[1:], uint32(len(cookies)))
+	for c := range cookies {
+		reply = binary.LittleEndian.AppendUint64(reply, c)
+	}
+	_ = conn.SetWriteDeadline(time.Now().Add(cookiesTimeout))
+	_, err = conn.Write(reply)
+	return err == nil
 }
 
 // peerUID is the user id of the process on the other end of the connection.
@@ -222,6 +263,28 @@ func (c *FactoryClient) fetch(family int) (int, error) {
 	if family == unix.AF_INET6 {
 		req = '6'
 	}
+	fd := -1
+	err := c.ask(func(conn *net.UnixConn) (err error) {
+		fd, err = requestSocket(conn, req)
+		return err
+	})
+	return fd, err
+}
+
+// LiveCookies asks the factory for the cookies (SO_COOKIE) of all the TCP sockets of the
+// host's network namespace, in any state. A factory that does not know the request refuses
+// it (errRefused).
+func (c *FactoryClient) LiveCookies() (map[uint64]struct{}, error) {
+	var cookies map[uint64]struct{}
+	err := c.ask(func(conn *net.UnixConn) (err error) {
+		cookies, err = requestCookies(conn)
+		return err
+	})
+	return cookies, err
+}
+
+// ask makes a request of the factory on a connection of the client's, or a new one.
+func (c *FactoryClient) ask(request func(conn *net.UnixConn) error) error {
 	// A kept connection may have been closed by the factory since: try the next, and a new one.
 	for {
 		conn := c.take()
@@ -229,17 +292,17 @@ func (c *FactoryClient) fetch(family int) (int, error) {
 		if fresh {
 			var err error
 			if conn, err = c.dial(); err != nil {
-				return -1, err
+				return err
 			}
 		}
-		fd, err := requestSocket(conn, req)
+		err := request(conn)
 		if err == nil {
 			c.put(conn)
-			return fd, nil
+			return nil
 		}
 		conn.Close()
 		if fresh || errors.Is(err, errRefused) {
-			return -1, err
+			return err
 		}
 	}
 }
@@ -269,6 +332,36 @@ func requestSocket(conn *net.UnixConn, req byte) (int, error) {
 		return -1, errors.New("the socket factory sent no descriptor")
 	}
 	return fds[0], nil
+}
+
+func requestCookies(conn *net.UnixConn) (map[uint64]struct{}, error) {
+	_ = conn.SetDeadline(time.Now().Add(cookiesTimeout))
+	if _, err := conn.Write([]byte{'L'}); err != nil {
+		return nil, err
+	}
+	var head [5]byte
+	if _, err := io.ReadFull(conn, head[:1]); err != nil {
+		return nil, err
+	}
+	if head[0] != '+' {
+		return nil, errRefused
+	}
+	if _, err := io.ReadFull(conn, head[1:]); err != nil {
+		return nil, err
+	}
+	n := binary.LittleEndian.Uint32(head[1:])
+	if n > maxCookies {
+		return nil, fmt.Errorf("the socket factory announced %d sockets", n)
+	}
+	raw := make([]byte, 8*n)
+	if _, err := io.ReadFull(conn, raw); err != nil {
+		return nil, err
+	}
+	cookies := make(map[uint64]struct{}, n)
+	for i := 0; i < len(raw); i += 8 {
+		cookies[binary.LittleEndian.Uint64(raw[i:])] = struct{}{}
+	}
+	return cookies, nil
 }
 
 func (c *FactoryClient) take() *net.UnixConn {

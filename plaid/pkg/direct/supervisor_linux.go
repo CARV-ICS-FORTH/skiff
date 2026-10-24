@@ -135,6 +135,7 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 		loopDone: make(chan struct{}),
 		watchdog: wd,
 	}
+	s.table.SetLiveness(cfg.Factory.LiveCookies, s.logf)
 	s.accepts.maxAge, s.accepts.perKey = keptAcceptAge, keptAcceptMax
 	s.accepts.expired = func(pre Preamble) {
 		s.reject("unaccepted", "from %s, kept for the next accept of %s and not accepted", pre.Client, pre.Backend)
