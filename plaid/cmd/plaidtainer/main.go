@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"plaid/pkg/api"
+	"plaid/pkg/direct"
 	"plaid/pkg/ipam"
 	"plaid/pkg/version"
 )
@@ -27,6 +28,8 @@ func randomID(prefix string) string {
 }
 
 func main() {
+	direct.RunWatchdogIfRequested()  // a supervisor's watchdog is this program started again
+	direct.PlaceRuntimeDescriptors() // before anything opens a file: see the package
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -330,7 +333,7 @@ func handleExec(apptainerBin string, globalOpts PlaidOptions, args []string) {
 		apptainerArgs = append(apptainerArgs, image)
 		apptainerArgs = append(apptainerArgs, cmdArgs...)
 
-		code := execPassthroughCommand(apptainerBin, apptainerArgs)
+		code := launchHostNetworking(apptainerBin, apptainerArgs, opts)
 		os.Exit(code)
 	}
 
@@ -446,7 +449,7 @@ func handleRun(apptainerBin string, globalOpts PlaidOptions, args []string) {
 		apptainerArgs = append(apptainerArgs, image)
 		apptainerArgs = append(apptainerArgs, cmdArgs...)
 
-		code := execPassthroughCommand(apptainerBin, apptainerArgs)
+		code := launchHostNetworking(apptainerBin, apptainerArgs, opts)
 		os.Exit(code)
 	}
 

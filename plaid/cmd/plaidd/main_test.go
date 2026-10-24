@@ -55,6 +55,11 @@ func TestNewPlaidDaemonWithoutKubernetes(t *testing.T) {
 		t.Errorf("expected route host 192.168.1.60, got %s", routes[0].RemoteHostIP.String())
 	}
 
+	listed, err := daemon.HandleListRoutes()
+	if err != nil || len(listed) != 1 || listed[0].Subnet != "10.244.6.0/24" || listed[0].RemoteHostIP != "192.168.1.60" {
+		t.Errorf("listed routes: %v, %v", listed, err)
+	}
+
 	status, err := daemon.HandleGetStatus()
 	if err != nil {
 		t.Fatalf("HandleGetStatus failed: %v", err)

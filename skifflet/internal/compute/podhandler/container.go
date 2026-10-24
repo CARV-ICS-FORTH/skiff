@@ -290,12 +290,17 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 			}
 			return ""
 		}(),
-		EnvFilePath:   containerPath.EnvFilePath(),
-		Binds:         binds,
-		GPUs:          minors(devices),
-		Command:       kubecontainer.ExpandContainerCommand(container.Command, resolvedEnvs),
-		Args:          kubecontainer.ExpandContainerCommand(container.Args, resolvedEnvs),
-		ExecutionMode: executionMode,
+		EnvFilePath:        containerPath.EnvFilePath(),
+		Binds:              binds,
+		GPUs:               minors(devices),
+		Command:            kubecontainer.ExpandContainerCommand(container.Command, resolvedEnvs),
+		Args:               kubecontainer.ExpandContainerCommand(container.Args, resolvedEnvs),
+		ExecutionMode:      executionMode,
+		DirectConnectPorts: strings.TrimSpace(h.Pod.GetAnnotations()[DirectConnectPortsAnnotation]),
+		DirectListenPorts:  strings.TrimSpace(h.Pod.GetAnnotations()[DirectListenPortsAnnotation]),
+	}
+	if h.lifecycle != nil {
+		c.PodIP = h.lifecycle.GetPodStatus().PodIP
 	}
 
 	return c, nil

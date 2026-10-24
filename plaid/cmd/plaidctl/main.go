@@ -8,10 +8,13 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"plaid/pkg/api"
+	"plaid/pkg/direct"
 	"plaid/pkg/handoff"
 	"plaid/pkg/netcfg"
 	"plaid/pkg/version"
@@ -38,11 +41,18 @@ func main() {
 		overlaySocket(args[1:])
 		return
 	}
+	if args[0] == "socket-factory" {
+		socketFactory(args[1:])
+		return
+	}
 
 	client := api.NewClient(socketPath)
 
 	switch args[0] {
 	case "status":
+		sf := flag.NewFlagSet("status", flag.ExitOnError)
+		containers := sf.Bool("containers", false, "also list the direct path's counters of each container")
+		_ = sf.Parse(args[1:])
 		status, err := client.GetStatus()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error getting status: %v\n", err)
@@ -130,6 +140,9 @@ func main() {
 			fmt.Printf("              drops: no service=%d, no flow=%d, flow limit=%d, no port=%d, unsupported=%d\n",
 				e.DropsNoService, e.DropsNoFlow, e.DropsFlowLimit, e.DropsPorts, e.DropsUnsupported)
 		}
+		if d := status.Direct; d != nil {
+			printDirect(os.Stdout, d, *containers)
+		}
 		fmt.Printf("Endpoints:    %d\n", status.EndpointsCount)
 		for _, ep := range status.Endpoints {
 			fmt.Printf("  - %s\n", ep)
@@ -191,7 +204,7 @@ func main() {
 
 	case "route":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: plaidctl route <add|del> ...")
+			fmt.Fprintln(os.Stderr, "Usage: plaidctl route <list|add|del> ...")
 			os.Exit(1)
 		}
 		switch args[1] {
@@ -220,6 +233,16 @@ func main() {
 				os.Exit(1)
 			}
 			fmt.Printf("Route added: %s -> %s\n", req.Subnet, req.RemoteHostIP)
+
+		case "list":
+			routes, err := client.ListRoutes()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error listing routes: %v\n", err)
+				os.Exit(1)
+			}
+			for _, r := range routes {
+				fmt.Printf("%s -> %s\n", r.Subnet, r.RemoteHostIP)
+			}
 
 		case "del", "remove":
 			if len(args) < 3 {
@@ -338,6 +361,27 @@ func overlaySocket(args []string) {
 	fmt.Printf("Overlay sockets %s:%d (%d receive, %d send) handed to plaidd\n", ip, *port, len(rx), len(tx))
 }
 
+// socketFactory is the program the deployment runs in the physical host's network
+// namespace for the direct path: it makes TCP sockets there and gives them to the
+// supervisors of the containers that run in the bubble, which connect and bind them. It
+// runs until it is stopped.
+func socketFactory(args []string) {
+	fs := flag.NewFlagSet("socket-factory", flag.ExitOnError)
+	path := fs.String("listen", "", "UNIX socket to serve the factory on (the user's own, mode 0600)")
+	_ = fs.Parse(args)
+	if *path == "" {
+		fmt.Fprintln(os.Stderr, "Usage: plaidctl socket-factory --listen <socket>")
+		os.Exit(2)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	fmt.Printf("Socket factory on %s\n", *path)
+	if err := direct.ServeFactory(ctx, *path); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: socket factory: %v\n", err)
+		os.Exit(1)
+	}
+}
+
 func printUsage() {
 	fmt.Print(`plaidctl - Control utility for Plaid daemon (plaidd)
 
@@ -346,16 +390,37 @@ Usage:
 
 Commands:
   version                                         Display version information
-  status                                          Display daemon status & endpoints
+  status [-containers]                            Display daemon status & endpoints (-containers: the direct path's counters per container)
   overlay-socket --bind <ip> --handoff <socket>   Open the overlay UDP sockets here and hand them to plaidd (host helper; --sockets N)
+  socket-factory --listen <socket>                Make TCP sockets here for the direct path of the containers in the bubble (host helper)
   endpoint del <endpoint-id>                      Remove a container endpoint
   service list                                    List the Service engine's table and flows
   service set <file.json|->                       Replace the Service table (plaidd --disable-kubernetes only)
+  route list                                      List the overlay's routes
   route add <subnet> <remote-host> [vni] [port]   Add a cross-host overlay route
   route del <subnet>                              Remove an overlay route
   filter list                                     List active packet filter rules
   filter del <rule-id>                            Remove a packet filter rule
 `)
+}
+
+// printDirect writes the direct path's section of the status: the node's totals, and with
+// containers the counters of each running supervisor.
+func printDirect(w io.Writer, d *api.DirectStatus, containers bool) {
+	fmt.Fprintf(w, "Direct path:  %d supervisors running, %d ended: %s\n", d.Running, d.Ended, directCounters(d.Total))
+	fmt.Fprintf(w, "              fallbacks to the overlay or the pod network: %s\n", orNone(direct.FormatReasons(d.Total.Fallbacks)))
+	fmt.Fprintf(w, "              connections turned away: %s\n", orNone(direct.FormatReasons(d.Total.Rejected)))
+	if containers {
+		for _, c := range d.Containers {
+			fmt.Fprintf(w, "  - %s (pid %d): %s; fallbacks: %s; turned away: %s\n", c.Name, c.PID, directCounters(c.Counters),
+				orNone(direct.FormatReasons(c.Counters.Fallbacks)), orNone(direct.FormatReasons(c.Counters.Rejected)))
+		}
+	}
+}
+
+func directCounters(c api.DirectCounters) string {
+	return fmt.Sprintf("connects=%d binds=%d accepts=%d, proxied=%d (failed %d), errors=%d",
+		c.Connects, c.Binds, c.Accepts, c.Proxied, c.ProxyFailed, c.Errors)
 }
 
 func orNone(s string) string {

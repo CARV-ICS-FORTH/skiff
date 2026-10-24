@@ -91,6 +91,13 @@ check "an RDMA device's port 0" 1 'SKIFF_RDMA_DEVICE: "mlx5_0:0" is not' 2 -- SK
 check "slirp4netns MTU that is not a number" 1 'SKIFF_SLIRP_MTU.*not an MTU' 2 -- SKIFF_SLIRP_MTU=big
 check "slirp4netns MTU below the minimum" 1 'SKIFF_SLIRP_MTU.*between 576 and 65520' 2 -- SKIFF_SLIRP_MTU=500
 check "slirp4netns MTU above what it takes" 1 'SKIFF_SLIRP_MTU.*between 576 and 65520' 2 -- SKIFF_SLIRP_MTU=65521
+check "a direct path ack timeout in seconds or milliseconds" 0 "" 2 -- SKIFF_DIRECT_ACK_TIMEOUT=250ms
+check "a direct path ack timeout that is no duration" 1 'SKIFF_DIRECT_ACK_TIMEOUT.*not a duration' 2 -- SKIFF_DIRECT_ACK_TIMEOUT=soon
+check "a direct path ack timeout of nothing" 1 'SKIFF_DIRECT_ACK_TIMEOUT.*not a duration' 2 -- SKIFF_DIRECT_ACK_TIMEOUT=0s
+check "a direct path port base" 0 "" 2 -- SKIFF_DIRECT_PORT_BASE=30000
+check "a direct path port base that is no port" 1 'SKIFF_DIRECT_PORT_BASE.*not a port' 2 -- SKIFF_DIRECT_PORT_BASE=high
+check "a direct path port base in the system's ports" 1 'SKIFF_DIRECT_PORT_BASE.*not a port' 2 -- SKIFF_DIRECT_PORT_BASE=80
+check "a direct path port base with no room for 4096 ports" 1 'SKIFF_DIRECT_PORT_BASE.*not a port' 2 -- SKIFF_DIRECT_PORT_BASE=61441
 check "slirp4netns MTU below the pod MTU" 1 'SKIFF_SLIRP_MTU \(1400\) is below the pod MTU \(1450\)' 2 -- SKIFF_SLIRP_MTU=1400
 check "MTU without room for VXLAN" 1 'no room for VXLAN.*at most 1450' 2 -- SKIFF_POD_MTU=1500
 check "the network: an interface name" 0 "" 2 -- SKIFF_NETWORK=enp130s0
@@ -124,7 +131,7 @@ expect "pod MTU is the link's less VXLAN" "$(derived SKIFF_POD_MTU SKIFF_UPLINK_
 expect "the slirp4netns MTU is the most it takes" "$(derived SKIFF_SLIRP_MTU)" 65520
 expect "an explicit pod MTU is kept" "$(derived SKIFF_POD_MTU SKIFF_POD_MTU=1300)" 1300
 expect "the scratch directory defaults to one of the user's own: /tmp/.skiff.<uid>" "$(derived SKIFF_TMP_DIR)" "/tmp/.skiff.$(id -u)"
-expect "what is below it follows" "$(derived SKIFF_APPTAINER_TMP SKIFF_TMP_DIR=/scratch/s) $(derived SKIFF_OVERLAY_HANDOFF SKIFF_TMP_DIR=/scratch/s)" "/scratch/s/.apptainer/tmp /scratch/s/overlay.sock"
+expect "what is below it follows" "$(derived SKIFF_APPTAINER_TMP SKIFF_TMP_DIR=/scratch/s) $(derived SKIFF_OVERLAY_HANDOFF SKIFF_TMP_DIR=/scratch/s) $(derived SKIFF_DIRECT_SOCKET SKIFF_TMP_DIR=/scratch/s)" "/scratch/s/.apptainer/tmp /scratch/s/overlay.sock /scratch/s/direct.sock"
 expect "the state directory is the home's ~/.skiff" "$(derived SKIFF_STATE_DIR HOME=/home/u)" /home/u/.skiff
 expect "and cannot be overridden" "$(derived SKIFF_STATE_DIR HOME=/home/u SKIFF_STATE_DIR=/elsewhere)" /home/u/.skiff
 expect "the volumes are below the state directory" "$(derived SKIFF_VOLUMES_DIR HOME=/home/u)" /home/u/.skiff/volumes

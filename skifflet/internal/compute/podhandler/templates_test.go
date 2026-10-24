@@ -340,3 +340,30 @@ func TestPrepareAttemptScratch_MakesTheWorkingDirectory(t *testing.T) {
 		t.Fatalf("the working directory is not in the writable layer: %v", err)
 	}
 }
+
+func TestBuildApptainerArgs_DirectPorts(t *testing.T) {
+	podDir := endpoint.PodPath(t.TempDir())
+	plain := strings.Join((&Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/i.sif"}).BuildApptainerArgs(5, podDir, 1), " ")
+	if strings.Contains(plain, "--direct") || strings.Contains(plain, "--pod-ip") {
+		t.Errorf("a container with no direct ports got options for them: %s", plain)
+	}
+	log := podDir.Container("app").DirectLogPath()
+	// plaidtainer's own options come after its command (the ones before it are its global ones),
+	// and before Apptainer's, which it forwards.
+	for name, tc := range map[string]struct {
+		connect, listen, want string
+	}{
+		"both":         {"80,5203", "8080", "--host-networking exec --direct-connect-ports 80,5203 --direct-listen-ports 8080 --pod-ip 10.244.1.9 --direct-log " + log + " --pid"},
+		"connect only": {"80", "", "--host-networking exec --direct-connect-ports 80 --pod-ip 10.244.1.9 --direct-log " + log + " --pid"},
+		"listen only":  {"", "8080", "--host-networking exec --direct-listen-ports 8080 --pod-ip 10.244.1.9 --direct-log " + log + " --pid"},
+	} {
+		c := &Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/i.sif", DirectConnectPorts: tc.connect, DirectListenPorts: tc.listen, PodIP: "10.244.1.9"}
+		if got := strings.Join(c.BuildApptainerArgs(5, podDir, 1), " "); !strings.HasPrefix(got, tc.want) {
+			t.Errorf("%s: arguments %q do not start with %q", name, got, tc.want)
+		}
+	}
+	// The pod has no address yet: nothing to keep on the direct path.
+	if got := strings.Join((&Container{Name: "app", ExecutionMode: "exec", DirectConnectPorts: "5201"}).BuildApptainerArgs(5, podDir, 1), " "); strings.Contains(got, "--direct") {
+		t.Errorf("a container of a pod with no address was given the direct path: %s", got)
+	}
+}

@@ -29,10 +29,11 @@ type EndpointHandler interface {
 	HandleRemoveEndpoint(req *Request) error
 }
 
-// RouteHandler handles AddRoute and RemoveRoute requests.
+// RouteHandler handles AddRoute, RemoveRoute and ListRoutes requests.
 type RouteHandler interface {
 	HandleAddRoute(req *Request) error
 	HandleRemoveRoute(req *Request) error
+	HandleListRoutes() ([]RouteInfo, error)
 }
 
 // StatusProvider provides status info for GetStatus requests.
@@ -53,6 +54,12 @@ type ServiceHandler interface {
 	HandleListServices() (*Response, error)
 }
 
+// DirectHandler handles ReportDirect requests: the counters of the supervisors of the
+// direct path.
+type DirectHandler interface {
+	HandleReportDirect(report *DirectReport) error
+}
+
 // Server is the IPC server listening on a UNIX domain socket.
 type Server struct {
 	socketPath    string
@@ -61,6 +68,7 @@ type Server struct {
 	statusProv    StatusProvider
 	filterHandler FilterHandler
 	svcHandler    ServiceHandler
+	directHandler DirectHandler
 	listener      net.Listener
 	lockFile      *os.File
 	mu            sync.Mutex
@@ -96,6 +104,13 @@ func (s *Server) SetServiceHandler(h ServiceHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.svcHandler = h
+}
+
+// SetDirectHandler registers a DirectHandler with the server.
+func (s *Server) SetDirectHandler(h DirectHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.directHandler = h
 }
 
 // Start begins listening on the UNIX domain socket.
@@ -298,6 +313,15 @@ func (s *Server) handleConn(conn net.Conn) {
 				resp = Response{Success: true}
 			}
 		}
+	case ActionListRoutes:
+		if s.rtHandler != nil {
+			routes, err := s.rtHandler.HandleListRoutes()
+			if err != nil {
+				resp = Response{Success: false, Error: err.Error()}
+			} else {
+				resp = Response{Success: true, Routes: routes}
+			}
+		}
 	case ActionGetStatus:
 		if !s.ready.Load() {
 			resp = Response{Success: true, Ready: false}
@@ -365,6 +389,19 @@ func (s *Server) handleConn(conn net.Conn) {
 		} else {
 			resp = *listResp
 			resp.Success = true
+		}
+	case ActionReportDirect:
+		s.mu.Lock()
+		h := s.directHandler
+		s.mu.Unlock()
+		if h == nil {
+			resp = Response{Success: false, Error: "this daemon does not take reports of the direct path"}
+		} else if req.Direct == nil {
+			resp = Response{Success: false, Error: "report_direct has no report"}
+		} else if err := h.HandleReportDirect(req.Direct); err != nil {
+			resp = Response{Success: false, Error: err.Error()}
+		} else {
+			resp = Response{Success: true}
 		}
 	default:
 		resp = Response{Success: false, Error: fmt.Sprintf("unknown action: %s", req.Action)}
