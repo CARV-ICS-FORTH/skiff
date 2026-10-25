@@ -88,32 +88,39 @@ func serveFactoryConn(conn *net.UnixConn) {
 		if _, err := conn.Read(req[:]); err != nil {
 			return
 		}
-		if req[0] == 'L' {
-			if !serveCookies(conn) {
-				return
-			}
-			continue
+		var ok bool
+		switch req[0] {
+		case 'L':
+			ok = serveCookies(conn)
+		case '4':
+			ok = serveSocket(conn, unix.AF_INET)
+		case '6':
+			ok = serveSocket(conn, unix.AF_INET6)
+		default:
+			ok = refuse(conn)
 		}
-		domain := unix.AF_INET
-		if req[0] == '6' {
-			domain = unix.AF_INET6
-		}
-		fd, err := unix.Socket(domain, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
-		if err != nil || (req[0] != '4' && req[0] != '6') {
-			if err == nil {
-				unix.Close(fd)
-			}
-			if _, err := conn.Write([]byte{'-'}); err != nil {
-				return
-			}
-			continue
-		}
-		_, _, err = conn.WriteMsgUnix([]byte{'+'}, unix.UnixRights(fd), nil)
-		unix.Close(fd)
-		if err != nil {
+		if !ok {
 			return
 		}
 	}
+}
+
+// serveSocket answers a request for a TCP socket of the family, and says whether the
+// connection is still good.
+func serveSocket(conn *net.UnixConn, domain int) bool {
+	fd, err := unix.Socket(domain, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return refuse(conn)
+	}
+	_, _, err = conn.WriteMsgUnix([]byte{'+'}, unix.UnixRights(fd), nil)
+	unix.Close(fd)
+	return err == nil
+}
+
+// refuse answers a request that cannot be served, and says whether the connection is still good.
+func refuse(conn *net.UnixConn) bool {
+	_, err := conn.Write([]byte{'-'})
+	return err == nil
 }
 
 // serveCookies answers a request for the cookies of the host's TCP sockets, and says whether
@@ -121,8 +128,7 @@ func serveFactoryConn(conn *net.UnixConn) {
 func serveCookies(conn *net.UnixConn) bool {
 	cookies, err := liveTCPCookies()
 	if err != nil {
-		_, err := conn.Write([]byte{'-'})
-		return err == nil
+		return refuse(conn)
 	}
 	reply := make([]byte, 5, 5+8*len(cookies))
 	reply[0] = '+'

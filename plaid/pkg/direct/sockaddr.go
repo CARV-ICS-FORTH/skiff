@@ -72,6 +72,3 @@ func addrPortOf(sa unix.Sockaddr) netip.AddrPort {
 	}
 	return netip.AddrPort{}
 }
-
-func nativeUint32(b []byte) uint32       { return binary.NativeEndian.Uint32(b) }
-func putNativeUint32(b []byte, v uint32) { binary.NativeEndian.PutUint32(b, v) }

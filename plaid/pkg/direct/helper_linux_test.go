@@ -93,3 +93,6 @@ func (fakeResolver) HostOf(pod netip.Addr) (netip.Addr, bool) {
 
 // A pod's server is served at its own port on the host.
 func (fakeResolver) HostPort(pod netip.AddrPort) (uint16, bool) { return pod.Port(), true }
+
+// swapped is the number of sockets the supervisor has put in place of the container's.
+func swapped(s *Supervisor) uint64 { return s.stats.Connects.Load() + s.stats.Binds.Load() }

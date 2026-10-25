@@ -74,8 +74,8 @@ type APIResolver struct {
 
 // tables is what plaidd said, which is not changed once it is published.
 type tables struct {
-	services map[netip.AddrPort][]netip.AddrPort // Service address to its eligible backends
-	nodeNet  netip.Prefix                        // the pods of this node
+	services map[netip.AddrPort][]Backend // Service address to its eligible backends that the direct path can reach
+	nodeNet  netip.Prefix                 // the pods of this node
 	localIP  netip.Addr
 	routes   []route
 }
@@ -125,19 +125,9 @@ func (r *APIResolver) lookup(t *tables, dst netip.AddrPort) (b Backend, known, o
 		}
 		return Backend{}, true, false
 	}
-	backends, ok := t.services[dst]
+	usable, ok := t.services[dst]
 	if !ok {
 		return Backend{}, false, false
-	}
-	// Those on a node that is not known are left out; a Service whose backends are all
-	// unknown is not one for the direct path.
-	var usable []Backend
-	for _, pod := range backends {
-		if node, ok := t.nodeOf(pod.Addr()); ok {
-			if port, ok := r.hostPort(node, pod); ok {
-				usable = append(usable, Backend{Pod: pod, Host: netip.AddrPortFrom(node.host, port)})
-			}
-		}
 	}
 	if len(usable) == 0 {
 		return Backend{}, true, false
@@ -275,22 +265,7 @@ func (r *APIResolver) ask() (*tables, bool) {
 	if err != nil {
 		return nil, false
 	}
-	t := &tables{services: make(map[netip.AddrPort][]netip.AddrPort)}
-	for _, e := range list.Services {
-		if !strings.EqualFold(e.Protocol, "tcp") {
-			continue
-		}
-		vip, err := netip.ParseAddr(e.VIP)
-		if err != nil {
-			continue
-		}
-		key := netip.AddrPortFrom(vip, e.Port)
-		for _, b := range e.Backends {
-			if ip, err := netip.ParseAddr(b.IP); err == nil && b.Eligible {
-				t.services[key] = append(t.services[key], netip.AddrPortFrom(ip, b.Port))
-			}
-		}
-	}
+	t := &tables{services: make(map[netip.AddrPort][]Backend)}
 	t.nodeNet, _ = netip.ParsePrefix(status.NodeCIDR)
 	t.localIP = r.local
 	if !t.localIP.IsValid() {
@@ -303,6 +278,32 @@ func (r *APIResolver) ask() (*tables, bool) {
 		host, err2 := netip.ParseAddr(rt.RemoteHostIP)
 		if err1 == nil && err2 == nil {
 			t.routes = append(t.routes, route{subnet, host})
+		}
+	}
+	for _, e := range list.Services {
+		if !strings.EqualFold(e.Protocol, "tcp") {
+			continue
+		}
+		vip, err := netip.ParseAddr(e.VIP)
+		if err != nil {
+			continue
+		}
+		key := netip.AddrPortFrom(vip, e.Port)
+		for _, b := range e.Backends {
+			ip, err := netip.ParseAddr(b.IP)
+			if err != nil || !b.Eligible {
+				continue
+			}
+			// A backend on a node that is not known is left out; a Service whose backends are
+			// all unknown is still a Service (the lookup knows it), but not one for the direct path.
+			backends := t.services[key]
+			pod := netip.AddrPortFrom(ip, b.Port)
+			if node, ok := t.nodeOf(ip); ok {
+				if port, ok := r.hostPort(node, pod); ok {
+					backends = append(backends, Backend{Pod: pod, Host: netip.AddrPortFrom(node.host, port)})
+				}
+			}
+			t.services[key] = backends
 		}
 	}
 	return t, true

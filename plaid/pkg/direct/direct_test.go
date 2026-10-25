@@ -109,8 +109,8 @@ func TestPorts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !p.Has(5201) || !p.Has(5203) || p.Has(5202) || p.String() != "5201,5203" {
-		t.Errorf("got %q", p)
+	if !p.Has(5201) || !p.Has(5203) || p.Has(5202) || len(p) != 2 {
+		t.Errorf("got %v", p)
 	}
 	for _, bad := range []string{"0", "70000", "http", "5201;5202"} {
 		if _, err := ParsePorts(bad); err == nil {
@@ -127,8 +127,8 @@ func TestPorts(t *testing.T) {
 func TestPortsThatShareAHostPort(t *testing.T) {
 	p, _ := ParsePorts("8080,5201,8096,5202,40000")
 	own, shared := p.Exclusive()
-	if own.String() != "5201,5202" || fmt.Sprint(shared) != "[8080 8096 40000]" || p.String() != "5201,5202,8080,8096,40000" {
-		t.Errorf("own %s, shared %v, set %s", own, shared, p)
+	if len(own) != 2 || !own.Has(5201) || !own.Has(5202) || fmt.Sprint(shared) != "[8080 8096 40000]" || len(p) != 5 {
+		t.Errorf("own %v, shared %v, set %v", own, shared, p)
 	}
 	for _, port := range []uint16{8080, 8096} {
 		a, _ := HostPort(DefaultPortBase, netip.MustParsePrefix("10.244.1.0/24"), netip.AddrPortFrom(netip.MustParseAddr("10.244.1.9"), port))

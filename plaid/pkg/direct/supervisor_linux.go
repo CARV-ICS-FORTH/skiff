@@ -24,7 +24,7 @@ type Supervisor struct {
 	cmd        *exec.Cmd
 	listener   int
 	targets    *targets
-	threads    threadLocks // orders the answers to a task's calls against what is written to its memory
+	threads    threadLocks // orders a task's answers and the calls that hold something (see threadLocks)
 	table      *Table
 	stop       chan struct{}
 	loopDone   chan struct{}
@@ -35,9 +35,8 @@ type Supervisor struct {
 	timings    Timings
 	connLogged atomic.Uint64 // connections logged so far (logConn)
 
-	holding     holding                      // the calls that hold a connection, by thread
 	accepts     kept[uint64, keptAccept]     // connections that an accept gave up, by listener (see accept)
-	dials       kept[connectKey, Backend]    // connections that a connect gave up, by call (see connect)
+	dials       kept[uint64, keptDial]       // connections that a connect gave up, by the container's socket (see connect)
 	podBound    kept[uint64, netip.AddrPort] // the container's sockets that a bind gave up after it had bound them in the pod, by socket (see bind)
 	acceptLocks [16]sync.Mutex               // by listener: see acceptReady
 
@@ -153,9 +152,6 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 
 // Stats is the supervisor's counters.
 func (s *Supervisor) Stats() *Stats { return &s.stats }
-
-// Swapped is the number of sockets put in place of the container's.
-func (st *Stats) Swapped() uint64 { return st.Connects.Load() + st.Binds.Load() }
 
 // Counters is a copy of the counters, as plaidd takes them.
 func (st *Stats) Counters() api.DirectCounters {
@@ -275,9 +271,10 @@ func (s *Supervisor) logf(format string, args ...any) {
 //
 // A call that can wait (a connect makes a connection, an accept waits for one) is decided
 // by the goroutine that received it, and another goroutine takes over the receiving first,
-// so that the others are not held up. Handing the call to a new goroutine instead made the
-// connect wait for a thread to be woken for it (36 microseconds on the cluster's nodes);
-// the thread that is woken now is the next receiver's, while this one works.
+// so that the others are not held up. The call stays on the thread that received it: handing
+// it to a new goroutine makes the connect wait for a thread to be woken (36 microseconds on
+// the cluster's nodes), and the thread that is woken here is the next receiver's, while this
+// one works.
 func (s *Supervisor) serve() {
 	fds := []unix.PollFd{{Fd: int32(s.listener), Events: unix.POLLIN}}
 	for {
@@ -373,16 +370,16 @@ func (s *Supervisor) answer(n *notif, tl *timeline) {
 	if r.answered {
 		return
 	}
-	resp := notifResp{ID: n.ID, Val: r.val, Errno: r.errno}
+	resp := notifResp{ID: n.ID, Errno: r.errno}
 	if r.through {
 		resp.Flags = flagContinue
 	}
 	if hook := s.cfg.beforeSend; hook != nil {
-		hook(int(n.Pid), int(n.Nr), func() bool { return ioctlValid(s.listener, n.ID) })
+		hook(int(n.Pid), int(n.Nr), s.validFunc(n))
 	}
 	t := s.threads.lock(int(n.Pid))
 	err := ioctlSend(s.listener, &resp)
-	s.threads.unlock(int(n.Pid), t)
+	t.unlock()
 	if err != nil && err != unix.ENOENT {
 		s.logf("answering call %d of thread %d: %v", n.Nr, n.Pid, err)
 		return
@@ -403,25 +400,44 @@ func (s *Supervisor) answer(n *notif, tl *timeline) {
 // with its number itself).
 type reply struct {
 	through  bool
-	val      int64
 	errno    int32
 	answered bool
 }
 
 var letThrough = reply{through: true}
 
+// answered is for a call that has told the kernel itself, cancelled for one that has nobody
+// to tell (its thread gave it up): in both nothing is left to answer.
+var (
+	answered  = reply{answered: true}
+	cancelled = answered
+)
+
 func succeed() reply { return reply{} }
 
 func failWith(errno syscall.Errno) reply { return reply{errno: -int32(errno)} }
 
 func errnoOf(err error) syscall.Errno {
-	var errno syscall.Errno
-	if e, ok := err.(syscall.Errno); ok {
-		errno = e
-	} else {
-		errno = unix.EIO
+	if errno, ok := err.(syscall.Errno); ok {
+		return errno
 	}
-	return errno
+	return unix.EIO
+}
+
+// valid says whether the held call is still held: the thread has not given it up.
+func (s *Supervisor) valid(n *notif) bool { return ioctlValid(s.listener, n.ID) }
+
+// validFunc is valid as a function, for the hook of the tests: it keeps the call's id, not
+// the notification, which then stays on the stack of serve.
+func (s *Supervisor) validFunc(n *notif) func() bool {
+	id := n.ID
+	return func() bool { return ioctlValid(s.listener, id) }
+}
+
+// takeTurn waits for the earlier call of the thread that holds something, and takes the
+// thread's turn (see threadLocks). It returns nil if the call has been given up meanwhile.
+func (s *Supervisor) takeTurn(n *notif) *threadLock {
+	return s.threads.enter(int(n.Pid), func() bool { return s.valid(n) })
 }
 
 // decide is the supervisor's judgement of one held call.

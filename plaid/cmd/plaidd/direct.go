@@ -40,6 +40,14 @@ func (b *directBook) isAlive(pid int) bool {
 	return err == nil || err == syscall.EPERM
 }
 
+// retire moves a supervisor that has ended, with its last counters, from those that run to
+// those that ended. The caller holds the lock.
+func (b *directBook) retire(key string, counters api.DirectCounters) {
+	delete(b.running, key)
+	b.ended++
+	b.done.Add(counters)
+}
+
 // report keeps a supervisor's counters (they are its totals, so a report replaces the
 // last), or, if it has ended, adds them to those of the supervisors that did.
 func (b *directBook) report(r *api.DirectReport) error {
@@ -63,9 +71,7 @@ func (b *directBook) report(r *api.DirectReport) error {
 		return fmt.Errorf("plaidd keeps the reports of at most %d supervisors", maxDirectSupervisors)
 	}
 	if r.Ended {
-		delete(b.running, key)
-		b.ended++
-		b.done.Add(r.Counters)
+		b.retire(key, r.Counters)
 		return nil
 	}
 	if b.running == nil {
@@ -83,9 +89,7 @@ func (b *directBook) status() *api.DirectStatus {
 	defer b.mu.Unlock()
 	for key, c := range b.running {
 		if !b.isAlive(c.PID) {
-			delete(b.running, key)
-			b.ended++
-			b.done.Add(c.Counters)
+			b.retire(key, c.Counters)
 		}
 	}
 	if len(b.running) == 0 && b.ended == 0 {

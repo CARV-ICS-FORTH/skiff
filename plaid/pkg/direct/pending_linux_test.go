@@ -3,7 +3,6 @@
 package direct
 
 import (
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,42 +56,5 @@ func TestKeptSocketsAreTakenInOrderAndExpire(t *testing.T) {
 	k.closeAll()
 	if fdIsOpen(e) || k.has("w") {
 		t.Error("closeAll leaves a socket")
-	}
-}
-
-func TestHoldingMakesAThreadsCallWaitForTheOneItGaveUp(t *testing.T) {
-	var h holding
-	valid := func() bool { return true }
-	first := h.enter(7, valid)
-	if other := h.enter(8, valid); other == nil { // another thread does not wait
-		t.Fatal("another thread waited")
-	} else {
-		other()
-	}
-	var entered atomic.Bool
-	got := make(chan func())
-	go func() { l := h.enter(7, valid); entered.Store(true); got <- l }()
-	time.Sleep(150 * time.Millisecond)
-	if entered.Load() {
-		t.Fatal("the restarted call did not wait for the one that was given up")
-	}
-	first()
-	(<-got)()
-
-	// A call that has been given up meanwhile does not wait for ever.
-	first = h.enter(7, valid)
-	defer first()
-	var live atomic.Bool
-	live.Store(true)
-	done := make(chan func(), 1)
-	go func() { done <- h.enter(7, live.Load) }()
-	live.Store(false)
-	select {
-	case l := <-done:
-		if l != nil {
-			t.Error("a call that was given up entered")
-		}
-	case <-time.After(2 * time.Second):
-		t.Error("a call that was given up waits")
 	}
 }

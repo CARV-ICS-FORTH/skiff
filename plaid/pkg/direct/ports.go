@@ -35,20 +35,6 @@ func (p Ports) Has(port uint16) bool {
 	return ok
 }
 
-// String is the set as ParsePorts reads it.
-func (p Ports) String() string {
-	list := make([]int, 0, len(p))
-	for port := range p {
-		list = append(list, int(port))
-	}
-	sort.Ints(list)
-	parts := make([]string, len(list))
-	for i, port := range list {
-		parts[i] = strconv.Itoa(port)
-	}
-	return strings.Join(parts, ",")
-}
-
 // The host ports of the direct path. A pod's server listens on the host at a port that
 // follows from the pod's address and its own port, so that every supervisor can compute
 // where a pod is served and none has to be told (no allocator, nothing to keep):

@@ -33,18 +33,20 @@ const (
 )
 
 // Table remembers the sockets that were put in place, by socket cookie (SO_COOKIE: unique
-// for the life of the machine, unlike an inode number, which is reused, and the same for
-// a socket however many descriptors, processes and SCM_RIGHTS copies refer to it). close
-// is not intercepted, so the table cannot see that a socket is gone; an entry that stays is
-// harmless because no other socket has its cookie, but the entries of closed connections
-// would fill the table, and a pooled connection that lives for hours would be the least
-// recently used of them. So when the connection table nears its size, a sweep asks the
-// kernel which of the cookies are those of sockets that still exist and drops the others
-// (see SetLiveness); the least recently used are pushed out only when the table is full and
-// the sweep has not made room. A listener is looked up only when a connection arrives on it, and a server with
-// two of them, one busy and one not, would see the quiet one pushed out by the connections
-// of the busy one (and then have it accept connections as the pod's network's, with the
-// preamble in them), so listeners have a table of their own.
+// for the life of the machine, unlike an inode number, which is reused, and the same for a
+// socket however many descriptors, processes and SCM_RIGHTS copies refer to it).
+//
+// close is not intercepted, so the table cannot see that a socket is gone. An entry that stays
+// is harmless, as no other socket has its cookie, but the entries of closed connections fill
+// the table and push out the least recently used, which may be a pooled connection that lives
+// for hours. So when the connection table nears its size, a sweep asks the kernel which
+// cookies are those of sockets that still exist and drops the others (see SetLiveness); the
+// least recently used are pushed out only when the table is full and the sweep has not made
+// room.
+//
+// Listeners have a table of their own. A listener is looked up only when a connection arrives
+// on it, so one that is quiet would be pushed out by the connections of a busy one, and its
+// connections would be accepted as the pod network's, with the preamble in them.
 type Table struct {
 	mu               sync.Mutex
 	conns, listeners lru

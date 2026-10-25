@@ -4,6 +4,7 @@ package direct
 
 import (
 	"crypto/hmac"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -136,7 +137,7 @@ func copyOptions(from, to, family int) {
 // verdict on the held call: answered, or that the call has been cancelled meanwhile (the
 // caller may keep what it made for the call that is made again, see kept).
 func (s *Supervisor) put(n *notif, fd int, sock int, cloexec bool) error {
-	if !ioctlValid(s.listener, n.ID) {
+	if !s.valid(n) {
 		return errCancelled
 	}
 	a := notifAddfd{ID: n.ID, Flags: unix.SECCOMP_ADDFD_FLAG_SETFD, Srcfd: uint32(sock), Newfd: uint32(fd)}
@@ -157,8 +158,6 @@ func (s *Supervisor) put(n *notif, fd int, sock int, cloexec bool) error {
 // errCancelled says that the container's thread gave up the call (a signal, or it died):
 // there is nobody to answer.
 var errCancelled = errors.New("the call was cancelled")
-
-var cancelled = reply{answered: true}
 
 func cookieOf(fd int) uint64 {
 	c, _ := unix.GetsockoptUint64(fd, unix.SOL_SOCKET, unix.SO_COOKIE)
@@ -188,7 +187,7 @@ func unspecifiedFor(family int) netip.Addr {
 //
 // If the container gives the connect up after the server has acked (a signal: the thread
 // makes the call again), the connection is kept for the call that is made again, which is
-// answered with it and does not make a second one for the server to accept (see connectKey).
+// answered with it and does not make a second one for the server to accept (see keptDial).
 // If it gives the call up after the socket was put in place, the descriptor already is the
 // connected host socket, which the table knows: the call that is made again is answered with
 // success.
@@ -206,20 +205,15 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	tid, fd := int(n.Pid), int(n.Args[0])
 	held, err := s.inspect(tid, fd)
 	if err != nil {
-		if err != errNotOurs {
-			s.stats.Errors.Add(1)
-			s.logf("connect %s: %v", dst, err)
-		}
-		return letThrough
+		return s.failed("connect", dst, err)
 	}
 	defer held.close()
 	tl.mark(phInspect)
-	valid := func() bool { return ioctlValid(s.listener, n.ID) }
-	leave := s.holding.enter(tid, valid) // after the call of this thread that was given up
-	if leave == nil {
+	turn := s.takeTurn(n) // after the call of this thread that was given up
+	if turn == nil {
 		return cancelled
 	}
-	defer leave()
+	defer turn.leave()
 	cookie := cookieOf(held.dup)
 	if sock, ok := s.table.Get(cookie); ok && sock.Kind == KindClient && sock.Peer == dst {
 		// This connect was made, and its answer was given up (a signal came between the socket's
@@ -227,10 +221,13 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 		// host socket, connected to the backend, and the kernel would say EISCONN.
 		return succeed()
 	}
-	key := connectKey{tid: tid, fd: fd, cookie: cookie, dst: dst}
-	sock, madeBefore, reused := s.dials.take(key)
+	sock, dial, reused := s.dials.take(cookie)
+	if reused && dial.dst != dst {
+		unix.Close(sock) // made for another address
+		sock, reused = -1, false
+	}
 	if reused {
-		backend = madeBefore
+		backend = dial.backend
 	}
 	keep := false // sock is kept for the call that is made again
 	defer func() {
@@ -243,7 +240,7 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	if epollFirst {
 		var ok bool
 		if entries, ok = s.registrations(tid, fd, held); !ok {
-			return s.fallback("epoll", "connect %s: the socket is in an epoll set that it cannot be taken out of", dst)
+			return s.inEpollSet("connect", dst)
 		}
 		tl.mark(phEpoll)
 	}
@@ -252,9 +249,7 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	if !reused {
 		fresh, err := s.cfg.Factory.Socket(held.family)
 		if err != nil {
-			s.stats.Errors.Add(1)
-			s.logf("connect %s: %v", dst, err)
-			return letThrough
+			return s.failed("connect", dst, err)
 		}
 		sock = fresh
 		tl.mark(phFactory)
@@ -269,16 +264,14 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	}
 
 	if err := held.readFlags(tid, fd); err != nil {
-		s.stats.Errors.Add(1)
-		s.logf("connect %s: %v", dst, err)
-		return letThrough
+		return s.failed("connect", dst, err)
 	}
 	tl.mark(phFlags)
 	if !epollFirst {
 		var ok bool
 		if entries, ok = s.registrations(tid, fd, held); !ok {
 			s.epollFirst.Store(true)
-			return s.fallback("epoll", "connect %s: the socket is in an epoll set that it cannot be taken out of", dst)
+			return s.inEpollSet("connect", dst)
 		}
 		tl.mark(phEpoll)
 	}
@@ -332,7 +325,7 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	if err := s.put(n, fd, sock, held.cloexec); err != nil {
 		undo()
 		// The server has the connection (it acked). The call is made again, and takes it.
-		keep = errors.Is(err, errCancelled) && s.dials.put(key, sock, backend)
+		keep = errors.Is(err, errCancelled) && s.dials.put(cookie, sock, keptDial{dst, backend})
 		return s.putFailed("connect", err)
 	}
 	tl.mark(phAddfd)
@@ -342,13 +335,13 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	return succeed()
 }
 
-// connectKey says which call a connection that a connect made belongs to, for the call that
-// is made again: the thread, which restarts its own call, the descriptor and the socket it
-// was (the descriptor may have been closed and made again meanwhile), and the address.
-type connectKey struct {
-	tid, fd int
-	cookie  uint64
+// keptDial is a connection that a connect gave up, kept for the container's socket that it
+// was made for (by its cookie: a descriptor that was closed and made again is another socket):
+// the call that is made again takes it if it is for the same address, and then goes to the same
+// backend.
+type keptDial struct {
 	dst     netip.AddrPort
+	backend Backend
 }
 
 // dialFailure is the short word the counts have for why a connection to the backend's node
@@ -421,6 +414,22 @@ func (s *Supervisor) logConn(format string, args ...any) {
 	case n == connLogFirst+1:
 		s.logf("the rest of the connections are counted, not logged (stats)")
 	}
+}
+
+// failed counts a connect or bind that went wrong in the supervisor, except for a socket that
+// is not one for the direct path (errNotOurs), logs it, and lets the call through.
+func (s *Supervisor) failed(call string, addr netip.AddrPort, err error) reply {
+	if err != errNotOurs {
+		s.stats.Errors.Add(1)
+		s.logf("%s %s: %v", call, addr, err)
+	}
+	return letThrough
+}
+
+// inEpollSet is the fallback for a socket that is registered in an epoll set that it cannot
+// be taken out of.
+func (s *Supervisor) inEpollSet(call string, addr netip.AddrPort) reply {
+	return s.fallback("epoll", "%s %s: the socket is in an epoll set that it cannot be taken out of", call, addr)
 }
 
 // fallback counts a direct attempt that was given up for the reason, logs it (the first
@@ -509,7 +518,7 @@ func (s *Supervisor) putFailed(call string, err error) reply {
 // that a port that the pod's network has taken fails the call with EADDRINUSE. If the call is
 // then given up (a signal) the socket stays bound, and the call that is made again, which
 // would be told EINVAL, finds a note of it (podBound) and goes on with the swap, after the
-// one that was given up has ended (see holding). A call whose answer was given up after the
+// one that was given up has ended (see threadLocks). A call whose answer was given up after the
 // swap finds the listener in the table.
 func (s *Supervisor) bind(n *notif) (r reply) {
 	want, ok := sockaddrArg(n)
@@ -521,23 +530,18 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 	}
 	tid, fd := int(n.Pid), int(n.Args[0])
 	held, err := s.inspect(tid, fd)
-	if err == nil {
-		defer held.close()
-		err = held.readFlags(tid, fd)
-	}
 	if err != nil {
-		if err != errNotOurs {
-			s.stats.Errors.Add(1)
-			s.logf("bind %s: %v", want, err)
-		}
-		return letThrough
+		return s.failed("bind", want, err)
 	}
-	valid := func() bool { return ioctlValid(s.listener, n.ID) }
-	leave := s.holding.enter(tid, valid) // after the call of this thread that was given up
-	if leave == nil {
+	defer held.close()
+	if err := held.readFlags(tid, fd); err != nil {
+		return s.failed("bind", want, err)
+	}
+	turn := s.takeTurn(n) // after the call of this thread that was given up
+	if turn == nil {
 		return cancelled
 	}
-	defer leave()
+	defer turn.leave()
 	cookie := cookieOf(held.dup)
 	if sock, ok := s.table.Get(cookie); ok && sock.Kind == KindListener && sock.Local == want {
 		// This bind was made, and its answer was given up (a signal came between the socket's
@@ -546,7 +550,7 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 	}
 	entries, ok := s.registrations(tid, fd, held)
 	if !ok {
-		return s.fallback("epoll", "bind %s: the socket is in an epoll set that it cannot be taken out of", want)
+		return s.inEpollSet("bind", want)
 	}
 	podBound := false // the pod-side socket was bound and listens already, by this call made before
 	if sa, err := unix.Getsockname(held.dup); err == nil && addrPortOf(sa).Port() != 0 {
@@ -570,9 +574,7 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 	}
 	sock, err := s.cfg.Factory.Socket(held.family)
 	if err != nil {
-		s.stats.Errors.Add(1)
-		s.logf("bind %s: %v", want, err)
-		return letThrough
+		return s.failed("bind", want, err)
 	}
 	defer unix.Close(sock)
 	copyOptions(held.dup, sock, held.family)
@@ -685,27 +687,26 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	}
 	nonblock := fl&unix.O_NONBLOCK != 0
 
-	valid := func() bool { return ioctlValid(s.listener, n.ID) }
 	var conn int
 	var pre Preamble
-	var had keptAccept // what was kept with the connection, if it was taken from the queue
-	var leave func()   // the thread's turn, while the call holds a connection (see holding)
+	var had keptAccept   // what was kept with the connection, if it was taken from the queue
+	var turn *threadLock // the thread's turn, while the call holds a connection (see threadLocks)
 	defer func() {
-		if leave != nil {
-			leave()
+		if turn != nil {
+			turn.leave()
 		}
 	}()
 	for {
 		if !nonblock {
 			// Wait in turns, so that a thread that gave up (a signal) is noticed.
 			for !pollReadable(dup, 200) && !s.accepts.has(cookie) {
-				if !valid() {
+				if !s.valid(n) {
 					return cancelled
 				}
 			}
 		}
-		if leave == nil {
-			if leave = s.holding.enter(tid, valid); leave == nil {
+		if turn == nil {
+			if turn = s.takeTurn(n); turn == nil {
 				return cancelled
 			}
 		}
@@ -713,8 +714,8 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 		if conn, had, queued = s.accepts.take(cookie); !queued {
 			if conn, err = s.acceptReady(dup, cookie, nonblock); err != nil {
 				if err == unix.EINTR || (err == unix.EAGAIN && !nonblock) {
-					leave() // nothing is held while it waits again
-					leave = nil
+					turn.leave() // nothing is held while it waits again
+					turn = nil
 					continue // another thread took it
 				}
 				return failWith(errnoOf(err))
@@ -740,9 +741,9 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 			// Nothing else is queued, and a blocking accept cannot be told so. Waiting for
 			// the next connection would leave a server that polled the listener and then
 			// called accept standing here with whatever else it has to do (iperf3 in the
-			// middle of a test), and an error would end a server that does not expect one
-			//. The kernel returns the connection that was polled for: a
-			// client that went away, or whatever it was. This is one that has.
+			// middle of a test), and an error would end a server that does not expect one.
+			// The kernel returns the connection that was polled for, a client that went
+			// away or whatever it was: this is one that has.
 			if conn, err = s.closedConnection(); err == nil {
 				pre = Preamble{Client: peer, Backend: netip.AddrPortFrom(s.cfg.PodIP, listener.Local.Port())}
 				s.logf("accept: a closed connection from %s in place of the one turned away", peer)
@@ -773,9 +774,9 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	}
 	// The address is written, and the call answered, under the task's lock and only if the
 	// call is still held (see threadLocks).
-	t := s.threads.lock(int(n.Pid))
-	defer s.threads.unlock(int(n.Pid), t)
-	if !valid() {
+	t := s.threads.lock(tid)
+	defer t.unlock()
+	if !s.valid(n) {
 		return giveUp()
 	}
 	// A connection that an earlier accept put in this process's table is there still if the
@@ -807,7 +808,7 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 		}
 	}
 	if hook := s.cfg.beforeSend; hook != nil {
-		hook(tid, int(n.Nr), valid)
+		hook(tid, int(n.Nr), s.validFunc(n))
 	}
 	if err := ioctlSend(s.listener, &notifResp{ID: n.ID, Val: int64(newfd)}); err != nil {
 		// The task was interrupted between the two: it was told nothing, and the descriptor
@@ -825,7 +826,7 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	tl.finish(phAdmit)
 	s.stats.Accepted.Add(1)
 	s.logConn("accept: fd %d of %s, from %s", newfd, listener.Local, pre.Client)
-	return reply{answered: true}
+	return answered
 }
 
 // keptAccept is a connection that an accept gave up, with what it has done to the container: if
@@ -862,13 +863,10 @@ func (s *Supervisor) install(n *notif, conn, flags int, listener Socket, pre Pre
 	if flags&unix.SOCK_NONBLOCK != 0 {
 		_ = unix.SetNonblock(conn, true)
 	}
-	// The descriptor is added, and then the call is answered with its number. (Adding it with
-	// SECCOMP_ADDFD_FLAG_SEND answers in the same step, and does it with one call fewer, but on
-	// the 6.8 kernel of the test cluster a Tomcat acceptor that was accepting at about 5000
-	// connections a second was now and then given the result 0, once in some 100000 accepts,
-	// which it took for its new socket: it called getsockname on its descriptor 0, got ENOTSOCK,
-	// and closed it. The connection was lost, and so was the container's stdin, so every
-	// descriptor that followed was handed out as 0 until the container ended.)
+	// The descriptor is added, and then the call is answered with its number. Adding it with
+	// SECCOMP_ADDFD_FLAG_SEND answers in the same step, with one call fewer, but on the 6.8
+	// kernel of the test cluster it now and then (once in some 100000 accepts, at about 5000
+	// a second) gave the acceptor the result 0 in place of the descriptor's number.
 	a := notifAddfd{ID: n.ID, Srcfd: uint32(conn)}
 	if flags&unix.SOCK_CLOEXEC != 0 {
 		a.NewfdFlags = unix.O_CLOEXEC
@@ -1043,13 +1041,13 @@ func writeAddr(tid int, addrPtr, lenPtr uint64, ap netip.AddrPort, family int) e
 	if err := readRemote(tid, lenPtr, lb[:]); err != nil {
 		return err
 	}
-	have := int(int32(nativeUint32(lb[:])))
+	have := int(int32(binary.NativeEndian.Uint32(lb[:])))
 	sa := encodeSockaddr(ap, family)
 	if have > 0 {
 		if err := writeRemote(tid, addrPtr, sa[:min(have, len(sa))]); err != nil {
 			return err
 		}
 	}
-	putNativeUint32(lb[:], uint32(len(sa)))
+	binary.NativeEndian.PutUint32(lb[:], uint32(len(sa)))
 	return writeRemote(tid, lenPtr, lb[:])
 }

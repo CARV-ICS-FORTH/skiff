@@ -199,13 +199,10 @@ func (s *Supervisor) hostPortFree(family int, port uint16) bool {
 
 // forward carries one connection that came to the pod-side socket to the container's
 // listener on the host and back. The two directions are copied with io.Copy, which splices
-// between two TCP connections, in the kernel. (A copy through a buffer in user space was
-// used for a while: one stream from an unmarked client pod over the overlay to a marked
-// server looked steadier with it, but the dips of that comparison were the server standing
-// still in accept, see admit, and not the copy. Measured again without them, ten to fifteen
-// runs each: over the overlay 8.4 Gbit/s (7.7 to 8.7) with splice, which took 65 % of a core,
-// and 8.2 (7.9 to 8.4) with the copy at 90 %; on the pod's loopback, where the proxy is the
-// limit, 17 to 21 Gbit/s with splice at a core and 13 to 14 with the copy at 108 %.)
+// between two TCP connections, in the kernel: over the overlay that is 8.4 Gbit/s (7.7 to
+// 8.7) at 65 % of a core, where a copy through a buffer in user space gives 8.2 (7.9 to 8.4)
+// at 90 %; on the pod's loopback, where the proxy is the limit, 17 to 21 Gbit/s at a core
+// against 13 to 14 at 108 % (ten to fifteen runs each).
 func (p *localProxy) forward(c *net.TCPConn) {
 	defer c.Close()
 	peer := c.RemoteAddr().(*net.TCPAddr).AddrPort()

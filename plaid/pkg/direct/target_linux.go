@@ -24,11 +24,10 @@ import (
 // while tgkill(tgid, tid, 0) finds the thread: a thread id belongs to one process at a
 // time. A pidfd of a process that ended fails with ESRCH, and then the entry is dropped.
 type targets struct {
-	mu      sync.Mutex
-	known   map[int]target
-	epolls  map[int]epollSet // by process
-	maxSize int
-	mover   mover // the thread that moves epoll registrations (epoll_linux.go)
+	mu     sync.Mutex
+	known  map[int]target
+	epolls map[int]epollSet // by process
+	mover  mover            // the thread that moves epoll registrations (epoll_linux.go)
 }
 
 type target struct{ tgid, pidfd int }
@@ -36,7 +35,7 @@ type target struct{ tgid, pidfd int }
 const maxTargets = 4096
 
 func newTargets() *targets {
-	return &targets{known: make(map[int]target), epolls: make(map[int]epollSet), maxSize: maxTargets, mover: mover{keep: runtimeDescriptors()}}
+	return &targets{known: make(map[int]target), epolls: make(map[int]epollSet), mover: mover{keep: runtimeDescriptors()}}
 }
 
 // getfd duplicates descriptor fd of thread tid's process into this process.
@@ -83,7 +82,7 @@ func (ts *targets) lookup(tid int, fresh bool) (target, error) {
 	if old, ok := ts.known[tid]; ok {
 		unix.Close(old.pidfd)
 	}
-	if len(ts.known) >= ts.maxSize {
+	if len(ts.known) >= maxTargets {
 		for k, v := range ts.known { // not the oldest, but some: the cache is for speed
 			unix.Close(v.pidfd)
 			delete(ts.known, k)
@@ -215,7 +214,7 @@ func (ts *targets) epollEntries(tid, fd int, ino uint64) ([]epollEntry, error) {
 			}
 		}
 		ts.mu.Lock()
-		if len(ts.epolls) >= ts.maxSize {
+		if len(ts.epolls) >= maxTargets {
 			for k := range ts.epolls { // some, not the oldest: the cache is for speed
 				delete(ts.epolls, k)
 				break

@@ -221,10 +221,8 @@ func field(t *testing.T, output, word, key string) string {
 		if !strings.HasPrefix(line, word+" ") {
 			continue
 		}
-		for _, f := range strings.Fields(line) {
-			if v, ok := strings.CutPrefix(f, key+"="); ok {
-				return v
-			}
+		if v := tokenOf(line, key); v != "" {
+			return v
 		}
 	}
 	t.Fatalf("no %s %s= in the output: %s", word, key, output)
@@ -343,8 +341,8 @@ func TestDirectConnectionBetweenPods(t *testing.T) {
 	if !strings.Contains(so, "received 1000000") {
 		t.Errorf("the server got %q", so)
 	}
-	if server.Stats().Accepted.Load() != 1 || client.Stats().Swapped() != 1 {
-		t.Errorf("accepted %d, swapped %d; want 1, 1", server.Stats().Accepted.Load(), client.Stats().Swapped())
+	if server.Stats().Accepted.Load() != 1 || swapped(client) != 1 {
+		t.Errorf("accepted %d, swapped %d; want 1, 1", server.Stats().Accepted.Load(), swapped(client))
 	}
 }
 
@@ -379,8 +377,8 @@ func TestDirectConnectionToAPodAddress(t *testing.T) {
 			t.Errorf("server %s = %s, want the client %s", key, got, clientLocal)
 		}
 	}
-	if server.Stats().Accepted.Load() != 1 || client.Stats().Swapped() != 1 {
-		t.Errorf("accepted %d, swapped %d; want 1, 1", server.Stats().Accepted.Load(), client.Stats().Swapped())
+	if server.Stats().Accepted.Load() != 1 || swapped(client) != 1 {
+		t.Errorf("accepted %d, swapped %d; want 1, 1", server.Stats().Accepted.Load(), swapped(client))
 	}
 }
 
@@ -453,8 +451,8 @@ func TestUnmarkedConnectionsAreLeftAlone(t *testing.T) {
 	if err := s.Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if s.Stats().Swapped() != 0 || !strings.Contains(out.String(), "connect network is unreachable") {
-		t.Errorf("swapped %d; output %q", s.Stats().Swapped(), out.String())
+	if swapped(s) != 0 || !strings.Contains(out.String(), "connect network is unreachable") {
+		t.Errorf("swapped %d; output %q", swapped(s), out.String())
 	}
 }
 
@@ -739,8 +737,8 @@ func TestFallbackToThePodNetwork(t *testing.T) {
 			if !strings.Contains(out.String(), "connect network is unreachable") {
 				t.Errorf("the connect did not go on to the pod network: %s", out)
 			}
-			if got := client.Stats().Fallbacks.Snapshot(); got[tc.reason] != 1 || len(got) != 1 || client.Stats().Swapped() != 0 {
-				t.Errorf("fallbacks %v, swapped %d; want one %s", got, client.Stats().Swapped(), tc.reason)
+			if got := client.Stats().Fallbacks.Snapshot(); got[tc.reason] != 1 || len(got) != 1 || swapped(client) != 0 {
+				t.Errorf("fallbacks %v, swapped %d; want one %s", got, swapped(client), tc.reason)
 			}
 			t.Logf("%s: the container's connect returned after %v", tc.reason, time.Since(start))
 		})
@@ -829,8 +827,8 @@ func TestHostPortInUse(t *testing.T) {
 	}
 	server.cmd.Process.Kill()
 	server.Wait()
-	if got := server.Stats().Fallbacks.Snapshot(); got["host-port-in-use"] != 1 || server.Stats().Swapped() != 0 {
-		t.Errorf("server: fallbacks %v, swapped %d", got, server.Stats().Swapped())
+	if got := server.Stats().Fallbacks.Snapshot(); got["host-port-in-use"] != 1 || swapped(server) != 0 {
+		t.Errorf("server: fallbacks %v, swapped %d", got, swapped(server))
 	}
 	if got := client.Stats().Fallbacks.Snapshot(); got["no-ack"] != 1 || !strings.Contains(clientOut.String(), "connect network is unreachable") {
 		t.Errorf("client: fallbacks %v: %s", got, clientOut)
@@ -989,8 +987,8 @@ func TestEpollGuardDoesNotConnectTwice(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
-	if got := client.Stats().Fallbacks.Snapshot(); got["epoll"] != 2 || client.Stats().Swapped() != 0 {
-		t.Errorf("fallbacks %v, swapped %d: %s", got, client.Stats().Swapped(), out)
+	if got := client.Stats().Fallbacks.Snapshot(); got["epoll"] != 2 || swapped(client) != 0 {
+		t.Errorf("fallbacks %v, swapped %d: %s", got, swapped(client), out)
 	}
 	if accepted > 1 {
 		t.Errorf("the backend's node accepted %d connections for two connects that were not swapped, want at most the one started before the look", accepted)
@@ -1131,8 +1129,8 @@ func TestEpollRegistrationsGoWithTheSwap(t *testing.T) {
 				if err := client.Wait(); err != nil {
 					t.Fatalf("%v\n%s", err, out)
 				}
-				if client.Stats().Swapped() != 1 || len(client.Stats().Fallbacks.Snapshot()) != 0 || !strings.Contains(out.String(), "local 10.244.1.9:") {
-					t.Errorf("swapped %d, fallbacks %v: %s", client.Stats().Swapped(), client.Stats().Fallbacks.Snapshot(), out)
+				if swapped(client) != 1 || len(client.Stats().Fallbacks.Snapshot()) != 0 || !strings.Contains(out.String(), "local 10.244.1.9:") {
+					t.Errorf("swapped %d, fallbacks %v: %s", swapped(client), client.Stats().Fallbacks.Snapshot(), out)
 				}
 				wantEntry(t, out, "4", events) // EPOLLOUT: connected
 				server.cmd.Process.Kill()

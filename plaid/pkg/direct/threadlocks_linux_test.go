@@ -4,6 +4,7 @@ package direct
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -14,20 +15,20 @@ func TestThreadLocks(t *testing.T) {
 	var l threadLocks
 	a := l.lock(1)
 	other := l.lock(2) // another thread: no wait
-	l.unlock(2, other)
+	other.unlock()
 
 	entered := make(chan struct{})
 	go func() {
 		b := l.lock(1)
 		close(entered)
-		l.unlock(1, b)
+		b.unlock()
 	}()
 	select {
 	case <-entered:
 		t.Fatal("the lock of thread 1 was taken twice")
 	case <-time.After(100 * time.Millisecond):
 	}
-	l.unlock(1, a)
+	a.unlock()
 	select {
 	case <-entered:
 	case <-time.After(2 * time.Second):
@@ -54,7 +55,7 @@ func TestThreadLocks(t *testing.T) {
 					t.Error("two goroutines hold the lock of thread 7")
 				}
 				inside--
-				l.unlock(7, k)
+				k.unlock()
 			}
 		}()
 	}
@@ -63,5 +64,42 @@ func TestThreadLocks(t *testing.T) {
 	defer l.mu.Unlock()
 	if len(l.held) != 0 {
 		t.Errorf("%d locks kept", len(l.held))
+	}
+}
+
+func TestTurnMakesAThreadsCallWaitForTheOneItGaveUp(t *testing.T) {
+	var l threadLocks
+	valid := func() bool { return true }
+	first := l.enter(7, valid)
+	if other := l.enter(8, valid); other == nil { // another thread does not wait
+		t.Fatal("another thread waited")
+	} else {
+		other.leave()
+	}
+	var entered atomic.Bool
+	got := make(chan *threadLock)
+	go func() { turn := l.enter(7, valid); entered.Store(true); got <- turn }()
+	time.Sleep(150 * time.Millisecond)
+	if entered.Load() {
+		t.Fatal("the restarted call did not wait for the one that was given up")
+	}
+	first.leave()
+	(<-got).leave()
+
+	// A call that has been given up meanwhile does not wait for ever.
+	first = l.enter(7, valid)
+	defer first.leave()
+	var live atomic.Bool
+	live.Store(true)
+	done := make(chan *threadLock, 1)
+	go func() { done <- l.enter(7, live.Load) }()
+	live.Store(false)
+	select {
+	case l := <-done:
+		if l != nil {
+			t.Error("a call that was given up entered")
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("a call that was given up waits")
 	}
 }
