@@ -3,8 +3,14 @@
 package direct
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"runtime"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"unsafe"
@@ -54,7 +60,11 @@ func TestTargetsForgetAThreadThatEnded(t *testing.T) {
 		t.Fatal("the thread was not kept")
 	}
 	// The same number with another process: the kept entry does not hold.
-	ts.known[tid] = target{tgid: 1, pidfd: ts.known[tid].pidfd}
+	pidfd, err := unix.PidfdOpen(unix.Getpid(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts.known[tid] = &process{target: target{tgid: 1, pidfd: pidfd}, tids: 1}
 	if _, err := ts.lookup(tid, false); err != nil || ts.known[tid].tgid != unix.Getpid() {
 		t.Errorf("the entry of a thread that is not in its process was kept: %v, tgid %d", err, ts.known[tid].tgid)
 	}
@@ -563,5 +573,200 @@ func TestWriteRemoteHonoursPagePermissions(t *testing.T) {
 	}
 	if err := writeRemote(unix.Getpid(), addr, []byte("no")); err == nil || string(mem[:2]) != "ok" {
 		t.Fatalf("a read-only page: %v, %q", err, mem[:2])
+	}
+}
+
+func init() {
+	// A process of n threads (and the ones the runtime has) that ends when its input does:
+	// it prints their thread ids, and its own.
+	helpers["threads"] = func(args []string) int {
+		n, _ := strconv.Atoi(args[0])
+		tids := make(chan int)
+		for range n {
+			go func() {
+				runtime.LockOSThread() // and never unlock: the thread is this goroutine's until the process ends
+				tids <- unix.Gettid()
+				select {}
+			}()
+		}
+		for range n {
+			fmt.Println(<-tids)
+		}
+		io.Copy(io.Discard, os.Stdin)
+		return 0
+	}
+}
+
+// threadedProcess is a child of n threads, whose thread ids are tids.
+type threadedProcess struct {
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+	tids  []int
+}
+
+func startThreaded(t testing.TB, n int) *threadedProcess {
+	t.Helper()
+	cmd := helperCmd("threads", false, strconv.Itoa(n))
+	cmd.Env = append(cmd.Env, "GORACE=atexit_sleep_ms=0") // (the race detector waits a second before a process exits)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	p := &threadedProcess{cmd: cmd, stdin: stdin}
+	sc := bufio.NewScanner(out)
+	for range n {
+		if !sc.Scan() {
+			t.Fatalf("the child printed %d thread ids of %d: %v", len(p.tids), n, sc.Err())
+		}
+		tid, err := strconv.Atoi(sc.Text())
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.tids = append(p.tids, tid)
+	}
+	return p
+}
+
+// end ends the process and waits for it: it is gone, not a zombie.
+func (p *threadedProcess) end() {
+	p.stdin.Close()
+	p.cmd.Wait()
+}
+
+func openDescriptors(t testing.TB) int {
+	t.Helper()
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(ents)
+}
+
+// The threads of a process are kept with one pidfd.
+func TestTargetsShareAPidfdForAProcess(t *testing.T) {
+	ts := newTargets()
+	defer ts.closeAll()
+	p := startThreaded(t, 8)
+	defer p.end()
+	before := openDescriptors(t) // with the child's (its pidfd and two pipes) and not what the lookups add
+	pidfd := -1
+	for _, tid := range p.tids {
+		got, err := ts.lookup(tid, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.tgid != p.cmd.Process.Pid {
+			t.Errorf("thread %d is of process %d, found %d", tid, p.cmd.Process.Pid, got.tgid)
+		}
+		if pidfd >= 0 && got.pidfd != pidfd {
+			t.Errorf("thread %d has pidfd %d, the others %d", tid, got.pidfd, pidfd)
+		}
+		pidfd = got.pidfd
+	}
+	if len(ts.procs) != 1 || len(ts.known) != len(p.tids) {
+		t.Errorf("kept %d processes and %d threads, want 1 and %d", len(ts.procs), len(ts.known), len(p.tids))
+	}
+	if got := openDescriptors(t) - before; got != 1 {
+		t.Errorf("%d descriptors more for a process of %d threads, want 1", got, len(p.tids))
+	}
+	// A thread that is dropped leaves the process to the others, and the last one takes it.
+	for i, tid := range p.tids {
+		ts.drop(tid)
+		if want := 1 - i/(len(p.tids)-1); len(ts.procs) != want {
+			t.Fatalf("after dropping %d threads, %d processes are kept, want %d", i+1, len(ts.procs), want)
+		}
+	}
+}
+
+// Processes that ended are not kept for ever, and do not cost the supervisor a descriptor
+// for each of their threads: those that a sweep finds are dropped as new ones are kept.
+func TestTargetsForgetProcessesThatEnded(t *testing.T) {
+	const runs, threads, live = 200, 8, 3
+	ts := newTargets()
+	defer ts.closeAll()
+	before := openDescriptors(t)
+	var running []*threadedProcess
+	most := 0
+	check := func(p *threadedProcess) {
+		t.Helper()
+		for _, tid := range p.tids {
+			got, err := ts.lookup(tid, false)
+			if err != nil || got.tgid != p.cmd.Process.Pid {
+				t.Fatalf("thread %d of process %d: tgid %d, %v", tid, p.cmd.Process.Pid, got.tgid, err)
+			}
+		}
+	}
+	for range runs {
+		p := startThreaded(t, threads)
+		check(p)
+		running = append(running, p)
+		if len(running) > live {
+			running[0].end()
+			running = running[1:]
+		}
+		for _, r := range running {
+			check(r) // the threads that are kept still give their process
+		}
+		most = max(most, openDescriptors(t)-before)
+	}
+	// What is kept at most is a sweep's worth of processes (the ones that ended since the
+	// last), the live ones, and the pipes of the live ones' children: not runs*threads.
+	if bound := minSweep + live*3 + 8; most > bound {
+		t.Errorf("%d descriptors at most for %d processes of %d threads, want at most %d", most, runs, threads, bound)
+	}
+	if len(ts.procs) > minSweep+live || len(ts.known) > (minSweep+live)*threads {
+		t.Errorf("kept %d processes and %d threads", len(ts.procs), len(ts.known))
+	}
+	t.Logf("%d descriptors at most (before: %d), %d processes and %d threads kept at the end", most, before, len(ts.procs), len(ts.known))
+	for _, r := range running {
+		r.end()
+	}
+	ts.sweep()
+	if len(ts.procs) != 0 || len(ts.known) != 0 {
+		t.Errorf("after a sweep, with no process left, %d processes and %d threads are kept", len(ts.procs), len(ts.known))
+	}
+	if got := openDescriptors(t) - before; got != 0 {
+		t.Errorf("%d descriptors left", got)
+	}
+}
+
+// A process that ended takes its threads and its epoll look with it; the ones that did not
+// stay as they are.
+func TestSweepKeepsTheLiveOnes(t *testing.T) {
+	ts := newTargets()
+	defer ts.closeAll()
+	gone, live := startThreaded(t, 4), startThreaded(t, 4)
+	defer live.end()
+	for _, p := range []*threadedProcess{gone, live} {
+		for _, tid := range p.tids {
+			if _, err := ts.lookup(tid, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ts.procs[p.cmd.Process.Pid].epolls = &epollSet{sig: 1}
+	}
+	gone.end()
+	ts.sweep()
+	if _, ok := ts.procs[gone.cmd.Process.Pid]; ok || len(ts.procs) != 1 || len(ts.known) != 4 {
+		t.Errorf("after a sweep, %d processes and %d threads are kept; want the live one's 1 and 4", len(ts.procs), len(ts.known))
+	}
+	if p := ts.procs[live.cmd.Process.Pid]; p == nil || p.epolls == nil || p.tids != 4 {
+		t.Errorf("the live process was changed by a sweep: %+v", p)
+	}
+	for _, tid := range gone.tids {
+		if _, ok := ts.known[tid]; ok {
+			t.Errorf("thread %d of the process that ended is kept", tid)
+		}
+	}
+	// A thread that is looked up whose process is gone is an error, not an entry.
+	if _, err := ts.lookup(gone.tids[0], false); err == nil {
+		t.Error("a thread of a process that ended was found")
 	}
 }

@@ -23,19 +23,47 @@ import (
 // takes a read of /proc/<tid>/status, the largest part of a lookup. A kept entry is good
 // while tgkill(tgid, tid, 0) finds the thread: a thread id belongs to one process at a
 // time. A pidfd of a process that ended fails with ESRCH, and then the entry is dropped.
+//
+// There is one pidfd for a process, whatever the number of its threads that were held: a
+// process that runs many short-lived threads (a Go program does) would otherwise cost the
+// supervisor a descriptor for each. The processes that ended are dropped by a sweep, when
+// a process is to be kept and there are twice as many as there were after the last sweep
+// (at least 64): one poll, without waiting, of all the pidfds, an ended process's being
+// readable. A process that ended takes its threads, and what was found of its epoll
+// instances, with it. A lookup that hits is a read of a map and a tgkill, whatever the
+// sweeps do. maxTargets bounds the processes whatever a sweep finds.
 type targets struct {
-	mu     sync.Mutex
-	known  map[int]target
-	epolls map[int]epollSet // by process
-	mover  mover            // the thread that moves epoll registrations (epoll_linux.go)
+	mu      sync.Mutex
+	known   map[int]*process // by thread
+	procs   map[int]*process // by process
+	sweepAt int              // the number of processes at which the next one kept sweeps
+	polls   []unix.PollFd    // for a sweep
+	swept   []*process       // the processes of a sweep, in the order of polls
+	mover   mover            // the thread that moves epoll registrations (epoll_linux.go)
 }
 
 type target struct{ tgid, pidfd int }
 
-const maxTargets = 4096
+// process is a kept process: its pidfd, how many of its threads are in known, and what was
+// found of its epoll instances. A process that is not kept any more has pidfd -1.
+type process struct {
+	target
+	tids   int
+	epolls *epollSet
+}
+
+const (
+	maxTargets = 4096
+	minSweep   = 64
+)
 
 func newTargets() *targets {
-	return &targets{known: make(map[int]target), epolls: make(map[int]epollSet), mover: mover{keep: runtimeDescriptors()}}
+	return &targets{
+		known:   make(map[int]*process),
+		procs:   make(map[int]*process),
+		sweepAt: minSweep,
+		mover:   mover{keep: runtimeDescriptors()},
+	}
 }
 
 // getfd duplicates descriptor fd of thread tid's process into this process.
@@ -60,7 +88,11 @@ func (ts *targets) getfd(tid, fd int) (int, error) {
 func (ts *targets) lookup(tid int, fresh bool) (target, error) {
 	if !fresh {
 		ts.mu.Lock()
-		t, ok := ts.known[tid]
+		p, ok := ts.known[tid]
+		var t target
+		if ok {
+			t = p.target
+		}
 		ts.mu.Unlock()
 		if ok {
 			if unix.Tgkill(t.tgid, tid, 0) == nil {
@@ -73,33 +105,116 @@ func (ts *targets) lookup(tid int, fresh bool) (target, error) {
 	if err != nil {
 		return target{}, err
 	}
-	pidfd, err := unix.PidfdOpen(tgid, 0)
-	if err != nil {
-		return target{}, fmt.Errorf("pidfd_open(%d): %w", tgid, err)
-	}
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	if old, ok := ts.known[tid]; ok {
-		unix.Close(old.pidfd)
-	}
-	if len(ts.known) >= maxTargets {
-		for k, v := range ts.known { // not the oldest, but some: the cache is for speed
-			unix.Close(v.pidfd)
-			delete(ts.known, k)
-			break
+	if old, ok := ts.known[tid]; ok { // a stale entry: the thread id is another process's now
+		delete(ts.known, tid)
+		if old.tids--; old.tids == 0 && old.tgid != tgid {
+			ts.retire(old)
 		}
 	}
-	t := target{tgid: tgid, pidfd: pidfd}
-	ts.known[tid] = t
-	return t, nil
+	p := ts.procs[tgid]
+	if p != nil && pollEnded([]unix.PollFd{{Fd: int32(p.pidfd), Events: unix.POLLIN}}) > 0 {
+		ts.reap(p) // the process number is another process's now
+		p = nil
+	}
+	if p == nil {
+		pidfd, err := unix.PidfdOpen(tgid, 0)
+		if err != nil {
+			return target{}, fmt.Errorf("pidfd_open(%d): %w", tgid, err)
+		}
+		if len(ts.procs) >= ts.sweepAt {
+			ts.sweep()
+		}
+		if len(ts.procs) >= maxTargets {
+			for _, v := range ts.procs { // not the oldest, but some: the cache is for speed
+				ts.reap(v)
+				break
+			}
+		}
+		p = &process{target: target{tgid: tgid, pidfd: pidfd}}
+		ts.procs[tgid] = p
+	}
+	p.tids++
+	ts.known[tid] = p
+	return p.target, nil
 }
 
+// sweep drops the processes that ended, with their threads. The next one is due when
+// there are twice as many as are left (and in any case before maxTargets).
+func (ts *targets) sweep() {
+	ts.polls, ts.swept = ts.polls[:0], ts.swept[:0]
+	for _, p := range ts.procs {
+		ts.polls = append(ts.polls, unix.PollFd{Fd: int32(p.pidfd), Events: unix.POLLIN})
+		ts.swept = append(ts.swept, p)
+	}
+	pollEnded(ts.polls)
+	threads := false
+	for i, p := range ts.swept {
+		if ts.polls[i].Revents&unix.POLLIN != 0 {
+			threads = threads || p.tids > 0
+			ts.retire(p)
+		}
+	}
+	if threads {
+		for tid, p := range ts.known {
+			if p.pidfd < 0 {
+				delete(ts.known, tid)
+			}
+		}
+	}
+	clear(ts.swept) // for the collector: they are not kept now
+	ts.sweepAt = min(max(minSweep, 2*len(ts.procs)), maxTargets)
+}
+
+// pollEnded polls pidfds without waiting, and says how many are readable: how many processes
+// ended. A poll that fails says none.
+func pollEnded(fds []unix.PollFd) int {
+	for {
+		n, err := unix.Poll(fds, 0)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+}
+
+// retire closes a process's pidfd and forgets it (and what was found of its epoll
+// instances with it), but not its threads (which have pidfd -1 now): that is a pass over known, for the caller to make.
+func (ts *targets) retire(p *process) {
+	unix.Close(p.pidfd)
+	p.pidfd = -1
+	delete(ts.procs, p.tgid)
+}
+
+// reap retires a process and drops its threads.
+func (ts *targets) reap(p *process) {
+	ts.retire(p)
+	if p.tids > 0 {
+		for tid, q := range ts.known {
+			if q == p {
+				delete(ts.known, tid)
+			}
+		}
+	}
+}
+
+// drop forgets a thread, and its process if no thread of it is kept or it ended.
 func (ts *targets) drop(tid int) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	if t, ok := ts.known[tid]; ok {
-		unix.Close(t.pidfd)
-		delete(ts.known, tid)
+	p, ok := ts.known[tid]
+	if !ok {
+		return
+	}
+	delete(ts.known, tid)
+	if p.tids--; p.tids == 0 {
+		ts.retire(p)
+	} else if pollEnded([]unix.PollFd{{Fd: int32(p.pidfd), Events: unix.POLLIN}}) > 0 {
+		ts.reap(p)
 	}
 }
 
@@ -107,10 +222,12 @@ func (ts *targets) closeAll() {
 	ts.mover.close()
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	for tid, t := range ts.known {
-		unix.Close(t.pidfd)
-		delete(ts.known, tid)
+	for _, p := range ts.procs {
+		unix.Close(p.pidfd)
+		p.pidfd = -1
 	}
+	clear(ts.procs)
+	clear(ts.known)
 }
 
 // tgidOf is the process a thread belongs to.
@@ -204,23 +321,22 @@ func (ts *targets) epollEntries(tid, fd int, ino uint64) ([]epollEntry, error) {
 		return nil, err
 	}
 	ts.mu.Lock()
-	known, ok := ts.epolls[t.tgid]
+	var known *epollSet
+	if p := ts.procs[t.tgid]; p != nil {
+		known = p.epolls
+	}
 	ts.mu.Unlock()
-	if !ok || known.sig != sig || !areEpolls(d, known.fds) {
-		known = epollSet{sig: sig}
+	if known == nil || known.sig != sig || !areEpolls(d, known.fds) {
+		known = &epollSet{sig: sig}
 		for _, n := range nums {
 			if isEpoll(d, n) {
 				known.fds = append(known.fds, n)
 			}
 		}
 		ts.mu.Lock()
-		if len(ts.epolls) >= maxTargets {
-			for k := range ts.epolls { // some, not the oldest: the cache is for speed
-				delete(ts.epolls, k)
-				break
-			}
+		if p := ts.procs[t.tgid]; p != nil && p.pidfd == t.pidfd { // not one that ended meanwhile
+			p.epolls = known
 		}
-		ts.epolls[t.tgid] = known
 		ts.mu.Unlock()
 	}
 	var entries []epollEntry
