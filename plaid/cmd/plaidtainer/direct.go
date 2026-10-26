@@ -41,7 +41,10 @@ func launchHostNetworking(apptainerBin string, args []string, opts PlaidOptions)
 		return execPassthroughCommand(apptainerBin, args)
 	}
 	var cfg direct.Config
-	err := checkPtraceScope(yamaPtraceScopeFile)
+	err := direct.CheckKernel()
+	if err == nil {
+		err = checkPtraceScope(yamaPtraceScopeFile)
+	}
 	if err == nil {
 		cfg, err = directConfig(opts)
 	}

@@ -11,10 +11,13 @@ import (
 // and arm64 Linux.
 type Supervisor struct{}
 
+var errNoSupervisor = errors.New("the direct path needs Linux on amd64 or arm64")
+
 // Start fails: the direct path needs Linux on amd64 or arm64.
-func Start(Config, *exec.Cmd) (*Supervisor, error) {
-	return nil, errors.New("the direct path needs Linux on amd64 or arm64")
-}
+func Start(Config, *exec.Cmd) (*Supervisor, error) { return nil, errNoSupervisor }
+
+// CheckKernel fails for the same reason.
+func CheckKernel() error { return errNoSupervisor }
 
 // Wait is not reached: there is no supervisor.
 func (*Supervisor) Wait() error { return errors.New("no supervisor") }
