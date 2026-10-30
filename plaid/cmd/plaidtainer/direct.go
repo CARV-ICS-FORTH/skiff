@@ -40,6 +40,7 @@ func launchHostNetworking(apptainerBin string, args []string, opts PlaidOptions)
 	if opts.DirectConnectPorts == "" && opts.DirectListenPorts == "" {
 		return execPassthroughCommand(apptainerBin, args)
 	}
+	direct.PlaceRuntimeDescriptors() // before the first file is opened: see the package
 	var cfg direct.Config
 	err := direct.CheckKernel()
 	if err == nil {

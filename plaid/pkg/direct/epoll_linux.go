@@ -115,8 +115,9 @@ var runtimeFds struct {
 // has that number is left to the pod network. Low numbers are the ones programs use (an Asio
 // server's first socket is 6), so the netpoller is made, if it has not been yet, where a
 // program's numbers seldom go: the free numbers below runtimeDescriptorsAt are taken while it
-// is made, and given back. plaidtainer asks first thing (PlaceRuntimeDescriptors), before
-// anything it does starts the netpoller.
+// is made, and given back. That takes tens of milliseconds, so plaidtainer asks only for a
+// container that marks ports (PlaceRuntimeDescriptors), before it opens a file, which would
+// start the netpoller.
 func runtimeDescriptors() []int {
 	runtimeFds.once.Do(func() {
 		var taken []int
