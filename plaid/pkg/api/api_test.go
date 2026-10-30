@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
 )
@@ -16,6 +18,8 @@ type mockHandlers struct {
 	lastAddRoute *Request
 	lastDelRoute *Request
 	receivedFDs  []int
+	mu           sync.Mutex // for routes, which the test changes while the server runs
+	routes       []RouteInfo
 }
 
 func (m *mockHandlers) HandleAddEndpoint(req *Request, tapFDs []int) error {
@@ -37,6 +41,18 @@ func (m *mockHandlers) HandleAddRoute(req *Request) error {
 func (m *mockHandlers) HandleRemoveRoute(req *Request) error {
 	m.lastDelRoute = req
 	return nil
+}
+
+func (m *mockHandlers) HandleListRoutes() ([]RouteInfo, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.routes, nil
+}
+
+func (m *mockHandlers) setRoutes(routes []RouteInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.routes = routes
 }
 
 func (m *mockHandlers) HandleGetStatus() (*Response, error) {
@@ -98,6 +114,14 @@ func TestAPIServerAndClient(t *testing.T) {
 	}
 	if handlers.lastDelRoute == nil || handlers.lastDelRoute.Subnet != "10.244.2.0/24" {
 		t.Errorf("RemoveRoute handler did not receive expected params")
+	}
+
+	// A route is listed with the address of its node.
+	want := []RouteInfo{{Subnet: "10.244.2.0/24", RemoteHostIP: "192.168.1.10"}}
+	handlers.setRoutes(want)
+	routes, err := client.ListRoutes()
+	if err != nil || len(routes) != 1 || routes[0] != want[0] {
+		t.Fatalf("ListRoutes: %v, %v", routes, err)
 	}
 
 	// 3. Test AddEndpoint with SCM_RIGHTS FD passing
@@ -382,5 +406,61 @@ func TestAddEndpointWithoutHandlerClosesDescriptors(t *testing.T) {
 	_ = r.Close()
 	if _, err := w.Write([]byte("x")); err == nil {
 		t.Error("the server still holds the read end it was sent")
+	}
+}
+
+type directRecorder struct{ reports []DirectReport }
+
+func (d *directRecorder) HandleReportDirect(r *DirectReport) error {
+	if r.PID < 0 {
+		return fmt.Errorf("no such process")
+	}
+	d.reports = append(d.reports, *r)
+	return nil
+}
+
+// A report of the direct path reaches its handler with its counters; a daemon that has no
+// handler, or a handler that refuses the report, answers with an error.
+func TestReportDirect(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sockPath := filepath.Join(t.TempDir(), "d.sock")
+	handlers := &mockHandlers{}
+	srv := NewServer(sockPath, handlers, handlers, handlers)
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	srv.MarkReady()
+	client := NewClient(sockPath)
+
+	report := DirectReport{Supervisor: "default/p/c", PID: 7, Ended: true,
+		Counters: DirectCounters{Connects: 2, Accepts: 3, Fallbacks: map[string]uint64{"refused": 1}, Rejected: map[string]uint64{"bad-mac": 4}}}
+	if err := client.ReportDirect(report); err == nil {
+		t.Error("a report was accepted by a daemon that has no handler for it")
+	}
+	rec := &directRecorder{}
+	srv.SetDirectHandler(rec)
+	if err := client.ReportDirect(report); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.reports) != 1 || rec.reports[0].Counters.Rejected["bad-mac"] != 4 || !rec.reports[0].Ended || rec.reports[0].Counters.Fallbacks["refused"] != 1 {
+		t.Errorf("the handler got %+v", rec.reports)
+	}
+	report.PID = -1
+	if err := client.ReportDirect(report); err == nil || !strings.Contains(err.Error(), "no such process") {
+		t.Errorf("a report the handler refused: %v", err)
+	}
+	if resp, err := client.Send(&Request{Action: ActionReportDirect}); err != nil || resp.Success {
+		t.Errorf("a request without a report: %+v, %v", resp, err)
+	}
+}
+
+func TestDirectCountersAdd(t *testing.T) {
+	var total DirectCounters
+	total.Add(DirectCounters{Connects: 1, Errors: 2, Fallbacks: map[string]uint64{"a": 1}})
+	total.Add(DirectCounters{Connects: 4, Proxied: 3, Fallbacks: map[string]uint64{"a": 2, "b": 1}, Rejected: map[string]uint64{"c": 5}})
+	if total.Connects != 5 || total.Errors != 2 || total.Proxied != 3 || total.Fallbacks["a"] != 3 || total.Fallbacks["b"] != 1 || total.Rejected["c"] != 5 {
+		t.Errorf("%+v", total)
 	}
 }

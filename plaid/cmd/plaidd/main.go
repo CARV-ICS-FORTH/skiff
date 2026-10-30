@@ -54,6 +54,7 @@ type PlaidDaemon struct {
 	k8sCtrl      *k8s.Controller
 	services     *svc.Engine // tap mode only
 	nodePorts    *nodeport.Reconciler
+	direct       directBook // what the direct path's supervisors report
 }
 
 type Config struct {
@@ -434,6 +435,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 	d.apiServer = api.NewServer(cfg.SocketPath, d, d, d)
 	d.apiServer.SetFilterHandler(d)
 	d.apiServer.SetServiceHandler(d)
+	d.apiServer.SetDirectHandler(d)
 	return d, nil
 }
 
@@ -843,6 +845,15 @@ func (d *PlaidDaemon) HandleRemoveRoute(req *api.Request) error {
 	return nil
 }
 
+func (d *PlaidDaemon) HandleListRoutes() ([]api.RouteInfo, error) {
+	routes := d.routes.Routes()
+	list := make([]api.RouteInfo, 0, len(routes))
+	for _, r := range routes {
+		list = append(list, api.RouteInfo{Subnet: r.Subnet.String(), RemoteHostIP: r.RemoteHostIP.String()})
+	}
+	return list, nil
+}
+
 func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 	eps := d.bridge.Endpoints()
 	epList := make([]string, len(eps))
@@ -896,6 +907,7 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		Endpoints:           epList,
 	}
 	d.fillServiceStatus(resp)
+	resp.Direct = d.direct.status()
 	return resp, nil
 }
 

@@ -458,6 +458,7 @@ run_workload_cases() {
     run_case "35" "memory-volumes"
     run_case "36" "controllers"
     run_case "37" "rdma"
+    run_case "38" "direct-path"
     run_overlay_startup_failures
     run_fresh_job_storage
     run_alternative_network
@@ -573,6 +574,7 @@ if [ -n "$ONLY_CASE" ]; then
             35) run_case "35" "memory-volumes" ;;
             36) run_case "36" "controllers" ;;
             37) run_case "37" "rdma" ;;
+            38) run_case "38" "direct-path" ;;
             *) echo "Unknown case: $ONLY_CASE" >&2; exit 1 ;;
         esac
     fi

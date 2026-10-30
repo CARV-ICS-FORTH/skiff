@@ -45,6 +45,15 @@ type PlaidOptions struct {
 	Binary         string
 	MTU            int
 	ReadinessFile  string
+
+	// The direct path (see plaid/pkg/direct): the ports the container marks (the Service
+	// ports it connects to, the ports it listens on), the pod's address, the socket factory
+	// and a file for the supervisor's log. With no ports a container runs as it always did.
+	DirectConnectPorts string
+	DirectListenPorts  string
+	PodIP              string
+	DirectSocket       string
+	DirectLog          string
 }
 
 // EnsureDefaults sets default socket and binary paths if not explicitly configured.
@@ -53,6 +62,7 @@ func (opts *PlaidOptions) EnsureDefaults() {
 	if opts.Binary == "" {
 		opts.Binary = "/usr/local/bin/plaid"
 	}
+	opts.DirectSocket = netcfg.DirectSocketPath(opts.DirectSocket)
 	if opts.ReadinessFile == "" {
 		if env := os.Getenv("PLAID_READINESS_FILE"); env != "" {
 			opts.ReadinessFile = env
@@ -95,6 +105,21 @@ func mergePlaidOptions(base, override PlaidOptions) PlaidOptions {
 	}
 	if override.ReadinessFile != "" {
 		res.ReadinessFile = override.ReadinessFile
+	}
+	if override.DirectConnectPorts != "" {
+		res.DirectConnectPorts = override.DirectConnectPorts
+	}
+	if override.DirectListenPorts != "" {
+		res.DirectListenPorts = override.DirectListenPorts
+	}
+	if override.PodIP != "" {
+		res.PodIP = override.PodIP
+	}
+	if override.DirectSocket != "" {
+		res.DirectSocket = override.DirectSocket
+	}
+	if override.DirectLog != "" {
+		res.DirectLog = override.DirectLog
 	}
 	return res
 }
@@ -203,6 +228,28 @@ func parseWrapperArgs(args []string) (opts PlaidOptions, apptainerFlags []string
 			continue
 		}
 
+		// The direct path's options
+		if v, ok := optionValue(args, &i, "--direct-connect-ports"); ok {
+			opts.DirectConnectPorts = v
+			continue
+		}
+		if v, ok := optionValue(args, &i, "--direct-listen-ports"); ok {
+			opts.DirectListenPorts = v
+			continue
+		}
+		if v, ok := optionValue(args, &i, "--pod-ip"); ok {
+			opts.PodIP = v
+			continue
+		}
+		if v, ok := optionValue(args, &i, "--direct-socket"); ok {
+			opts.DirectSocket = v
+			continue
+		}
+		if v, ok := optionValue(args, &i, "--direct-log"); ok {
+			opts.DirectLog = v
+			continue
+		}
+
 		// Apptainer flags
 		if strings.HasPrefix(arg, "-") {
 			apptainerFlags = append(apptainerFlags, arg)
@@ -220,6 +267,19 @@ func parseWrapperArgs(args []string) (opts PlaidOptions, apptainerFlags []string
 	}
 
 	return opts, apptainerFlags, image, workloadArgs
+}
+
+// optionValue reads the value of the option name at args[*i], given as name=value or as
+// name value, and moves *i past it.
+func optionValue(args []string, i *int, name string) (string, bool) {
+	if v, ok := strings.CutPrefix(args[*i], name+"="); ok {
+		return v, true
+	}
+	if args[*i] == name && *i+1 < len(args) {
+		*i++
+		return args[*i], true
+	}
+	return "", false
 }
 
 // parsePlaidOptions scans args and extracts Plaid-specific flags, returning the parsed options

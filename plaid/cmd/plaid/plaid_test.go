@@ -45,6 +45,10 @@ func (h *testAPIHandler) HandleRemoveRoute(req *api.Request) error {
 	return nil
 }
 
+func (h *testAPIHandler) HandleListRoutes() ([]api.RouteInfo, error) {
+	return nil, nil
+}
+
 func (h *testAPIHandler) SetEndpoint(key string, req *api.Request) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

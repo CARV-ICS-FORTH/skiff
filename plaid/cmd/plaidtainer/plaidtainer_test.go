@@ -1,15 +1,21 @@
 package main
 
 import (
+	"context"
+	"encoding/base64"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"plaid/pkg/api"
+	"plaid/pkg/direct"
+	"plaid/pkg/netcfg"
 )
 
 func TestPassthroughWaitsForTermCompletion(t *testing.T) {
@@ -410,4 +416,373 @@ func TestResolveNetworkParams_StandaloneResolverAndOverrides(t *testing.T) {
 	if _, _, dns := resolveNetworkParams(tap, "10.200.3.4/24", "", ""); dns != "" {
 		t.Errorf("a cluster must state its resolver; got %q", dns)
 	}
+}
+
+func TestParseDirectPathOptions(t *testing.T) {
+	opts, flags, image, workload := parseWrapperArgs([]string{
+		"--direct-connect-ports", "80,5203", "--direct-listen-ports=8080", "--pod-ip=10.244.1.9", "--direct-socket", "/tmp/f.sock", "--direct-log=/tmp/d.log",
+		"--pid", "--no-init", "--netns-path", "/proc/12/ns/net", "img.sif", "iperf3", "-s", "--pod-ip", "x",
+	})
+	if opts.DirectConnectPorts != "80,5203" || opts.DirectListenPorts != "8080" || opts.PodIP != "10.244.1.9" || opts.DirectSocket != "/tmp/f.sock" || opts.DirectLog != "/tmp/d.log" {
+		t.Errorf("options: %+v", opts)
+	}
+	if strings.Join(flags, " ") != "--pid --no-init --netns-path /proc/12/ns/net" {
+		t.Errorf("Apptainer flags: %q", flags)
+	}
+	// What follows the image is the container's, whatever it looks like.
+	if image != "img.sif" || strings.Join(workload, " ") != "iperf3 -s --pod-ip x" {
+		t.Errorf("image %q, workload %q", image, workload)
+	}
+	merged := mergePlaidOptions(PlaidOptions{DirectSocket: "/g.sock"}, opts)
+	if merged.DirectSocket != "/tmp/f.sock" || merged.DirectConnectPorts != "80,5203" || merged.DirectListenPorts != "8080" {
+		t.Errorf("merged: %+v", merged)
+	}
+	t.Setenv("PLAID_DIRECT_SOCKET", "/env.sock")
+	d := PlaidOptions{}
+	d.EnsureDefaults()
+	if d.DirectSocket != "/env.sock" {
+		t.Errorf("the environment's factory socket was not used: %q", d.DirectSocket)
+	}
+}
+
+// writeKubeconfig makes a cluster kubeconfig whose user has a private key, and points the
+// bubble's environment at it, as the bubble does.
+func writeKubeconfig(t *testing.T, key string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "kubeconfig")
+	yaml := "apiVersion: v1\nkind: Config\ncurrent-context: c\n" +
+		"clusters: [{name: k, cluster: {server: 'https://127.0.0.1:6443'}}]\n" +
+		"users: [{name: u, user: {client-key-data: " + base64.StdEncoding.EncodeToString([]byte(key)) + "}}]\n" +
+		"contexts: [{name: c, context: {cluster: k, user: u}}]\n"
+	if err := os.WriteFile(path, []byte(yaml), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(netcfg.EnvDirectKeyFile, path)
+	return path
+}
+
+// Yama's scope 2 and 3 turn the direct path off, naming the setting; 0 and 1, a missing file
+// (no Yama) and a file that is not understood do not.
+func TestPtraceScopeOfYama(t *testing.T) {
+	dir := t.TempDir()
+	check := func(content string) error {
+		path := filepath.Join(dir, "ptrace_scope")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return checkPtraceScope(path)
+	}
+	for _, ok := range []string{"0\n", "1\n", "1", "\n", "restricted\n"} {
+		if err := check(ok); err != nil {
+			t.Errorf("scope %q refused: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"2\n", "3\n", "3"} {
+		err := check(bad)
+		if err == nil || !strings.Contains(err.Error(), "ptrace_scope is "+strings.TrimSpace(bad)) {
+			t.Errorf("scope %q: %v, want one that names the setting", bad, err)
+		}
+	}
+	if err := checkPtraceScope(filepath.Join(dir, "absent")); err != nil {
+		t.Errorf("no Yama: %v", err)
+	}
+}
+
+func TestDirectConfigRefusals(t *testing.T) {
+	writeKubeconfig(t, "a private key")
+	good := PlaidOptions{DirectConnectPorts: "80", DirectListenPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/tmp/f.sock", Socket: "/tmp/plaidd.sock"}
+	if _, err := directConfig(good); err != nil {
+		t.Fatalf("a complete configuration was refused: %v", err)
+	}
+	for name, mutate := range map[string]func(*PlaidOptions){
+		"bad connect port": func(o *PlaidOptions) { o.DirectConnectPorts = "http" },
+		"bad listen port":  func(o *PlaidOptions) { o.DirectListenPorts = "0" },
+		"no pod IP":        func(o *PlaidOptions) { o.PodIP = "" },
+		"IPv6 pod":         func(o *PlaidOptions) { o.PodIP = "fd00::1" },
+		"no factory":       func(o *PlaidOptions) { o.DirectSocket = "" },
+	} {
+		o := good
+		mutate(&o)
+		if _, err := directConfig(o); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	// The key is the cluster's: no key file, or a kubeconfig without a key, is no direct path.
+	t.Setenv(netcfg.EnvDirectKeyFile, "")
+	if _, err := directConfig(good); err == nil {
+		t.Error("accepted without a key file")
+	}
+	t.Setenv(netcfg.EnvDirectKeyFile, filepath.Join(t.TempDir(), "absent"))
+	if _, err := directConfig(good); err == nil {
+		t.Error("accepted with a key file that is not there")
+	}
+	writeKubeconfig(t, "a private key")
+	t.Setenv(netcfg.EnvDirectAckTimeout, "soon")
+	if _, err := directConfig(good); err == nil {
+		t.Error("accepted an ack timeout that is no duration")
+	}
+	t.Setenv(netcfg.EnvDirectPortBase, "80")
+	if _, err := directConfig(good); err == nil {
+		t.Error("accepted a port base in the system's ports")
+	}
+	t.Setenv(netcfg.EnvDirectPortBase, "")
+	t.Setenv(netcfg.EnvDirectAckTimeout, "250ms")
+	if cfg, err := directConfig(good); err != nil || cfg.AckTimeout != 250*time.Millisecond {
+		t.Errorf("ack timeout: %v, %v", cfg.AckTimeout, err)
+	}
+}
+
+func TestMain(m *testing.M) {
+	direct.RunWatchdogIfRequested() // the supervisors of the tests below start the test binary as their watchdog
+	os.Exit(m.Run())
+}
+
+// launchDirect runs script as the container of a launcher with direct ports, in a process
+// of its own (it replaces itself or ends in a signal), and returns how that ended.
+func launchDirect(t *testing.T, script string, signalGroup syscall.Signal) (*exec.Cmd, error, string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLaunchDirectHelper$")
+	cmd.Env = append(os.Environ(), "PLAID_TEST_DIRECT=1", "PLAID_TEST_SCRIPT="+script)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if signalGroup != 0 {
+		time.Sleep(500 * time.Millisecond)
+		syscall.Kill(-cmd.Process.Pid, signalGroup)
+	}
+	timer := time.AfterFunc(10*time.Second, func() { syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) })
+	defer timer.Stop()
+	err := cmd.Wait()
+	if strings.Contains(stderr.String(), "the direct path is off") {
+		t.Skip(strings.TrimSpace(stderr.String()))
+	}
+	return cmd, err, stderr.String()
+}
+
+func TestLaunchDirectHelper(t *testing.T) {
+	if os.Getenv("PLAID_TEST_DIRECT") != "1" {
+		t.Skip("a helper of the tests below")
+	}
+	opts := PlaidOptions{DirectListenPorts: "5201", PodIP: "10.244.1.9", DirectSocket: "/nonexistent/factory.sock", Socket: "/nonexistent/plaidd.sock"}
+	os.Exit(launchHostNetworking("/bin/sh", []string{os.Getenv("PLAID_TEST_SCRIPT")}, opts))
+}
+
+func writeScript(t *testing.T, body string) string {
+	path := filepath.Join(t.TempDir(), "container.sh")
+	if err := os.WriteFile(path, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The launcher outlives nothing it supervises and ends as Apptainer ends: with its exit
+// status, and of the signal that killed it.
+func TestLaunchDirectEndsAsTheContainerDoes(t *testing.T) {
+	writeKubeconfig(t, "a private key")
+	cmd, err, _ := launchDirect(t, writeScript(t, "exit 7\n"), 0)
+	if cmd.ProcessState.ExitCode() != 7 {
+		t.Errorf("exit status %d (%v), want 7", cmd.ProcessState.ExitCode(), err)
+	}
+	cmd, _, _ = launchDirect(t, writeScript(t, "kill -KILL $$\n"), 0)
+	if ws := cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != syscall.SIGKILL {
+		t.Errorf("ended %v, want killed by SIGKILL as the container's launcher was", ws)
+	}
+	cmd, _, _ = launchDirect(t, writeScript(t, "kill -TERM $$\n"), 0)
+	if ws := cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != syscall.SIGTERM {
+		t.Errorf("ended %v, want killed by SIGTERM", ws)
+	}
+}
+
+// A container that crashes (SIGSEGV, SIGILL, SIGABRT...) ends the launcher of the same
+// signal and nothing else: the Go runtime's own handlers of those signals would print a
+// dump of the launcher's goroutines into the container's log.
+func TestLaunchDirectEndsOfACrashWithoutADump(t *testing.T) {
+	writeKubeconfig(t, "a private key")
+	for _, sig := range []syscall.Signal{syscall.SIGSEGV, syscall.SIGILL, syscall.SIGABRT, syscall.SIGBUS, syscall.SIGFPE} {
+		cmd, _, stderr := launchDirect(t, writeScript(t, "kill -"+strconv.Itoa(int(sig))+" $$\n"), 0)
+		if ws := cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != sig {
+			t.Errorf("%v: ended %v, want killed by the signal", sig, ws)
+		}
+		if strings.Contains(stderr, "goroutine") {
+			t.Errorf("%v: the launcher printed a dump:\n%s", sig, stderr)
+		}
+	}
+}
+
+// A signal to the process group reaches the container; the launcher stays until it has
+// finished its graceful work, as the one that started the launcher expects.
+func TestLaunchDirectWaitsForTheContainerToTerminate(t *testing.T) {
+	writeKubeconfig(t, "a private key")
+	root := t.TempDir()
+	complete := filepath.Join(root, "complete")
+	script := writeScript(t, "trap 'sleep 0.3; touch "+complete+"; exit 0' TERM\nsleep 30 &\nwait $!\n")
+	cmd, err, stderr := launchDirect(t, script, syscall.SIGTERM)
+	if err != nil {
+		t.Fatalf("the launcher ended badly: %v (%s)", err, stderr)
+	}
+	if _, err := os.Stat(complete); err != nil {
+		t.Errorf("the launcher ended before the container finished: %v (%v)", err, cmd.ProcessState)
+	}
+}
+
+func TestClusterKey(t *testing.T) {
+	write := func(user string) string {
+		path := filepath.Join(t.TempDir(), "kubeconfig")
+		yaml := "apiVersion: v1\nkind: Config\ncurrent-context: c\n" +
+			"clusters: [{name: k, cluster: {server: 'https://127.0.0.1:6443'}}]\n" +
+			"users: [{name: other, user: {client-key-data: b3RoZXI=}}, {name: u, user: " + user + "}]\n" +
+			"contexts: [{name: c, context: {cluster: k, user: u}}]\n"
+		if err := os.WriteFile(path, []byte(yaml), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// The key follows the current context's user and the private key, and is not the private key itself.
+	a, b := write("{client-key-data: Y2x1c3RlciBBIGtleQ==}"), write("{client-key-data: Y2x1c3RlciBCIGtleQ==}") // "cluster A key", "cluster B key"
+	k1, err := clusterKey(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k2, _ := clusterKey(a)
+	k3, _ := clusterKey(b)
+	if string(k1) != string(k2) || string(k1) == string(k3) || len(k1) != 32 || string(k1) != string(direct.DeriveKey([]byte("cluster A key"))) {
+		t.Errorf("keys %x %x %x", k1, k2, k3)
+	}
+	if _, err := clusterKey(write("{token: abc}")); err == nil {
+		t.Error("a user with no private key gave a key")
+	}
+	if _, err := clusterKey(filepath.Join(t.TempDir(), "absent")); err == nil {
+		t.Error("a kubeconfig that is not there gave a key")
+	}
+}
+
+func TestDirectNameFollowsTheLogPath(t *testing.T) {
+	for log, want := range map[string]string{
+		"/tmp/.skiff.20002/.pods/default/dp-server-a_99ef93ff-4a28-42e5-83e0-042d4ebe3656/job/i5201.direct.log": "default/dp-server-a/i5201",
+		"/s/pods/kube-system/coredns_1/job/coredns.direct.log":                                                  "kube-system/coredns/coredns",
+	} {
+		if got := directName(log); got != want {
+			t.Errorf("directName(%q) = %q, want %q", log, got, want)
+		}
+	}
+	if got := directName(""); got != "pid "+strconv.Itoa(os.Getpid()) {
+		t.Errorf("without a log: %q", got)
+	}
+}
+
+type reportRecorder struct{ got chan api.DirectReport }
+
+func (r reportRecorder) HandleReportDirect(report *api.DirectReport) error {
+	r.got <- *report
+	return nil
+}
+
+// The counters reach plaidd named by the container, with the supervisor's process; a plaidd that is
+// not there is told of once in the log and does not stop the supervisor.
+func TestCounterReporterTellsPlaidd(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "p.sock")
+	srv := api.NewServer(sock, nil, nil, nil)
+	rec := reportRecorder{make(chan api.DirectReport, 4)}
+	srv.SetDirectHandler(rec)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	srv.MarkReady()
+	var logged []string
+	logf := func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	report := counterReporter(api.NewClient(sock), "default/p/c", logf)
+	report(api.DirectCounters{Connects: 2}, true)
+	r := <-rec.got
+	if r.Supervisor != "default/p/c" || r.PID != os.Getpid() || !r.Ended || r.Counters.Connects != 2 {
+		t.Errorf("the report is %+v", r)
+	}
+	srv.Close()
+	report(api.DirectCounters{}, false)
+	report(api.DirectCounters{}, false)
+	if len(logged) != 1 {
+		t.Errorf("a plaidd that is not there was logged %d times: %q", len(logged), logged)
+	}
+}
+
+// containerHelper is the "container" of the test below: it records, every 50 ms, what a call
+// that the supervisor holds (getsockname on a new socket) says.
+func TestContainerHelper(t *testing.T) {
+	if os.Getenv("PLAID_TEST_CONTAINER") != "1" {
+		t.Skip("a helper of the test below")
+	}
+	log, err := os.OpenFile(os.Getenv("PLAID_TEST_LOG"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o644)
+	if err != nil {
+		os.Exit(2)
+	}
+	for {
+		fd, _ := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+		_, err := syscall.Getsockname(fd)
+		syscall.Close(fd)
+		fmt.Fprintf(log, "getsockname: %v\n", err)
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A supervisor that is killed (SIGKILL: nothing in it runs) leaves a container whose
+// getsockname, connect, bind and accept all fail with ENOSYS, which no program takes as a
+// network that is down. The container must not outlive its supervisor.
+func TestContainerDoesNotOutliveItsSupervisor(t *testing.T) {
+	writeKubeconfig(t, "a private key")
+	dir := t.TempDir()
+	logFile, pidFile := filepath.Join(dir, "calls"), filepath.Join(dir, "pid")
+	script := writeScript(t, "echo $$ > "+pidFile+"\nPLAID_TEST_CONTAINER=1 PLAID_TEST_LOG="+logFile+" exec "+os.Args[0]+" -test.run=^TestContainerHelper$\n")
+	sup := exec.Command(os.Args[0], "-test.run=^TestLaunchDirectHelper$")
+	sup.Env = append(os.Environ(), "PLAID_TEST_DIRECT=1", "PLAID_TEST_SCRIPT="+script)
+	sup.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stderrFile, err := os.Create(filepath.Join(dir, "stderr")) // a file: a pipe would be held open by the container
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup.Stderr = stderrFile
+	if err := sup.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stderr := func() string { b, _ := os.ReadFile(stderrFile.Name()); return string(b) }
+	reaped := make(chan struct{})
+	go func() { sup.Wait(); close(reaped) }()
+	defer syscall.Kill(-sup.Process.Pid, syscall.SIGKILL)
+	var container int
+	for i := 0; i < 100 && container == 0; i++ {
+		if b, err := os.ReadFile(pidFile); err == nil {
+			container, _ = strconv.Atoi(strings.TrimSpace(string(b)))
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if strings.Contains(stderr(), "the direct path is off") {
+		t.Skip(strings.TrimSpace(stderr()))
+	}
+	if container == 0 {
+		t.Fatalf("the container did not start: %s", stderr())
+	}
+	time.Sleep(300 * time.Millisecond)
+	if b, _ := os.ReadFile(logFile); !strings.Contains(string(b), "getsockname: <nil>") {
+		t.Fatalf("the container's calls did not work under the supervisor: %q", b)
+	}
+	syscall.Kill(sup.Process.Pid, syscall.SIGKILL) // the supervisor alone
+	<-reaped
+	for i := 0; i < 60; i++ { // up to 3 s
+		if syscall.Kill(container, 0) == syscall.ESRCH {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	b, _ := os.ReadFile(logFile)
+	t.Errorf("the container is still running after its supervisor was killed; its calls now say: %s", lastLine(string(b)))
+	syscall.Kill(container, syscall.SIGKILL)
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return lines[len(lines)-1]
 }

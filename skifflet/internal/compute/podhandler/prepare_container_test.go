@@ -118,6 +118,28 @@ func TestPrepareContainer_SiblingsAreNotHeldBack(t *testing.T) {
 	}
 }
 
+// The annotations of the pod mark the direct path's ports, for each of its containers.
+func TestPrepareContainer_DirectPortsFromTheAnnotations(t *testing.T) {
+	useConfig(t, &fakeConfig{})
+	h, _ := handlerFor(t, corev1.Container{Name: "a"}, corev1.Container{Name: "b"})
+	for i := range h.Pod.Spec.Containers {
+		c, ok := h.prepareContainer(context.Background(), &h.Pod.Spec.Containers[i], false, i)
+		if !ok || c.DirectConnectPorts != "" || c.DirectListenPorts != "" {
+			t.Fatalf("container %d of a pod without annotations: %+v, %v", i, c, ok)
+		}
+	}
+	h.Pod.Annotations = map[string]string{
+		DirectConnectPortsAnnotation: " 80,5203 ",
+		DirectListenPortsAnnotation:  "8080",
+	}
+	for i := range h.Pod.Spec.Containers {
+		c, ok := h.prepareContainer(context.Background(), &h.Pod.Spec.Containers[i], false, i)
+		if !ok || c.DirectConnectPorts != "80,5203" || c.DirectListenPorts != "8080" {
+			t.Errorf("container %d: connect %q, listen %q (%v)", i, c.DirectConnectPorts, c.DirectListenPorts, ok)
+		}
+	}
+}
+
 // Nothing is retried once the pod is going away.
 func TestPrepareContainer_StopsWhenThePodDoes(t *testing.T) {
 	useConfig(t, &fakeConfig{})

@@ -37,6 +37,17 @@ const (
 	// EnvSocket and EnvMTU are the variables every Plaid tool reads.
 	EnvSocket = "PLAID_SOCKET_PATH"
 	EnvMTU    = "PLAID_MTU"
+
+	// EnvDirectSocket is where plaidtainer finds the socket factory of the direct path.
+	EnvDirectSocket = "PLAID_DIRECT_SOCKET"
+	// EnvDirectKeyFile is the cluster's kubeconfig, whose private key the direct path's key
+	// is derived from (the bubble's, not a pod's: containers get none of the bubble's
+	// environment). EnvDirectAckTimeout (a duration like "1s") is how long a client waits
+	// for the server's ack before it leaves the connect to the pod network. EnvDirectPortBase
+	// is the first of the host ports (4096 of them) that the pods' servers are served at.
+	EnvDirectKeyFile    = "PLAID_DIRECT_KEY_FILE"
+	EnvDirectAckTimeout = "PLAID_DIRECT_ACK_TIMEOUT"
+	EnvDirectPortBase   = "PLAID_DIRECT_PORT_BASE"
 )
 
 // SocketPath is the API socket in effect: the explicit setting, else the
@@ -49,6 +60,15 @@ func SocketPath(explicit string) string {
 		return env
 	}
 	return DefaultSocketPath
+}
+
+// DirectSocketPath is the socket factory's socket in effect: the explicit setting, else the
+// environment's, else none (the direct path is off).
+func DirectSocketPath(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return os.Getenv(EnvDirectSocket)
 }
 
 // MTUFromEnv returns the MTU the environment asks for, or 0 when it asks for none (or

@@ -157,6 +157,19 @@ func (c *Client) RemoveRoute(subnet string) error {
 	return nil
 }
 
+// ListRoutes returns the overlay's routes: the subnets of the remote nodes and the
+// addresses of the nodes.
+func (c *Client) ListRoutes() ([]RouteInfo, error) {
+	resp, err := c.Send(&Request{Action: ActionListRoutes})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("list routes failed: %s", resp.Error)
+	}
+	return resp.Routes, nil
+}
+
 // GetStatus retrieves daemon status.
 func (c *Client) GetStatus() (*Response, error) {
 	req := &Request{
@@ -231,4 +244,16 @@ func (c *Client) ListServices() (*Response, error) {
 		return nil, fmt.Errorf("list_services failed: %s", resp.Error)
 	}
 	return resp, nil
+}
+
+// ReportDirect tells plaidd what a supervisor of the direct path has done.
+func (c *Client) ReportDirect(report DirectReport) error {
+	resp, err := c.Send(&Request{Action: ActionReportDirect, Direct: &report})
+	if err != nil {
+		return err
+	}
+	if !resp.Success {
+		return fmt.Errorf("report_direct failed: %s", resp.Error)
+	}
+	return nil
 }
