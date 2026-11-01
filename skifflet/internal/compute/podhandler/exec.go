@@ -48,6 +48,10 @@ const outputDrain = 2 * time.Second
 // Exec is the one copying the client's input, which is blocked reading a stream
 // that only the client (or the server closing the connection) can end.
 func (t *Target) Exec(ctx context.Context, argv []string, s ExecStreams) (int, error) {
+	// Like the container runtimes, give programs a terminal type unless the container defines one.
+	if s.TTY && !hasVariable(t.Env, "TERM") {
+		t.Env = append(t.Env, "TERM=xterm")
+	}
 	cmd, release, err := t.Command(ctx, argv)
 	if err != nil {
 		return -1, err
@@ -98,11 +102,6 @@ func (t *Target) runTerminal(cmd *exec.Cmd, s ExecStreams) (int, error) {
 	// The command leads a session of its own whose controlling terminal is the
 	// one just opened (its standard input). It is its own process group too.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	// Like the container runtimes, give programs a terminal type unless the
-	// container defines one.
-	if !hasVariable(cmd.Env, "TERM") {
-		cmd.Env = append(cmd.Env, "TERM=xterm")
-	}
 	if err := cmd.Start(); err != nil {
 		tty.Close()
 		return -1, err

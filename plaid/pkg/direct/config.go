@@ -24,8 +24,8 @@ type Config struct {
 	// to the pod network (DefaultAckTimeout if zero).
 	AckTimeout time.Duration
 	// PreambleTimeout is how long a server's accept waits for the preamble of a connection
-	// to a listener of the container's, which holds the container's accept (DefaultPreambleTimeout
-	// if zero).
+	// to a listener whose container took TCP_DEFER_ACCEPT off it, which holds the container's
+	// accept (DefaultPreambleTimeout if zero). Other listeners do not wait.
 	PreambleTimeout time.Duration
 	// Factory makes the host sockets.
 	Factory *FactoryClient
@@ -43,4 +43,8 @@ type Config struct {
 	// call just before the supervisor answers it (an accept: between adding the descriptor and
 	// the answer), and says whether the call is still held. Nil in a program.
 	beforeSend func(tid, nr int, valid func() bool)
+	// outOfReach, for the tests, says that the thread cannot be looked into, as a process that has
+	// made itself not dumpable cannot be by a supervisor without CAP_SYS_PTRACE in its namespace
+	// (a test's supervisor made that namespace, and has it).
+	outOfReach func(tid int) bool
 }

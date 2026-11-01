@@ -143,12 +143,15 @@ if [ "$SKIFF_ROLE" = "controller" ]; then
         K3S_WAIT=$((K3S_WAIT + 1))
     done
     
-    # Export server-ca.crt to shared directory for node certificates FIRST (CA key is NOT exported)
-    echo "Copying server-ca.crt to /var/lib/skiff/tls..."
+    # Export the CAs to the shared directory FIRST (their keys are NOT exported): server-ca for
+    # node certificates, client-ca for Skifflet to know who calls the kubelet API.
+    echo "Copying server-ca.crt and client-ca.crt to /var/lib/skiff/tls..."
     mkdir -p /var/lib/skiff/tls
-    cp /var/lib/rancher/k3s/server/tls/server-ca.crt /var/lib/skiff/tls/server-ca.crt.tmp
-    chmod 644 /var/lib/skiff/tls/server-ca.crt.tmp
-    mv /var/lib/skiff/tls/server-ca.crt.tmp /var/lib/skiff/tls/server-ca.crt
+    for ca in client-ca server-ca; do
+        cp "/var/lib/rancher/k3s/server/tls/${ca}.crt" "/var/lib/skiff/tls/${ca}.crt.tmp"
+        chmod 644 "/var/lib/skiff/tls/${ca}.crt.tmp"
+        mv "/var/lib/skiff/tls/${ca}.crt.tmp" "/var/lib/skiff/tls/${ca}.crt"
+    done
 
     # Copy kubeconfig to shared directory AFTER server-ca is ready
     echo "Copying kubeconfig to /var/lib/skiff..."
@@ -341,6 +344,7 @@ start_skifflet() {
     KUBECONFIG=/var/lib/skiff/kubeconfig \
     APISERVER_KEY_LOCATION="${NODE_CERT_DIR}/kubelet.key" \
     APISERVER_CERT_LOCATION="${NODE_CERT_DIR}/kubelet.crt" \
+    APISERVER_CLIENT_CA_LOCATION=/var/lib/skiff/tls/client-ca.crt \
     VKUBELET_ADDRESS="${HOST_IP}" \
     skifflet \
       --apptainer=plaidtainer \

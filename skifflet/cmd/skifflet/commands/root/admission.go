@@ -16,17 +16,29 @@ package root
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
+	"time"
 
 	"skifflet/internal/provider"
 
 	"errors"
 
 	"github.com/sirupsen/logrus"
+	"k8s.io/client-go/rest"
 )
 
-func StartAPIServer(c Opts, virtualk8s *provider.VirtualK8S) {
+func StartAPIServer(c Opts, virtualk8s *provider.VirtualK8S, restConfig *rest.Config) error {
+	auth, err := newKubeletAuth(restConfig, c.NodeName)
+	if err != nil {
+		return fmt.Errorf("kubelet API authentication: %w", err)
+	}
+	tlsConfig, err := kubeletTLSConfig(c.K8sClientCAFilepath)
+	if err != nil {
+		return fmt.Errorf("kubelet API authentication: %w", err)
+	}
+
 	mux := newKubeletMux(kubeletRoutes{
 		RunInContainer:     virtualk8s.RunInContainer,
 		GetContainerLogs:   virtualk8s.GetContainerLogs,
@@ -38,17 +50,17 @@ func StartAPIServer(c Opts, virtualk8s *provider.VirtualK8S) {
 	})
 
 	/*---------------------------------------------------
-	 * Start the Webhook on the background
+	 * Start the kubelet API on the background
 	 *---------------------------------------------------*/
 	allAddr := fmt.Sprintf(":%d", c.KubeletPort)
 	advertisedAddr := fmt.Sprintf("%s:%d", c.KubeletAddress, c.KubeletPort)
 
+	server := kubeletServer(allAddr, auth.wrap(mux), tlsConfig)
+
 	go func() {
-		if err := http.ListenAndServeTLS(
-			allAddr,
+		if err := server.ListenAndServeTLS(
 			c.K8sAPICertFilepath,
 			c.K8sAPIKeyFilepath,
-			mux,
 		); err != nil && !errors.Is(err, context.Canceled) {
 			logrus.Fatal("API Server has failed. Err:", err)
 			// handle error
@@ -59,5 +71,26 @@ func StartAPIServer(c Opts, virtualk8s *provider.VirtualK8S) {
 		"Address", advertisedAddr,
 		"cert", c.K8sAPICertFilepath,
 		"key", c.K8sAPIKeyFilepath,
+		"client-ca", c.K8sClientCAFilepath,
 	)
+	return nil
+}
+
+// How long a connection to the kubelet API may take over what comes before its authentication, on
+// the network: the handshake and the headers of a request, and the wait for the next one.
+// There is no limit on a request as a whole (ReadTimeout, WriteTimeout): logs that are followed
+// run for as long as they run, and a read deadline would end them.
+const (
+	kubeletReadHeaderTimeout = 10 * time.Second
+	kubeletIdleTimeout       = 2 * time.Minute
+)
+
+func kubeletServer(addr string, handler http.Handler, tlsConfig *tls.Config) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ReadHeaderTimeout: kubeletReadHeaderTimeout,
+		IdleTimeout:       kubeletIdleTimeout,
+	}
 }

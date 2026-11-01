@@ -138,6 +138,8 @@ func TestOverlaySocketsAreAdoptedFromTheHelper(t *testing.T) {
 		t.Run(strconv.Itoa(n), func(t *testing.T) {
 			files, port := helperSockets(t, n)
 			d, path := handoffDaemon(t, net.IPv4(127, 0, 0, 1), port)
+			// The datagrams below come from a node: the overlay refuses others.
+			d.routes.AddRoute(&vxlan.RouteEntry{Subnet: &net.IPNet{IP: net.IPv4(10, 244, 2, 0), Mask: net.CIDRMask(24, 32)}, RemoteHostIP: net.IPv4(127, 0, 0, 1)})
 			err := receive(t, d, path, func() {
 				if err := handoff.Send(context.Background(), path, sockReq(port, n, 4*n), files, 5*time.Second); err != nil {
 					t.Errorf("helper: %v", err)

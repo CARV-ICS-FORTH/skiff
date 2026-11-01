@@ -15,6 +15,7 @@
 package podhandler
 
 import (
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -25,6 +26,63 @@ const (
 	RootUID = 0
 	RootGID = 0
 )
+
+// defaultCapabilities are the capabilities of a container that runs as root: those the container
+// runtimes of Kubernetes give (containerd's default), so that an image runs here as it does
+// there.
+var defaultCapabilities = []string{
+	"CAP_AUDIT_WRITE", "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID", "CAP_KILL", "CAP_MKNOD",
+	"CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_SETFCAP", "CAP_SETGID", "CAP_SETPCAP", "CAP_SETUID", "CAP_SYS_CHROOT",
+}
+
+// capabilityArgs are Apptainer's options for the capabilities of a container that runs as root,
+// worked out as containerd's CRI does it (WithCapabilities): all with privileged or an added ALL,
+// none with a dropped ALL, which wins over an added one, else the default ones, then what is added
+// by name and what is dropped by name, which wins. All of them is
+// what root has in Apptainer without options. They are all within the bubble's user namespace:
+// the pod's author asks for them, not its image.
+func capabilityArgs(privileged bool, caps *corev1.Capabilities) []string {
+	if privileged {
+		return nil
+	}
+	var add, drop []string
+	if caps != nil {
+		add, drop = capabilityNames(caps.Add), capabilityNames(caps.Drop)
+	}
+	if slices.Contains(add, "CAP_ALL") && !slices.Contains(drop, "CAP_ALL") {
+		if len(drop) == 0 {
+			return nil
+		}
+		return []string{"--drop-caps", strings.Join(drop, ",")}
+	}
+	var kept []string
+	if !slices.Contains(drop, "CAP_ALL") {
+		kept = slices.Clone(defaultCapabilities)
+	}
+	for _, name := range add {
+		if name != "CAP_ALL" && !slices.Contains(kept, name) {
+			kept = append(kept, name)
+		}
+	}
+	kept = slices.DeleteFunc(kept, func(name string) bool { return slices.Contains(drop, name) })
+	if len(kept) == 0 {
+		return []string{"--no-privs"}
+	}
+	return []string{"--no-privs", "--add-caps", strings.Join(kept, ",")}
+}
+
+// capabilityNames are names of Kubernetes (with or without the prefix) as Apptainer's.
+func capabilityNames(caps []corev1.Capability) []string {
+	names := make([]string, 0, len(caps))
+	for _, c := range caps {
+		name := strings.ToUpper(string(c))
+		if !strings.HasPrefix(name, "CAP_") {
+			name = "CAP_" + name
+		}
+		names = append(names, name)
+	}
+	return names
+}
 
 // DetermineEffectiveSecurityContext returns a synthesized SecurityContext for reading effective configurations
 // from the provided pod's and container's security context. Container's fields take precedence in cases where both
@@ -182,10 +240,11 @@ func DetermineEffectiveRunAsUser(sc *corev1.SecurityContext, img image.User) (ui
 // UnappliedSecurityContext lists the securityContext fields of a pod that Skifflet accepts and
 // does not apply, as the text of an event. What it applies is the user and group a
 // container runs as (runAsUser, runAsGroup, the image's user) and runAsNonRoot (a container
-// that would run as root is refused). The rest has no equivalent here: a container runs without privileges in a user
-// namespace of the job's user, with a writable root filesystem of its own, its volumes are
-// writable by any user (so a group for them, fsGroup, is not needed to write), and the
-// capabilities, filters and labels of a Linux security module are not Skiff's to set. A
+// that would run as root is refused), and privileged and capabilities (see capabilityArgs: a
+// container that is not root has none, as with a runtime). The rest has no equivalent here: a
+// container runs in a user namespace of the job's user, with a writable root filesystem of its
+// own, its volumes are writable by any user (so a group for them, fsGroup, is not needed to
+// write), and the filters and labels of a Linux security module are not Skiff's to set. A
 // pod that sets them is not refused (charts set them routinely and run unchanged), and it is
 // told which were not applied. Empty when there are none.
 func UnappliedSecurityContext(pod *corev1.Pod) string {
@@ -232,12 +291,6 @@ func UnappliedSecurityContext(pod *corev1.Pod) string {
 			continue
 		}
 		var fields []string
-		if sc.Privileged != nil && *sc.Privileged {
-			fields = append(fields, "privileged")
-		}
-		if sc.Capabilities != nil && (len(sc.Capabilities.Add) > 0 || len(sc.Capabilities.Drop) > 0) {
-			fields = append(fields, "capabilities")
-		}
 		if sc.ReadOnlyRootFilesystem != nil && *sc.ReadOnlyRootFilesystem {
 			fields = append(fields, "readOnlyRootFilesystem")
 		}

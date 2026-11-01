@@ -20,20 +20,22 @@ import (
 // Supervisor holds the container's connect, bind, accept, getsockname and getpeername
 // calls and decides them.
 type Supervisor struct {
-	cfg        Config
-	cmd        *exec.Cmd
-	listener   int
-	targets    *targets
-	threads    threadLocks // orders a task's answers and the calls that hold something (see threadLocks)
-	table      *Table
-	stop       chan struct{}
-	loopDone   chan struct{}
-	watchdog   *watchdog // ends the container if the supervisor does not (see watchdog_linux.go)
-	loopOnce   sync.Once
-	handlers   sync.WaitGroup
-	stats      Stats
-	timings    Timings
-	connLogged atomic.Uint64 // connections logged so far (logConn)
+	cfg      Config
+	cmd      *exec.Cmd
+	listener int
+	targets  *targets
+	threads  threadLocks // orders a task's answers and the calls that hold something (see threadLocks)
+	table    *Table
+	// The networks of the container's own sockets and of the host's (see hostSocket).
+	podNet, hostNet atomic.Uint64
+	stop            chan struct{}
+	loopDone        chan struct{}
+	watchdog        *watchdog // ends the container if the supervisor does not (see watchdog_linux.go)
+	loopOnce        sync.Once
+	handlers        sync.WaitGroup
+	stats           Stats
+	timings         Timings
+	connLogged      atomic.Uint64 // connections logged so far (logConn)
 
 	accepts     kept[uint64, keptAccept]     // connections that an accept gave up, by listener (see accept)
 	dials       kept[uint64, keptDial]       // connections that a connect gave up, by the container's socket (see connect)
@@ -134,6 +136,7 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 		loopDone: make(chan struct{}),
 		watchdog: wd,
 	}
+	s.targets.outOfReach = cfg.outOfReach
 	s.table.SetLiveness(cfg.Factory.LiveCookies, s.logf)
 	s.accepts.maxAge, s.accepts.perKey = keptAcceptAge, keptAcceptMax
 	s.accepts.expired = func(k keptAccept) {
@@ -301,7 +304,7 @@ func (s *Supervisor) serve() {
 			s.stats.Notifications.Add(1)
 			tl := s.timings.begin()
 			switch int(n.Nr) {
-			case unix.SYS_CONNECT, unix.SYS_ACCEPT, unix.SYS_ACCEPT4:
+			case unix.SYS_CONNECT, unix.SYS_BIND, unix.SYS_ACCEPT, unix.SYS_ACCEPT4:
 				s.handlers.Add(1)
 				go s.serve()
 				s.answer(&n, tl)
@@ -348,8 +351,9 @@ func (s *Supervisor) waitForCall(fds []unix.PollFd) (int, error) {
 func (s *Supervisor) loopEnded() { s.loopOnce.Do(func() { close(s.loopDone) }) }
 
 // answer decides one call and tells the kernel. Whatever goes wrong in the supervisor lets
-// the call run as it would have without one: the container loses the direct path for that
-// call, not its network.
+// the call run as it would have without one, until the container has a socket of the host's:
+// the container loses the direct path for that call, not its network. From then on the call is
+// refused (see guardFailed).
 func (s *Supervisor) answer(n *notif, tl *timeline) {
 	if int(n.Nr) == unix.SYS_CONNECT {
 		s.connecting.Add(1)
@@ -363,14 +367,20 @@ func (s *Supervisor) answer(n *notif, tl *timeline) {
 				s.stats.Errors.Add(1)
 				s.logf("call %d of thread %d: panic: %v", n.Nr, n.Pid, p)
 				r = letThrough
+				if s.hostSocketsExist() {
+					r = failWith(unix.EPERM)
+				}
 			}
 		}()
 		r = s.decide(n, tl)
+		if r.through && !r.anyone && s.hostSocketsExist() {
+			r = s.perform(n)
+		}
 	}()
 	if r.answered {
 		return
 	}
-	resp := notifResp{ID: n.ID, Errno: r.errno}
+	resp := notifResp{ID: n.ID, Val: r.val, Errno: r.errno}
 	if r.through {
 		resp.Flags = flagContinue
 	}
@@ -400,11 +410,16 @@ func (s *Supervisor) answer(n *notif, tl *timeline) {
 // with its number itself).
 type reply struct {
 	through  bool
+	anyone   bool  // through even once the container has sockets of the host's
+	val      int64 // the result of a call that was run here (perform)
 	errno    int32
 	answered bool
 }
 
 var letThrough = reply{through: true}
+
+// letThroughAlways is for a call that is harmless on any descriptor, so that it need not be run here.
+var letThroughAlways = reply{through: true, anyone: true}
 
 // answered is for a call that has told the kernel itself, cancelled for one that has nobody
 // to tell (its thread gave it up): in both nothing is left to answer.
@@ -451,6 +466,17 @@ func (s *Supervisor) decide(n *notif, tl *timeline) reply {
 		return s.accept(n, tl)
 	case unix.SYS_GETSOCKNAME, unix.SYS_GETPEERNAME:
 		return s.name(n, tl)
+	case unix.SYS_LISTEN:
+		return s.listen(n)
+	case unix.SYS_SENDTO, unix.SYS_SENDMSG, unix.SYS_SENDMMSG:
+		return s.onHostSocket(n, unix.EOPNOTSUPP)
+	case unix.SYS_IOCTL:
+		// Those of the socket itself (its owner, its out-of-band mark, the time of a packet) say
+		// nothing of the network, and programs use them.
+		if uint32(n.Args[1]) < unix.SIOCADDRT {
+			return letThroughAlways
+		}
+		return s.onHostSocket(n, unix.EPERM)
 	}
 	return letThrough
 }

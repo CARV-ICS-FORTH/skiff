@@ -253,13 +253,16 @@ func (p *localProxy) forward(c *net.TCPConn) {
 	wg.Wait()
 }
 
-// dial connects to the container's listener on the host's loopback: its IPv4 address for a
-// socket of the family, and for an IPv6 one its IPv6 address first (a listener that is only
-// IPv6 has no other).
+// dial connects to the container's listener: at the node's address, and on the host's loopback
+// for a listener on every address: its IPv4 address for a socket of the family, and for an IPv6
+// one its IPv6 address first (a listener that is only IPv6 has no other).
 func (p *localProxy) dial() (*net.TCPConn, netip.AddrPort, error) {
 	candidates := []netip.Addr{netip.MustParseAddr("127.0.0.1")}
 	if p.family == unix.AF_INET6 {
 		candidates = []netip.Addr{netip.IPv6Loopback(), candidates[0]}
+	}
+	if node, ok := p.s.cfg.Resolver.HostOf(p.s.cfg.PodIP); ok && node.IsValid() && !node.IsUnspecified() {
+		candidates = append([]netip.Addr{node}, candidates...)
 	}
 	var last error
 	for _, addr := range candidates {

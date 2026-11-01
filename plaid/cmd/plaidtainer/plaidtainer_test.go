@@ -319,6 +319,16 @@ func TestWorkloadArgPreservation(t *testing.T) {
 	_ = flags
 }
 
+func TestCapabilityFlagsDoNotEatImage(t *testing.T) {
+	flags, pos := splitFlagsAndPositional([]string{"--no-privs", "--add-caps", "CAP_CHOWN,CAP_KILL", "--drop-caps", "CAP_KILL", "/i.sif", "sh"})
+	if want := []string{"--no-privs", "--add-caps", "CAP_CHOWN,CAP_KILL", "--drop-caps", "CAP_KILL"}; strings.Join(flags, " ") != strings.Join(want, " ") {
+		t.Errorf("flags = %q, want %q", flags, want)
+	}
+	if len(pos) != 2 || pos[0] != "/i.sif" {
+		t.Errorf("positional = %q", pos)
+	}
+}
+
 func TestShortFlagContainDoesNotEatImage(t *testing.T) {
 	// In Apptainer, -c is --contain (boolean), not taking an argument!
 	args := []string{

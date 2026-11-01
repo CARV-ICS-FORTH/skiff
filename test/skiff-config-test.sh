@@ -273,7 +273,7 @@ rm -rf "$netdir"
 nodedir=$(mktemp -d)
 trap 'rm -rf "$nodedir"' EXIT
 mkdir -p "$nodedir/base" "$nodedir/tools" "$nodedir/fake"
-for command in mkdir stat hostname id cat grep uname sed; do ln -s "$(command -v "$command")" "$nodedir/base/$command"; done
+for command in mkdir chmod stat hostname id cat grep uname sed; do ln -s "$(command -v "$command")" "$nodedir/base/$command"; done
 user=$(id -un)
 printf '#!/bin/sh\ncase "$1" in buildcfg) echo "LIBEXECDIR=${FAKE_LIBEXEC:-}" ;; *) echo "apptainer version ${FAKE_APPTAINER:-1.5.4}" ;; esac\n' > "$nodedir/tools/apptainer"
 printf '#!/bin/sh\necho "slirp4netns version ${FAKE_SLIRP:-1.2.1}"\necho "commit: abcdef"\n' > "$nodedir/tools/slirp4netns"
@@ -583,6 +583,24 @@ out=$(node_check "$nodedir/fake:$GOOD" "$nodedir/scratch" "" FAKE_OWNER=someonee
 expect "a scratch directory that is another user's is refused, as the sign of a shared node" "$status:$(grep -c 'belongs to someoneelse' <<< "$out")" "1:1"
 out=$(node_check "$nodedir/fake:$GOOD" "$nodedir/not-yet-there" "" FAKE_OWNER=someoneelse); status=$?
 expect "one that does not exist yet is nobody's" "$status:$out" "0:"
+rm -rf "$nodedir/private"
+out=$(node_check "$GOOD" "$nodedir/private" ""); status=$?
+expect "a scratch directory is made for its user alone" "$status:$out:$(stat -c %a "$nodedir/private")" "0::700"
+chmod 750 "$nodedir/private"
+out=$(node_check "$GOOD" "$nodedir/private" ""); status=$?
+expect "one the user named that others can enter is refused, not changed" "$status:$(grep -c 'is open to others (mode 750)' <<< "$out"):$(stat -c %a "$nodedir/private")" "1:1:750"
+chmod 700 "$nodedir/private"
+ln -s "$nodedir/private" "$nodedir/a-link"
+out=$(node_check "$nodedir/fake:$GOOD" "$nodedir/a-link" "" FAKE_OWNER=someoneelse); status=$?
+expect "a link of another user's is refused" "$status:$(grep -c 'belongs to someoneelse' <<< "$out")" "1:1"
+private_download() { # what the commands that write below the two directories do first
+    env -i PATH="$1" HOME="$nodedir/h2" SKIFF_TMP_DIR="$nodedir/s2" "${@:2}" "$BASH" -c 'source "$1"; skiff_private_dirs' _ "$repo_dir/scripts/skiff.sh" 2>&1
+}
+mkdir -p "$nodedir/h2/.skiff" "$nodedir/s2"; chmod 755 "$nodedir/h2/.skiff"; chmod 700 "$nodedir/s2"
+out=$(private_download "$GOOD"); status=$?
+expect "Skiff's own directory, left open by a version before, is closed" "$status:$out:$(stat -c %a "$nodedir/h2/.skiff")" "0::700"
+out=$(private_download "$nodedir/fake:$GOOD" FAKE_OWNER=someoneelse); status=$?
+expect "a squatted directory stops what would have written there" "$status:$(grep -c 'belongs to someoneelse' <<< "$out")" "1:1"
 out=$(node_check "$nodedir/base" "$nodedir/a-file/scratch"); status=$?
 expect "every problem of a node is reported at once" "$status:$(grep -c . <<< "$out")" "1:2"
 
@@ -823,8 +841,8 @@ for arch in $FAKE_NODE_ARCHS; do n=$((n + 1)); echo "NodeName=n$n Arch=$arch Cor
 EOF2
 chmod +x "$work/dlbin/"* "$work/slurmbin/scontrol"
 mkdir -p "$work/dlbase"
-for command in bash sh tar gzip sha256sum awk sed tr grep sort mkdir mktemp mv rm cp cat uname env chmod ls; do ln -s "$(command -v "$command")" "$work/dlbase/$command"; done
-run_download() { env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" "$@" bash "$pkg/scripts/skiff.sh" download 2>&1; }
+for command in bash sh tar gzip sha256sum awk sed tr grep sort mkdir mktemp mv rm cp cat uname env chmod ls stat id; do ln -s "$(command -v "$command")" "$work/dlbase/$command"; done
+run_download() { env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" SKIFF_IMAGE_DIGEST_CHECK="${digest_check:-0}" "$@" bash "$pkg/scripts/skiff.sh" download 2>&1; }
 # listing DIR: its entries in C order, on one line; sorted WORD...: the same of words
 listing() { ls "$1" | LC_ALL=C sort | tr '\n' ' '; }
 sorted() { printf '%s\n' "$@" | LC_ALL=C sort | tr '\n' ' '; }
@@ -849,8 +867,51 @@ expect "download: and it says what comes next" "$(grep -c 'Check a compute node 
 : > "$reg/apptainer"; : > "$reg/requests"
 out=$(run_download); status=$?
 expect "download: again, it fetches, converts and pulls nothing" "$status:$(grep -c . "$reg/requests"):$(grep -c '^build\|^pull' "$reg/apptainer"):$(grep -c 'in the cache already' <<< "$out")" "0:0:0:5"
-out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" bash "$pkg/scripts/skiff.sh" download docker.io/library/nginx:1.27 2>&1); status=$?
+out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" SKIFF_IMAGE_DIGEST_CHECK=0 bash "$pkg/scripts/skiff.sh" download docker.io/library/nginx:1.27 2>&1); status=$?
 expect "download: an image of the user's own goes to the cache, and nothing else is done" "$status:$([ -f "$work/dlhome/.skiff/.images/$(names docker.io/library/nginx:1.27 "$host_arch" | tr -d ' ')" ] && echo yes):$(grep -c '^pull' "$reg/apptainer"):$(grep -c '^build' "$reg/apptainer")" "0:yes:1:0"
+
+# The digest the package names is what is fetched, and the opt-out says so.
+digest_check=1
+index_digest="sha256:$(sha "$reg/manifests/9.9.9-test")"
+cp "$reg/manifests/9.9.9-test" "$reg/manifests/$index_digest"
+printf '%s\n' "$index_digest" > "$pkg/IMAGE_DIGEST"
+rm -f "$tarfile"; : > "$reg/requests"
+out=$(run_download); status=$?
+expect "download: the image is fetched by the digest the package names, not by its tag" "$status:$(grep -c "manifests/$index_digest\$" "$reg/requests"):$(grep -c 'manifests/9.9.9-test$' "$reg/requests")" "0:1:0"
+: > "$reg/requests"
+out=$(run_download); status=$?
+expect "download: an archive that is the image is checked, and not fetched again" "$status:$(grep -c 'manifests/' "$reg/requests"):$(grep -c 'not the image this package names' <<< "$out")" "0:0:0"
+mkdir "$work/tampered"; tar -xf "$tarfile" -C "$work/tampered"
+for first_blob in "$work/tampered/blobs/sha256/"*; do echo x >> "$first_blob"; break; done
+tar -C "$work/tampered" -cf "$tarfile" .
+: > "$reg/requests"
+out=$(run_download); status=$?
+expect "download: an archive with a changed blob is fetched again" "$status:$(grep -c 'not the image this package names' <<< "$out"):$(grep -c "manifests/$index_digest\$" "$reg/requests")" "0:1:1"
+mkdir "$work/tampered2"; tar -xf "$tarfile" -C "$work/tampered2"
+printf '[]\n' > "$work/tampered2/manifest.json"
+tar -C "$work/tampered2" -cf "$tarfile" .
+out=$(run_download); status=$?
+expect "download: an archive whose manifest.json names something else is fetched again" "$status:$(grep -c 'not the image this package names' <<< "$out")" "0:1"
+head -c 4096 "$tarfile" > "$tarfile.cut"; mv "$tarfile.cut" "$tarfile"
+out=$(run_download); status=$?
+expect "download: an archive cut short is fetched again" "$status:$(grep -c 'not the image this package names' <<< "$out")" "0:1"
+wrong="sha256:$(printf 'x' | sha256sum | awk '{print $1}')"
+cp "$reg/manifests/9.9.9-test" "$reg/manifests/$wrong"
+printf '%s\n' "$wrong" > "$pkg/IMAGE_DIGEST"
+rm -f "$tarfile"
+out=$(run_download 2>&1); status=$?
+expect "download: what does not match the digest is refused" "$([ "$status" -ne 0 ] && echo refused):$(grep -c 'is not that image' <<< "$out"):$([ -f "$tarfile" ] && echo kept)" "refused:1:"
+out=$(run_download SKIFF_IMAGE_DIGEST_CHECK=0 2>&1); status=$?
+expect "download: SKIFF_IMAGE_DIGEST_CHECK=0 takes the tag, and says so" "$status:$(grep -c 'WARNING: SKIFF_IMAGE_DIGEST_CHECK=0' <<< "$out")" "0:1"
+printf 'not-a-digest\n' > "$pkg/IMAGE_DIGEST"
+rm -f "$tarfile"
+out=$(run_download 2>&1); status=$?
+expect "download: an IMAGE_DIGEST that is not a digest is refused" "$([ "$status" -ne 0 ] && echo refused):$(grep -c 'is not a sha256 digest' <<< "$out")" "refused:1"
+rm -f "$pkg/IMAGE_DIGEST" "$tarfile" "$reg/manifests/$index_digest" "$reg/manifests/$wrong"
+out=$(run_download 2>&1); status=$?
+expect "download: a package without a digest is refused" "$([ "$status" -ne 0 ] && echo refused):$(grep -c 'no image digest in' <<< "$out")" "refused:1"
+digest_check=0
+out=$(run_download 2>&1) # (and the archive is there again, for what follows)
 
 # Slurm's nodes of the other architecture (and of one Skiff does not run on): both.
 : > "$reg/apptainer"; : > "$reg/requests"
@@ -869,13 +930,13 @@ expect "download: a later run without Slurm keeps this version's other architect
 for spelling in "--arch $other_machine" "--arch=$other_arch" "--arch $host_arch,$other_arch"; do
     rm -rf "$work/dlhome5"; mkdir -p "$work/dlhome5"
     # shellcheck disable=SC2086 # (the option and its value are two words, or one)
-    out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome5" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" bash "$pkg/scripts/skiff.sh" download $spelling 2>&1); status=$?
+    out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome5" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" SKIFF_IMAGE_DIGEST_CHECK=0 bash "$pkg/scripts/skiff.sh" download $spelling 2>&1); status=$?
     expect "download: $spelling prepares both architectures" "$status:$(images_of "$work/dlhome5"):$(listing "$work/dlhome5/.skiff/.images")" "0:$(sorted skiff-9.9.9-test-$host_arch.sif skiff-9.9.9-test-$host_arch.tar skiff-9.9.9-test-$other_arch.sif skiff-9.9.9-test-$other_arch.tar):$(system "$host_arch" "$other_arch")"
 done
-out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome5" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" bash "$pkg/scripts/skiff.sh" download --arch mips 2>&1); status=$?
+out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome5" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" SKIFF_IMAGE_DIGEST_CHECK=0 bash "$pkg/scripts/skiff.sh" download --arch mips 2>&1); status=$?
 expect "download: an architecture Skiff does not run on is refused" "$status:$(grep -c -- '--arch mips: Skiff runs on amd64 (x86_64) and arm64 (aarch64)' <<< "$out")" "2:1"
 : > "$reg/apptainer"
-out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome5" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" bash "$pkg/scripts/skiff.sh" download --arch "$other_arch" docker.io/library/nginx:1.27 2>&1); status=$?
+out=$(env -i PATH="$work/dlbin:$work/dlbase" HOME="$work/dlhome5" FAKE_REG="$reg" SKIFF_TMP_DIR="$work/dlscratch" SKIFF_IMAGE_DIGEST_CHECK=0 bash "$pkg/scripts/skiff.sh" download --arch "$other_arch" docker.io/library/nginx:1.27 2>&1); status=$?
 expect "download: --arch with an image of the user's own pulls it for both architectures" "$status:$(grep -c "^pull --disable-cache --arch $host_arch .* docker://docker.io/library/nginx:1.27" "$reg/apptainer"):$(grep -c "^pull --disable-cache --arch $other_arch .* docker://docker.io/library/nginx:1.27" "$reg/apptainer"):$(grep -c '^build' "$reg/apptainer")" "0:1:1:0"
 
 # failures: a blob that is not what its digest says, a version that is not published, no VERSION

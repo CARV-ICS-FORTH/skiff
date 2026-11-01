@@ -142,6 +142,12 @@ publish-index: publish-check
 	cp README.md LICENSE $(DIST)/
 	cp scripts/skiff.sh scripts/skiff.slurm $(DIST)/scripts/
 	echo "$(VERSION)" > $(DIST)/VERSION
+	@# (Docker Hub may answer "not found" for a moment after the tag is pushed.)
+	for attempt in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+		digest=$$(docker buildx imagetools inspect $(IMAGE):$(VERSION) --format '{{json .Manifest}}' | jq -r .digest) && [ -n "$$digest" ] && break; \
+		sleep 10; \
+	done; \
+	case "$$digest" in sha256:*) echo "$$digest" > $(DIST)/IMAGE_DIGEST ;; *) echo "publish: no digest for $(IMAGE):$(VERSION)" >&2; exit 1 ;; esac
 	COPYFILE_DISABLE=1 tar --no-xattrs -C dist -czf $(DIST).tar.gz skiff-$(VERSION)
 	@echo "Published $(IMAGE):$(VERSION); the package is $(DIST).tar.gz"
 

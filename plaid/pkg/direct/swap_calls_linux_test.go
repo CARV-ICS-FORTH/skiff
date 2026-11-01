@@ -423,34 +423,42 @@ func TestTwoThreadsAcceptOnOneBlockingListener(t *testing.T) {
 	}
 }
 
-// An idle connection to a host port, one that sends no preamble, holds the server's accept
-// for no longer than the preamble timeout, and the real client behind it is acked then.
-func TestAnIdleConnectionDelaysAcceptByTheTimeoutAtMost(t *testing.T) {
+// Idle connections to a host port, ones that send no preamble, do not hold the server's accept:
+// a real client gets its ack at once while they are held back by the kernel and when they come
+// out of its queue, where one after the other used to take the preamble timeout.
+func TestIdleConnectionsDoNotDelayAccept(t *testing.T) {
+	const idlers = 40 // 4 s of the preamble timeout, in a row
 	port := freePort(t)
 	p := strconv.Itoa(port)
-	server, out := runPod(t, podConfig(t, "10.244.5.4", Ports{uint16(port): {}}, fakeResolver{}), "serve", p)
+	server, out := runPod(t, podConfig(t, "10.244.5.4", Ports{uint16(port): {}}, fakeResolver{}), "acceptloop", p)
 	out.waitFor(t, "listening")
-	start := time.Now()
-	idle, err := net.Dial("tcp", "127.0.0.1:"+p)
-	if err != nil {
-		t.Fatal(err)
+	defer func() {
+		server.cmd.Process.Kill()
+		server.Wait()
+	}()
+	for range idlers {
+		idle, err := net.Dial("tcp", "127.0.0.1:"+p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer idle.Close()
 	}
-	defer idle.Close()
-	c := forged(t, p, func(*Preamble, *[]byte) {})
 	ack := make([]byte, AckSize)
-	c.SetReadDeadline(time.Now().Add(3 * time.Second))
-	if _, err := io.ReadFull(c, ack); err != nil {
-		t.Fatalf("no ack: %v", err)
+	for start := time.Now(); time.Since(start) < deferAcceptSeconds*time.Second+1500*time.Millisecond; time.Sleep(50 * time.Millisecond) {
+		dialed := time.Now()
+		c := forged(t, p, func(*Preamble, *[]byte) {})
+		c.SetReadDeadline(time.Now().Add(3 * time.Second))
+		_, err := io.ReadFull(c, ack)
+		c.Close()
+		if err != nil {
+			t.Fatalf("no ack %v into the run: %v", time.Since(start), err)
+		}
+		if took := time.Since(dialed); took > 250*time.Millisecond {
+			t.Errorf("a client was acked after %v, %v into the run, behind %d idle connections", took, time.Since(start), idlers)
+		}
 	}
-	if took := time.Since(start); took > 400*time.Millisecond { // the wait is 100 ms; it was a second
-		t.Errorf("the real client was acked after %v behind an idle connection, want 100 ms and a little", took)
-	}
-	c.Close()
-	if err := server.Wait(); err != nil {
-		t.Fatalf("%v\n%s", err, out)
-	}
-	if r := server.Stats().Rejected.Snapshot(); r["no-preamble"] != 1 {
-		t.Errorf("rejections: %v", r)
+	if r := server.Stats().Rejected.Snapshot(); r["no-preamble"] != idlers {
+		t.Errorf("the idle connections were not all turned away: %v", r)
 	}
 }
 
@@ -646,5 +654,52 @@ func TestAnInstalledConnectionIsRecognised(t *testing.T) {
 		if ok {
 			t.Errorf("a connection that is not there (%s) was recognised", name)
 		}
+	}
+}
+
+// A connection that the kernel queued on a listener with TCP_DEFER_ACCEPT before anything came on
+// it, as a SYN cookie's is, gets the moment its preamble needs, and an idle one no more than that.
+func TestAQueuedConnectionGetsAMomentForItsPreamble(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	lf, err := l.(*net.TCPListener).File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf.Close()
+	s := &Supervisor{cfg: Config{PreambleTimeout: 5 * time.Second}}
+	accepted := func() (net.Conn, int) { // accepted before the option is set, so that it has no preamble yet
+		c, err := net.Dial("tcp", l.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		fd, _, err := unix.Accept(int(lf.Fd()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c, fd
+	}
+	late, lateFD := accepted()
+	defer late.Close()
+	defer unix.Close(lateFD)
+	idle, idleFD := accepted()
+	defer idle.Close()
+	defer unix.Close(idleFD)
+	if err := unix.SetsockoptInt(int(lf.Fd()), unix.IPPROTO_TCP, unix.TCP_DEFER_ACCEPT, deferAcceptSeconds); err != nil {
+		t.Fatal(err)
+	}
+	go late.Write(make([]byte, PreambleSize))
+	if err := s.readPreamble(lateFD, int(lf.Fd()), make([]byte, PreambleSize)); err != nil {
+		t.Errorf("a preamble right behind its connection: %v", err)
+	}
+	start := time.Now()
+	if err := s.readPreamble(idleFD, int(lf.Fd()), make([]byte, PreambleSize)); err == nil {
+		t.Error("an idle connection had a preamble")
+	}
+	if took := time.Since(start); took > 500*time.Millisecond {
+		t.Errorf("an idle connection held the accept for %v, not the preamble timeout's seconds", took)
 	}
 }

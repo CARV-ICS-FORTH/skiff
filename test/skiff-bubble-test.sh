@@ -173,6 +173,13 @@ tcp 127.0.0.1 6443 $guest 6443"
 
 # slirp4netns runs at its own, larger MTU (Plaid cuts what it sends for the pods), and the bubble is told it.
 grep -q -- "--mtu=$SKIFF_SLIRP_MTU " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&2; fail "slirp4netns was not started at the MTU of its link"; }
+# It parses what the pods send: it has no way to the host's loopback, and as little else as it can work with.
+for limit in --disable-host-loopback --enable-seccomp; do
+    grep -q -- "$limit " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&2; fail "slirp4netns was started without $limit"; }
+done
+case "$(readlink -f /etc/resolv.conf)" in
+    /etc/*|/run/*) grep -q -- "--enable-sandbox " "$FAKE_DIR/args" || { cat "$FAKE_DIR/args" >&2; fail "slirp4netns was started without its sandbox"; } ;;
+esac
 [ "$SKIFF_SLIRP_MTU" -gt "$SKIFF_POD_MTU" ] || fail "the test does not tell the slirp4netns link from the pod MTU"
 grep -q -- "--env SKIFF_SLIRP_MTU=$SKIFF_SLIRP_MTU " "$FAKE_DIR/instance-run" || fail "the bubble was not told the MTU of the slirp4netns link"
 # plaidd's RDMA transport: on (SKIFF_RDMA=auto), its device chosen by plaidd, and the host's

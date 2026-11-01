@@ -39,7 +39,9 @@ type targets struct {
 	sweepAt int              // the number of processes at which the next one kept sweeps
 	polls   []unix.PollFd    // for a sweep
 	swept   []*process       // the processes of a sweep, in the order of polls
-	mover   mover            // the thread that moves epoll registrations (epoll_linux.go)
+
+	outOfReach func(tid int) bool // see Config
+	mover      mover              // the thread that moves epoll registrations (epoll_linux.go)
 }
 
 type target struct{ tgid, pidfd int }
@@ -68,6 +70,9 @@ func newTargets() *targets {
 
 // getfd duplicates descriptor fd of thread tid's process into this process.
 func (ts *targets) getfd(tid, fd int) (int, error) {
+	if ts.outOfReach != nil && ts.outOfReach(tid) {
+		return -1, fmt.Errorf("pidfd_getfd(%d) of thread %d: %w", fd, tid, unix.EPERM)
+	}
 	for attempt := 0; ; attempt++ {
 		t, err := ts.lookup(tid, attempt > 0)
 		if err != nil {

@@ -248,6 +248,59 @@ _skiff_cidr() {
     fi
 }
 
+# skiff_private_dir NAME DIR: make DIR this user's alone (mode 700), creating it if it is not
+# there, or say why it cannot be. A directory that others can enter is closed only if it is
+# Skiff's own (a version before this one left them open); one the user named, or a link to one,
+# may be open to others on purpose, and is refused instead. Nothing below the state and scratch directories is for anyone
+# else: they hold credentials, the environments of containers (with the values of Secrets), their
+# logs and what the bubble runs. What is below them keeps the modes containers need; a umask would
+# reach the containers too. The owner of the name counts as well as the owner of what it leads
+# to: the default scratch directory is in /tmp.
+skiff_private_dir() {
+    local name=$1 dir=$2 owner me mode
+    dir=${dir%/}
+    mkdir -p -- "${dir%/*}" 2>/dev/null
+    mkdir -m 700 -- "$dir" 2>/dev/null && return 0
+    me=$(id -un)
+    for owner in "$(stat -c %U -- "$dir" 2>/dev/null)" "$(stat -L -c %U -- "$dir" 2>/dev/null)"; do
+        if [ -n "$owner" ] && [ "$owner" != "$me" ]; then
+            echo "$(hostname): $name ($dir) belongs to $owner: someone else's Skiff has run here, someone made it first, or the node is shared; the nodes of a job must be the job's alone (set SKIFF_TMP_DIR to a directory of your own to share a node)" >&2
+            return 1
+        fi
+    done
+    if [ ! -d "$dir" ] || [ ! -w "$dir" ]; then
+        echo "$(hostname): $name ($dir) cannot be created or written by $me" >&2
+        return 1
+    fi
+    mode=$(stat -L -c %a -- "$dir" 2>/dev/null) || mode=777
+    (( 8#$mode & 8#077 )) || return 0
+    if [ -L "$dir" ] || { [ "$dir" != "$SKIFF_STATE_DIR" ] && [ "$dir" != "/tmp/.skiff.$(id -u)" ]; }; then
+        echo "$(hostname): $name ($dir) is open to others (mode $mode), and it will hold credentials and the values of Secrets: close it, or use a directory of its own below it" >&2
+        return 1
+    fi
+    if ! chmod 700 -- "$dir" 2>/dev/null; then
+        echo "$(hostname): $name ($dir) cannot be closed to others by $me" >&2
+        return 1
+    fi
+}
+
+# skiff_private_dirs: the state and scratch directories, as anything that writes below them needs.
+skiff_private_dirs() {
+    skiff_private_dir "the state directory" "$SKIFF_STATE_DIR" && skiff_private_dir SKIFF_TMP_DIR "$SKIFF_TMP_DIR"
+}
+
+# skiff_overlay_secret: a new secret for this cluster's overlay, which every node reads from the
+# shared state directory. A datagram without it is not taken (see OverlayConfig.Secret).
+skiff_overlay_secret() {
+    local secret
+    secret=$(od -An -N7 -tx1 /dev/urandom | tr -d ' \n')
+    if [ "${#secret}" != 14 ]; then
+        echo "ERROR: cannot make the overlay's secret" >&2
+        return 1
+    fi
+    (umask 077; printf '%s\n' "$secret" > "$SKIFF_STATE_DIR/overlay-secret")
+}
+
 # --- Resolution and validation -------------------------------------------------
 
 # skiff_config_resolve: derive what is not set. The one derivation of the addresses
@@ -852,15 +905,7 @@ skiff_check_node() {
     done
 
     # The scratch directory.
-    if [ -d "$SKIFF_TMP_DIR" ]; then
-        owner=$(stat -c %U "$SKIFF_TMP_DIR" 2>/dev/null || true)
-        if [ -n "$owner" ] && [ "$owner" != "$(id -un)" ]; then
-            echo "$host: SKIFF_TMP_DIR ($SKIFF_TMP_DIR) belongs to $owner: someone else's Skiff has run here, or the node is shared; the nodes of a job must be the job's alone (set SKIFF_TMP_DIR to a directory of your own to share a node)" >&2
-            errors=$((errors + 1))
-        fi
-    fi
-    if ! mkdir -p "$SKIFF_TMP_DIR" 2>/dev/null || [ ! -d "$SKIFF_TMP_DIR" ] || [ ! -w "$SKIFF_TMP_DIR" ]; then
-        echo "$host: SKIFF_TMP_DIR ($SKIFF_TMP_DIR) cannot be created or written by $(id -un)" >&2
+    if ! skiff_private_dir SKIFF_TMP_DIR "$SKIFF_TMP_DIR"; then
         errors=$((errors + 1))
     else
         fstype=$(stat -f -c %T "$SKIFF_TMP_DIR" 2>/dev/null || true)
@@ -1170,7 +1215,7 @@ bubble_start_socat_relays() {
 # same kind of Apptainer execution as the overlay's helper: it keeps the host network. Unlike
 # that helper it is a daemon.
 bubble_start_socket_factory() {
-    apptainer exec "$BUBBLE_IMAGE" /usr/local/bin/plaidctl socket-factory --listen "$DIRECT_SOCKET" &
+    apptainer exec "${SKIFF_HELPER_OPTIONS[@]}" "$BUBBLE_IMAGE" /usr/local/bin/plaidctl socket-factory --listen "$DIRECT_SOCKET" &
     DIRECT_HELPER_PID=$!
 }
 
@@ -1326,6 +1371,9 @@ skiff_bubble() {
     # inside the bubble through this socket. It is node-local (in the scratch directory; the
     # home directory is shared between nodes, where a socket would not work), and only its
     # owner can connect to it.
+    # The helpers that keep the host network see of the user's files only the scratch directory,
+    # where their sockets are: not the home, with its credentials and whatever else is there.
+    SKIFF_HELPER_OPTIONS=(--contain --no-home --pwd / --bind "$SKIFF_TMP_DIR")
     OVERLAY_HANDOFF="$SKIFF_OVERLAY_HANDOFF"
     OVERLAY_PORT=8472
     OVERLAY_HELPER_PID=""
@@ -1342,7 +1390,7 @@ skiff_bubble() {
     trap bubble_handle_int INT
     trap bubble_cleanup EXIT
 
-    mkdir -p "$SKIFF_STATE_DIR"
+    skiff_private_dirs || exit 1
     mkdir -p "$SKIFF_STATE_DIR/.apptainer/cache"
     mkdir -p "$SKIFF_APPTAINER_TMP"
     # What Apptainer unpacks and converts on this host (the bubble image here, below also
@@ -1370,7 +1418,7 @@ skiff_bubble() {
     # an ordinary Apptainer execution that keeps the host network, and exits once plaidd
     # has acknowledged: it forwards nothing. It starts before the bubble so that a port
     # that is already taken stops the startup early.
-    apptainer exec "$BUBBLE_IMAGE" /usr/local/bin/plaidctl overlay-socket \
+    apptainer exec "${SKIFF_HELPER_OPTIONS[@]}" "$BUBBLE_IMAGE" /usr/local/bin/plaidctl overlay-socket \
         --bind "$HOST_IP_DETECTED" --port "$OVERLAY_PORT" --handoff "$OVERLAY_HANDOFF" --timeout 10m &
     OVERLAY_HELPER_PID=$!
     bubble_start_socket_factory
@@ -1412,6 +1460,7 @@ skiff_bubble() {
     	--env SKIFF_OVERLAY_HANDOFF="$OVERLAY_HANDOFF" \
     	--env PLAID_DIRECT_SOCKET="$DIRECT_SOCKET" \
     	--env PLAID_DIRECT_KEY_FILE=/var/lib/skiff/kubeconfig \
+    	--env PLAID_OVERLAY_SECRET_FILE=/var/lib/skiff/overlay-secret \
     	--env PLAID_DIRECT_ACK_TIMEOUT="$SKIFF_DIRECT_ACK_TIMEOUT" \
     	--env PLAID_DIRECT_PORT_BASE="$SKIFF_DIRECT_PORT_BASE" \
     	--env SKIFF_SLIRP_API="/root/.skiff/slirp-${NAME}.sock" \
@@ -1460,7 +1509,23 @@ skiff_bubble() {
     # Plaid cuts those packets for the pods (TCP into segments, other packets into fragments)
     # before its Service engine, which does not reassemble fragments, or any pod sees them. (The
     # overlay does not pass through slirp4netns: its socket is the host's.)
-    slirp4netns --configure --cidr="$CIDR/24" --mtu="$SKIFF_SLIRP_MTU" --api-socket "$SLIRP_SOCK" "$PID" tap0 &
+    #
+    # It gets no way to the host's loopback, and as little of the system as it can work with.
+    # seccomp takes a build with libseccomp, as the one in Skiff's tools is. The sandbox leaves it
+    # only the host's /etc and /run, where /etc/resolv.conf must lead for it to answer DNS.
+    SLIRP_LIMITS=(--disable-host-loopback)
+    SLIRP_BUILD=$(slirp4netns --version 2>/dev/null || true)
+    if [[ "$SLIRP_BUILD" == *libseccomp* ]]; then
+        SLIRP_LIMITS+=(--enable-seccomp)
+    else
+        echo "Note: this slirp4netns has no libseccomp: it runs without its seccomp filter"
+    fi
+    SLIRP_RESOLV=$(readlink -f /etc/resolv.conf 2>/dev/null || true)
+    case "$SLIRP_RESOLV" in
+        /etc/*|/run/*) SLIRP_LIMITS+=(--enable-sandbox) ;;
+        *) echo "Note: /etc/resolv.conf leads to ${SLIRP_RESOLV:-nothing}, outside /etc and /run: slirp4netns runs without its sandbox" ;;
+    esac
+    slirp4netns --configure --cidr="$CIDR/24" --mtu="$SKIFF_SLIRP_MTU" --api-socket "$SLIRP_SOCK" "${SLIRP_LIMITS[@]}" "$PID" tap0 &
     SLIRP_PID=$!
 
     # Forward ports based on Role
@@ -1742,7 +1807,7 @@ _skiff_cluster_cleanup() {
         skiff_launch_run "${SKIFF_NODES[$i]}" 15 bash -c 'source "$1"; shift; _skiff_sweep_bubble "$@"' _ "$SKIFF_SCRIPT" "$SKIFF_LAUNCHER_DIR" "${SKIFF_JOB_ID:-unknown}" "$((i + 1))" 2>/dev/null || status=$?
         [ "$status" -ne 137 ] || echo "WARNING: the last sweep on ${SKIFF_NODES[$i]} did not end within 15 s: its bubble's instance (bubble$((i + 1))) may still be running there" >&2
     done
-    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
+    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR/overlay-secret" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
     wait 2>/dev/null || true
     echo "Cluster cleanup complete."
     if [ -f "$SKIFF_JOB_RESULTS_DIR/${SKIFF_JOB_ID:-unknown}.cause" ]; then
@@ -1842,7 +1907,7 @@ skiff_cluster() {
 
     # Safe cleanup of old cluster credentials (only after verifying no active cluster)
     echo "Preparing ~/.skiff for cluster startup..."
-    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR"/slirp-*.sock
+    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR/overlay-secret" "$SKIFF_STATE_DIR"/slirp-*.sock
 
     # The images the bubbles run: the SIFs of the mode, each node its architecture's
     # (skiff_image_files), made from their archives when missing or older than the archive
@@ -1851,9 +1916,11 @@ skiff_cluster() {
     # unpacks and converts goes to the scratch directory.
     echo "Preparing the image..."
     skiff_image_files || exit 1
+    skiff_private_dirs || exit 1
+    skiff_overlay_secret || exit 1
     mkdir -p "$SKIFF_IMAGES_DIR" "$SKIFF_APPTAINER_TMP"
     export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
-    local archive sif archives sifs=0
+    local archive arch sif archives sifs=0
     if [ "${SKIFF_DEV:-0}" = 1 ]; then
         archives=("$SKIFF_IMAGE_TAR")
     else
@@ -1862,6 +1929,11 @@ skiff_cluster() {
     for archive in "${archives[@]}"; do
         sif="${archive%.tar}.sif"
         if [ -f "$archive" ] && { [ ! -f "$sif" ] || [ "$archive" -nt "$sif" ]; }; then
+            arch=${archive%.tar}
+            if [ "${SKIFF_DEV:-0}" != 1 ] && ! _skiff_archive_good "$archive" "${arch##*-}"; then
+                echo "ERROR: $archive is not the image this package names: run 'skiff.sh download'" >&2
+                exit 1
+            fi
             echo "Converting $archive to $sif..."
             if ! apptainer build --force "$sif" "docker-archive://$archive"; then
                 echo "ERROR: Failed to convert $archive to $sif!" >&2
@@ -2312,7 +2384,7 @@ skiff_tools() {
         echo "The tools in $dir are those of $archive already."
         return 0
     fi
-    mkdir -p "$SKIFF_STATE_DIR"
+    skiff_private_dir "the state directory" "$SKIFF_STATE_DIR" || return 1
     work=$(mktemp -d "$SKIFF_STATE_DIR/.tools.XXXXXX") || return 1
     # Each layer is a tar, gzip-compressed or not (gzip -f passes the latter through); the
     # tree is in one of them, named with a leading ./ or without (the other name is then
@@ -2473,12 +2545,51 @@ _skiff_check_digest() {
     [ "sha256:$(sha256sum "$1" | awk '{print $1}')" = "$2" ]
 }
 
+# _skiff_image_digest: the digest the package names for the image.
+_skiff_image_digest() { sed -n 1p "$SKIFF_SCRIPT_DIR/../IMAGE_DIGEST" 2>/dev/null | tr -d '[:space:]'; }
+
+# _skiff_archive_manifest CONFIG LAYERS: the manifest.json of an archive, as `docker save` writes it.
+_skiff_archive_manifest() {
+    printf '[{"Config":"%s","RepoTags":["docker.io/%s:%s"],"Layers":[%s]}]\n' "$1" "$SKIFF_IMAGE_REPOSITORY" "$SKIFF_VERSION" "$2"
+}
+
+# _skiff_archive_good ARCHIVE ARCH: whether an archive is the image the package names for ARCH: the
+# index it keeps has that digest, the manifest is the one the index names, the blobs are the
+# manifest's with their digests, and manifest.json names them. (SKIFF_IMAGE_DIGEST_CHECK=0: whatever
+# is there. A subshell, for the clean-up.)
+_skiff_archive_good() (
+    archive="$1" arch="$2"
+    [ "${SKIFF_IMAGE_DIGEST_CHECK:-1}" != 0 ] || exit 0
+    wanted=$(_skiff_image_digest)
+    [[ "$wanted" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+    work=$(mktemp -d "$SKIFF_IMAGES_DIR/.check.XXXXXX") || exit 1
+    trap 'rm -rf "$work"' EXIT
+    tar -xf "$archive" -C "$work" 2>/dev/null || exit 1
+    _skiff_check_digest "$work/image-index" "$wanted" || exit 1
+    manifest="$work/image-index"
+    if [[ "$(_skiff_json_flat "$manifest")" == *'"manifests":['* ]]; then
+        digest=$(skiff_index_digest "$manifest" "$arch")
+        _skiff_check_digest "$work/image-manifest" "$digest" || exit 1
+        manifest="$work/image-manifest"
+    fi
+    config="" layers=""
+    while read -r digest; do
+        [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+        file="blobs/sha256/${digest#sha256:}"
+        _skiff_check_digest "$work/$file" "$digest" || exit 1
+        if [ -z "$config" ]; then config=$file; else layers="${layers:+$layers,}\"$file\""; fi
+    done < <(skiff_manifest_blobs "$manifest")
+    [ -n "$config" ] && [ "$(cat "$work/manifest.json")" = "$(_skiff_archive_manifest "$config" "$layers")" ]
+)
+
 # _skiff_fetch_image ARCH: the Skiff image of this version for ARCH, from Docker Hub, saved as
 # SKIFF_IMAGE_TAR, with curl alone (a host needs no container runtime to start). The image
 # index names a manifest for each platform, the manifest the config and the layers; every
 # document and blob is checked against its digest. The archive holds the blobs and a
 # manifest.json that names them in order, as `docker save` writes it, and is what
-# `skiff.sh tools` and Apptainer read. (A subshell, for the clean-up of a failure.)
+# `skiff.sh tools` and Apptainer read. The package names the image's digest (IMAGE_DIGEST), which
+# is what is fetched: SKIFF_IMAGE_DIGEST_CHECK=0 takes what the version's tag names instead, with
+# a warning. (A subshell, for the clean-up of a failure.)
 _skiff_fetch_image() (
     arch="$1"
     types="application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
@@ -2490,8 +2601,23 @@ _skiff_fetch_image() (
         exit 1
     fi
     SKIFF_REGISTRY_TOKEN=$(_skiff_json_flat "$work/token" | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
-    if ! _skiff_registry_get "manifests/$SKIFF_VERSION" "$types" "$work/index"; then
-        echo "skiff.sh download: there is no $SKIFF_IMAGE_REPOSITORY:$SKIFF_VERSION on Docker Hub" >&2
+    wanted=$(_skiff_image_digest)
+    if [ "${SKIFF_IMAGE_DIGEST_CHECK:-1}" = 0 ]; then
+        echo "skiff.sh download: WARNING: SKIFF_IMAGE_DIGEST_CHECK=0: taking what the tag $SKIFF_VERSION names" >&2
+        wanted=""
+    elif [ -z "$wanted" ]; then
+        echo "skiff.sh download: no image digest in $SKIFF_SCRIPT_DIR/../IMAGE_DIGEST: it belongs beside the scripts' folder, as in the release package (SKIFF_IMAGE_DIGEST_CHECK=0 takes what the tag names)" >&2
+        exit 1
+    elif ! [[ "$wanted" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+        echo "skiff.sh download: IMAGE_DIGEST is not a sha256 digest ($wanted)" >&2
+        exit 1
+    fi
+    if ! _skiff_registry_get "manifests/${wanted:-$SKIFF_VERSION}" "$types" "$work/index"; then
+        echo "skiff.sh download: there is no $SKIFF_IMAGE_REPOSITORY:$SKIFF_VERSION${wanted:+ with the digest $wanted} on Docker Hub" >&2
+        exit 1
+    fi
+    if [ -n "$wanted" ] && ! _skiff_check_digest "$work/index" "$wanted"; then
+        echo "skiff.sh download: what Docker Hub has for $wanted is not that image" >&2
         exit 1
     fi
     manifest="$work/index"
@@ -2532,9 +2658,15 @@ _skiff_fetch_image() (
             exit 1
         fi
     done <<< "$blobs"
-    printf '[{"Config":"%s","RepoTags":["docker.io/%s:%s"],"Layers":[%s]}]\n' \
-        "$config" "$SKIFF_IMAGE_REPOSITORY" "$SKIFF_VERSION" "$layers" > "$work/archive/manifest.json"
-    tar -C "$work/archive" -cf "$work/image.tar" manifest.json blobs || exit 1
+    _skiff_archive_manifest "$config" "$layers" > "$work/archive/manifest.json"
+    # (What the digest is checked against later: see _skiff_archive_good.)
+    cp "$work/index" "$work/archive/image-index"
+    members=(manifest.json image-index blobs)
+    if [ "$manifest" != "$work/index" ]; then
+        cp "$manifest" "$work/archive/image-manifest"
+        members+=(image-manifest)
+    fi
+    tar -C "$work/archive" -cf "$work/image.tar" "${members[@]}" || exit 1
     mv -f "$work/image.tar" "$SKIFF_IMAGE_TAR"
 )
 
@@ -2606,6 +2738,7 @@ skiff_download() {
     [ -z "$given" ] || why="$why; --arch: ${given#,}"
     echo "Architectures: $archs ($why)"
     skiff_config_resolve
+    skiff_private_dirs || return 1
     mkdir -p "$SKIFF_IMAGES_DIR" "$SKIFF_IMAGE_CACHE" "$SKIFF_APPTAINER_TMP" || return 1
     # What Apptainer unpacks and converts goes to the scratch directory.
     export APPTAINER_TMPDIR="$SKIFF_APPTAINER_TMP"
@@ -2629,6 +2762,10 @@ skiff_download() {
     else
         for arch in $archs; do
             skiff_image_files "$arch" || return 1
+            if [ -f "$SKIFF_IMAGE_TAR" ] && ! _skiff_archive_good "$SKIFF_IMAGE_TAR" "$arch"; then
+                echo "$SKIFF_IMAGE_TAR is not the image this package names: fetching it again"
+                rm -f "$SKIFF_IMAGE_TAR" "$SKIFF_IMAGE_SIF"
+            fi
             if [ ! -f "$SKIFF_IMAGE_TAR" ]; then
                 echo "Downloading the Skiff image $SKIFF_IMAGE_REPOSITORY:$SKIFF_VERSION ($arch)..."
                 _skiff_fetch_image "$arch" || return 1

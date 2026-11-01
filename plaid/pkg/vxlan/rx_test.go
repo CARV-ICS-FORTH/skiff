@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"net/netip"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -62,7 +65,7 @@ func datagram(seq uint32, size int) []byte {
 func startEngine(t *testing.T, cfg OverlayConfig, inj FrameInjector) *OverlayEngine {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	cfg.BindAddress, cfg.Port = "127.0.0.1", 0
+	cfg.BindAddress, cfg.Port, cfg.AnySource = "127.0.0.1", 0, true
 	oe := NewOverlayEngine(cfg, NewRouteTable(), inj)
 	if err := oe.Start(ctx); err != nil {
 		cancel()
@@ -201,7 +204,7 @@ func TestOverlayReportsSocketDrops(t *testing.T) {
 	inj := &seqInjector{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	oe := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1"}, NewRouteTable(), inj)
+	oe := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1", AnySource: true}, NewRouteTable(), inj)
 	if err := oe.Adopt(ctx, []*net.UDPConn{conn}, []*net.UDPConn{plainSocket(t)}); err != nil {
 		t.Fatal(err)
 	}
@@ -262,5 +265,184 @@ func TestOverlayReceiveBuffer(t *testing.T) {
 	want := startEngine(t, OverlayConfig{RcvBuf: defaultRcvBuf}, newMockInjector()).Stats().RcvBuf
 	if got := startEngine(t, OverlayConfig{}, newMockInjector()).Stats().RcvBuf; got != want {
 		t.Errorf("without RcvBuf the buffer is %d, want the default's %d", got, want)
+	}
+}
+
+// The overlay's port is open to everyone who can reach the machine: what comes from an address
+// no route leads to is not put on the pods' network, and does not get an answer about RDMA.
+func TestOverlayTakesOnlyWhatComesFromANode(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inj := &seqInjector{}
+	routes := NewRouteTable()
+	oe := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1"}, routes, inj)
+	if err := oe.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer oe.Close()
+	// Not connected: the answer comes from one of the engine's send sockets, whose port differs.
+	c := plainSocket(t)
+	engine := &net.UDPAddr{IP: loopback, Port: oe.LocalPort()}
+
+	hello := control{typ: ctlHello, port: uint16(c.LocalAddr().(*net.UDPAddr).Port), session: 1, gen: 1, lid: 1, qps: []qpAddr{{1, 1}}}
+	send := func() {
+		t.Helper()
+		if _, err := c.WriteToUDP(datagram(0, 200), engine); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.WriteToUDP(hello.appendTo(nil, 1), engine); err != nil {
+			t.Fatal(err)
+		}
+	}
+	answered := func() bool {
+		t.Helper()
+		if err := c.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+		_, err := c.Read(make([]byte, 2048))
+		return err == nil
+	}
+
+	send()
+	waitFor(t, "the datagrams to be counted", func() bool { return oe.Stats().RxForeign == 2 })
+	if answered() {
+		t.Error("a stranger's HELLO was answered")
+	}
+	if n := inj.n.Load(); n != 0 {
+		t.Errorf("%d frames from a stranger were delivered", n)
+	}
+
+	_, subnet, _ := net.ParseCIDR("10.244.2.0/24")
+	routes.AddRoute(&RouteEntry{Subnet: subnet, RemoteHostIP: loopback, VNI: 1, Port: 1})
+	send()
+	waitFor(t, "the node's frame", func() bool { return inj.n.Load() == 1 })
+	if !answered() {
+		t.Error("a node's HELLO was not answered")
+	}
+
+	routes.RemoveRoute(subnet.String())
+	send()
+	waitFor(t, "the datagrams to be counted", func() bool { return oe.Stats().RxForeign == 4 })
+	if n := inj.n.Load(); n != 1 {
+		t.Errorf("%d frames delivered, the one from the node should be all", n)
+	}
+}
+
+// A process of any user on a node sends from a node's address: what does not carry the cluster's
+// secret is dropped all the same, control datagrams too, and two engines with it understand each
+// other in every way they send.
+func TestOverlayTakesOnlyWhatCarriesTheSecret(t *testing.T) {
+	const secret = uint64(0x0123456789abcd) << 8
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inj := &seqInjector{}
+	routes := NewRouteTable()
+	_, subnet, _ := net.ParseCIDR("10.244.2.0/24")
+	routes.AddRoute(&RouteEntry{Subnet: subnet, RemoteHostIP: loopback, VNI: 1, Port: 1})
+	oe := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1", Secret: secret}, routes, inj)
+	if err := oe.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer oe.Close()
+	c := plainSocket(t)
+	engine := &net.UDPAddr{IP: loopback, Port: oe.LocalPort()}
+	hello := control{typ: ctlHello, port: uint16(c.LocalAddr().(*net.UDPAddr).Port), session: 1, gen: 1, lid: 1, gidPrefix: 1, qps: []qpAddr{{1, 1}}}
+
+	plain := datagram(0, 200)
+	wrong := datagram(1, 200)
+	binary.BigEndian.PutUint64(wrong, uint64(wrong[0])<<56|(secret^1<<8)>>8)
+	for _, d := range [][]byte{plain, wrong, hello.appendTo(nil, 1)} {
+		if _, err := c.WriteToUDP(d, engine); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, "the datagrams to be counted", func() bool { return oe.Stats().RxForeign == 3 })
+	if err := c.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Read(make([]byte, 2048)); err == nil {
+		t.Error("a HELLO without the secret was answered")
+	}
+	if n := inj.n.Load(); n != 0 {
+		t.Errorf("%d frames without the secret were delivered", n)
+	}
+
+	good := datagram(7, 200)
+	oe.seal(good)
+	if good[0] != plain[0] || binary.BigEndian.Uint64(good)<<8 != secret {
+		t.Errorf("sealed header %x", good[:8])
+	}
+	if _, err := c.WriteToUDP(good, engine); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the sealed frame", func() bool { return inj.n.Load() == 1 })
+	if stats := oe.Stats(); stats.RxForeign != 3 || stats.RxInvalid != 0 {
+		t.Errorf("%+v", stats)
+	}
+}
+
+func TestReadSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret")
+	for content, want := range map[string]uint64{
+		"0123456789abcd\n":  0x0123456789abcd << 8,
+		"00000000000000\n":  0,
+		"0123456789abc\n":   0,
+		"0123456789abcde\n": 0,
+		"not hexadecimal!":  0,
+		"":                  0,
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadSecret(path)
+		if got != want || (err != nil) != (want == 0) {
+			t.Errorf("%q: %#x, %v", content, got, err)
+		}
+	}
+	if _, err := ReadSecret(path + ".missing"); err == nil {
+		t.Error("no file")
+	}
+}
+
+func TestRouteTableKnowsItsNodes(t *testing.T) {
+	routes := NewRouteTable()
+	node, stranger := netip.MustParseAddr("192.0.2.1"), netip.MustParseAddr("192.0.2.2")
+	if routes.IsNode(node) {
+		t.Error("an empty table knows a node")
+	}
+	_, a, _ := net.ParseCIDR("10.244.1.0/24")
+	_, b, _ := net.ParseCIDR("10.244.2.0/24")
+	routes.AddRoute(&RouteEntry{Subnet: a, RemoteHostIP: net.ParseIP("192.0.2.1")}) // (4-in-6, as ParseIP gives it)
+	routes.AddRoute(&RouteEntry{Subnet: b, RemoteHostIP: net.IPv4(192, 0, 2, 1).To4()})
+	if !routes.IsNode(node) || routes.IsNode(stranger) {
+		t.Errorf("node: %v, stranger: %v", routes.IsNode(node), routes.IsNode(stranger))
+	}
+	routes.RemoveRoute(a.String())
+	if !routes.IsNode(node) {
+		t.Error("the node has another route")
+	}
+	routes.AddRoute(&RouteEntry{Subnet: b, RemoteHostIP: net.ParseIP("192.0.2.2")}) // the subnet moves
+	if routes.IsNode(node) || !routes.IsNode(stranger) {
+		t.Errorf("after the move, old: %v, new: %v", routes.IsNode(node), routes.IsNode(stranger))
+	}
+}
+
+// The log has a line for each kind of foreign datagram.
+func TestStrangersDoNotSilenceAWrongSecret(t *testing.T) {
+	oe := &OverlayEngine{cfg: OverlayConfig{Secret: 1 << 8}, routes: NewRouteTable()}
+	if oe.fromNode(netip.MustParseAddr("192.0.2.1")) {
+		t.Fatal("a stranger was taken")
+	}
+	if oe.secretLogged.Load() {
+		t.Fatal("the stranger was logged as a wrong secret")
+	}
+	if oe.sealed(make([]byte, 8)) {
+		t.Fatal("a datagram without the secret was taken")
+	}
+	if !oe.foreignLogged.Load() || !oe.secretLogged.Load() {
+		t.Errorf("logged: foreign %v, secret %v", oe.foreignLogged.Load(), oe.secretLogged.Load())
+	}
+	if n := oe.rxForeign.Load(); n != 2 {
+		t.Errorf("counted %d", n)
 	}
 }

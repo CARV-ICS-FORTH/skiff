@@ -107,7 +107,7 @@ func newSuperFixture(t *testing.T) *superFixture {
 	_, node, _ := net.ParseCIDR("10.244.1.0/24")
 	_, cluster, _ := net.ParseCIDR("10.244.0.0/16")
 	router, _ := net.ParseMAC("02:00:00:00:00:01")
-	f.b = NewBridge(BridgeConfig{GatewayMode: "tap", GatewayIP: net.ParseIP("10.244.1.1"), GatewayMAC: router, NodeCIDR: node, ClusterCIDR: cluster})
+	f.b = NewBridge(BridgeConfig{AnySource: true, GatewayMode: "tap", GatewayIP: net.ParseIP("10.244.1.1"), GatewayMAC: router, NodeCIDR: node, ClusterCIDR: cluster})
 	for _, ep := range []Endpoint{f.pod, f.peer, f.plain, f.nowrite} {
 		if err := f.b.AddEndpoint(ep); err != nil {
 			t.Fatal(err)

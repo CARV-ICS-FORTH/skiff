@@ -29,12 +29,27 @@ set -euo pipefail
 
 # Where skiff.sh is (a submitted job runs from a copy of this file).
 SKIFF_SCRIPT=""
+# It runs as the user, with everything the user can reach, and a job can be submitted from a
+# directory of others: one that is another's, or that others can write to, is not taken. (Writable
+# by the group is fine if the group is the user's own, as where every user has one and umask 002.)
+me=$(id -un)
+others_can_change() {
+    local mode user group
+    IFS=' ' read -r mode user group < <(stat -L -c '%a %U %G' -- "$1" 2>/dev/null) || return 0
+    [ "$user" != "$me" ] || (( 8#$mode & 8#002 )) || { (( 8#$mode & 8#020 )) && [ "$group" != "$me" ]; }
+}
 for candidate in "${SLURM_SUBMIT_DIR:-$HOME/skiff}/scripts/skiff.sh" "${SLURM_SUBMIT_DIR:-$HOME/skiff}/skiff.sh" \
                  "$HOME/skiff/scripts/skiff.sh" "$HOME/skiff/skiff.sh"; do
-    if [ -f "$candidate" ]; then SKIFF_SCRIPT="$candidate"; break; fi
+    [ -f "$candidate" ] || continue
+    if others_can_change "$candidate" || others_can_change "${candidate%/*}"; then
+        echo "WARNING: not using $candidate: it or its directory is another user's, or others can write to it" >&2
+        continue
+    fi
+    SKIFF_SCRIPT="$candidate"
+    break
 done
 if [ -z "$SKIFF_SCRIPT" ]; then
-    echo "ERROR: skiff.sh not found (looked next to skiff.slurm, in its scripts/ folder and in ~/skiff); copy it to the cluster." >&2
+    echo "ERROR: skiff.sh not found (looked next to skiff.slurm, in its scripts/ folder and in ~/skiff, for one that is yours and that others cannot write to); copy it to the cluster." >&2
     exit 1
 fi
 

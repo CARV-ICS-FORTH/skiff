@@ -708,6 +708,7 @@ func (oe *OverlayEngine) sendControlTo(a netip.Addr, port int, b []byte) {
 	if s == nil || port <= 0 || port > 65535 || b == nil {
 		return
 	}
+	oe.seal(b)
 	_, _ = s.tx[0].conn.WriteToUDPAddrPort(b, netip.AddrPortFrom(a, uint16(port)))
 }
 

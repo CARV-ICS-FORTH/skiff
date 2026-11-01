@@ -655,7 +655,7 @@ func TestAdmit(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer unix.Close(fd)
-		return s.admit(fd, listener, nil)
+		return s.admit(fd, int(lf.Fd()), listener, nil)
 	}
 
 	// The client wrote its preamble and went away.
@@ -1017,6 +1017,7 @@ func init() {
 			fmt.Println("bind", err)
 			return 2
 		}
+		unix.SetsockoptInt(fd, unix.IPPROTO_TCP, unix.TCP_DEFER_ACCEPT, 0) // so that the supervisor waits for the preamble
 		unix.Listen(fd, 8)
 		buf := make([]byte, 128)
 		addrlen := uint32(len(buf))

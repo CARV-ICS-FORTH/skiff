@@ -97,6 +97,10 @@ func NewCommand(ctx context.Context, name string, c Opts) *cobra.Command {
 				merr = multierror.Append(merr, fmt.Errorf("empty key path. Use flags or set %s", EnvAPIKeyLocation))
 			}
 
+			if c.K8sClientCAFilepath == "" {
+				merr = multierror.Append(merr, fmt.Errorf("empty client CA path. Use flags or set %s", EnvClientCALocation))
+			}
+
 			if err := validateClusterDomain(c.DefaultHostEnvironment.ClusterDomainOrDefault()); err != nil {
 				merr = multierror.Append(merr, err)
 			}
@@ -217,7 +221,9 @@ func runRootCommand(ctx context.Context, c Opts) error {
 		return err
 	}
 
-	StartAPIServer(c, virtualk8s)
+	if err := StartAPIServer(c, virtualk8s, restConfig); err != nil {
+		return err
+	}
 
 	// Register before pod execution so the controller can allocate a PodCIDR.
 	// The node stays NotReady until Plaid has attached the bubble gateway.

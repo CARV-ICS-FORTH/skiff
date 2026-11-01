@@ -20,7 +20,7 @@ profile_required_cases() {
         T17-exec-streams T17-exec-tty T17-exec-right-after-start T17-exec-init-running T17-exec-init-finished \
         T14-exec-client-cancel T14-exec-target-ends T14-exec-resources \
         T10-exec-hooks T10-http-hook T10-completed T11-poststart-failure T11-prestop-failure \
-        T11-prestop-hang T11-zero-grace T11-liveness-prestop T26-deletion-progress T27-default-class T27-delayed-provisioning T27-create-failure T28-shared-replacement T28-local-control T29-delete-and-retain T29-cleanup-retry T29-user-owned T30-fresh-job T27-claim-waits T27-waiting-cancel T31-private-tmp T31-reset-on-restart T31-emptydir T31-working-dir T31-subpath-escape T34-writable-layer T34-private-layer T34-reset-layer T37-kubelet-endpoints T37-metrics-api T38-nonroot-network T38-fields-not-applied T39-graceful-job-end T40-node-capacity T40-requests T41-volume-forms \
+        T11-prestop-hang T11-zero-grace T11-liveness-prestop T26-deletion-progress T27-default-class T27-delayed-provisioning T27-create-failure T28-shared-replacement T28-local-control T29-delete-and-retain T29-cleanup-retry T29-user-owned T30-fresh-job T27-claim-waits T27-waiting-cancel T31-private-tmp T31-reset-on-restart T31-emptydir T31-working-dir T31-subpath-escape T34-writable-layer T34-private-layer T34-reset-layer T37-kubelet-endpoints T37-metrics-api T38-nonroot-network T38-fields-not-applied T38-capabilities T38-exec-environment T38-exec-root T38-exec-own-userns T38-source-address T39-graceful-job-end T40-node-capacity T40-requests T41-volume-forms \
         T12-default-and-tail T12-partial-line T12-timestamps T12-since T12-limit-bytes T12-invalid T12-follow-tail \
         T13-previous-missing T13-attempts T13-init-attempts \
         T05-unsupported-forms T06-metadata-updates T06-unsupported-updates T06-rollout \
@@ -28,7 +28,7 @@ profile_required_cases() {
         T20-cycles T20-no-leaks \
         T18-services T18-node-networks T18-startup-report T18-pod-network T18-connectivity T18-runtime-path T32-scratch T32-volume-roots T32-unusable-scratch \
         E2E-17-alt T18-alt-services T18-alt-node-networks T18-alt-startup-report T18-alt-pod-network T18-alt-connectivity T18-alt-runtime-path T32-alt-scratch T32-alt-volume-roots \
-        T21-owner T21-no-forward T21-traffic T36-failure-cause \
+        T21-owner T21-no-forward T21-traffic T21-secret T36-failure-cause \
         T22-cancel-during-startup T22-helper-killed T22-port-taken T22-second-boot \
         T23-translation T23-named-ports T23-dns T23-bubble T23-large T23-selectorless T23-untranslated T23-no-local-backend \
         T24-pinned T24-refusal T24-unsupported T24-no-kube-proxy T24-counters \

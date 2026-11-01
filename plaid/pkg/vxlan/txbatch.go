@@ -113,6 +113,7 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 	}
 	start := len(tb.buf.B)
 	tb.buf.B = packet.AppendVXLANHeader(tb.buf.B, oe.sendFlags, vni)
+	oe.seal(tb.buf.B[start:])
 	if tb.buf.B, err = frame.MarshalTo(tb.buf.B); err != nil {
 		tb.buf.B = tb.buf.B[:start]
 		return fmt.Errorf("failed to marshal inner frame: %w", err)
@@ -404,6 +405,7 @@ func (tb *TxBatch) sendChunks(ts *txSock, vni uint32, addr netip.AddrPort, h pac
 			}
 			end = min(end, total)
 			buf = packet.AppendVXLANHeader(buf, flags, vni)
+			oe.seal(buf[start:])
 			buf = appendChunkHeader(buf, id, total, off, h)
 			var data []byte
 			if off == 0 {

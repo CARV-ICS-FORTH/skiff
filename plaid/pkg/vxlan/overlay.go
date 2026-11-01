@@ -39,10 +39,14 @@ package vxlan
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -78,6 +82,14 @@ type OverlayConfig struct {
 	BindAddress string // e.g. "0.0.0.0"
 	Port        int    // e.g. 8472
 	DefaultVNI  uint32 // e.g. 1
+	// AnySource takes datagrams from any address, not only from the nodes of the route table.
+	// For tests of the engine alone, which have no routes back.
+	AnySource bool
+	// Secret is what a datagram of the cluster carries in the seven bytes of the VXLAN header
+	// after the flags, the VNI among them, which nothing reads (see ReadSecret); 0 is none, and
+	// the header is a standard one. It is checked as well as the address of a node.
+	// The overlay is not encrypted.
+	Secret uint64
 	// RxQueueLen is how many received datagrams may wait for the bridge on each receive
 	// socket (0: defaultRxQueueLen). A queued read holds a pool buffer of 64 KiB, so the
 	// worst case is RxQueueLen x 64 KiB for each socket (512 x 64 KiB = 32 MiB by
@@ -140,6 +152,7 @@ type Stats struct {
 	RxReads   uint64 // system calls that received datagrams: fewer than the datagrams with UDP_GRO
 	RxPackets uint64 // valid VXLAN packets (datagrams, or whole super-frames) handed to the bridge, as many as RxPerSocket adds up to
 	RxInvalid uint64 // datagrams that were not valid VXLAN
+	RxForeign uint64 // what came from an address that is no node's, or without the secret (see OverlayConfig)
 	RxDropped uint64 // valid packets the bridge did not accept
 	// RxQueueDrops are datagrams read from a socket but dropped because the queue to the
 	// bridge was full; SocketDrops are datagrams the kernel dropped because a socket's
@@ -185,11 +198,12 @@ type OverlayEngine struct {
 	closeOnce  sync.Once
 	closedChan chan struct{}
 
-	txPackets, txSends, txErrors, rxReads, rxInvalid, rxDropped, rxQueueDrops atomic.Uint64
-	superTx, superTxChunks, superRx, superPartial, superInvalid, superEvicted atomic.Uint64
-	superTxFailed                                                             atomic.Uint64
-	superHold                                                                 atomic.Int64 // no super-frame is sent whole before the clock reaches this
-	rcvBuf                                                                    atomic.Int64
+	foreignLogged, secretLogged                                                          atomic.Bool // see fromNode, sealed
+	txPackets, txSends, txErrors, rxReads, rxInvalid, rxForeign, rxDropped, rxQueueDrops atomic.Uint64
+	superTx, superTxChunks, superRx, superPartial, superInvalid, superEvicted            atomic.Uint64
+	superTxFailed                                                                        atomic.Uint64
+	superHold                                                                            atomic.Int64 // no super-frame is sent whole before the clock reaches this
+	rcvBuf                                                                               atomic.Int64
 	// gso: sends use UDP_SEGMENT; gsoWorked: one did; gro: the receive sockets have UDP_GRO.
 	gso, gsoWorked, gro atomic.Bool
 	// linkChunksOff: the chunks are no longer sized by OverlayConfig.LinkMTU, because a send of them failed.
@@ -405,6 +419,7 @@ func (oe *OverlayEngine) Stats() Stats {
 		TxErrors:     oe.txErrors.Load(),
 		RxReads:      oe.rxReads.Load(),
 		RxInvalid:    oe.rxInvalid.Load(),
+		RxForeign:    oe.rxForeign.Load(),
 		RxDropped:    oe.rxDropped.Load(),
 		RxQueueDrops: oe.rxQueueDrops.Load(),
 		RcvBuf:       int(oe.rcvBuf.Load()),
@@ -489,6 +504,9 @@ func (l *rxLane) readLoop(ctx context.Context, queue chan<- rxRead) {
 		if drops, ok := parseDropCount(oob[:oobn]); ok {
 			l.drops.Store(uint64(drops))
 		}
+		if !oe.fromNode(src.Addr()) {
+			continue // here, so that it takes no place in the queue from what is a node's
+		}
 
 		buf.B = buf.B[:n]
 		r := rxRead{buf: buf, seg: parseGROSize(oob[:oobn]), src: netip.AddrPortFrom(src.Addr().Unmap(), src.Port())}
@@ -565,12 +583,64 @@ func (l *rxLane) processRead(ctx context.Context, sink FrameInjector, r rxRead) 
 	r.buf.Release()
 }
 
+// fromNode reports whether what was read from a may be taken: only the cluster's nodes send to
+// the overlay's port. The route table knows the cluster's nodes; a node that
+// has only just joined is refused for as long as its route takes to arrive, as a lost datagram.
+func (oe *OverlayEngine) fromNode(a netip.Addr) bool {
+	if oe.cfg.AnySource || oe.routes.IsNode(a) {
+		return true
+	}
+	oe.rxForeign.Add(1)
+	if oe.foreignLogged.CompareAndSwap(false, true) { // once, so as not to fill the log
+		fmt.Printf("[plaid/overlay] Dropping datagrams from %s, which is not a node of this cluster (counted as foreign from now on)\n", a)
+	}
+	return false
+}
+
+// ReadSecret reads OverlayConfig.Secret from a file of fourteen hexadecimal digits (Skiff makes
+// one for each cluster: skiff_overlay_secret).
+func ReadSecret(path string) (uint64, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	text := strings.TrimSpace(string(data))
+	secret, err := strconv.ParseUint(text, 16, 56)
+	if err != nil || len(text) != 14 || secret == 0 {
+		return 0, fmt.Errorf("the overlay's secret in %s is not 14 hexadecimal digits", path)
+	}
+	return secret << 8, nil
+}
+
+// seal puts the secret in the header of b, a datagram of this engine's.
+func (oe *OverlayEngine) seal(b []byte) {
+	if oe.cfg.Secret != 0 && len(b) >= packet.VXLANHeaderLen {
+		binary.BigEndian.PutUint64(b, uint64(b[0])<<56|oe.cfg.Secret>>8)
+	}
+}
+
+// sealed reports whether a datagram carries the secret. (There is nothing to time: a guess that
+// fails gets no answer.)
+func (oe *OverlayEngine) sealed(datagram []byte) bool {
+	if oe.cfg.Secret == 0 || binary.BigEndian.Uint64(datagram)<<8 == oe.cfg.Secret {
+		return true
+	}
+	oe.rxForeign.Add(1)
+	if oe.secretLogged.CompareAndSwap(false, true) { // once, as in fromNode, and apart from it
+		fmt.Println("[plaid/overlay] Dropping datagrams without the cluster's secret (counted as foreign from now on)")
+	}
+	return false
+}
+
 // process handles one datagram, from src, read at time now; the frame it injects is valid
 // only during the call.
 func (l *rxLane) process(sink FrameInjector, datagram []byte, src netip.AddrPort, now int64) {
 	oe := l.oe
 	if len(datagram) < packet.VXLANHeaderLen {
 		oe.rxInvalid.Add(1)
+		return
+	}
+	if !oe.sealed(datagram) {
 		return
 	}
 	flags := datagram[0]

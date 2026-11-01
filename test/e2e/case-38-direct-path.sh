@@ -64,7 +64,7 @@ REPS=2
 WORK=$(mktemp -d)
 e2e_cleanup_register "rm -rf $WORK"
 cat > "$WORK/direct.py" <<'PY'
-import functools, hashlib, sys, threading, time, urllib.request
+import ctypes, functools, hashlib, os, socket, struct, sys, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 SIZE = 4194304
@@ -117,8 +117,68 @@ def client(reps, bases):
                 print("FAIL %s %s" % (base, str(e).replace(" ", "_")), flush=True)
     print("DONE", flush=True)
 
+# undumpable MARKED UNMARKED: a request to a marked port, which gives the process a socket of the
+# host's; it then makes itself not dumpable, as ssh-agent and sshd do, and a request that stays
+# on the pod network must still work: the supervisor must still be able to look at its sockets.
+def undumpable(marked, unmarked):
+    client_once = lambda base: urllib.request.urlopen("%s/%d" % (base, SIZE), timeout=30).read()
+    kept = None
+    try:
+        kept = urllib.request.urlopen("%s/%d" % (marked, SIZE), timeout=30)
+        kept.read(1)
+        print("OK %s" % marked, flush=True)
+        if ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE
+            raise Exception("prctl")
+        if client_once(unmarked) != stream(SIZE):
+            raise Exception("the download differs")
+        print("OK %s" % unmarked, flush=True)
+    except Exception as e:
+        print("FAIL %s" % str(e).replace(" ", "_"), flush=True)
+    print("DONE", flush=True)
+
+# identity MARKED: after a request to a marked port, what the supervisor runs for this process
+# is done as this process: its paths, umask, address and user on a Unix socket; and a socket it
+# may not write to, if it says so.
+def identity(marked, closed):
+    kept = None
+    try:
+        kept = urllib.request.urlopen("%s/%d" % (marked, SIZE), timeout=30)
+        kept.read(1)
+        os.umask(0o027)
+        path = "/tmp/identity-%d.sock" % os.getpid()
+        srv = socket.socket(socket.AF_UNIX)
+        srv.bind(path)
+        srv.listen(1)
+        print("MODE %o" % (os.stat(path).st_mode & 0o777), flush=True)
+        print("OWNER %d" % os.stat(path).st_uid, flush=True)
+        print("NAME %s" % (srv.getsockname() == path), flush=True)
+        cli = socket.socket(socket.AF_UNIX)
+        cli.connect(path)
+        conn, _ = srv.accept()
+        pid, uid, gid = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        print("PEER %d" % uid, flush=True)
+        pid, uid, gid = struct.unpack("3i", cli.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        print("SERVER %d" % uid, flush=True)
+        print("ME %d" % os.getuid(), flush=True)
+        if closed == "closed":
+            os.chown(path, 1234, 1234)
+            os.chmod(path, 0o600)
+            other = socket.socket(socket.AF_UNIX)
+            try:
+                other.connect(path)
+                print("CLOSED connected", flush=True)
+            except PermissionError:
+                print("CLOSED refused", flush=True)
+    except Exception as e:
+        print("FAIL %s" % str(e).replace(" ", "_"), flush=True)
+    print("DONE", flush=True)
+
 if sys.argv[1] == "serve":
     serve([int(p) for p in sys.argv[2:]])
+elif sys.argv[1] == "identity":
+    identity(sys.argv[2], sys.argv[3])
+elif sys.argv[1] == "undumpable":
+    undumpable(sys.argv[2], sys.argv[3])
 else:
     client(int(sys.argv[2]), sys.argv[3:])
 PY
@@ -352,6 +412,47 @@ fallback() {
     e2e_assert_ne "cf's connections fell back to the overlay" "$(dfallbacks "$line")" none
 }
 e2e_subcase_run T80-direct-fallback fallback
+
+# ---------------------------------------------------------------------------
+# T80-direct-undumpable: a process of a marked pod that has made itself not dumpable, with a socket
+# of the host's in the pod, keeps its own sockets of the pod network.
+# ---------------------------------------------------------------------------
+undumpable() {
+    client_pod cu "$PLAIN_NODE" "80" "http://direct-svc:80" "http://direct-svc:81" |
+        sed 's|direct.py client [0-9]* |direct.py undumpable |' | e2e_kubectl apply -f -
+    e2e_wait_condition 120 "cu has made its requests" client_done cu
+    check_results cu 2
+    await_counter "$PLAIN_NODE" cu connects 1
+    e2e_kubectl -n "$NS" delete pod cu --wait=false > /dev/null
+}
+e2e_subcase_run T80-direct-undumpable undumpable
+
+# ---------------------------------------------------------------------------
+# T80-direct-identity: once a pod has a socket of the host's, what the supervisor runs for it is
+# done as the pod: for one that runs as another user, and for root without CAP_DAC_OVERRIDE.
+# ---------------------------------------------------------------------------
+identity_pod() {  # identity_pod NAME SECURITY_CONTEXT ARGUMENT
+    client_pod "$1" "$PLAIN_NODE" "80" "http://direct-svc:80" |
+        sed -e "s|direct.py client [0-9]* \"\\\$@\"|direct.py identity \"\\\$1\" $3|" \
+            -e "s|^  - name: c\$|  - name: c\n    securityContext: $2|" | e2e_kubectl apply -f -
+    e2e_wait_condition 120 "$1 has made its requests" client_done "$1"
+    client_log "$1"
+}
+identity() {
+    local log
+    log=$(identity_pod cid-user '{runAsUser: 1000, runAsGroup: 1000}' open)
+    e2e_assert_contains "as another user: no failure" "$log" "MODE 750"
+    e2e_assert_contains "as another user: the socket is its own" "$log" "OWNER 1000"
+    e2e_assert_contains "as another user: the socket has the address it asked for" "$log" "NAME True"
+    e2e_assert_contains "as another user: its server sees that user" "$log" "PEER 1000"
+    e2e_assert_contains "as another user: its clients see that user" "$log" "SERVER 1000"
+    log=$(identity_pod cid-root '{capabilities: {drop: [DAC_OVERRIDE, DAC_READ_SEARCH]}}' closed)
+    e2e_assert_contains "as root: the socket has the address it asked for" "$log" "NAME True"
+    e2e_assert_contains "as root without CAP_DAC_OVERRIDE: a socket it may not write to is refused" "$log" "CLOSED refused"
+    e2e_assert_eq "no failures" "$(grep -c '^FAIL' <<< "$log" || true)" 0
+    e2e_kubectl -n "$NS" delete pod cid-user cid-root --wait=false > /dev/null
+}
+e2e_subcase_run T80-direct-identity identity
 
 # ---------------------------------------------------------------------------
 # T80-direct-still-ready: after all that traffic and several probe periods the server is

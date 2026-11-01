@@ -22,6 +22,7 @@ import (
 	"syscall"
 
 	"al.essio.dev/pkg/shellescape"
+	corev1 "k8s.io/api/core/v1"
 	"skifflet/internal/compute/endpoint"
 	"skifflet/internal/compute/gpu"
 )
@@ -56,10 +57,13 @@ func strval(v interface{}) string {
 type Container struct {
 	InstanceName string
 	// Name is the container's name in the pod.
-	Name          string
-	Hostname      string
-	RunAsUser     int64
-	RunAsGroup    int64
+	Name       string
+	Hostname   string
+	RunAsUser  int64
+	RunAsGroup int64
+	// Privileged and Capabilities are the container's securityContext (see capabilityArgs).
+	Privileged    bool
+	Capabilities  *corev1.Capabilities
 	ImageFilePath string
 	// WorkingDir is the directory the container starts in (see workingDirOf); "" means /.
 	WorkingDir string
@@ -148,6 +152,10 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 		"--unsquash",
 		"--overlay", podDir.Container(c.Name).AttemptOverlayDir(attempt),
 	)
+	// (A container of a user namespace of its own has none: see runsInUserNamespace.)
+	if !c.runsInUserNamespace() {
+		args = append(args, capabilityArgs(c.Privileged, c.Capabilities)...)
+	}
 
 	for _, minor := range c.GPUs {
 		args = append(args, "--device", fmt.Sprintf("%s=%d", gpu.CDIKind, minor))

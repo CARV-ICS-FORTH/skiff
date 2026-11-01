@@ -131,7 +131,8 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 	}
 
 	envfilePath := h.podDirectory.Container(container.Name).EnvFilePath()
-	if err := os.WriteFile(envfilePath, []byte(b.String()), endpoint.PodGlobalDirectoryPermissions); err != nil {
+	// It holds the values of Secrets, and only the launcher reads it.
+	if err := os.WriteFile(envfilePath, []byte(b.String()), 0o600); err != nil {
 		return Container{}, fmt.Errorf("cannot write env file for container '%s' of pod '%s': %w", container.Name, h.podKey, err)
 	}
 
@@ -242,7 +243,8 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		}
 		return Container{}, fmt.Errorf("image %s: %w", container.Image, err)
 	}
-	uid, gid, err := DetermineEffectiveRunAsUser(DetermineEffectiveSecurityContext(pod, container), imageConfig.User)
+	sc := DetermineEffectiveSecurityContext(pod, container)
+	uid, gid, err := DetermineEffectiveRunAsUser(sc, imageConfig.User)
 	if err != nil {
 		var cfg *ConfigError
 		if errors.As(err, &cfg) {
@@ -281,6 +283,8 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		Hostname:      hostname,
 		RunAsUser:     uid,
 		RunAsGroup:    gid,
+		Privileged:    sc.Privileged != nil && *sc.Privileged,
+		Capabilities:  sc.Capabilities,
 		ImageFilePath: img.Filepath,
 		WorkingDir:    workingDir,
 		StopSignal:    stopSignal,

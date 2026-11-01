@@ -262,6 +262,7 @@ var podFields = map[string]map[string]fieldSupport{
 		"SchedulingGates": scheduled, "ResourceClaims": fieldRefused,
 		"Resources":        fieldAccepted, // the pod's requests are the scheduler's; limits are not enforced
 		"HostnameOverride": fieldRefused, "SchedulingGroup": scheduled,
+		"EvictionResponders": fieldAccepted, // between the responders and the eviction API; the node sees a deletion
 	},
 	"Container": {
 		"Name": fieldImplemented, "Image": fieldImplemented, "Command": fieldImplemented, "Args": fieldImplemented,
@@ -284,7 +285,7 @@ var podFields = map[string]map[string]fieldSupport{
 		"SELinuxChangePolicy": fieldAccepted,
 	},
 	"SecurityContext": {
-		"Capabilities": fieldAccepted, "Privileged": fieldAccepted, "SELinuxOptions": fieldAccepted,
+		"Capabilities": fieldImplemented, "Privileged": fieldImplemented, "SELinuxOptions": fieldAccepted,
 		"WindowsOptions": fieldAccepted, "RunAsUser": fieldImplemented, "RunAsGroup": fieldImplemented,
 		"RunAsNonRoot": fieldImplemented, "ReadOnlyRootFilesystem": fieldAccepted,
 		"AllowPrivilegeEscalation": fieldAccepted, "ProcMount": fieldAccepted, "SeccompProfile": fieldAccepted,

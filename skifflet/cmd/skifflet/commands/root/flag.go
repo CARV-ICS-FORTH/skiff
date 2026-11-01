@@ -46,6 +46,8 @@ type Opts struct {
 
 	K8sAPICertFilepath string
 	K8sAPIKeyFilepath  string
+	// K8sClientCAFilepath is the CA of the client certificates the kubelet API accepts.
+	K8sClientCAFilepath string
 
 	// Node name to use when creating a node in Kubernetes
 	NodeName string
@@ -67,9 +69,10 @@ type Opts struct {
 }
 
 const (
-	EnvKubeletAddress  = "VKUBELET_ADDRESS"
-	EnvAPICertLocation = "APISERVER_CERT_LOCATION"
-	EnvAPIKeyLocation  = "APISERVER_KEY_LOCATION"
+	EnvKubeletAddress   = "VKUBELET_ADDRESS"
+	EnvAPICertLocation  = "APISERVER_CERT_LOCATION"
+	EnvAPIKeyLocation   = "APISERVER_KEY_LOCATION"
+	EnvClientCALocation = "APISERVER_CLIENT_CA_LOCATION"
 	// EnvPlaidSocket is the variable the Plaid tools read the same setting from.
 	EnvPlaidSocket = "PLAID_SOCKET_PATH"
 	// EnvClusterDomain is where a deployment states the cluster's DNS domain.
@@ -98,6 +101,7 @@ func installFlags(flags *pflag.FlagSet, c *Opts) {
 
 	flags.StringVar(&c.K8sAPICertFilepath, "certificate", os.Getenv(EnvAPICertLocation), "location for certificate to the API server")
 	flags.StringVar(&c.K8sAPIKeyFilepath, "key", os.Getenv(EnvAPIKeyLocation), "location for key for the API server")
+	flags.StringVar(&c.K8sClientCAFilepath, "client-ca", os.Getenv(EnvClientCALocation), "location for the CA of the client certificates the kubelet API accepts")
 
 	flags.StringVar(&c.NodeName, "nodename", "skifflet", "kubernetes node name")
 

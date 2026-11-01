@@ -502,7 +502,7 @@ type node struct {
 func newNode(t *testing.T, n int, cfg OverlayConfig) *node {
 	t.Helper()
 	nd := &node{sink: &superSink{}, addr: fmt.Sprintf("127.0.0.%d", n), ip: net.IPv4(10, 244, byte(n), 10)}
-	cfg.BindAddress = nd.addr
+	cfg.BindAddress, cfg.AnySource = nd.addr, true
 	nd.oe = NewOverlayEngine(cfg, NewRouteTable(), nd.sink)
 	if err := nd.oe.Start(context.Background()); err != nil {
 		t.Skipf("cannot start an engine on %s: %v", nd.addr, err)

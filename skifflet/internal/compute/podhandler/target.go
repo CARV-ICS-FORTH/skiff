@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+	"skifflet/internal/compute"
 	"skifflet/internal/compute/runtime"
 )
 
@@ -294,11 +296,19 @@ func (t *Target) Command(ctx context.Context, argv []string) (cmd *exec.Cmd, rel
 	if _, _, ok := t.Attempt.Launcher(); !ok {
 		return nil, nil, fmt.Errorf("%w: attempt %d ended", ErrContainerNotRunning, t.Attempt.ID)
 	}
+	userNamespace := runsInOtherUserNamespace(t.Payload)
+	argv, files, err := t.entering(argv, userNamespace)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, fmt.Errorf("%w: its process is gone", ErrContainerNotRunning)
+	} else if err != nil {
+		return nil, nil, err
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(t.boundContext(), cancel)
-	args := nsenterArgs(t.Payload, runsInOtherUserNamespace(t.Payload), argv)
+	args := nsenterArgs(t.Payload, userNamespace, argv)
 	cmd = exec.CommandContext(ctx, "nsenter", args...)
-	cmd.Env = t.Env
+	cmd.Env = []string{} // nothing of the container's before it is entered: see entering
+	cmd.ExtraFiles = files
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		killProcessTree(cmd.Process.Pid)
@@ -306,13 +316,114 @@ func (t *Target) Command(ctx context.Context, argv []string) (cmd *exec.Cmd, rel
 	}
 	cmd.WaitDelay = 2 * time.Second
 	t.Attempt.logger.Info("running a command in the container", "action", "exec", "command", argv[0])
-	return cmd, func() { stop(); cancel() }, nil
+	return cmd, func() {
+		stop()
+		cancel()
+		for _, f := range files {
+			f.Close()
+		}
+	}, nil
+}
+
+// entering makes argv something for nsenter to run, and the descriptors that takes (3 and up).
+// nsenter runs outside the container with all the capabilities it needs to enter one, so it gets
+// nothing of the container's. plaidtainer's `enter` is the first thing that runs inside:
+// it is given the environment on a pipe and the capabilities the command is limited to, and is
+// started from its descriptor. It enters the mount namespace and the root itself, from
+// descriptors of them opened here (see nsenterArgs).
+func (t *Target) entering(argv []string, userNamespace bool) ([]string, []*os.File, error) {
+	path, err := exec.LookPath(compute.Environment.ApptainerBin)
+	if err != nil {
+		return nil, nil, fmt.Errorf("enter the container: %w", err)
+	}
+	program, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("enter the container: %w", err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		program.Close()
+		return nil, nil, fmt.Errorf("enter the container: %w", err)
+	}
+	go writeEnv(w, t.Env)
+	// (In the order of plaidtainer's enterProgramFD and the rest.)
+	files := []*os.File{program, r}
+	if userNamespace {
+		// nsenter enters everything, and its program then runs as the container's user with nothing
+		// more than that (see plaidtainer's entered).
+		return append([]string{"/proc/self/fd/3", "entered", "-"}, argv...), files, nil
+	}
+	fail := func(err error) ([]string, []*os.File, error) {
+		for _, f := range files {
+			f.Close()
+		}
+		return nil, nil, err
+	}
+	mask, err := capabilitiesToKeep(t.Payload)
+	if err != nil {
+		return fail(err)
+	}
+	proc := procRoot + "/" + strconv.Itoa(t.Payload) + "/"
+	mount, err := os.Open(proc + "ns/mnt")
+	if err != nil {
+		return fail(fmt.Errorf("enter the container: %w", err))
+	}
+	files = append(files, mount)
+	for _, place := range []string{"root", "cwd"} {
+		dir, err := os.OpenFile(proc+place, unix.O_PATH|unix.O_DIRECTORY, 0)
+		if err != nil {
+			return fail(fmt.Errorf("enter the container: %w", err))
+		}
+		files = append(files, dir)
+	}
+	return append([]string{"/proc/self/fd/3", "enter", mask}, argv...), files, nil
+}
+
+// writeEnv gives the command the environment. By itself: a pipe holds less than an environment can
+// be. It ends when the command has read it, or when the command has ended and the caller has closed
+// the read end.
+func writeEnv(w *os.File, env []string) {
+	_, _ = w.WriteString(strings.Join(env, "\x00"))
+	w.Close()
+}
+
+// capabilitiesToKeep is the mask for `enter`: a program of the image must not have more in an
+// exec or a probe than when it runs as the container. It is the container's bounding set that
+// counts, not what its main process has at the moment (it may have given up its own as it changed
+// user). "-" keeps what there is: a container of a privileged pod has as much as nsenter.
+func capabilitiesToKeep(payload int) (string, error) {
+	theirs, err := capabilityBoundingSet(payload)
+	if err != nil {
+		return "", err
+	}
+	ours, err := capabilityBoundingSet(os.Getpid())
+	if err != nil {
+		return "", err
+	}
+	if theirs == ours {
+		return "-", nil
+	}
+	return theirs, nil
+}
+
+// capabilityBoundingSet is the CapBnd of a process, in hexadecimal.
+func capabilityBoundingSet(pid int) (string, error) {
+	status, err := os.ReadFile(procRoot + "/" + strconv.Itoa(pid) + "/status")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(status), "\n") {
+		if value, ok := strings.CutPrefix(line, "CapBnd:"); ok {
+			return strings.TrimSpace(value), nil
+		}
+	}
+	return "", fmt.Errorf("no CapBnd in the status of process %d", pid)
 }
 
 // nsenterArgs is the nsenter command line that runs argv in the namespaces of a container's
-// main process: mount, network, pid and UTS (its hostname, which is the pod's), its root and
-// working directory, and, for a container
-// that runs in a user namespace of its own (as another user than root), that user namespace
+// main process: network, pid and UTS (its hostname, which is the pod's); not the mount namespace,
+// the root or the working directory, where nsenter would look argv[0] up (see entering). For a
+// container that runs in a user namespace of its own (as another user than root), that user namespace
 // too, so that the command is the container's user, with the container's view of ids and
 // files, and not root of the bubble's namespace (what it was before: `kubectl exec` in a
 // container that runs as 1000 printed uid 0).
@@ -323,8 +434,9 @@ func nsenterArgs(payload int, userNamespace bool, argv []string) []string {
 		// the container's namespace does not map: "setgid failed". Kept, the command has the
 		// ids the container's main process has.)
 		args = append(args, "-U", "--preserve-credentials")
+		return append(append(args, "-m", "-n", "-p", "-u", "-r", "-w", "--"), argv...)
 	}
-	args = append(args, "-m", "-n", "-p", "-u", "-r", "-w", "--")
+	args = append(args, "-n", "-p", "-u", "--")
 	return append(args, argv...)
 }
 

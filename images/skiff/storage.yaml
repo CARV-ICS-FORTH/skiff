@@ -15,7 +15,9 @@
 # Differences from K3s's manifest: the shared filesystem in the configuration; the volume
 # type hostPath (a local volume needs node affinity, which a shared directory has not);
 # volumes are bound at once (Immediate), which also suits pods placed with nodeName; no
-# registry prefix on the images.
+# registry prefix on the images; the rules of the service account are the ones of the
+# provisioner's own manifest (it starts its helper pods in its namespace and has no need to
+# write pods elsewhere or endpoints at all), where K3s's allow any verb cluster-wide.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -28,17 +30,41 @@ metadata:
   name: local-path-provisioner-role
 rules:
 - apiGroups: [""]
-  resources: ["nodes", "persistentvolumeclaims", "configmaps", "pods/log"]
+  resources: ["nodes", "persistentvolumeclaims", "configmaps", "pods", "pods/log"]
   verbs: ["get", "list", "watch"]
 - apiGroups: [""]
-  resources: ["endpoints", "persistentvolumes", "pods"]
-  verbs: ["*"]
+  resources: ["persistentvolumes"]
+  verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
 - apiGroups: ["storage.k8s.io"]
   resources: ["storageclasses"]
   verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: local-path-provisioner-role
+  namespace: kube-system
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "create", "patch", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: local-path-provisioner-bind
+  namespace: kube-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: local-path-provisioner-role
+subjects:
+- kind: ServiceAccount
+  name: local-path-provisioner-service-account
+  namespace: kube-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

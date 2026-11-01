@@ -33,7 +33,7 @@ func TestKernelFeaturesNamedWhenMissing(t *testing.T) {
 }
 
 // The probes agree with the kernel the tests run on, which has everything the supervisor
-// needs (CI's runners and the nodes: 5.9 or newer).
+// needs (CI's runners and the nodes: 5.14 or newer).
 func TestKernelProbesOnThisKernel(t *testing.T) {
 	for _, f := range kernelFeatures {
 		if err := f.probe(); err != nil {

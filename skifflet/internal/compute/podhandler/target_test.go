@@ -5,15 +5,18 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"skifflet/internal/compute"
 	"skifflet/internal/compute/runtime"
 )
 
@@ -31,6 +34,7 @@ func newFakeProc(t *testing.T) *fakeProc {
 	f := &fakeProc{t: t, root: t.TempDir()}
 	procRoot = f.root
 	t.Cleanup(func() { procRoot = old })
+	f.add(os.Getpid(), procSpec{}) // Skifflet itself, with what its containers have
 	return f
 }
 
@@ -80,7 +84,7 @@ func (f *fakeProc) add(pid int, spec procSpec) {
 	for _, p := range nspid {
 		parts = append(parts, strconv.Itoa(p))
 	}
-	write("status", "Name:\tx\nNSpid:\t"+strings.Join(parts, "\t")+"\n")
+	write("status", "Name:\tx\nNSpid:\t"+strings.Join(parts, "\t")+"\nCapBnd:\t000001ffffffffff\n")
 	if spec.env != nil {
 		write("environ", strings.Join(spec.env, "\x00")+"\x00")
 	}
@@ -89,8 +93,13 @@ func (f *fakeProc) add(pid int, spec procSpec) {
 			f.t.Fatal(err)
 		}
 	}
-	if err := os.Symlink(f.root, filepath.Join(dir, "root")); err != nil {
-		f.t.Fatal(err)
+	if _, ok := spec.ns["mnt"]; !ok {
+		write("ns/mnt", "")
+	}
+	for _, place := range []string{"root", "cwd"} {
+		if err := os.Symlink(f.root, filepath.Join(dir, place)); err != nil {
+			f.t.Fatal(err)
+		}
 	}
 	if spec.exe != "" {
 		if err := os.Symlink(spec.exe, filepath.Join(dir, "exe")); err != nil {
@@ -322,10 +331,17 @@ func TestTarget_EnvironmentIsTheContainersNeverSkifflets(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	if strings.Contains(strings.Join(cmd.Env, "\n"), "SKIFF_SECRET") || strings.Join(cmd.Env, " ") != "PATH=/container/bin APP_MODE=fixture" {
-		t.Fatalf("command environment %v", cmd.Env)
+	if cmd.Env == nil || len(cmd.Env) != 0 {
+		t.Fatalf("nsenter's environment %v", cmd.Env)
 	}
-	want := []string{"nsenter", "-t", strconv.Itoa(fakePayload), "-m", "-n", "-p", "-u", "-r", "-w", "--", "sh", "-c", "pwd"}
+	env, err := io.ReadAll(cmd.ExtraFiles[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(env) != "PATH=/container/bin\x00APP_MODE=fixture" {
+		t.Fatalf("the command's environment %q", env)
+	}
+	want := []string{"nsenter", "-t", strconv.Itoa(fakePayload), "-n", "-p", "-u", "--", "/proc/self/fd/3", "enter", "-", "sh", "-c", "pwd"}
 	if strings.Join(cmd.Args, " ") != strings.Join(want, " ") {
 		t.Fatalf("command line %v, want %v", cmd.Args, want)
 	}
@@ -350,7 +366,7 @@ func TestTarget_EnvironmentIsTheContainersNeverSkifflets(t *testing.T) {
 func fakeNsenter(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	script := "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done; shift\nexec 3<&0\n\"$@\" <&3 &\nwait $!\nexit $?\n"
+	script := "#!/bin/sh\nwhile [ \"$1\" != \"--\" ]; do shift; done; shift\nexec 9<&0\n\"$@\" <&9 &\nwait $!\nexit $?\n"
 	if err := os.WriteFile(filepath.Join(dir, "nsenter"), []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +392,70 @@ func liveTarget(t *testing.T) (*Target, *Attempt) {
 	}
 	go a.Wait(cmd) // the launcher's waiter, so that the container can end by itself
 	t.Cleanup(func() { _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); <-a.done })
-	return &Target{Attempt: a, Payload: 4242, Env: os.Environ()}, a
+	return &Target{Attempt: a, Payload: os.Getpid(), Env: os.Environ()}, a
+}
+
+// A command is limited to what the container has when that is less than what nsenter has, and
+// does not run if that cannot be found out.
+func TestCapabilitiesToKeep(t *testing.T) {
+	if mask, err := capabilitiesToKeep(os.Getpid()); err != nil || mask != "-" {
+		t.Errorf("a container with what nsenter has (privileged): %q, %v", mask, err)
+	}
+	if _, err := capabilitiesToKeep(1 << 30); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a process that is gone: %v", err)
+	}
+
+	limited := exec.Command("unshare", "-Ur", "setpriv", "--bounding-set=-all", "sleep", "30")
+	if err := limited.Start(); err != nil {
+		t.Skipf("cannot start a limited process: %v", err)
+	}
+	t.Cleanup(func() { _ = limited.Process.Kill(); _ = limited.Wait() })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if set, _ := capabilityBoundingSet(limited.Process.Pid); set == "0000000000000000" {
+			break
+		}
+		if limited.ProcessState != nil || time.Now().After(deadline) {
+			t.Skip("no process limited by setpriv here")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if mask, err := capabilitiesToKeep(limited.Process.Pid); err != nil || mask != "0000000000000000" {
+		t.Errorf("a limited container: %q, %v", mask, err)
+	}
+}
+
+// Nothing of the container reaches nsenter, which runs outside it with all the capabilities: its
+// environment goes on the pipe, and not in arguments, which every user of the node can read.
+func TestCommandKeepsTheEnvironmentFromNsenter(t *testing.T) {
+	const secret = "LD_PRELOAD=/volume/lib.so"
+	target := &Target{Payload: os.Getpid(), Env: []string{"PATH=/container/bin", secret}}
+	argv, files, err := target.entering([]string{"id"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		for _, f := range files {
+			f.Close()
+		}
+	}()
+	if want := []string{"/proc/self/fd/3", "entered", "-", "id"}; !slices.Equal(argv, want) {
+		t.Errorf("argv = %q, want %q", argv, want)
+	}
+	env, err := io.ReadAll(files[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(env) != "PATH=/container/bin\x00"+secret {
+		t.Errorf("what the pipe has: %q", env)
+	}
+
+	saved := compute.Environment.ApptainerBin
+	t.Cleanup(func() { compute.Environment.ApptainerBin = saved })
+	compute.Environment.ApptainerBin = "/no/such/plaidtainer"
+	if _, _, err := target.entering([]string{"id"}, true); err == nil {
+		t.Error("without the program that enters, the command must not run")
+	}
 }
 
 func TestTargetRun_ExitCodeAndOutput(t *testing.T) {
@@ -525,7 +604,7 @@ func TestKillProcessTree_KillsDescendantsLeavesOthers(t *testing.T) {
 // none to join.
 func TestNsenterArgs(t *testing.T) {
 	got := strings.Join(nsenterArgs(42, false, []string{"id", "-u"}), " ")
-	if got != "-t 42 -m -n -p -u -r -w -- id -u" {
+	if got != "-t 42 -n -p -u -- id -u" { // nothing that makes the path of the command the container's
 		t.Errorf("without a user namespace: %q", got)
 	}
 	got = strings.Join(nsenterArgs(42, true, []string{"id", "-u"}), " ")

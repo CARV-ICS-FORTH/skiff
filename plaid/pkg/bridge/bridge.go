@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"plaid/pkg/packet"
@@ -90,6 +91,9 @@ type BridgeConfig struct {
 	NodeCIDR    *net.IPNet
 	ClusterCIDR *net.IPNet
 	FDBTTL      time.Duration
+	// AnySource takes frames from an endpoint whatever their source, for tests of what the bridge
+	// does with one (see ownSource).
+	AnySource bool
 }
 
 // Bridge is the user-space L2/L3 switch.
@@ -115,6 +119,10 @@ type Bridge struct {
 	// answer. Packets to either are handed to it before anything else decides where they
 	// go, including the guard against the bubble sending non-cluster traffic back.
 	services *svc.Engine
+
+	anySource     bool
+	sourceDropped atomic.Uint64 // frames of a pod with another source than its own (see ownSource)
+	sourceLogged  atomic.Bool
 }
 
 // NewBridge creates and initializes a Bridge.
@@ -131,6 +139,7 @@ func NewBridge(cfg BridgeConfig) *Bridge {
 		gatewayIP:   cfg.GatewayIP,
 		gatewayMAC:  cfg.GatewayMAC,
 		gatewayMode: cfg.GatewayMode,
+		anySource:   cfg.AnySource,
 		nodeCIDR:    cfg.NodeCIDR,
 		clusterCIDR: cfg.ClusterCIDR,
 	}
@@ -322,6 +331,10 @@ func (x *Batch) processFrame(srcEP Endpoint, raw []byte, trusted bool) error {
 	}
 	frame.Trusted = trusted
 	x.src = srcEP
+	if !b.ownSource(srcEP, raw) {
+		x.sup.whole = x.sup.on
+		return nil
+	}
 
 	// A super-frame that would only be looked at is not filtered or learnt from.
 	if !x.sup.dry {
@@ -352,6 +365,49 @@ func (x *Batch) processFrame(srcEP Endpoint, raw []byte, trusted bool) error {
 	// Handle Unicast
 	return b.handleUnicast(x, srcEP, frame, raw)
 }
+
+// ownSource says whether a frame from srcEP has that endpoint's addresses as its source: its MAC,
+// and its IPv4 address in an IPv4 packet or as the sender of an ARP packet (0.0.0.0 is what an
+// address probe says). The bridge routes only IPv4, so other protocols are checked by their MAC. An
+// endpoint without an address, and the bubble, whose traffic comes from other nodes' pods and
+// the host, are not checked. A frame that is not long enough for this is left to what parses it.
+func (b *Bridge) ownSource(srcEP Endpoint, raw []byte) bool {
+	if b.anySource || srcEP == nil || srcEP.IP() == nil || srcEP == b.BubbleEndpoint() {
+		return true
+	}
+	if isOwnSource(srcEP.IP().To4(), srcEP.MAC(), raw) {
+		return true
+	}
+	b.sourceDropped.Add(1)
+	if b.sourceLogged.CompareAndSwap(false, true) { // once, so as not to fill the log
+		fmt.Printf("[plaid/bridge] Dropping frames of %s with another source address (counted from now on)\n", srcEP.Name())
+	}
+	return false
+}
+
+func isOwnSource(ip net.IP, mac net.HardwareAddr, raw []byte) bool {
+	if len(ip) != 4 || len(mac) != 6 {
+		return true
+	}
+	if !bytes.Equal(raw[6:12], mac) {
+		return false
+	}
+	payload := raw[packet.EthernetHeaderLen:]
+	switch binary.BigEndian.Uint16(raw[12:14]) {
+	case packet.EtherTypeIPv4:
+		return len(payload) < 20 || payload[0]>>4 != 4 || bytes.Equal(payload[12:16], ip)
+	case packet.EtherTypeARP:
+		if len(payload) < 18 {
+			return true
+		}
+		sender := payload[14:18]
+		return bytes.Equal(payload[8:14], mac) && (bytes.Equal(sender, ip) || binary.BigEndian.Uint32(sender) == 0)
+	}
+	return true
+}
+
+// SourceDropped is how many frames ownSource has refused.
+func (b *Bridge) SourceDropped() uint64 { return b.sourceDropped.Load() }
 
 func (b *Bridge) handleBroadcast(srcEP Endpoint, frame *packet.EthernetFrame, raw []byte) error {
 	// If it's an ARP request, check if it's asking for known local endpoints or bridge/gateway/slirp

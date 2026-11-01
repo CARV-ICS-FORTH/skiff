@@ -137,6 +137,18 @@ func (t *Table) Add(cookie uint64, s Socket) {
 	}
 }
 
+// Remove forgets a socket.
+func (t *Table) Remove(cookie uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if el, ok := t.listeners.entries[cookie]; ok {
+		t.listeners.remove(el)
+	}
+	if el, ok := t.conns.entries[cookie]; ok {
+		t.conns.remove(el)
+	}
+}
+
 // SetLiveness gives the table the means to tell which of its sockets still exist: live
 // returns the cookies of all the sockets that do (a socket in any state counts, down to
 // one that is closing), and logf, if not nil, receives the line for a failure of it. Without

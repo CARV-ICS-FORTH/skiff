@@ -118,7 +118,7 @@ func TestOverlayEngineEndToEnd(t *testing.T) {
 
 	// Node B setup (port 0 selects random free port)
 	injB := newMockInjector()
-	engineB := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1", Port: 0, DefaultVNI: 1}, NewRouteTable(), injB)
+	engineB := NewOverlayEngine(OverlayConfig{BindAddress: "127.0.0.1", Port: 0, DefaultVNI: 1}, routeTo(0), injB)
 	if err := engineB.Start(ctx); err != nil {
 		t.Fatalf("Failed to start engine B: %v", err)
 	}

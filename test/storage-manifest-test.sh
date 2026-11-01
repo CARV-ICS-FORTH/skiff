@@ -36,6 +36,15 @@ for name, d in classes.items():
     assert "volumeBindingMode: Immediate" in d, name
     assert 'defaultVolumeType: "hostPath"' in d, name + ": a local volume needs node affinity, a shared directory has none"
 assert "reclaimPolicy: Delete" in classes["local-path"] and "storageclass.kubernetes.io/is-default-class: \"true\"" in classes["local-path"]
+# What the provisioner's service account may do: a token that leaks must not be able to
+# start pods everywhere, or to change where a Service's traffic goes.
+assert '"*"' not in text, "a rule allows any verb"
+assert "endpoints" not in text.split("kind: Deployment")[0].split("kind: ClusterRole\n")[1], "the provisioner has no use for endpoints"
+role = next(d for d in docs if re.search(r"^kind: Role$", d, re.M))
+assert "namespace: kube-system" in role and '"pods"' in role and '"create"' in role, role
+cluster_role = next(d for d in docs if re.search(r"^kind: ClusterRole$", d, re.M))
+pods_rule = next(r for r in cluster_role.split("- apiGroups")[1:] if '"pods"' in r)
+assert '"create"' not in pods_rule and '"delete"' not in pods_rule, pods_rule
 assert text.count("rancher/local-path-provisioner:v0.0.32") == 1 and text.count("rancher/mirrored-library-busybox:1.37.0") == 1
 PY
 echo "storage-manifest-test: ok"

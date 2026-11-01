@@ -63,7 +63,7 @@ no_forward() {
 }
 e2e_subcase_run T21-no-forward no_forward
 
-# counters NODE: "tx txerrors rx rxinvalid rxdropped" from plaidctl status, each found by its
+# counters NODE: "tx txerrors rx rxinvalid rxdropped rxforeign" from plaidctl status, each found by its
 # name: the line has more fields than these, and gains some. tx and rx count what the overlay
 # carried over UDP (datagrams) and over RDMA (messages, from the RDMA line, when the nodes have
 # InfiniBand: see case 37).
@@ -72,8 +72,8 @@ counters() {
     status=$(runtime_plaidctl "$1" status)
     rdma_tx=$(sed -n 's/^RDMA:.*: tx \([0-9]*\) messages, .*/\1/p' <<< "$status")
     rdma_rx=$(sed -n 's/^RDMA:.*, rx \([0-9]*\) messages, .*/\1/p' <<< "$status")
-    sed -n 's/^Overlay:.*[(, ]tx=\([0-9]*\).*, tx errors=\([0-9]*\), rx=\([0-9]*\).*, rx invalid=\([0-9]*\), rx dropped=\([0-9]*\).*/\1 \2 \3 \4 \5/p' <<< "$status" |
-        awk -v t="${rdma_tx:-0}" -v r="${rdma_rx:-0}" '{print $1 + t, $2, $3 + r, $4, $5}'
+    sed -n 's/^Overlay:.*[(, ]tx=\([0-9]*\).*, tx errors=\([0-9]*\), rx=\([0-9]*\).*, rx invalid=\([0-9]*\), rx foreign=\([0-9]*\), rx dropped=\([0-9]*\).*/\1 \2 \3 \4 \6 \5/p' <<< "$status" |
+        awk -v t="${rdma_tx:-0}" -v r="${rdma_rx:-0}" '{print $1 + t, $2, $3 + r, $4, $5, $6}'
 }
 
 # Cross-node traffic moves the overlay counters of both ends, from the first node to every other
@@ -92,19 +92,44 @@ traffic() {
         fixture_client_job "$NS" "e2e20-client-$n" "$client_node" "http://${server_ip}:8080/" | e2e_kubectl apply -f -
         e2e_wait_job_complete "$NS" "e2e20-client-$n" 60
         after_s=$(counters "$server_node"); after_c=$(counters "$client_node")
-        read -r ta ea ra ia da <<< "$after_s"; read -r ta0 ea0 ra0 ia0 da0 <<< "$before_s"
-        read -r tb eb rb ib db <<< "$after_c"; read -r tb0 eb0 rb0 ib0 db0 <<< "$before_c"
+        read -r ta ea ra ia da fa <<< "$after_s"; read -r ta0 ea0 ra0 ia0 da0 fa0 <<< "$before_s"
+        read -r tb eb rb ib db fb <<< "$after_c"; read -r tb0 eb0 rb0 ib0 db0 fb0 <<< "$before_c"
         [ "$ta" -gt "$ta0" ] && [ "$ra" -gt "$ra0" ] || e2e_fail "the overlay of $server_node did not carry the request from $client_node (before: $before_s, after: $after_s)"
         [ "$tb" -gt "$tb0" ] && [ "$rb" -gt "$rb0" ] || e2e_fail "the overlay of $client_node did not carry the request to $server_node (before: $before_c, after: $after_c)"
         e2e_assert_eq "no overlay send errors on $server_node" "$ea" "$ea0"
         e2e_assert_eq "no overlay send errors on $client_node" "$eb" "$eb0"
         e2e_assert_eq "no invalid overlay datagrams on $server_node" "$ia" "$ia0"
         e2e_assert_eq "no dropped overlay packets on $client_node" "$db" "$db0"
+        e2e_assert_eq "the overlay of $server_node takes what $client_node sends" "$fa" "$fa0"
+        e2e_assert_eq "the overlay of $client_node takes what $server_node sends" "$fb" "$fb0"
     done
     e2e_kubectl delete pod e2e20-server -n "$NS" --grace-period=2 --timeout=60s >/dev/null
 }
 if e2e_two_nodes T21-traffic; then
     e2e_subcase_run T21-traffic traffic
+fi
+
+# A process of any user on a node sends from that node's address, which the overlay's allow-list
+# takes: it is the cluster's secret that keeps the datagram off the pod network. (From the node's
+# host, as such a process would, with a whole frame behind a VXLAN header without the secret.)
+stranger_on_a_node() {
+    local from="${NODES[0]}" to="${NODES[1]}" before after to_ip="${IPS[${NODES[1]}]}"
+    local f0 f1 r0 r1 i0 i1 d0 d1 ignored
+    before=$(counters "$to")
+    runtime_ssh_node "${IPS[$from]}" "bash -c 'for i in 1 2 3; do printf \"\\x08\\0\\0\\0\\0\\0\\x01\\0\\xff\\xff\\xff\\xff\\xff\\xff\\x02\\0\\0\\0\\0\\x01\\x08\\0forged\" > /dev/udp/${to_ip}/8472; done'"
+    local deadline=$((SECONDS + 15))
+    while :; do
+        after=$(counters "$to")
+        read -r ignored ignored r1 i1 d1 f1 <<< "$after"
+        read -r ignored ignored r0 i0 d0 f0 <<< "$before"
+        [ "$f1" -ge $((f0 + 3)) ] || [ "$SECONDS" -ge "$deadline" ] && break
+        sleep 1
+    done
+    e2e_assert_eq "datagrams from a node's address without the secret are dropped as foreign" "$((f1 - f0))" 3
+    e2e_assert_eq "and none of them is counted as anything else" "$((i1 - i0)):$((d1 - d0))" "0:0"
+}
+if e2e_two_nodes T21-secret; then
+    e2e_subcase_run T21-secret stranger_on_a_node
 fi
 
 [ "$E2E_FAILED" -eq 0 ] && e2e_pass "Case $E2E_CASE complete" || { e2e_log "Case $E2E_CASE FAILED"; exit 1; }

@@ -13,12 +13,13 @@ import (
 )
 
 // MinKernel is the oldest Linux that has everything the supervisor uses; the interface that
-// sets it is SECCOMP_IOCTL_NOTIF_ADDFD, below. The others it uses are older: the seccomp
+// sets it is SO_NETNS_COOKIE, below: how a socket of the host's is known once the table has
+// forgotten it. The others it uses are older: SECCOMP_IOCTL_NOTIF_ADDFD (5.9), the seccomp
 // listener (5.0) and SECCOMP_USER_NOTIF_FLAG_CONTINUE (5.5), SO_COOKIE (4.12), the
 // cookie of NETLINK_SOCK_DIAG's inet_diag_msg, process_vm_readv and writev (3.2) and
 // EPOLLEXCLUSIVE (4.5); close_range (5.9) is used where it is, with a fallback (see
 // closeListed).
-const MinKernel = "5.9"
+const MinKernel = "5.14"
 
 // kernelFeature is a kernel interface that the supervisor cannot do without: probe says
 // whether the running kernel has it, by using it.
@@ -30,7 +31,8 @@ type kernelFeature struct {
 var kernelFeatures = []kernelFeature{
 	{"pidfd_open", "5.3", probePidfdOpen},
 	{"pidfd_getfd", "5.6", probePidfdGetfd},
-	{"SECCOMP_IOCTL_NOTIF_ADDFD with SECCOMP_ADDFD_FLAG_SETFD", MinKernel, probeNotifAddfd},
+	{"SECCOMP_IOCTL_NOTIF_ADDFD with SECCOMP_ADDFD_FLAG_SETFD", "5.9", probeNotifAddfd},
+	{"SO_NETNS_COOKIE", MinKernel, probeNetnsCookie},
 }
 
 // CheckKernel says whether the kernel has what the supervisor needs, by trying each of
@@ -51,6 +53,17 @@ func checkKernelFeatures(features []kernelFeature) error {
 		return nil
 	}
 	return fmt.Errorf("the kernel lacks %s: the direct path needs Linux %s or newer", strings.Join(lacks, ", "), MinKernel)
+}
+
+// probeNetnsCookie asks a socket which network namespace it is in.
+func probeNetnsCookie() error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	_, err = unix.GetsockoptUint64(fd, unix.SOL_SOCKET, unix.SO_NETNS_COOKIE)
+	return err
 }
 
 // probePidfdOpen opens a pidfd of this process; the calls on the container's processes

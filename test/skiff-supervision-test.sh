@@ -3,6 +3,7 @@
 set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 test_dir=$(mktemp -d)
+export SKIFF_IMAGE_DIGEST_CHECK=0 # (the images here are stand-ins: skiff-config-test checks this)
 trap 'rm -rf "$test_dir"' EXIT
 mkdir -p "$test_dir/bin" "$test_dir/repo/scripts"
 
@@ -113,6 +114,24 @@ rc=0
 SLURM_JOB_ID=8998 HOME="$test_dir/home-nohelper" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/nohelper.log" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] && grep -q 'skiff.sh not found' "$test_dir/nohelper.log" || { echo "missing helper: exit $rc" >&2; cat "$test_dir/nohelper.log" >&2; exit 1; }
 mv "$test_dir/skiff.sh.away" "$test_dir/repo/scripts/skiff.sh"
+
+# A job submitted from a directory that others can write to does not run what is there.
+mkdir -p "$test_dir/shared/scripts"
+printf 'touch "%s"\n' "$test_dir/marker" > "$test_dir/shared/scripts/skiff.sh"
+chmod 777 "$test_dir/shared/scripts"
+rc=0
+SLURM_JOB_ID=8994 HOME="$test_dir/home-shared" SLURM_SUBMIT_DIR="$test_dir/shared" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/shared.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$test_dir/marker" ] && grep -q 'not using .*shared/scripts/skiff.sh' "$test_dir/shared.log" || { echo "a skiff.sh others can change: exit $rc" >&2; cat "$test_dir/shared.log" >&2; exit 1; }
+
+# Writable by a group is writable by others unless the group is the user's own; where no group has
+# the user's name, as with a site's "users", it does not count as one.
+mkdir -p "$test_dir/shared-group/scripts" "$test_dir/fake-stat"
+printf 'touch "%s"\n' "$test_dir/marker" > "$test_dir/shared-group/scripts/skiff.sh"
+printf '#!/bin/sh\necho "775 %s users of a site"\n' "$(id -un)" > "$test_dir/fake-stat/stat"
+chmod +x "$test_dir/fake-stat/stat"
+rc=0
+PATH="$test_dir/fake-stat:$PATH" SLURM_JOB_ID=8993 HOME="$test_dir/home-shared" SLURM_SUBMIT_DIR="$test_dir/shared-group" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/shared-group.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$test_dir/marker" ] && grep -q 'not using .*shared-group/scripts/skiff.sh' "$test_dir/shared-group.log" || { echo "a skiff.sh a site's group can write to: exit $rc" >&2; cat "$test_dir/shared-group.log" >&2; exit 1; }
 
 # A node that lacks a host program, or whose scratch directory cannot be used, stops the
 # job before any bubble starts, naming the problem.

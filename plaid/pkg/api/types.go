@@ -234,6 +234,9 @@ type Response struct {
 	OverlayRxReads   uint64 `json:"overlay_rx_reads"`
 	OverlayRxPackets uint64 `json:"overlay_rx_packets"`
 	OverlayRxInvalid uint64 `json:"overlay_rx_invalid"`
+	// OverlayRxForeign counts what came from an address that is no node of the cluster, or
+	// without the cluster's secret.
+	OverlayRxForeign uint64 `json:"overlay_rx_foreign"`
 	OverlayRxDropped uint64 `json:"overlay_rx_dropped"`
 	// Datagrams lost before the bridge: the in-process queue was full, or the kernel's
 	// socket buffer was; and that buffer's effective size in bytes.

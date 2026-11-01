@@ -28,7 +28,8 @@ func randomID(prefix string) string {
 }
 
 func main() {
-	direct.RunWatchdogIfRequested() // a supervisor's watchdog is this program started again
+	enterIfRequested()              // the last step of entering a container is this program started again
+	direct.RunWatchdogIfRequested() // and so is a supervisor's watchdog
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -763,6 +764,8 @@ func takesArg(flag string) bool {
 		"--shell":              true,
 		"--readiness-file":     true,
 		"--device":             true, // a CDI device name (--device nvidia.com/gpu=0)
+		"--add-caps":           true,
+		"--drop-caps":          true,
 	}
 	return knownValFlags[flag]
 }

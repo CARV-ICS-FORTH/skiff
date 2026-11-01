@@ -74,10 +74,10 @@ func main() {
 		}
 		fmt.Println()
 		if status.OverlayTransport != "" {
-			fmt.Printf("Overlay:      %s socket %s (sockets=%d rx/%d tx, rx per socket=%v, tx=%d in %d sends, tx errors=%d, rx=%d in %d reads, rx invalid=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d, offload=%s, super=%s)\n",
+			fmt.Printf("Overlay:      %s socket %s (sockets=%d rx/%d tx, rx per socket=%v, tx=%d in %d sends, tx errors=%d, rx=%d in %d reads, rx invalid=%d, rx foreign=%d, rx dropped=%d, queue drops=%d, socket drops=%d, rcvbuf=%d, offload=%s, super=%s)\n",
 				status.OverlayTransport, status.OverlayAddress, status.OverlayRxSockets, status.OverlayTxSockets, status.OverlayRxPerSocket,
 				status.OverlayTxPackets, status.OverlayTxSends, status.OverlayTxErrors,
-				status.OverlayRxPackets, status.OverlayRxReads, status.OverlayRxInvalid, status.OverlayRxDropped,
+				status.OverlayRxPackets, status.OverlayRxReads, status.OverlayRxInvalid, status.OverlayRxForeign, status.OverlayRxDropped,
 				status.OverlayRxQueueDrops, status.OverlaySocketDrops, status.OverlayRcvBuf, orNone(status.OverlayOffload), superSummary(status.OverlaySuper))
 		}
 		if r := status.OverlayRDMA; r != nil {

@@ -120,6 +120,27 @@ t04_not_implemented() {  # t04_not_implemented DESCRIPTION OUTPUT WORD
 }
 e2e_subcase_run T04-attach-501 t04_not_implemented "kubectl attach" \
     "$(e2e_kubectl attach e2e06-pod -n "$NS" -c app 2>&1 || true)" "attach"
+# The kubelet's port is open to everyone who can reach the node: without credentials it says
+# nothing and runs nothing, and a pod's own token is not enough, from outside or from a pod.
+t04_kubelet_auth() {
+    local addr url code token
+    addr=$(e2e_kubectl get node "$NODE_A" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}')
+    url="https://${addr}:10250"
+    for path in pods runningpods/ stats/summary "containerLogs/${NS}/e2e06-pod/app"; do
+        code=$(e2e_curl -sk -o /dev/null -w '%{http_code}' "${url}/${path}")
+        e2e_assert_eq "/${path} without credentials" "$code" 401
+    done
+    code=$(e2e_curl -sk -o /dev/null -w '%{http_code}' -X POST "${url}/exec/${NS}/e2e06-pod/app?command=id&output=1")
+    e2e_assert_eq "exec without credentials" "$code" 401
+    token=$(e2e_kubectl create token default -n "$NS")
+    for path in pods stats/summary "containerLogs/${NS}/e2e06-pod/app"; do
+        code=$(e2e_curl -sk -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${token}" "${url}/${path}")
+        e2e_assert_eq "/${path} with a pod's token" "$code" 403
+    done
+    code=$(e2e_curl -sk -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer ${token}" "${url}/exec/${NS}/e2e06-pod/app?command=id&output=1")
+    e2e_assert_eq "exec with a pod's token" "$code" 403
+}
+e2e_subcase_run T04-kubelet-auth t04_kubelet_auth
 # Usage is served (case 28 looks at what the numbers say): the summary and the resource
 # metrics carry this pod.
 e2e_subcase_run T04-stats t04_lists stats/summary

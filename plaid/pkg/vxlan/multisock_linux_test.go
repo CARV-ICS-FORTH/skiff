@@ -63,7 +63,7 @@ func (fi *flowInjector) total() (n int) {
 // newEngine starts an engine on loopback with sockets of its own.
 func newEngine(t *testing.T, cfg OverlayConfig, inj FrameInjector, routes *RouteTable) *OverlayEngine {
 	t.Helper()
-	cfg.BindAddress = "127.0.0.1"
+	cfg.BindAddress, cfg.AnySource = "127.0.0.1", true
 	if routes == nil {
 		routes = NewRouteTable()
 	}

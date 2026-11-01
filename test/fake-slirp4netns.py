@@ -18,6 +18,7 @@ import time
 
 if "--version" in sys.argv:  # what the preflight asks; nothing is started by it
     print("slirp4netns version 1.2.1")
+    print("libseccomp: 2.5.3")
     sys.exit(0)
 
 directory = os.environ["FAKE_SLIRP_DIR"]

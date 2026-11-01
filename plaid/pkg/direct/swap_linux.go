@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -24,11 +25,20 @@ const (
 	// connectTimeout bounds the supervisor's connect. A connect that the container made
 	// non-blocking would not have waited for it, but it could not be answered before.
 	connectTimeout = 3 * time.Second
-	// DefaultPreambleTimeout bounds the wait for a client's preamble, which is held inside
-	// the server's accept: a connection that does not send one is not a client of ours, and
-	// every idle connection to a host port stalls the accept of a server (an event loop's)
-	// for as long. A client sends its preamble as soon as it is connected, so a preamble that
-	// has not arrived by then is not coming; one that has is read without waiting.
+	// deferAcceptSeconds is how long the kernel holds a connection to a swapped listener back
+	// from its queue while nothing has come on it (TCP_DEFER_ACCEPT). A client sends its preamble
+	// as soon as it is connected, so the connection that is queued has its preamble with it, and
+	// accept does not wait for one. A connection with nothing on it is queued after this long, and
+	// is turned away at once. A client that has not sent by then has about given up (AckTimeout).
+	deferAcceptSeconds = 1
+	// preambleGrace is how long accept looks for a preamble on a connection the kernel queued
+	// before it had come: when the listener's queue of half-open connections is full, SYN cookies
+	// make a connection of the handshake's last packet, and the client's preamble is right
+	// behind. An idle connection that took the one second above is not given it (its handshake
+	// was sent again).
+	preambleGrace = 10 * time.Millisecond
+	// DefaultPreambleTimeout bounds the wait for a client's preamble inside the server's accept,
+	// on a listener whose container has taken TCP_DEFER_ACCEPT off it.
 	DefaultPreambleTimeout = 100 * time.Millisecond
 	// preambleSkew is how far a preamble's time may be from the server's clock.
 	preambleSkew = time.Minute
@@ -171,6 +181,107 @@ func unspecifiedFor(family int) netip.Addr {
 	return netip.IPv4Unspecified()
 }
 
+// hostSocket says whether dup, a duplicate of a socket of the container's, is one of the host's
+// network that was put in place of one of its own. The table says so, and how, but it forgets:
+// it is bounded, and a sweep drops a connection the peer has reset. The socket's network namespace
+// does not. Where the host and the pod are the same network it says nothing.
+func (s *Supervisor) hostSocket(dup int) (Socket, bool) {
+	if sock, ok := s.table.Get(cookieOf(dup)); ok {
+		return sock, true
+	}
+	if host := s.hostNet.Load(); host != 0 && host != s.podNet.Load() && netnsCookieOf(dup) == host {
+		return Socket{Kind: KindClient}, true
+	}
+	return Socket{}, false
+}
+
+// noteNetworks learns which network is which from the first socket put in place of another. There
+// is nothing to look for before that: no host socket has reached the container.
+func (s *Supervisor) noteNetworks(container, host int) {
+	if s.hostNet.Load() == 0 {
+		s.podNet.Store(netnsCookieOf(container))
+		s.hostNet.Store(netnsCookieOf(host))
+	}
+}
+
+func netnsCookieOf(fd int) uint64 {
+	c, _ := unix.GetsockoptUint64(fd, unix.SOL_SOCKET, unix.SO_NETNS_COOKIE)
+	return c
+}
+
+// swapped says what the socket at the held call's first argument was put in place of the
+// container's as, if it was. The error is that the supervisor cannot tell: the guards that ask do
+// not let such a call run. A descriptor that is not open is no socket at all, for the kernel to say.
+func (s *Supervisor) swapped(n *notif) (Socket, bool, error) {
+	if !s.hostSocketsExist() {
+		return Socket{}, false, nil
+	}
+	dup, err := s.targets.getfd(int(n.Pid), int(n.Args[0]))
+	if errors.Is(err, unix.EBADF) {
+		return Socket{}, false, nil
+	}
+	if err != nil {
+		return Socket{}, false, err
+	}
+	defer unix.Close(dup)
+	sock, ok := s.hostSocket(dup)
+	return sock, ok, nil
+}
+
+// outOfReach says whether err from looking at a descriptor means that a socket of the host's
+// may be behind it, unseen: the container has such sockets, and the descriptor is one it has.
+func (s *Supervisor) outOfReach(err error) bool {
+	if !s.hostSocketsExist() {
+		return false
+	}
+	return !errors.Is(err, unix.EBADF) && !errors.Is(err, unix.ENOTSOCK)
+}
+
+// inspectFailed answers a connect or bind whose socket could not be inspected: refused, if it may
+// be one of the host's, as what it would do then is not for the kernel to run.
+func (s *Supervisor) inspectFailed(call string, addr netip.AddrPort, err error) reply {
+	if err != errNotOurs && s.outOfReach(err) {
+		return s.guardFailed(err)
+	}
+	return s.failed(call, addr, err)
+}
+
+// guardFailed answers a call on a socket the supervisor could not look at.
+func (s *Supervisor) guardFailed(err error) reply {
+	s.stats.Errors.Add(1)
+	s.logf("a call on a socket that cannot be looked at is refused: %v", err)
+	return failWith(unix.EPERM)
+}
+
+// onHostSocket fails a call on a socket of the host's network with errno, and lets one on any
+// other socket run. A container has such a socket to reach its backend or to take what comes to
+// its marked port, and is to do nothing else with it: its own network namespace is what keeps
+// it from the host's loopback, from the host's interfaces and from the host's other ports.
+//
+// This holds whether or not the peer has reset the connection.
+func (s *Supervisor) onHostSocket(n *notif, errno syscall.Errno) reply {
+	_, ok, err := s.swapped(n)
+	if err != nil {
+		return s.guardFailed(err)
+	}
+	if ok {
+		return failWith(errno)
+	}
+	return letThrough
+}
+
+// listen runs on a socket that was bound as a marked port, and on the container's own.
+func (s *Supervisor) listen(n *notif) reply {
+	sock, ok, err := s.swapped(n)
+	if err != nil {
+		return s.guardFailed(err)
+	}
+	if ok && sock.Kind != KindListener {
+		return failWith(unix.EINVAL)
+	}
+	return letThrough
+}
+
 // connect: a marked Service port goes to its backend on the host network. The container
 // is told the connection is made; the backend's supervisor is told, in the preamble, who
 // the client is and which pod it means, and says in the ack that it has the connection.
@@ -195,17 +306,17 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	tl.mark(phDispatch)
 	dst, ok := sockaddrArg(n)
 	if !ok || !s.cfg.ConnectPorts.Has(dst.Port()) {
-		return letThrough
+		return s.onHostSocket(n, unix.EISCONN)
 	}
 	backend, ok := s.cfg.Resolver.Resolve(dst)
 	if !ok {
-		return letThrough
+		return s.onHostSocket(n, unix.EISCONN)
 	}
 	tl.mark(phResolve)
 	tid, fd := int(n.Pid), int(n.Args[0])
 	held, err := s.inspect(tid, fd)
 	if err != nil {
-		return s.failed("connect", dst, err)
+		return s.inspectFailed("connect", dst, err)
 	}
 	defer held.close()
 	tl.mark(phInspect)
@@ -220,6 +331,9 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 		// being put in place and the answer): the thread makes it again. The descriptor is the
 		// host socket, connected to the backend, and the kernel would say EISCONN.
 		return succeed()
+	}
+	if _, ok := s.hostSocket(held.dup); ok {
+		return failWith(unix.EISCONN) // a socket of the host's already: see onHostSocket
 	}
 	sock, dial, reused := s.dials.take(cookie)
 	if reused && dial.dst != dst {
@@ -322,14 +436,17 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 		return s.fallback("epoll", "connect %s: %v", dst, err)
 	}
 	tl.mark(phMove)
+	// Known before the container has it: another of its threads can use it from then on.
+	s.noteNetworks(held.dup, sock)
+	s.table.Add(hostCookie, Socket{Kind: KindClient, Family: held.family, Local: local, Peer: dst})
 	if err := s.put(n, fd, sock, held.cloexec); err != nil {
+		s.table.Remove(hostCookie)
 		undo()
 		// The server has the connection (it acked). The call is made again, and takes it.
 		keep = errors.Is(err, errCancelled) && s.dials.put(cookie, sock, keptDial{dst, backend})
 		return s.putFailed("connect", err)
 	}
 	tl.mark(phAddfd)
-	s.table.Add(hostCookie, Socket{Kind: KindClient, Family: held.family, Local: local, Peer: dst})
 	s.stats.Connects.Add(1)
 	s.logConn("connect %s: on the host, %s to %s, as %s", dst, addrPortOf(sa), backend.Host, local)
 	return succeed()
@@ -508,7 +625,7 @@ func (s *Supervisor) putFailed(call string, err error) reply {
 	return failWith(errnoOf(err))
 }
 
-// bind: a marked port is bound on the host, on every address, at the host port that follows
+// bind: a marked port is bound on the host, on the node's address, at the host port that follows
 // from the pod's address and the port (HostPort). listen then runs on the host socket. The
 // container's own socket stays in the pod's network behind a proxy (see startProxy). If
 // the host port cannot be had (a process of the host holds it) the socket stays a socket of
@@ -523,15 +640,15 @@ func (s *Supervisor) putFailed(call string, err error) reply {
 func (s *Supervisor) bind(n *notif) (r reply) {
 	want, ok := sockaddrArg(n)
 	if !ok || !s.cfg.ListenPorts.Has(want.Port()) {
-		return letThrough
+		return s.onHostSocket(n, unix.EINVAL)
 	}
 	if !want.Addr().IsUnspecified() && want.Addr() != s.cfg.PodIP {
-		return letThrough // the pod's loopback or another address: the pod network's
+		return s.onHostSocket(n, unix.EINVAL) // the pod's loopback or another address: the pod network's
 	}
 	tid, fd := int(n.Pid), int(n.Args[0])
 	held, err := s.inspect(tid, fd)
 	if err != nil {
-		return s.failed("bind", want, err)
+		return s.inspectFailed("bind", want, err)
 	}
 	defer held.close()
 	if err := held.readFlags(tid, fd); err != nil {
@@ -547,6 +664,9 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 		// This bind was made, and its answer was given up (a signal came between the socket's
 		// being put in place and the answer): the thread makes it again. The kernel would say EINVAL.
 		return succeed()
+	}
+	if _, ok := s.hostSocket(held.dup); ok {
+		return failWith(unix.EINVAL) // a socket of the host's already: see onHostSocket
 	}
 	entries, ok := s.registrations(tid, fd, held)
 	if !ok {
@@ -578,8 +698,23 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 	}
 	defer unix.Close(sock)
 	copyOptions(held.dup, sock, held.family)
+	if err := unix.SetsockoptInt(sock, unix.IPPROTO_TCP, unix.TCP_DEFER_ACCEPT, deferAcceptSeconds); err != nil {
+		s.logf("bind %s: connections will be waited for in accept: %v", want, err)
+	}
 	host := netip.AddrPortFrom(unspecifiedFor(held.family), hostPort)
-	if err := unix.Bind(sock, sockaddrFor(host, held.family)); err != nil {
+	if node, ok := s.cfg.Resolver.HostOf(s.cfg.PodIP); ok && node.IsValid() && !node.IsUnspecified() {
+		// (A socket that is only IPv6 cannot have it, nor a host that has moved it: on every address.)
+		on := netip.AddrPortFrom(node, hostPort)
+		if err := unix.Bind(sock, sockaddrFor(on, held.family)); err == nil {
+			host = on
+		} else if err == unix.EADDRINUSE {
+			return s.fallback("host-port-in-use", "bind %s: on the host at %s: %v", want, on, err)
+		}
+	}
+	if host.Addr().IsUnspecified() {
+		err = unix.Bind(sock, sockaddrFor(host, held.family))
+	}
+	if err != nil {
 		reason := "bind-error"
 		if err == unix.EADDRINUSE {
 			reason = "host-port-in-use"
@@ -613,7 +748,11 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 		_ = unix.SetNonblock(sock, true)
 	}
 	hostCookie := cookieOf(sock)
+	// Known before the container has it, as in connect.
+	s.noteNetworks(held.dup, sock)
+	s.table.Add(hostCookie, Socket{Kind: KindListener, Family: held.family, Local: want})
 	if err := s.put(n, fd, sock, held.cloexec); err != nil {
+		s.table.Remove(hostCookie)
 		undo()
 		if errors.Is(err, errCancelled) {
 			// The call was given up (a signal) and is made again, to find the socket bound,
@@ -622,7 +761,6 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 		}
 		return s.putFailed("bind", err)
 	}
-	s.table.Add(hostCookie, Socket{Kind: KindListener, Family: held.family, Local: want})
 	s.stats.Binds.Add(1)
 	if err := s.startProxy(held, want, hostPort, s.ownerOf(tid, fd, hostCookie)); err != nil {
 		s.stats.Errors.Add(1)
@@ -665,27 +803,54 @@ func (s *Supervisor) ownerOf(tid, fd int, cookie uint64) descriptor {
 // process still has the connection there, and does not add it a second time. A connection that
 // is not accepted again leaves its descriptor in the container's table, which nothing here can
 // close, and is counted as one that was not accepted.
+//
+// Once the container has a socket of the host's its own listeners are served here too, for the
+// reason in perform_linux.go. Before that an accept that is not on a swapped listener is let through.
 func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 	tid, fd := int(n.Pid), int(n.Args[0])
 	dup, err := s.targets.getfd(tid, fd)
 	if err != nil {
+		if s.outOfReach(err) {
+			return s.guardFailed(err)
+		}
 		return letThrough
 	}
 	defer unix.Close(dup)
 	cookie := cookieOf(dup)
-	listener, ok := s.table.Get(cookie)
-	if !ok || listener.Kind != KindListener {
-		return letThrough
+	listener, swapped := s.table.Get(cookie)
+	if swapped && listener.Kind != KindListener {
+		return failWith(unix.EINVAL) // a connection
+	}
+	if !swapped {
+		if _, host := s.hostSocket(dup); host {
+			return s.guardFailed(errors.New("a socket of the host's that the table does not have"))
+		}
+		if !s.hostSocketsExist() {
+			return letThrough
+		}
+		// The container's own listener, which is not let through (see perform_linux.go): it is
+		// served as a swapped one is, without a preamble and with its own peer's address.
+		if e := notListening(dup); e != 0 {
+			return failWith(e)
+		}
 	}
 	flags := 0
 	if int(n.Nr) == unix.SYS_ACCEPT4 {
-		flags = int(n.Args[3])
+		if flags = int(int32(n.Args[3])); flags&^(unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC) != 0 {
+			return failWith(unix.EINVAL)
+		}
 	}
 	fl, err := unix.FcntlInt(uintptr(dup), unix.F_GETFL, 0)
 	if err != nil {
-		return letThrough
+		return s.guardFailed(err)
 	}
 	nonblock := fl&unix.O_NONBLOCK != 0
+	var deadline time.Time // of the socket's SO_RCVTIMEO
+	if !nonblock {
+		if tv, err := unix.GetsockoptTimeval(dup, unix.SOL_SOCKET, unix.SO_RCVTIMEO); err == nil && (tv.Sec != 0 || tv.Usec != 0) {
+			deadline = time.Now().Add(time.Duration(tv.Nano()))
+		}
+	}
 
 	var conn int
 	var pre Preamble
@@ -702,6 +867,9 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 			for !pollReadable(dup, 200) && !s.accepts.has(cookie) {
 				if !s.valid(n) {
 					return cancelled
+				}
+				if !deadline.IsZero() && time.Now().After(deadline) {
+					return failWith(unix.EAGAIN)
 				}
 			}
 		}
@@ -727,8 +895,11 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 			pre = had.pre
 			break
 		}
+		if !swapped {
+			break
+		}
 		var reason string
-		if pre, reason, err = s.admit(conn, listener, tl); err == nil {
+		if pre, reason, err = s.admit(conn, dup, listener, tl); err == nil {
 			break
 		}
 		// Not a client of ours, or a wrong or old one: closed, and the next connection is
@@ -792,14 +963,21 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 		had = keptAccept{pre: pre}
 	}
 	if n.Args[1] != 0 && n.Args[2] != 0 {
-		if err := writeAddr(int(n.Pid), n.Args[1], n.Args[2], pre.Client, listener.Family); err != nil {
+		if !swapped {
+			if e := copyPeer(tid, n.Args[1], n.Args[2], conn); e != 0 {
+				return failWith(e)
+			}
+		} else if err := writeAddr(int(n.Pid), n.Args[1], n.Args[2], pre.Client, listener.Family); err != nil {
 			return failWith(unix.EFAULT)
 		}
 	}
 	tl.mark(phWriteAddr)
 	newfd := had.fd
 	if !reuse {
-		newfd, err = s.install(n, conn, flags, listener, pre)
+		if swapped {
+			s.table.Add(cookieOf(conn), Socket{Kind: KindAccepted, Family: listener.Family, Local: pre.Backend, Peer: pre.Client})
+		}
+		newfd, err = s.install(n, conn, flags)
 		if err != nil {
 			if errors.Is(err, unix.ENOENT) {
 				return giveUp()
@@ -822,10 +1000,12 @@ func (s *Supervisor) accept(n *notif, tl *timeline) reply {
 		}
 		return cancelled
 	}
-	tl.mark(phAcceptFD)
-	tl.finish(phAdmit)
-	s.stats.Accepted.Add(1)
-	s.logConn("accept: fd %d of %s, from %s", newfd, listener.Local, pre.Client)
+	if swapped {
+		tl.mark(phAcceptFD)
+		tl.finish(phAdmit)
+		s.stats.Accepted.Add(1)
+		s.logConn("accept: fd %d of %s, from %s", newfd, listener.Local, pre.Client)
+	}
 	return answered
 }
 
@@ -859,7 +1039,7 @@ func (s *Supervisor) installedAt(tid int, k keptAccept, conn, flags int) bool {
 
 // install puts the accepted connection in the table of the process of the held call, and
 // returns its number there. The call is not answered with it yet.
-func (s *Supervisor) install(n *notif, conn, flags int, listener Socket, pre Preamble) (int, error) {
+func (s *Supervisor) install(n *notif, conn, flags int) (int, error) {
 	if flags&unix.SOCK_NONBLOCK != 0 {
 		_ = unix.SetNonblock(conn, true)
 	}
@@ -871,7 +1051,6 @@ func (s *Supervisor) install(n *notif, conn, flags int, listener Socket, pre Pre
 	if flags&unix.SOCK_CLOEXEC != 0 {
 		a.NewfdFlags = unix.O_CLOEXEC
 	}
-	s.table.Add(cookieOf(conn), Socket{Kind: KindAccepted, Family: listener.Family, Local: pre.Backend, Peer: pre.Client})
 	return ioctlAddfd(s.listener, &a)
 }
 
@@ -939,12 +1118,12 @@ func (s *Supervisor) closedConnection() (int, error) {
 	return conn, err
 }
 
-// admit decides whether the connection that was accepted on the listener is a client
-// of ours that the listener's container may have, and if it is acknowledges it. The reason
-// it is not is a short word for the counts.
-func (s *Supervisor) admit(conn int, listener Socket, tl *timeline) (pre Preamble, reason string, err error) {
+// admit decides whether the connection that was accepted on the listener (dup is the
+// supervisor's descriptor of it) is a client of ours that the listener's container may have,
+// and if it is acknowledges it. The reason it is not is a short word for the counts.
+func (s *Supervisor) admit(conn, dup int, listener Socket, tl *timeline) (pre Preamble, reason string, err error) {
 	var buf [PreambleSize]byte
-	if err := readFull(conn, buf[:], s.cfg.PreambleTimeout); err != nil {
+	if err := s.readPreamble(conn, dup, buf[:]); err != nil {
 		return pre, "no-preamble", err
 	}
 	tl.mark(phReadPre)
@@ -975,7 +1154,8 @@ func (s *Supervisor) admit(conn int, listener Socket, tl *timeline) (pre Preambl
 			return pre, "wrong-client", fmt.Errorf("%s is not a pod of the node %s", pre.Client.Addr(), peer.Addr())
 		}
 	case PreambleLocal:
-		if !peer.Addr().IsLoopback() {
+		node, _ := s.cfg.Resolver.HostOf(s.cfg.PodIP) // where the proxy finds a listener on the node's address
+		if !peer.Addr().IsLoopback() && peer.Addr() != node {
 			return pre, "wrong-host", fmt.Errorf("a local connection from %s", peer.Addr())
 		}
 	default:
@@ -1002,6 +1182,30 @@ func (s *Supervisor) admit(conn int, listener Socket, tl *timeline) (pre Preambl
 	}
 	tl.mark(phAckWrite)
 	return pre, "", nil
+}
+
+// readPreamble reads the preamble of a connection that was accepted on the listener dup. What
+// has not come when it is accepted is not waited for, if the kernel held the connection back
+// until something came (see deferAcceptSeconds): what is here then is all an idle connection
+// or one that sent a part of a preamble will send, and a preamble is one segment. The exception
+// is a connection that did not wait in the kernel (see preambleGrace). The container may have
+// taken the option off its listener with a setsockopt of its own.
+func (s *Supervisor) readPreamble(conn, dup int, buf []byte) error {
+	got, _, err := unix.Recvfrom(conn, buf, unix.MSG_DONTWAIT)
+	if err == nil && got == len(buf) {
+		return nil
+	}
+	if (err == nil && got == 0) || (err != nil && err != unix.EAGAIN) {
+		return errors.New("closed before it was complete")
+	}
+	got = max(got, 0)
+	if v, err := unix.GetsockoptInt(dup, unix.IPPROTO_TCP, unix.TCP_DEFER_ACCEPT); err == nil && v > 0 {
+		if info, err := unix.GetsockoptTCPInfo(conn, unix.IPPROTO_TCP, unix.TCP_INFO); err != nil || info.Total_retrans > 0 {
+			return errors.New("nothing more had come")
+		}
+		return readFull(conn, buf[got:], preambleGrace)
+	}
+	return readFull(conn, buf[got:], s.cfg.PreambleTimeout)
 }
 
 // readFull reads len(buf) bytes from fd, waiting at most timeout for them.

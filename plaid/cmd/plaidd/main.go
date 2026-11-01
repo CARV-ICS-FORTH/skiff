@@ -58,24 +58,25 @@ type PlaidDaemon struct {
 }
 
 type Config struct {
-	SocketPath     string
-	NodeCIDR       string
-	ClusterCIDR    string
-	GatewayIP      string
-	GatewayMAC     string
-	BubbleMAC      string
-	GatewayMode    string
-	Uplink         string
-	UplinkAddress  string
-	ServiceCIDR    string
-	Resolver       string
-	VXLANPort      int
-	VXLANVNI       int
-	VXLANBind      string
-	OverlayHandoff string
-	OverlaySockets int
-	OverlayMTU     int
-	Offload        bool
+	SocketPath        string
+	NodeCIDR          string
+	ClusterCIDR       string
+	GatewayIP         string
+	GatewayMAC        string
+	BubbleMAC         string
+	GatewayMode       string
+	Uplink            string
+	UplinkAddress     string
+	ServiceCIDR       string
+	Resolver          string
+	VXLANPort         int
+	VXLANVNI          int
+	OverlaySecretFile string
+	VXLANBind         string
+	OverlayHandoff    string
+	OverlaySockets    int
+	OverlayMTU        int
+	Offload           bool
 	// RDMA lets the overlay offer its RDMA transport (see vxlan.RDMAConfig) on RDMADevice,
 	// or, when that is empty, on the port behind RDMAInterface (the host's interface of the
 	// cluster's network, which plaidd cannot see from a bubble) or the first active
@@ -129,6 +130,7 @@ func main() {
 	flag.StringVar(&cfg.Resolver, "resolver", "", "Resolver IP advertised to standalone plaidtainer")
 	flag.IntVar(&cfg.VXLANPort, "vxlan-port", packet.DefaultVXLANPort, "VXLAN UDP port")
 	flag.IntVar(&cfg.VXLANVNI, "vxlan-vni", packet.DefaultVNI, "VXLAN VNI")
+	flag.StringVar(&cfg.OverlaySecretFile, "overlay-secret-file", os.Getenv("PLAID_OVERLAY_SECRET_FILE"), "File with the secret every node's overlay datagrams carry: 14 hexadecimal digits, the same on all nodes")
 	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address (with --overlay-handoff: the address the handed-over socket must be bound to)")
 	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP sockets, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
 	flag.IntVar(&cfg.OverlaySockets, "overlay-sockets", vxlan.DefaultSockets, "Receive sockets of the overlay (1 to 16), in one SO_REUSEPORT group, each read and processed by its own goroutines so that what a node receives is not limited to one core, and four times as many send sockets, so that the kernel of the receiving node spreads the flows over its sockets. Only when plaidd opens the VXLAN port itself: with --overlay-handoff the helper's --sockets decides. The wire format is the same for any number, and nodes with different numbers interoperate")
@@ -352,7 +354,14 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 		}
 	}
 
+	var overlaySecret uint64
+	if cfg.OverlaySecretFile != "" {
+		if overlaySecret, err = vxlan.ReadSecret(cfg.OverlaySecretFile); err != nil {
+			return nil, err
+		}
+	}
 	overlay := vxlan.NewOverlayEngine(vxlan.OverlayConfig{
+		Secret:      overlaySecret,
 		BindAddress: cfg.VXLANBind,
 		Port:        cfg.VXLANPort,
 		DefaultVNI:  uint32(cfg.VXLANVNI),
@@ -877,6 +886,7 @@ func (d *PlaidDaemon) HandleGetStatus() (*api.Response, error) {
 		OverlayRxReads:      ov.RxReads,
 		OverlayRxPackets:    ov.RxPackets,
 		OverlayRxInvalid:    ov.RxInvalid,
+		OverlayRxForeign:    ov.RxForeign,
 		OverlayRxDropped:    ov.RxDropped,
 		OverlayRxQueueDrops: ov.RxQueueDrops,
 		OverlaySocketDrops:  ov.SocketDrops,
