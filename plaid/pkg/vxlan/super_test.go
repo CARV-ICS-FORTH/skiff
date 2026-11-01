@@ -769,3 +769,78 @@ func TestLaneHandsOverTheBuffer(t *testing.T) {
 		t.Errorf("a refused frame: %+v", st)
 	}
 }
+
+// sealedChunks is refChunks as an engine with a key sends them.
+func sealedChunks(c *overlayCipher, chunks [][]byte) (out [][]byte) {
+	for _, d := range chunks {
+		b := append([]byte(nil), d[:packet.VXLANHeaderLen]...)
+		b = append(b, make([]byte, overlayRoomLen)...)
+		out = append(out, c.seal(append(b, d[packet.VXLANHeaderLen:]...), 0, c.local))
+	}
+	return out
+}
+
+func newKeyedLane() *testLane {
+	oe := NewOverlayEngine(OverlayConfig{Super: true, Key: testKey, LocalSubnet: testSubnet}, NewRouteTable(), nil)
+	return &testLane{rxLane: &rxLane{oe: oe}, now: int64(time.Hour)}
+}
+
+func clones(ds [][]byte) (out [][]byte) {
+	for _, d := range ds {
+		out = append(out, append([]byte(nil), d...))
+	}
+	return out
+}
+
+// A super-frame that was encrypted comes out whole only if every chunk of it came, as it was sent,
+// once and in its place.
+func TestEncryptedChunks(t *testing.T) {
+	h, f := tsoFrame(false, 9000, 1450, 1)
+	tx := testCipher(t, testKey)
+	sealed := sealedChunks(tx, refChunks(0, 1, 1, h, f, chunkDatagram))
+	if len(sealed) < 5 {
+		t.Fatal("test frame too small")
+	}
+	whole := func(l *testLane, sink *superSink) bool {
+		return len(sink.supers) == 1 && sink.supers[0].h == h && bytes.Equal(sink.supers[0].frame, f)
+	}
+
+	l, sink := newKeyedLane(), &superSink{}
+	l.feed(sink, source(0), clones(sealed)...)
+	if !whole(l, sink) {
+		t.Fatalf("round trip: %d delivered", len(sink.supers))
+	}
+	// The same datagrams again are not fresh.
+	foreign := l.counters().RxForeign
+	l.feed(sink, source(0), clones(sealed)...)
+	if len(sink.supers) != 1 || l.counters().RxForeign != foreign+uint64(len(sealed)) {
+		t.Errorf("replayed: %d delivered, %d refused", len(sink.supers), l.counters().RxForeign-foreign)
+	}
+
+	for i := range sealed {
+		// One chunk changed: it is refused, and the frame does not come out.
+		l, sink = newKeyedLane(), &superSink{}
+		changed := clones(sealed)
+		changed[i][len(changed[i])/2] ^= 1
+		l.feed(sink, source(0), changed...)
+		if len(sink.supers) != 0 || l.counters().RxForeign != 1 {
+			t.Errorf("chunk %d changed: %d delivered, %d refused", i, len(sink.supers), l.counters().RxForeign)
+		}
+		// One chunk lost.
+		l, sink = newKeyedLane(), &superSink{}
+		l.feed(sink, source(0), clones(sealed[:i])...)
+		l.feed(sink, source(0), clones(sealed[i+1:])...)
+		if len(sink.supers) != 0 {
+			t.Errorf("chunk %d lost: %d delivered", i, len(sink.supers))
+		}
+	}
+	// Cut short: the last chunk without its end does not open.
+	l, sink = newKeyedLane(), &superSink{}
+	cut := clones(sealed)
+	last := len(cut) - 1
+	cut[last] = cut[last][:len(cut[last])-1]
+	l.feed(sink, source(0), cut...)
+	if len(sink.supers) != 0 {
+		t.Errorf("cut short: %d delivered", len(sink.supers))
+	}
+}

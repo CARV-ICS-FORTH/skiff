@@ -102,6 +102,9 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 	}
 
 	size := packet.VXLANHeaderLen + packet.EthernetHeaderLen + len(frame.Payload)
+	if oe.cipher != nil {
+		size += overlayCipherBytes
+	}
 	sock := packet.FlowIndex(frame.EtherType, frame.Payload, len(socks.tx))
 	link := oe.rdmaLink(remoteAddr.Addr())
 	if tb.n > 0 && !tb.joins(remoteAddr, sock, size, link) {
@@ -114,9 +117,15 @@ func (tb *TxBatch) Send(frame *packet.EthernetFrame, dstIP net.IP) (err error) {
 	start := len(tb.buf.B)
 	tb.buf.B = packet.AppendVXLANHeader(tb.buf.B, oe.sendFlags, vni)
 	oe.seal(tb.buf.B[start:])
+	if oe.cipher != nil {
+		tb.buf.B = append(tb.buf.B, make([]byte, overlayRoomLen)...)
+	}
 	if tb.buf.B, err = frame.MarshalTo(tb.buf.B); err != nil {
 		tb.buf.B = tb.buf.B[:start]
 		return fmt.Errorf("failed to marshal inner frame: %w", err)
+	}
+	if oe.cipher != nil {
+		tb.buf.B = oe.cipher.seal(tb.buf.B, start, subnetName(route.Subnet))
 	}
 	if tb.n == 0 {
 		tb.addr, tb.sock, tb.seg, tb.link = remoteAddr, sock, size, link
@@ -332,6 +341,11 @@ func (tb *TxBatch) SendSuper(h packet.VnetHeader, frame *packet.EthernetFrame, d
 	if rerr != nil || !ok || !addr.Addr().Is4() || !oe.peers.fresh(addr.Addr(), oe.clock()) {
 		return false, nil
 	}
+	if oe.cipher != nil {
+		if d += overlayCipherBytes; d > maxSegmentedBytes {
+			return false, nil
+		}
+	}
 	if len(route.VtepMAC) == 6 {
 		frame.DstMAC = route.VtepMAC
 	}
@@ -349,7 +363,7 @@ func (tb *TxBatch) SendSuper(h packet.VnetHeader, frame *packet.EthernetFrame, d
 	}
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
-	return tb.sendChunks(ts, vni, addr, h, frame, d, oe.chunkBytes(d))
+	return tb.sendChunks(ts, vni, subnetName(route.Subnet), addr, h, frame, d, oe.chunkBytes(d))
 }
 
 // sendSuperRDMA sends a super-frame whole over the RDMA link to dstIP's node, after the
@@ -380,10 +394,13 @@ func (tb *TxBatch) sendSuperRDMA(h packet.VnetHeader, frame *packet.EthernetFram
 // sendChunks is SendSuper once the socket is locked. The segments' datagrams are d bytes,
 // the chunks' are c (see chunkBytes). If the first send fails because c does not fit the
 // route, the frame goes again with chunks of d.
-func (tb *TxBatch) sendChunks(ts *txSock, vni uint32, addr netip.AddrPort, h packet.VnetHeader, frame *packet.EthernetFrame, d, c int) (bool, error) {
+func (tb *TxBatch) sendChunks(ts *txSock, vni, to uint32, addr netip.AddrPort, h packet.VnetHeader, frame *packet.EthernetFrame, d, c int) (bool, error) {
 	oe, ip := tb.oe, frame.Payload
 	total := packet.EthernetHeaderLen + len(ip)
 	per := c - packet.VXLANHeaderLen - chunkHdrLen // frame bytes in a chunk; the first has the virtio header too
+	if oe.cipher != nil {
+		per -= overlayCipherBytes
+	}
 	first := per - packet.VnetHeaderLen
 	chunks := 1
 	if total > first {
@@ -406,6 +423,9 @@ func (tb *TxBatch) sendChunks(ts *txSock, vni uint32, addr netip.AddrPort, h pac
 			end = min(end, total)
 			buf = packet.AppendVXLANHeader(buf, flags, vni)
 			oe.seal(buf[start:])
+			if oe.cipher != nil {
+				buf = append(buf, make([]byte, overlayRoomLen)...)
+			}
 			buf = appendChunkHeader(buf, id, total, off, h)
 			var data []byte
 			if off == 0 {
@@ -416,16 +436,27 @@ func (tb *TxBatch) sendChunks(ts *txSock, vni uint32, addr netip.AddrPort, h pac
 			} else {
 				data = ip[off-packet.EthernetHeaderLen : end-packet.EthernetHeaderLen]
 			}
+			if oe.cipher != nil {
+				// Sealed here, each chunk on its own: the frame is copied, and the send has one part.
+				buf = oe.cipher.seal(append(buf, data...), start, to)
+				want += len(buf) - start
+				continue
+			}
 			tb.io.set(2*j, buf[start:])
 			tb.io.set(2*j+1, data)
 			want += len(buf) - start + len(data)
+		}
+		parts := 2 * n
+		if oe.cipher != nil {
+			tb.io.set(0, buf)
+			tb.buf.B, parts = buf[:0], 1 // (it keeps what it has grown to)
 		}
 		var oob []byte
 		if n > 1 {
 			putSegmentSize(tb.oob[:], c)
 			oob = tb.oob[:segmentOOBLen]
 		}
-		err := superSend(tb.io, ts, addr, 2*n, oob, want)
+		err := superSend(tb.io, ts, addr, parts, oob, want)
 		tb.io.clear()
 		oe.txSends.Add(1)
 		if err == nil {
@@ -442,7 +473,7 @@ func (tb *TxBatch) sendChunks(ts *txSock, vni uint32, addr netip.AddrPort, h pac
 			return true, err
 		}
 		if c > d && oe.linkChunksFailed(err) {
-			return tb.sendChunks(ts, vni, addr, h, frame, d, d)
+			return tb.sendChunks(ts, vni, to, addr, h, frame, d, d)
 		}
 		if n > 1 {
 			oe.segmentFailed(err)

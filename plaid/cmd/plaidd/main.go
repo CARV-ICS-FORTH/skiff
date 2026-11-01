@@ -72,6 +72,7 @@ type Config struct {
 	VXLANPort         int
 	VXLANVNI          int
 	OverlaySecretFile string
+	OverlayKeyFile    string
 	VXLANBind         string
 	OverlayHandoff    string
 	OverlaySockets    int
@@ -130,6 +131,7 @@ func main() {
 	flag.StringVar(&cfg.Resolver, "resolver", "", "Resolver IP advertised to standalone plaidtainer")
 	flag.IntVar(&cfg.VXLANPort, "vxlan-port", packet.DefaultVXLANPort, "VXLAN UDP port")
 	flag.IntVar(&cfg.VXLANVNI, "vxlan-vni", packet.DefaultVNI, "VXLAN VNI")
+	flag.StringVar(&cfg.OverlayKeyFile, "overlay-key-file", os.Getenv("PLAID_OVERLAY_KEY_FILE"), "File with the key that encrypts the overlay's datagrams (64 hexadecimal digits); takes the place of the secret (default $PLAID_OVERLAY_KEY_FILE)")
 	flag.StringVar(&cfg.OverlaySecretFile, "overlay-secret-file", os.Getenv("PLAID_OVERLAY_SECRET_FILE"), "File with the secret every node's overlay datagrams carry: 14 hexadecimal digits, the same on all nodes")
 	flag.StringVar(&cfg.VXLANBind, "vxlan-bind", "0.0.0.0", "VXLAN bind address (with --overlay-handoff: the address the handed-over socket must be bound to)")
 	flag.StringVar(&cfg.OverlayHandoff, "overlay-handoff", "", "Path of the UNIX socket on which to receive the overlay's UDP sockets, opened on the physical host by `plaidctl overlay-socket` (default: plaidd opens the VXLAN port itself)")
@@ -283,8 +285,12 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 	if err := netcfg.ValidateMTU(cfg.MTU); err != nil {
 		return nil, err
 	}
-	if m := cfg.OverlayMTU; m != 0 && (m < 576 || m > 65535 || m < cfg.MTU+50) {
-		return nil, fmt.Errorf("overlay-mtu %d: want 0, or 576 to 65535 and at least the pod MTU (%d) + 50", m, cfg.MTU)
+	overhead := 50
+	if cfg.OverlayKeyFile != "" {
+		overhead = 90
+	}
+	if m := cfg.OverlayMTU; m != 0 && (m < 576 || m > 65535 || m < cfg.MTU+overhead) {
+		return nil, fmt.Errorf("overlay-mtu %d: want 0, or 576 to 65535 and at least the pod MTU (%d) + %d", m, cfg.MTU, overhead)
 	}
 	if cfg.GatewayMode == "tap" {
 		if cfg.UplinkMTU, err = netcfg.UplinkMTU(cfg.UplinkMTU, cfg.MTU); err != nil {
@@ -360,8 +366,22 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 			return nil, err
 		}
 	}
+	var overlayKey []byte
+	if cfg.OverlayKeyFile != "" {
+		if overlayKey, err = vxlan.ReadKey(cfg.OverlayKeyFile); err != nil {
+			return nil, err
+		}
+	}
+	var overlaySubnet *net.IPNet
+	if len(overlayKey) > 0 {
+		if _, overlaySubnet, err = net.ParseCIDR(cfg.NodeCIDR); err != nil {
+			return nil, fmt.Errorf("the overlay's key needs the node's pod subnet: %w", err)
+		}
+	}
 	overlay := vxlan.NewOverlayEngine(vxlan.OverlayConfig{
+		LocalSubnet: overlaySubnet,
 		Secret:      overlaySecret,
+		Key:         overlayKey,
 		BindAddress: cfg.VXLANBind,
 		Port:        cfg.VXLANPort,
 		DefaultVNI:  uint32(cfg.VXLANVNI),

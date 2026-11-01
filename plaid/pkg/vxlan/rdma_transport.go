@@ -705,7 +705,7 @@ func (t *rdmaTransport) controlFor(p *rdmaPeer, typ byte, l *rdmaLink) []byte {
 // sendControl sends a control datagram to a node's VXLAN port from the first send socket.
 func (oe *OverlayEngine) sendControlTo(a netip.Addr, port int, b []byte) {
 	s := oe.socks.Load()
-	if s == nil || port <= 0 || port > 65535 || b == nil {
+	if s == nil || port <= 0 || port > 65535 || b == nil || oe.cipher != nil {
 		return
 	}
 	oe.seal(b)

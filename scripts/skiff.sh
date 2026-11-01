@@ -81,6 +81,9 @@ if [ -n "${SKIFF_UPLINK_MTU:-}" ] || [ -n "${SKIFF_POD_MTU:-}" ]; then SKIFF_MTU
 # the cluster's network (SKIFF_NETWORK) when that is IPoIB, else the first active
 # InfiniBand port.
 : "${SKIFF_RDMA:=auto}"
+# SKIFF_OVERLAY_ENCRYPT=1 encrypts the overlay, in place of its secret. RDMA is not encrypted, and is off.
+: "${SKIFF_OVERLAY_ENCRYPT:=0}"
+[ "$SKIFF_OVERLAY_ENCRYPT" != 1 ] || SKIFF_RDMA=off
 : "${SKIFF_RDMA_DEVICE:=auto}"
 # The direct path (Plaid's pkg/direct, for the containers that mark ports): how long a
 # client's supervisor waits for the server's to acknowledge a connection before the connect
@@ -182,6 +185,7 @@ SKIFF_VOLUMES_DIR="$SKIFF_STATE_DIR/volumes"
 
 # What VXLAN adds to every packet of the pod network.
 SKIFF_VXLAN_OVERHEAD=50
+[ "$SKIFF_OVERLAY_ENCRYPT" != 1 ] || SKIFF_VXLAN_OVERHEAD=90 # who sent it to whom, its nonce and its tag (plaid/pkg/vxlan/cipher.go)
 
 # --- Address arithmetic (integers; no dependencies beyond bash 3.2) ---------
 
@@ -299,6 +303,16 @@ skiff_overlay_secret() {
         return 1
     fi
     (umask 077; printf '%s\n' "$secret" > "$SKIFF_STATE_DIR/overlay-secret")
+    # SKIFF_OVERLAY_ENCRYPT=1: a key that encrypts the datagrams, in place of the secret.
+    rm -f "$SKIFF_STATE_DIR/overlay-key"
+    if [ "$SKIFF_OVERLAY_ENCRYPT" = 1 ]; then
+        secret=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+        if [ "${#secret}" != 64 ]; then
+            echo "ERROR: cannot make the overlay's key" >&2
+            return 1
+        fi
+        (umask 077; printf '%s\n' "$secret" > "$SKIFF_STATE_DIR/overlay-key")
+    fi
 }
 
 # --- Resolution and validation -------------------------------------------------
@@ -421,6 +435,10 @@ skiff_config_validate() {
         errors=$((errors + 1))
     fi
 
+    if [ "$SKIFF_OVERLAY_ENCRYPT" != 0 ] && [ "$SKIFF_OVERLAY_ENCRYPT" != 1 ]; then
+        echo "SKIFF_OVERLAY_ENCRYPT: \"$SKIFF_OVERLAY_ENCRYPT\" is not 0 or 1" >&2
+        errors=$((errors + 1))
+    fi
     if [ "$SKIFF_RDMA" != auto ] && [ "$SKIFF_RDMA" != off ]; then
         echo "SKIFF_RDMA: \"$SKIFF_RDMA\" is not auto or off" >&2
         errors=$((errors + 1))
@@ -542,7 +560,7 @@ skiff_record_cause() {
 # skiff_config_export: make the resolved values available to what is started.
 skiff_config_export() {
     export SKIFF_POD_CIDR SKIFF_SERVICE_CIDR SKIFF_CLUSTER_DOMAIN SKIFF_CLUSTER_DNS \
-        SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_SLIRP_MTU SKIFF_TMP_DIR SKIFF_RDMA SKIFF_RDMA_DEVICE \
+        SKIFF_OVERLAY_ENCRYPT SKIFF_API_SERVICE_IP SKIFF_UPLINK_MTU SKIFF_POD_MTU SKIFF_SLIRP_MTU SKIFF_TMP_DIR SKIFF_RDMA SKIFF_RDMA_DEVICE \
         SKIFF_DIRECT_ACK_TIMEOUT SKIFF_DIRECT_PORT_BASE
     [ -z "${SKIFF_JOB_INSTANCE:-}" ] || export SKIFF_JOB_INSTANCE
 }
@@ -1461,6 +1479,7 @@ skiff_bubble() {
     	--env PLAID_DIRECT_SOCKET="$DIRECT_SOCKET" \
     	--env PLAID_DIRECT_KEY_FILE=/var/lib/skiff/kubeconfig \
     	--env PLAID_OVERLAY_SECRET_FILE=/var/lib/skiff/overlay-secret \
+    	--env PLAID_OVERLAY_KEY_FILE="$( [ "$SKIFF_OVERLAY_ENCRYPT" = 1 ] && echo /var/lib/skiff/overlay-key )" \
     	--env PLAID_DIRECT_ACK_TIMEOUT="$SKIFF_DIRECT_ACK_TIMEOUT" \
     	--env PLAID_DIRECT_PORT_BASE="$SKIFF_DIRECT_PORT_BASE" \
     	--env SKIFF_SLIRP_API="/root/.skiff/slirp-${NAME}.sock" \
@@ -1807,7 +1826,7 @@ _skiff_cluster_cleanup() {
         skiff_launch_run "${SKIFF_NODES[$i]}" 15 bash -c 'source "$1"; shift; _skiff_sweep_bubble "$@"' _ "$SKIFF_SCRIPT" "$SKIFF_LAUNCHER_DIR" "${SKIFF_JOB_ID:-unknown}" "$((i + 1))" 2>/dev/null || status=$?
         [ "$status" -ne 137 ] || echo "WARNING: the last sweep on ${SKIFF_NODES[$i]} did not end within 15 s: its bubble's instance (bubble$((i + 1))) may still be running there" >&2
     done
-    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR/overlay-secret" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
+    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR/overlay-secret" "$SKIFF_STATE_DIR/overlay-key" "$SKIFF_STATE_DIR"/slirp-*.sock 2>/dev/null || true
     wait 2>/dev/null || true
     echo "Cluster cleanup complete."
     if [ -f "$SKIFF_JOB_RESULTS_DIR/${SKIFF_JOB_ID:-unknown}.cause" ]; then
@@ -1907,7 +1926,7 @@ skiff_cluster() {
 
     # Safe cleanup of old cluster credentials (only after verifying no active cluster)
     echo "Preparing ~/.skiff for cluster startup..."
-    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR/overlay-secret" "$SKIFF_STATE_DIR"/slirp-*.sock
+    rm -rf "$SKIFF_STATE_DIR/kubeconfig" "$SKIFF_STATE_DIR/tls" "$SKIFF_STATE_DIR/.certs" "$SKIFF_STATE_DIR/overlay-secret" "$SKIFF_STATE_DIR/overlay-key" "$SKIFF_STATE_DIR"/slirp-*.sock
 
     # The images the bubbles run: the SIFs of the mode, each node its architecture's
     # (skiff_image_files), made from their archives when missing or older than the archive

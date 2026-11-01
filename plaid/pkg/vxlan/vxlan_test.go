@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -267,9 +266,14 @@ func ethernet(wire []byte) *packet.EthernetFrame {
 }
 
 func BenchmarkSend(b *testing.B) {
-	for _, size := range []int{1400, 8900} {
-		b.Run(strconv.Itoa(size), func(b *testing.B) {
-			engine := newFixture(b, OverlayConfig{}, 1).oe
+	for _, bench := range []struct {
+		name string
+		size int
+		key  []byte
+	}{{"1400", 1400, nil}, {"8900", 8900, nil}, {"encrypted/1400", 1400, make([]byte, overlayKeyLen)}, {"encrypted/8900", 8900, make([]byte, overlayKeyLen)}} {
+		size := bench.size
+		b.Run(bench.name, func(b *testing.B) {
+			engine := newFixture(b, OverlayConfig{Key: bench.key, LocalSubnet: testSubnet}, 1).oe
 			srcMAC, _ := net.ParseMAC("02:00:00:00:01:05")
 			dstMAC, _ := net.ParseMAC("02:00:00:00:02:10")
 			frame := &packet.EthernetFrame{

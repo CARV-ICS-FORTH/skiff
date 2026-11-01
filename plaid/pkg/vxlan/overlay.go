@@ -90,6 +90,13 @@ type OverlayConfig struct {
 	// the header is a standard one. It is checked as well as the address of a node.
 	// The overlay is not encrypted.
 	Secret uint64
+	// Key, when set, is the cluster's key for encrypting its datagrams (see cipher.go), and the
+	// Secret is not used. A datagram is 40 bytes longer, and a super-frame's chunks are copied to
+	// be sealed each on its own. RDMA is off with it, so that nothing leaves in the clear: that path
+	// does not go through the sealing, and to encrypt there would give up what RDMA is for.
+	Key []byte
+	// LocalSubnet is this node's pod subnet, which a key needs (see cipher.go).
+	LocalSubnet *net.IPNet
 	// RxQueueLen is how many received datagrams may wait for the bridge on each receive
 	// socket (0: defaultRxQueueLen). A queued read holds a pool buffer of 64 KiB, so the
 	// worst case is RxQueueLen x 64 KiB for each socket (512 x 64 KiB = 32 MiB by
@@ -198,6 +205,9 @@ type OverlayEngine struct {
 	closeOnce  sync.Once
 	closedChan chan struct{}
 
+	cipher   *overlayCipher // with a key (OverlayConfig.Key)
+	startErr error          // a key that cannot be used: nothing is sent or taken without it
+
 	foreignLogged, secretLogged                                                          atomic.Bool // see fromNode, sealed
 	txPackets, txSends, txErrors, rxReads, rxInvalid, rxForeign, rxDropped, rxQueueDrops atomic.Uint64
 	superTx, superTxChunks, superRx, superPartial, superInvalid, superEvicted            atomic.Uint64
@@ -273,7 +283,7 @@ func NewOverlayEngine(cfg OverlayConfig, routes *RouteTable, injector FrameInjec
 		cfg.Sockets = DefaultSockets
 	}
 
-	return &OverlayEngine{
+	oe := &OverlayEngine{
 		cfg:        cfg,
 		routes:     routes,
 		injector:   injector,
@@ -281,12 +291,28 @@ func NewOverlayEngine(cfg OverlayConfig, routes *RouteTable, injector FrameInjec
 		sendFlags:  packet.VXLANFlags,
 		clock:      monotonic,
 	}
+	if len(cfg.Key) > 0 {
+		c, err := newOverlayCipher(cfg.Key, cfg.LocalSubnet)
+		if err != nil {
+			oe.startErr = err
+			return oe
+		}
+		oe.cipher = c
+		if cfg.RDMA != nil {
+			fmt.Println("[plaidd/rdma] RDMA is not used: the overlay is encrypted (SKIFF_OVERLAY_ENCRYPT=1), and RDMA is not; the overlay is UDP only")
+		}
+		oe.cfg.Secret, oe.cfg.RDMA = 0, nil
+	}
+	return oe
 }
 
 // Start opens the sockets itself (see ListenSockets) and begins listening for VXLAN
 // frames. Standalone Plaid does this; in a Skiff bubble the sockets are opened on the
 // physical host and handed over instead (see Adopt).
 func (oe *OverlayEngine) Start(ctx context.Context) error {
+	if oe.startErr != nil {
+		return oe.startErr
+	}
 	oe.attachMu.Lock()
 	defer oe.attachMu.Unlock()
 	if oe.socks.Load() != nil {
@@ -312,6 +338,9 @@ func (oe *OverlayEngine) Start(ctx context.Context) error {
 // closes them. An engine that already has sockets refuses (and leaves them to the
 // caller).
 func (oe *OverlayEngine) Adopt(ctx context.Context, rx, tx []*net.UDPConn) error {
+	if oe.startErr != nil {
+		return oe.startErr
+	}
 	oe.attachMu.Lock()
 	defer oe.attachMu.Unlock()
 	if oe.socks.Load() != nil {
@@ -625,11 +654,16 @@ func (oe *OverlayEngine) sealed(datagram []byte) bool {
 	if oe.cfg.Secret == 0 || binary.BigEndian.Uint64(datagram)<<8 == oe.cfg.Secret {
 		return true
 	}
+	oe.notSealed()
+	return false
+}
+
+// notSealed counts a datagram without the cluster's secret or key.
+func (oe *OverlayEngine) notSealed() {
 	oe.rxForeign.Add(1)
 	if oe.secretLogged.CompareAndSwap(false, true) { // once, as in fromNode, and apart from it
 		fmt.Println("[plaid/overlay] Dropping datagrams without the cluster's secret (counted as foreign from now on)")
 	}
-	return false
 }
 
 // process handles one datagram, from src, read at time now; the frame it injects is valid
@@ -640,7 +674,13 @@ func (l *rxLane) process(sink FrameInjector, datagram []byte, src netip.AddrPort
 		oe.rxInvalid.Add(1)
 		return
 	}
-	if !oe.sealed(datagram) {
+	if oe.cipher != nil {
+		var ok bool
+		if datagram, ok = oe.cipher.open(datagram); !ok {
+			oe.notSealed()
+			return
+		}
+	} else if !oe.sealed(datagram) {
 		return
 	}
 	flags := datagram[0]

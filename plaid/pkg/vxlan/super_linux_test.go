@@ -503,6 +503,9 @@ func newNode(t *testing.T, n int, cfg OverlayConfig) *node {
 	t.Helper()
 	nd := &node{sink: &superSink{}, addr: fmt.Sprintf("127.0.0.%d", n), ip: net.IPv4(10, 244, byte(n), 10)}
 	cfg.BindAddress, cfg.AnySource = nd.addr, true
+	if cfg.Key != nil {
+		cfg.LocalSubnet = &net.IPNet{IP: nd.ip.Mask(net.CIDRMask(24, 32)), Mask: net.CIDRMask(24, 32)}
+	}
 	nd.oe = NewOverlayEngine(cfg, NewRouteTable(), nd.sink)
 	if err := nd.oe.Start(context.Background()); err != nil {
 		t.Skipf("cannot start an engine on %s: %v", nd.addr, err)
@@ -853,5 +856,90 @@ func TestSendingASuperFrameAllocatesNothing(t *testing.T) {
 		if allocs != 0 && !raceEnabled {
 			t.Errorf("payload %d: %.1f allocations for a super-frame, want 0", n, allocs)
 		}
+	}
+}
+
+// With a key, the chunks are sealed each on its own, within the size of an encrypted segment's
+// datagram, and two engines carry a super-frame as they do without one.
+func TestEncryptedSuperFrames(t *testing.T) {
+	f := newSuperFixture(t, "127.0.0.1", OverlayConfig{Offload: true, Super: true, Key: testKey, LocalSubnet: testSubnet})
+	f.announce()
+	h, frame := tsoFrame(false, 20000, 1450, 3)
+	marker := frame[len(frame)-200:]
+	if sent, err := f.send(h, frame); !sent || err != nil {
+		t.Fatalf("sent=%v, %v", sent, err)
+	}
+	d := packet.VXLANHeaderLen + packet.EthernetHeaderLen + 1450 + overlayCipherBytes
+	want := len(refChunks(packet.VXLANFlagSuperOK, 7, 0, h, frame, d-overlayCipherBytes))
+	got, _ := f.receiveFrom(t, 0, want)
+	rx := testCipher(t, testKey)
+	for i, dg := range got {
+		if len(dg) > d || i < len(got)-1 && len(dg) != d {
+			t.Errorf("datagram %d of %d is %d bytes, at most %d", i, len(got), len(dg), d)
+		}
+		if bytes.Contains(dg, marker) {
+			t.Errorf("datagram %d has the frame in the clear", i)
+		}
+		if _, ok := rx.open(append([]byte(nil), dg...)); !ok {
+			t.Errorf("datagram %d does not open", i)
+		}
+	}
+
+	cfg := OverlayConfig{Offload: true, Super: true, RcvBuf: 4 << 20, Key: testKey}
+	a, b := newNode(t, 1, cfg), newNode(t, 2, cfg)
+	a.routeTo(b)
+	b.routeTo(a)
+	b.sendPlain(t, a)
+	waitCount(t, "A to see the mark", 1, func() int { return a.oe.Stats().SuperPeers })
+	b.sendPlain(t, a)
+	for i, n := range []int{1, 1398, 1399, 30000, 65400} {
+		h, wire := tsoFrame(false, n, 1450, byte(i))
+		if sent, err := a.sendSuper(h, wire, b); !sent || err != nil {
+			t.Fatalf("payload %d: sent=%v, %v", n, sent, err)
+		}
+		waitCount(t, fmt.Sprintf("frame %d to arrive", i+1), i+1, func() int { _, s := b.sink.counts(); return s })
+		b.sink.mu.Lock()
+		arrived := b.sink.supers[i]
+		b.sink.mu.Unlock()
+		exp := append([]byte(nil), wire...)
+		copy(exp[0:6], net.HardwareAddr{2, 0, 0, 0, 0, 1})
+		if arrived.h != h || !bytes.Equal(arrived.frame, exp) {
+			t.Fatalf("payload %d: what arrived is not what was sent", n)
+		}
+	}
+	if st := b.oe.Stats(); st.RxForeign != 0 || st.SuperPartial != 0 || st.SuperInvalid != 0 {
+		t.Errorf("B %+v", st)
+	}
+}
+
+// BenchmarkSendSuper is a frame of 64 KiB sent whole, without a key and with one.
+func BenchmarkSendSuper(b *testing.B) {
+	for name, key := range map[string][]byte{"plain": nil, "encrypted": testKey} {
+		b.Run(name, func(b *testing.B) {
+			f := newFixture(b, OverlayConfig{Offload: true, Super: true, BindAddress: "127.0.0.1", Key: key, LocalSubnet: testSubnet}, 1)
+			f.announce()
+			h, wire := tsoFrame(false, 64000, 1450, 1)
+			frame := ethernet(wire)
+			tb := f.oe.NewBatch()
+			defer tb.Release()
+			b.SetBytes(int64(len(wire)))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if sent, err := tb.SendSuper(h, frame, f.dst(0)); !sent || err != nil {
+					b.Fatalf("sent=%v, %v", sent, err)
+				}
+			}
+		})
+	}
+}
+
+// A segment so large that the sealed datagram would not fit a send is cut, not sent whole.
+func TestEncryptedSuperFrameTooLargeForASend(t *testing.T) {
+	f := newSuperFixture(t, "127.0.0.1", OverlayConfig{Offload: true, Super: true, Key: testKey, LocalSubnet: testSubnet})
+	f.announce()
+	h, frame := tsoFrame(false, 65000, 1450, 1)
+	h.GSOSize = uint16(maxSegmentedBytes - packet.VXLANHeaderLen - int(h.HdrLen) - 1)
+	if sent, err := f.send(h, frame); sent || err != nil {
+		t.Errorf("sent=%v, %v", sent, err)
 	}
 }
