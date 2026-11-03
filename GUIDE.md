@@ -168,6 +168,23 @@ It runs until it is stopped, with no time limit, or until something fails: as wi
 
 The repository's scripts are the release's: clone it to the shared home and follow the same steps from `~/skiff/scripts`. They run the image of the version in the repository's `VERSION` file, which `skiff.sh download` fetches from Docker Hub, so they match it only on the commit tagged with that version (a release between them, `0.1.0-ff69203`, has its version only in its package: see [Releases](#releases)). On any other commit, build the image of that commit and run it as in development ([Evaluating on a Slurm cluster](#evaluating-on-a-slurm-cluster)), with `SKIFF_DEV=1`.
 
+## With EasyBuild
+
+On sites that provide software with [EasyBuild](https://easybuild.io), `easybuild/Skiff-0.1.0.eb` installs the release (its scripts, nothing is compiled) as a module:
+
+```bash
+eb Skiff-0.1.0.eb
+module load Skiff
+```
+
+Install it where the compute nodes can see it too: the job runs the installed `skiff.sh` on each node, and the home must be shared by them, as for any Skiff cluster. The module puts `skiff.sh` in `PATH` and sets `EBROOTSKIFF`; the steps of [the README](README.md) follow with `skiff.sh` in place of `bash skiff.sh`: `skiff.sh download` on a node with Internet access, `srun -N1 skiff.sh check`, and the job. The job finds `skiff.sh` next to `skiff.slurm`, so submit it from the installed scripts folder, and give it an output file in a folder you can write, since the installation is not yours:
+
+```bash
+cd $EBROOTSKIFF/scripts && sbatch --nodes=2 --output=$HOME/skiff-cluster-%j.out skiff.slurm
+```
+
+Everything per user is still in `~/.skiff`. Where the nodes have no Internet access and the login node has none either, prepare `~/.skiff` on a machine that has it (`skiff.sh download`, with the images of your pods) and copy `images/*.sif`, `tools/` and `.images/` to the same places in the home of the cluster (`rsync -a`, which keeps the files' times); the `.tar` files next to the SIFs are only needed to make them. `skiff.sh download` is then not needed there. Each architecture of the nodes needs its own SIF and tools.
+
 ## Nodes of another architecture
 
 Skiff runs on x86_64 (amd64) and arm64 (aarch64) nodes, and a cluster's login node may be of another architecture than its compute nodes. Everything `skiff.sh download` puts on the shared home is kept per architecture: the Skiff image (`~/.skiff/images/skiff-<version>-<arch>.tar` and `.sif`), the tools (`~/.skiff/tools/<machine>`) and the images in the cache (their names end in the architecture). Each node runs its own architecture's.
@@ -450,5 +467,7 @@ git push origin v0.1.0
 ```
 
 The workflow refuses a tag that does not name `VERSION` and a lightweight tag. It publishes the image, then creates the GitHub Release `v0.1.0` with the package attached; its notes are the tag's message, the image with its digest, and a link to the README. If only the release fails, re-run the failed job: the image is published already. Afterwards, raise `VERSION` (for example to `0.2.0`), so that commits after the release do not carry its version.
+
+The EasyBuild recipe of a release is `easybuild/Skiff-<version>.eb`, which names the package of the GitHub Release and its sha256. It is made after the release, since the checksum is of the published file: copy the previous recipe, change `version`, and set `checksums` to `sha256sum skiff-<version>.tar.gz` of the downloaded asset (or the `digest` of `gh release view v<version> --json assets`); install it with `eb` on a Slurm cluster or in the VMs, `module load Skiff`, and follow [With EasyBuild](#with-easybuild) up to a cluster that starts; commit it. Change nothing else unless the package's layout changed.
 
 Between releases, run the workflow by hand (Actions, Release, Run workflow) on a branch: it publishes that commit's version (`0.1.0-ff69203`), keeps the package with the run (its artifacts), and makes no tag or GitHub Release. There each platform is built at the same time on a GitHub machine of its own architecture; on a workstation, `make publish` builds the other architecture under emulation, which takes much longer.
