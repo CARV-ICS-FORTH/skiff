@@ -191,6 +191,7 @@ func init() {
 // An accept on a listener of the container's own, once it has a socket of the host's, that is given
 // up between the descriptor's being added and the answer: the call made again has that descriptor.
 func TestAnInterruptedAcceptOfItsOwnListenerKeepsItsConnection(t *testing.T) {
+	requireLoopback(t)
 	port := freePort(t)
 	var fired atomic.Int32
 	cfg := podConfig(t, "10.244.5.4", Ports{uint16(port): {}}, fakeResolver{})
