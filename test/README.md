@@ -18,6 +18,15 @@ make vet fmt-check check-shell
 
 Some shell regressions require Bash 4 or later. On systems with an older Bash, run the Linux regressions in the controller VM as described below.
 
+## Settings
+
+The tests need no settings beyond the ones below, as before: `SKIFF_DEV=1` for a cluster of the locally built image (`make -C test/vagrant e2e` sets it). A development cluster uses no image digest, so `SKIFF_IMAGE_DIGEST_CHECK` is not needed with it; the shell regressions set it themselves where they use stand-in images.
+
+- **Encryption of the overlay** is off by default, and the profile is qualified with it off. To check it, start the cluster with `SKIFF_OVERLAY_ENCRYPT=1` and run the cases of the overlay on it: `SKIFF_OVERLAY_ENCRYPT=1 SKIFF_DEV=1 bash test/e2e/run-all.sh --case 01 --no-teardown`, then `--case 03`, `20`, `22` and `38` with `--job-id` of that cluster.
+- **The kubelet API** of a node answers only with credentials of the cluster (case 06). By hand, go through the API server: `kubectl get --raw /api/v1/nodes/NODE/proxy/stats/summary`.
+- **The direct path** (case 38, and `plaid/pkg/direct`'s tests) needs Linux 5.14 or newer and Yama's `ptrace_scope` of at most 1: on an older kernel the pods of case 38 use the pod network, and the package's tests are for those kernels only. The Vagrant machines (Ubuntu 24.04, kernel 6.8) have both.
+- **Directories**: `~/.skiff` and `SKIFF_TMP_DIR` are made mode 700, and a `SKIFF_TMP_DIR` that others can enter is refused; `skiff.slurm` takes `skiff.sh` only from a directory others cannot write to.
+
 ## VM Tests
 
 Start the Vagrant environment following the [Skiff Guide](../GUIDE.md#evaluating-locally-with-vagrant), then build and deploy both the bubble and test fixture images:
