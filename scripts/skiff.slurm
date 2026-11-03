@@ -32,11 +32,23 @@ SKIFF_SCRIPT=""
 # It runs as the user, with everything the user can reach, and a job can be submitted from a
 # directory of others: one that is another's, or that others can write to, is not taken. (Writable
 # by the group is fine if the group is the user's own, as where every user has one and umask 002.)
+# What root owns is taken, and so is the installation of a module the user loaded (EasyBuild's
+# $EBROOTSKIFF), whoever installed it; neither if anyone at all can write to it.
 me=$(id -un)
+installed=$(cd "${EBROOTSKIFF:-/nonexistent}" 2>/dev/null && pwd -P) || installed=""
 others_can_change() {
-    local mode user group
+    local mode user group real
     IFS=' ' read -r mode user group < <(stat -L -c '%a %U %G' -- "$1" 2>/dev/null) || return 0
-    [ "$user" != "$me" ] || (( 8#$mode & 8#002 )) || { (( 8#$mode & 8#020 )) && [ "$group" != "$me" ]; }
+    ! (( 8#$mode & 8#002 )) || return 0
+    real=$(realpath -e -- "$1" 2>/dev/null) || return 0
+    if [ -n "$installed" ] && { [ "$real" = "$installed" ] || [[ "$real" == "$installed"/* ]]; }; then
+        return 1
+    fi
+    case "$user" in
+        "$me") (( 8#$mode & 8#020 )) && [ "$group" != "$me" ] ;;
+        root) (( 8#$mode & 8#020 )) && [ "$group" != root ] ;;
+        *) return 0 ;;
+    esac
 }
 for candidate in "${SLURM_SUBMIT_DIR:-$HOME/skiff}/scripts/skiff.sh" "${SLURM_SUBMIT_DIR:-$HOME/skiff}/skiff.sh" \
                  "$HOME/skiff/scripts/skiff.sh" "$HOME/skiff/skiff.sh"; do
@@ -49,7 +61,7 @@ for candidate in "${SLURM_SUBMIT_DIR:-$HOME/skiff}/scripts/skiff.sh" "${SLURM_SU
     break
 done
 if [ -z "$SKIFF_SCRIPT" ]; then
-    echo "ERROR: skiff.sh not found (looked next to skiff.slurm, in its scripts/ folder and in ~/skiff, for one that is yours and that others cannot write to); copy it to the cluster." >&2
+    echo "ERROR: skiff.sh not found (looked next to skiff.slurm, in its scripts/ folder and in ~/skiff, for one that is yours, root's or the loaded module's, and that others cannot write to); copy it to the cluster." >&2
     exit 1
 fi
 

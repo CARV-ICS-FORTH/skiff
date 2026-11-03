@@ -133,6 +133,22 @@ rc=0
 PATH="$test_dir/fake-stat:$PATH" SLURM_JOB_ID=8993 HOME="$test_dir/home-shared" SLURM_SUBMIT_DIR="$test_dir/shared-group" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/shared-group.log" 2>&1 || rc=$?
 [ "$rc" -eq 1 ] && [ ! -e "$test_dir/marker" ] && grep -q 'not using .*shared-group/scripts/skiff.sh' "$test_dir/shared-group.log" || { echo "a skiff.sh a site's group can write to: exit $rc" >&2; cat "$test_dir/shared-group.log" >&2; exit 1; }
 
+# An installation of the module the user loaded (EasyBuild's $EBROOTSKIFF), another user's, is taken; the
+# same files without the module are not, and one that anyone can write to is not taken either way.
+mkdir -p "$test_dir/module/scripts"
+printf 'touch "%s"\nexit 0\n' "$test_dir/module-marker" > "$test_dir/module/scripts/skiff.sh"
+printf '#!/bin/sh\necho "${FAKE_MODE:-755} easybuild software"\n' > "$test_dir/fake-stat/stat"
+rc=0
+PATH="$test_dir/fake-stat:$PATH" EBROOTSKIFF="$test_dir/module" SLURM_JOB_ID=8992 HOME="$test_dir/home-shared" SLURM_SUBMIT_DIR="$test_dir/module/scripts" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/module.log" 2>&1 || rc=$?
+[ -e "$test_dir/module-marker" ] && ! grep -q 'not using' "$test_dir/module.log" || { echo "the loaded module's skiff.sh: exit $rc" >&2; cat "$test_dir/module.log" >&2; exit 1; }
+rm -f "$test_dir/module-marker"
+rc=0
+PATH="$test_dir/fake-stat:$PATH" SLURM_JOB_ID=8991 HOME="$test_dir/home-shared" SLURM_SUBMIT_DIR="$test_dir/module/scripts" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/nomodule.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$test_dir/module-marker" ] && grep -q 'not using .*module/scripts/skiff.sh' "$test_dir/nomodule.log" || { echo "another's skiff.sh without its module: exit $rc" >&2; cat "$test_dir/nomodule.log" >&2; exit 1; }
+rc=0
+FAKE_MODE=777 PATH="$test_dir/fake-stat:$PATH" EBROOTSKIFF="$test_dir/module" SLURM_JOB_ID=8990 HOME="$test_dir/home-shared" SLURM_SUBMIT_DIR="$test_dir/module/scripts" bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/openmodule.log" 2>&1 || rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$test_dir/module-marker" ] && grep -q 'not using .*module/scripts/skiff.sh' "$test_dir/openmodule.log" || { echo "a module anyone can write to: exit $rc" >&2; cat "$test_dir/openmodule.log" >&2; exit 1; }
+
 # A node that lacks a host program, or whose scratch directory cannot be used, stops the
 # job before any bubble starts, naming the problem.
 rc=0
