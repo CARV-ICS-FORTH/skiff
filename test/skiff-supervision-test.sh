@@ -11,14 +11,21 @@ cat > "$test_dir/bin/scontrol" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
     "show node"*) echo "NodeName=controller Arch=x86_64 CoresPerSocket=4 CPUAlloc=0 CPUTot=8 CPULoad=0.10" ;;
+    "show hostnames "?*) [ "${TEST_EMPTY_NODES:-0}" = 1 ] || tr ',' '\n' <<< "$3" ;;
     *) [ "${TEST_EMPTY_NODES:-0}" = 1 ] || echo controller ;;
 esac
 EOF
-# squeue lists nothing, or with TEST_STEPS=1 the steps of the job (what `squeue -s` does).
+# squeue lists nothing, or with TEST_STEPS=1 the steps of the job (what `squeue -s` does), and
+# with TEST_LISTED the user's Skiff jobs: this one's two components (self), and another (other).
 cat > "$test_dir/bin/squeue" <<'EOF'
 #!/usr/bin/env bash
 case " $* " in
     *" -s "*) if [ "${TEST_STEPS:-0}" = 1 ]; then printf '%s.batch\n%s.extern\n%s.0\n' "$SLURM_JOB_ID" "$SLURM_JOB_ID" "$SLURM_JOB_ID"; fi ;;
+    *" --name=skiff-cluster "*)
+        case "${TEST_LISTED:-}" in
+            self) printf '%s+0\n%s+1\n' "$SLURM_JOB_ID" "$SLURM_JOB_ID" ;;
+            other) printf '%s+0\n%s+1\n4242\n' "$SLURM_JOB_ID" "$SLURM_JOB_ID" ;;
+        esac ;;
 esac
 exit 0
 EOF
@@ -261,3 +268,25 @@ mtu_run no-network TEST_PROBE=none SKIFF_NETWORK=ib9
 [ "$rc" -eq 1 ] && grep -q 'no global IPv4 address on interface ib9' "$test_dir/no-network.log" && ! grep -q 'Starting Controller' "$test_dir/no-network.log" || { echo "a network that cannot be had did not stop the job: exit $rc" >&2; cat "$test_dir/no-network.log" >&2; exit 1; }
 mtu_run bad-network SKIFF_NETWORK=10.0.1.5 TEST_PROBE=real
 [ "$rc" -eq 1 ] && grep -q 'SKIFF_NETWORK.*not auto, an interface name' "$test_dir/bad-network.log" || { echo "an invalid SKIFF_NETWORK was not refused: exit $rc" >&2; cat "$test_dir/bad-network.log" >&2; exit 1; }
+
+# A heterogeneous job (sbatch ... : ...): the nodes of its components, in order, the first the
+# controller's, and the step of each bubble in its node's component. Its own components, which
+# squeue lists as JOB+0 and JOB+1, are not another cluster; another Skiff job still is.
+het_run() { # het_run NAME VAR=value...: a job of two components (controller; worker1) that ends at once
+    local name="$1"
+    shift
+    job=$((job + 1))
+    rc=0
+    mkdir -p "$test_dir/home-$name/.skiff/images"; : > "$test_dir/home-$name/.skiff/images/skiff-9.9.9-test-$arch.tar"
+    env SLURM_JOB_ID="$job" HOME="$test_dir/home-$name" TEST_CHILD_MODE=0 SLURM_HET_SIZE=2 \
+        SLURM_JOB_NODELIST_HET_GROUP_0=controller SLURM_JOB_NODELIST_HET_GROUP_1=worker1 "$@" \
+        bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/$name.log" 2>&1 || rc=$?
+}
+job=9200
+het_run het TEST_LISTED=self
+grep -q '^  Nodes: controller worker1$' "$test_dir/het.log" \
+    && grep -q -- '-w controller --het-group=0 --exclusive --cpus-per-task=8 bash' "$test_dir/home-het/.skiff/step-args" \
+    && grep -q -- '-w worker1 --het-group=1 --exclusive --cpus-per-task=8 bash' "$test_dir/home-het/.skiff/step-args" \
+    || { echo "a heterogeneous job: its nodes, or the component of their steps, were not taken: exit $rc" >&2; cat "$test_dir/het.log" "$test_dir/home-het/.skiff/step-args" >&2; exit 1; }
+het_run het-other TEST_LISTED=other
+[ "$rc" -eq 1 ] && grep -q 'Another Skiff cluster job is already running (Job IDs: 4242)' "$test_dir/het-other.log" || { echo "another Skiff job beside a heterogeneous one was not refused: exit $rc" >&2; cat "$test_dir/het-other.log" >&2; exit 1; }
