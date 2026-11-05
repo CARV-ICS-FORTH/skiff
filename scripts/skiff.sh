@@ -1583,11 +1583,13 @@ skiff_bubble() {
     # row; a failed or hung `apptainer exec` proves nothing. With the 2 s interval a real
     # death is noticed within about three intervals.
     #
-    # A job of Skiff's own launcher (skiff.sh start) tells its bubbles to stop through its lease
-    # (SKIFF_LEASE, see skiff_launcher_lease): `stop` ends the bubble as TERM does, its pods
-    # stopped first. A lease that has not changed for SKIFF_LEASE_EXPIRY seconds is a supervisor
-    # that is gone (killed, or its host lost), and the bubble ends the same way rather than run
-    # on with nobody to stop it. (A Slurm job's bubbles have no lease: Slurm signals them.)
+    # A job tells its bubbles to stop through its lease (SKIFF_LEASE, see JOB.lease where the
+    # launcher's state is described): `stop` ends the bubble as TERM does, its pods stopped
+    # first. A lease that has not changed for SKIFF_LEASE_EXPIRY seconds is a supervisor that is
+    # gone (killed, or its host lost), and the bubble ends the same way rather than run on with
+    # nobody to stop it. (Both launchers give their bubbles one: skiff.sh start, and skiff.slurm,
+    # whose bubbles a signal to their steps would not reach alone everywhere: see its
+    # skiff_launch_checked.)
     local gone=0 missing=0 listed alive rc lease lease_seen="" lease_changed=$SECONDS
     while true; do
         if [ -n "${SKIFF_LEASE:-}" ]; then
@@ -2051,7 +2053,8 @@ skiff_cluster() {
 #                them as TERM does, and a lease that has not changed for SKIFF_LEASE_EXPIRY
 #                seconds means a supervisor that is gone, which ends them too. It is written in
 #                place: on a shared home, opening a file revalidates it, while a renamed one can
-#                be read stale from the directory cache for a minute.
+#                be read stale from the directory cache for a minute. skiff.slurm keeps one for
+#                each of its jobs too, named by the Slurm job ID (which the IDs here never are).
 # (The two intervals are settings only for the tests, which make them short.)
 SKIFF_LAUNCHER_DIR="$SKIFF_STATE_DIR/launcher"
 : "${SKIFF_LEASE_INTERVAL:=5}"
