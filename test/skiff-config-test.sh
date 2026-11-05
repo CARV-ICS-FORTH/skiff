@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Tests of scripts/skiff.sh: what it accepts, what it refuses (and says why),
 # and the addresses it derives. Runs without a cluster.
+# (Not -e: a check that fails is counted, and the others still run. So a temporary directory
+# that cannot be made ends the run where it is made: its name would be empty, and the paths
+# below it, which the test writes and removes with rm -rf, would be the same paths below /.)
 set -uo pipefail
 
 repo_dir=$(cd "$(dirname "$0")/.." && pwd)
@@ -224,7 +227,7 @@ expect "probe MTU: a node that did not answer keeps the default, with a warning"
 expect "probe fields" "$(env -i PATH="$PATH" bash -c 'source "$1"; skiff_probe_field "ip=10.0.1.11 dev=enp130s0 mtu=9000 speed=56000" dev; skiff_probe_field "ip=10.0.1.11 dev=enp130s0 mtu=9000 speed=56000" speed' _ "$repo_dir/scripts/skiff.sh" | tr '\n' ' ')" "enp130s0 56000 "
 
 # skiff.sh network-probe on stand-ins for ip and /sys/class/net
-netdir=$(mktemp -d)
+netdir=$(mktemp -d) || exit 1
 mkdir -p "$netdir/bin" "$netdir/sys/sys/class/net"
 cat > "$netdir/bin/ip" <<'EOF2'
 #!/bin/sh
@@ -270,7 +273,7 @@ rm -rf "$netdir"
 # skiff_check_node on a PATH that holds only the commands it uses itself, plus chosen
 # stand-ins for the host programs and a stand-in for the host's /proc, /sys and /etc
 # (SKIFF_SYS_ROOT): what a host lacks cannot be made to happen on a test machine.
-nodedir=$(mktemp -d)
+nodedir=$(mktemp -d) || exit 1
 trap 'rm -rf "$nodedir"' EXIT
 mkdir -p "$nodedir/base" "$nodedir/tools" "$nodedir/fake"
 for command in mkdir chmod stat hostname id cat grep uname sed; do ln -s "$(command -v "$command")" "$nodedir/base/$command"; done
@@ -676,7 +679,7 @@ expect "executing an unknown command is a usage error" "$status" 2
 # A docker-archive stand-in: two layers (the first gzip-compressed with the tools, the second
 # plain, without), a config that says the architecture, a manifest that names them, and tools
 # that only say who they are. archive DIR ARCH LAYER...: such an archive.
-work=$(mktemp -d)
+work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/layer1/opt/skiff/tools/bin" "$work/layer1/opt/skiff/tools/lib" "$work/layer2/etc" "$work/blobs"
 for tool in apptainer slirp4netns socat kubectl; do
@@ -690,7 +693,7 @@ tar -C "$work/layer2" -cf "$work/blobs/bbb" .
 archive() {
     local out="$1" arch="$2" layer layers="" dir
     shift 2
-    dir=$(mktemp -d "$work/arc.XXXXXX"); mkdir -p "$dir/blobs/sha256"
+    dir=$(mktemp -d "$work/arc.XXXXXX") || exit 1; mkdir -p "$dir/blobs/sha256"
     if [ -n "$arch" ]; then printf '{"architecture":"%s","os":"linux"}' "$arch"; else printf '{"os":"linux"}'; fi > "$dir/blobs/sha256/ccc"
     for layer in "$@"; do cp "$work/blobs/$layer" "$dir/blobs/sha256/$layer"; layers="${layers:+$layers,}\"blobs/sha256/$layer\""; done
     printf '[{"Config":"blobs/sha256/ccc","RepoTags":["x:latest"],"Layers":[%s]}]' "$layers" > "$dir/manifest.json"
