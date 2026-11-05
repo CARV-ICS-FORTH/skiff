@@ -69,6 +69,13 @@ case "$*" in
     *) exit 0 ;;
 esac
 EOF
+# setsid keeps what it runs (skiff.slurm runs the srun of a bubble in a session of its own) and
+# runs it, as util-linux's does without one, where a test machine (macOS) has none.
+cat > "$test_dir/bin/setsid" <<'EOF'
+#!/usr/bin/env bash
+mkdir -p "$HOME/.skiff"; echo "$*" >> "$HOME/.skiff/setsid-args"
+exec "$@"
+EOF
 cat > "$test_dir/fake-bubble" <<'EOF'
 #!/usr/bin/env bash
 if [ "$TEST_CHILD_MODE" = early ]; then exit 9; fi
@@ -76,7 +83,19 @@ mkdir -p "$HOME/.skiff/tls"
 echo "$SKIFF_JOB_INSTANCE" >> "$HOME/.skiff/instances"
 echo "$CONTROLLER_IP $SKIFF_UPLINK_MTU $SKIFF_POD_MTU" > "$HOME/.skiff/bubble-env"
 touch "$HOME/.skiff/kubeconfig" "$HOME/.skiff/tls/server-ca.crt"
-if [ "$TEST_CHILD_MODE" = term ]; then echo $$ > "$HOME/.skiff/bubble-pid"; exec sleep 30; fi
+if [ "$TEST_CHILD_MODE" = term ]; then
+    # Until its lease says stop, as the real bubble reads it (it then ends as on a TERM), or a
+    # signal ends it.
+    echo $$ > "$HOME/.skiff/bubble-pid"
+    for attempt in $(seq 1 300); do
+        if [ "$(cut -d' ' -f1 "${SKIFF_LEASE:-/nonexistent}" 2>/dev/null)" = stop ]; then
+            echo "$SKIFF_LEASE" >> "$HOME/.skiff/lease-seen"
+            exit 143
+        fi
+        sleep 0.1
+    done
+    exit 1
+fi
 sleep 0.1
 exit "$TEST_CHILD_MODE"
 EOF
@@ -173,11 +192,12 @@ SLURM_JOB_ID=8995 HOME="$test_dir/home-launcher" bash "$script_dir/../scripts/sk
 if grep -q 'Starting Controller' "$test_dir/launcher.log"; then echo "a running cluster of the launcher: a bubble was started" >&2; exit 1; fi
 
 job=9000
-for mode in 7 0 early empty term termsteps; do
+for mode in 7 0 early empty term termsteps termnolease; do
     job=$((job + 1))
     export SLURM_JOB_ID="$job" HOME="$test_dir/home-$mode" TEST_CHILD_MODE="$mode" TEST_STEPS=0
-    # (termsteps: the job is told to end while its steps are listed by Slurm, as they are on a cluster)
-    if [ "$mode" = termsteps ]; then export TEST_CHILD_MODE=term TEST_STEPS=1; fi
+    # (termsteps: the job is told to end while its steps are listed by Slurm, as they are on a
+    # cluster; termnolease: so is it, and its bubbles' lease cannot be written then)
+    case "$mode" in termsteps|termnolease) export TEST_CHILD_MODE=term TEST_STEPS=1 ;; esac
     export SKIFF_DEV=0
     [ "$mode" != 7 ] || unset SKIFF_DEV
     export TEST_EMPTY_NODES=0
@@ -185,7 +205,7 @@ for mode in 7 0 early empty term termsteps; do
     # the release's archive for each architecture (a cluster whose nodes are of either)
     mkdir -p "$HOME/.skiff/images"; : > "$HOME/.skiff/images/skiff-9.9.9-test-$arch.tar"; : > "$HOME/.skiff/images/skiff-9.9.9-test-$other.tar"
     rc=0
-    if [ "$mode" = term ] || [ "$mode" = termsteps ]; then
+    if [ "$TEST_CHILD_MODE" = term ]; then
         bash "$script_dir/../scripts/skiff.slurm" > "$test_dir/$mode.log" 2>&1 &
         supervisor_pid=$!
         for attempt in $(seq 1 50); do
@@ -193,6 +213,11 @@ for mode in 7 0 early empty term termsteps; do
             sleep 0.1
         done
         grep -q 'Supervising the bubbles' "$test_dir/$mode.log" || { cat "$test_dir/$mode.log"; exit 1; }
+        if [ "$mode" = termnolease ]; then
+            # (a directory in the lease's place: `stop` cannot be written there, whatever renews it)
+            lease="$HOME/.skiff/launcher/$SLURM_JOB_ID.lease"
+            until [ -d "$lease" ]; do rm -f "$lease"; mkdir "$lease" 2>/dev/null || true; done
+        fi
         kill -TERM "$supervisor_pid"
         wait "$supervisor_pid" || rc=$?
         expected=143
@@ -201,13 +226,25 @@ for mode in 7 0 early empty term termsteps; do
         case "$mode" in 7) expected=7 ;; early) expected=9 ;; *) expected=1 ;; esac
     fi
     check_result "$mode" "$expected" "$rc"
-    # Told to end with its steps listed, the job signals the tasks of each step (TERM, so the
-    # bubble drains its pods) and not the srun that started it; never the batch or extern step.
-    if [ "$mode" = termsteps ]; then
-        grep -qx -- "--signal=TERM ${SLURM_JOB_ID}.0" "$HOME/.skiff/scancel-args" || { echo "$mode: the step was not signalled: $(cat "$HOME/.skiff/scancel-args" 2>&1)" >&2; exit 1; }
-        if grep -qE 'batch|extern' "$HOME/.skiff/scancel-args"; then echo "$mode: a step that is not a bubble was signalled" >&2; exit 1; fi
-    elif [ "$mode" = term ] && [ -e "$HOME/.skiff/scancel-args" ]; then
-        echo "$mode: a step was signalled although Slurm listed none" >&2; exit 1
+    # Told to end, the job tells its bubbles to stop through their lease and signals none of its
+    # steps, whether Slurm lists them or not, and the lease goes with the job; where the lease
+    # cannot be written, it signals the tasks of each step instead (TERM, so the bubble drains its
+    # pods) and not the srun that started it; never the batch or extern step.
+    case "$mode" in
+        term|termsteps)
+            [ -s "$HOME/.skiff/lease-seen" ] || { echo "$mode: the bubble was not told to stop through its lease" >&2; exit 1; }
+            [ ! -e "$HOME/.skiff/scancel-args" ] || { echo "$mode: a step was signalled although the lease told the bubble: $(cat "$HOME/.skiff/scancel-args")" >&2; exit 1; }
+            [ ! -e "$HOME/.skiff/launcher/$SLURM_JOB_ID.lease" ] || { echo "$mode: the job's lease was left behind" >&2; exit 1; }
+            ;;
+        termnolease)
+            grep -qx -- "--signal=TERM ${SLURM_JOB_ID}.0" "$HOME/.skiff/scancel-args" || { echo "$mode: the step was not signalled: $(cat "$HOME/.skiff/scancel-args" 2>&1)" >&2; exit 1; }
+            if grep -qE 'batch|extern' "$HOME/.skiff/scancel-args"; then echo "$mode: a step that is not a bubble was signalled" >&2; exit 1; fi
+            ;;
+    esac
+    # The srun of a node's bubble runs in a session of its own (setsid): out of the process group
+    # of the job's script, which psslurm signals as a whole.
+    if [ "$mode" != empty ]; then
+        grep -q -- '^srun --nodes=1 -w controller --exclusive' "$HOME/.skiff/setsid-args" || { echo "$mode: the bubble's srun was not given a session of its own: $(cat "$HOME/.skiff/setsid-args" 2>&1)" >&2; exit 1; }
     fi
     # Every job's bubbles are told the job's own volume directory name.
     if [ "$mode" != empty ] && [ "$mode" != early ]; then
