@@ -304,6 +304,12 @@ Skiff runs pods on the NVIDIA GPUs of the job, as a cluster with the NVIDIA devi
 
 **Getting GPUs.** Skiff assumes what `skiff.slurm` already asks for, exclusive nodes, and that the job has **all the GPUs of each node**: submit to a partition with GPUs, with `--gpus-per-node` set to the node's GPUs (`sbatch --nodes=2 --gpus-per-node=4 skiff.slurm` on 4-GPU nodes; `--gres=gpu:4` is the same). The partition alone does not decide it, and an exclusive job may have the GPUs of its nodes without asking, depending on the site. A job that has only some of a node's GPUs is not supported yet: Skiff would use the ones Slurm gives its steps, but it has not been verified, and the node check warns when a step has fewer GPUs than its node. `skiff.slurm` gives the GPUs to the steps that run the bubbles (the job has them, its steps only get them when they ask), the node check reports them (`GPUs 0 (the step's), NVIDIA driver ...`) and refuses a node where a GPU the job has cannot be used. A job without GPUs, or on nodes without, is a cluster without GPUs, with nothing to configure.
 
+**GPU nodes and nodes without, in one cluster.** Where a site keeps them in partitions of their own (most do), a job of one partition has nodes of one kind: a cluster of both is a heterogeneous job, whose components are separated by `:`, each with its partition, its size and its GPUs. The options of `skiff.slurm` itself (`--exclusive`, `--mem=0`, `--ntasks-per-node=1`) are the first component's only, so the others are given them too; the first node of the first component runs the controller. A node advertises its own GPUs, so the pods that ask for GPUs run on the GPU nodes and the others wherever they fit:
+
+```bash
+sbatch --nodes=1 --partition=gpu --gpus-per-node=4 : --nodes=4 --partition=cpu --exclusive --mem=0 --ntasks-per-node=1 skiff.slurm
+```
+
 **Using them.** A node with GPUs advertises `nvidia.com/gpu` and is labeled `nvidia.com/gpu.present`, `nvidia.com/gpu.count` and `nvidia.com/gpu.product`. A pod gets GPUs by asking in the **limits** of its containers, and gets exactly those, no others:
 
 ```yaml

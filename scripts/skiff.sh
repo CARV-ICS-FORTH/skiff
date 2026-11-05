@@ -1729,10 +1729,11 @@ _skiff_record_job_exit() {
 
 # _skiff_one_cluster: one Skiff cluster per user, whichever launcher started it: another Slurm
 # job of the user's (where there is Slurm) or a running cluster of skiff.sh start refuses this one.
+# (The components of a heterogeneous job are listed as JOB+0, JOB+1, ...: they are this job.)
 _skiff_one_cluster() {
     local active
     if command -v squeue >/dev/null 2>&1; then
-        active=$(squeue -u "${USER:-$(id -un)}" --name=skiff-cluster --noheader -o "%i" 2>/dev/null | awk -v self="${SKIFF_JOB_ID:-}" '$1 != self' || true)
+        active=$(squeue -u "${USER:-$(id -un)}" --name=skiff-cluster --noheader -o "%i" 2>/dev/null | awk -v self="${SKIFF_JOB_ID:-}" '$1 != self && index($1, self "+") != 1' || true)
         if [ -n "$active" ]; then
             echo "ERROR: Another Skiff cluster job is already running (Job IDs: $active)." >&2
             echo "Only one active Skiff cluster job is allowed. Cancel it with 'scancel <job>' first." >&2
