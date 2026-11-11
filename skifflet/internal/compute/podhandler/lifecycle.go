@@ -469,6 +469,7 @@ func (a *Attempt) Start(cmd *exec.Cmd, gates probeGates) error {
 	}
 	if err := cmd.Start(); err != nil {
 		l.mu.Unlock()
+		a.event(corev1.EventTypeWarning, "Failed", "Error: %v", err)
 		return err
 	}
 	a.process = cmd.Process
@@ -481,6 +482,11 @@ func (a *Attempt) Start(cmd *exec.Cmd, gates probeGates) error {
 	l.mu.Unlock()
 
 	a.logger.Info("container attempt started", "action", "start", "pid", a.pid)
+	// The launch creates and starts the container in one step. The kubelet's events of the
+	// two follow each other here, as the process runs, and before a PostStart hook, as the
+	// kubelet records them.
+	a.event(corev1.EventTypeNormal, "Created", "Created container: %s", a.Container)
+	a.event(corev1.EventTypeNormal, "Started", "Started container %s", a.Container)
 	if gates.postStart {
 		a.update(func(cs *corev1.ContainerStatus) bool {
 			beginAttempt(cs, a.ID)
@@ -874,6 +880,7 @@ func (l *PodLifecycle) ReleaseLiveResources(gracePeriod time.Duration) {
 			stopped.Add(1)
 			go func() {
 				defer stopped.Done()
+				a.event(corev1.EventTypeNormal, "Killing", "Stopping container %s", a.Container)
 				a.Stop(gracePeriod, "the pod is being terminated")
 				select {
 				case <-a.done:

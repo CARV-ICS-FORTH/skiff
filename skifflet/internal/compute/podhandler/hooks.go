@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -151,15 +152,20 @@ var podEvents = func(pod *corev1.Pod, eventType, reason, message string) {
 }
 
 // ContainerEvent records an event about one of the pod's containers, when events
-// are recorded.
+// are recorded. It refers to the container as the kubelet does: spec.initContainers{name}
+// for an init container, spec.containers{name} for another.
 func (l *PodLifecycle) ContainerEvent(container, eventType, reason, format string, args ...any) {
 	if compute.Events == nil {
 		return
 	}
 	pod := l.GetPod()
+	field := "spec.containers"
+	if slices.ContainsFunc(pod.Spec.InitContainers, func(c corev1.Container) bool { return c.Name == container }) {
+		field = "spec.initContainers"
+	}
 	ref := &corev1.ObjectReference{
 		Kind: "Pod", APIVersion: "v1", Namespace: pod.Namespace, Name: pod.Name, UID: pod.UID,
-		FieldPath: fmt.Sprintf("spec.containers{%s}", container),
+		FieldPath: fmt.Sprintf("%s{%s}", field, container),
 	}
 	compute.Events.Eventf(ref, eventType, reason, format, args...)
 }

@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
@@ -92,6 +93,33 @@ func workingDirOf(container *corev1.Container, imageDir string) (string, error) 
 		return "", &ConfigError{Message: fmt.Sprintf("the working directory %q is not an absolute path", dir), Reason: "CreateContainerConfigError"}
 	}
 	return filepath.Clean(dir), nil
+}
+
+// ensureImage has the container's image on the node, with the kubelet's events: Pulled
+// "already present on machine" for an image it does not pull, else Pulling, and Pulled with
+// the time the pull took once it has succeeded. A failed pull's events are prepareContainer's.
+func (h *PodHandler) ensureImage(ctx context.Context, container *corev1.Container, policy corev1.PullPolicy) (*image.Image, error) {
+	event := func(reason, format string, args ...any) {
+		if h.lifecycle != nil {
+			h.lifecycle.ContainerEvent(container.Name, corev1.EventTypeNormal, reason, format, args...)
+		}
+	}
+	if policy != corev1.PullAlways {
+		if img, err := image.ResolveLocal(compute.Skiff.ImageDir(), container.Image); err == nil {
+			event("Pulled", "Container image %q already present on machine", container.Image)
+			return img, nil
+		} else if policy == corev1.PullNever {
+			return nil, &ImagePullError{Image: container.Image, Never: true, Err: err}
+		}
+	}
+	event("Pulling", "Pulling image %q", container.Image)
+	start := time.Now()
+	img, err := image.PullWithPolicy(ctx, compute.Skiff.ImageDir(), image.Docker, container.Image, policy)
+	if err != nil {
+		return nil, &ImagePullError{Image: container.Image, Err: err}
+	}
+	event("Pulled", "Successfully pulled image %q in %v", container.Image, time.Since(start).Truncate(time.Millisecond))
+	return img, nil
 }
 
 // buildContainer resolves everything one container needs to run: environment,
@@ -221,15 +249,9 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		pullCtx = h.lifecycle.Context()
 	}
 
-	var img *image.Image
-	if pullPolicy == corev1.PullNever {
-		img, err = image.ResolveLocal(compute.Skiff.ImageDir(), container.Image)
-	} else {
-		img, err = image.PullWithPolicy(pullCtx, compute.Skiff.ImageDir(), image.Docker, container.Image, pullPolicy)
-	}
-
+	img, err := h.ensureImage(pullCtx, container, pullPolicy)
 	if err != nil {
-		return Container{}, &ImagePullError{Image: container.Image, Never: pullPolicy == corev1.PullNever, Err: err}
+		return Container{}, err
 	}
 
 	/*---------------------------------------------------

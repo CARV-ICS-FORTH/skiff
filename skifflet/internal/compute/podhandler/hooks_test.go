@@ -56,14 +56,20 @@ func (r *hookRig) exited() bool {
 	}
 }
 
+// event is the next event after those of the container's start (Created, Started).
 func (r *hookRig) event(t *testing.T) string {
 	t.Helper()
-	select {
-	case e := <-r.events.Events:
-		return e
-	case <-time.After(3 * time.Second):
-		t.Fatal("no event was recorded")
-		return ""
+	for {
+		select {
+		case e := <-r.events.Events:
+			if strings.HasPrefix(e, "Normal Created ") || strings.HasPrefix(e, "Normal Started ") {
+				continue
+			}
+			return e
+		case <-time.After(3 * time.Second):
+			t.Fatal("no event was recorded")
+			return ""
+		}
 	}
 }
 
