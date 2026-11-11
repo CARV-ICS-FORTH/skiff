@@ -159,6 +159,40 @@ func init() {
 		fmt.Println("connect", err, "local", addrPortOf(local), "peer", addrPortOf(peer))
 		return 0
 	}
+	// dualstack PORT: what netserver does by default: a dual-stack listener on [::] and then
+	// one on 0.0.0.0 at the same port, whose bind fails (EADDRINUSE) natively, and which it
+	// goes on without. The first takes one connection.
+	helpers["dualstack"] = func(args []string) int {
+		port, _ := strconv.Atoi(args[0])
+		six, _ := unix.Socket(unix.AF_INET6, unix.SOCK_STREAM, 0)
+		unix.SetsockoptInt(six, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+		unix.SetsockoptInt(six, unix.IPPROTO_IPV6, unix.IPV6_V6ONLY, 0)
+		if err := unix.Bind(six, &unix.SockaddrInet6{Port: port}); err != nil {
+			fmt.Println("error bind 6", err)
+			return 2
+		}
+		unix.Listen(six, 8)
+		four, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		unix.SetsockoptInt(four, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+		errno, _ := unix.Bind(four, &unix.SockaddrInet4{Port: port}).(unix.Errno)
+		fmt.Printf("bind4=%d\n", errno) // 0: it was bound
+		unix.Close(four)
+		l, err := net.FileListener(os.NewFile(uintptr(six), "listener"))
+		if err != nil {
+			fmt.Println("error", err)
+			return 2
+		}
+		fmt.Println("listening")
+		c, err := l.Accept()
+		if err != nil {
+			fmt.Println("error", err)
+			return 2
+		}
+		fmt.Println("accepted", describe(nil, c.(*net.TCPConn)))
+		n, _ := io.Copy(io.Discard, c)
+		fmt.Println("received", n)
+		return 0
+	}
 	// bounddial ADDR LOCAL: a client that binds its socket before the connect, as netperf does
 	// for both of its connections (SO_REUSEADDR, then the local address it was given, the
 	// wildcard and port 0 by default), then sends a few bytes. IP_FREEBIND lets it bind an
@@ -903,6 +937,36 @@ func TestHostPortInUse(t *testing.T) {
 	}
 	if got := client.Stats().Fallbacks.Snapshot(); got["no-ack"] != 1 || !strings.Contains(clientOut.String(), "connect network is unreachable") {
 		t.Errorf("client: fallbacks %v: %s", got, clientOut)
+	}
+}
+
+// A server that listens on [::] (dual-stack) and then on 0.0.0.0 at one port is told for the
+// second what it would be natively, EADDRINUSE, and that is not a fallback: the first listener
+// is on the host and takes the clients of IPv4 the direct way.
+func TestADualStackListenerAndAnIPv4OneAtOnePort(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	vip := "10.43.0.81:" + p
+	marked := Ports{uint16(port): {}}
+	server, serverOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "dualstack", p)
+	serverOut.waitFor(t, "listening")
+	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+	client, clientOut := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", vip, "1000")
+	if err := client.Wait(); err != nil {
+		t.Fatalf("client: %v\n%s", err, clientOut)
+	}
+	if err := server.Wait(); err != nil {
+		t.Fatalf("server: %v\n%s", err, serverOut)
+	}
+	so := serverOut.String()
+	if got := tokenOf(so, "bind4"); got != strconv.Itoa(int(unix.EADDRINUSE)) {
+		t.Errorf("the IPv4 bind said %s, want EADDRINUSE: %s", got, so)
+	}
+	if !strings.Contains(so, "received 1000") || swapped(client) != 1 || server.Stats().Accepted.Load() != 1 {
+		t.Errorf("swapped %d, accepted %d: %s", swapped(client), server.Stats().Accepted.Load(), so)
+	}
+	if got := server.Stats().Fallbacks.Snapshot(); len(got) != 0 || server.Stats().Binds.Load() != 1 {
+		t.Errorf("server: fallbacks %v, binds %d", got, server.Stats().Binds.Load())
 	}
 }
 

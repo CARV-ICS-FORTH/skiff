@@ -734,18 +734,17 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 		if err := unix.Bind(sock, sockaddrFor(on, held.family)); err == nil {
 			host = on
 		} else if err == unix.EADDRINUSE {
-			return s.fallback("host-port-in-use", "bind %s: on the host at %s: %v", want, on, err)
+			return s.hostPortInUse(want, on, err)
 		}
 	}
 	if host.Addr().IsUnspecified() {
 		err = unix.Bind(sock, sockaddrFor(host, held.family))
 	}
+	if err == unix.EADDRINUSE {
+		return s.hostPortInUse(want, host, err)
+	}
 	if err != nil {
-		reason := "bind-error"
-		if err == unix.EADDRINUSE {
-			reason = "host-port-in-use"
-		}
-		return s.fallback(reason, "bind %s: on the host at %s: %v", want, host, err)
+		return s.fallback("bind-error", "bind %s: on the host at %s: %v", want, host, err)
 	}
 	// The registrations of the container's socket in epoll sets go to the host's, and are
 	// out of the old one's hands before it is put in the pod's network, so that no set of
@@ -794,6 +793,33 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 	}
 	s.logf("bind %s: on the host, %s", want, host)
 	return succeed()
+}
+
+// hostPortInUse answers a bind whose host port is taken. If it is taken by a listener of the same
+// port of this container, the bind is one that the pod's network refuses as well, where that
+// listener's own socket stays (see the proxy): a server that listens on [::] (dual-stack) and then
+// on 0.0.0.0 at one port, as netserver and many others do, and is told EADDRINUSE for the second as
+// it would be natively, while the first takes the clients of both families. That is no fallback,
+// and the kernel answers it in the pod's network. Otherwise a process of the host holds the port.
+func (s *Supervisor) hostPortInUse(want, on netip.AddrPort, err error) reply {
+	if s.listensAt(want.Port(), on.Port()) {
+		s.logf("bind %s: the port is served on the host already, at %s, by a listener of the container; the pod's network answers", want, on)
+		return letThrough
+	}
+	return s.fallback("host-port-in-use", "bind %s: on the host at %s: %v", want, on, err)
+}
+
+// listensAt says whether a listener of the container that was put on the host for the port is
+// at the host port.
+func (s *Supervisor) listensAt(port, hostPort uint16) bool {
+	s.proxyMu.Lock()
+	defer s.proxyMu.Unlock()
+	for addr, p := range s.proxies {
+		if addr.Port() == port && p.hostPort == hostPort {
+			return true
+		}
+	}
+	return false
 }
 
 // ownerOf says where the container has the socket that was put in place for descriptor fd of
