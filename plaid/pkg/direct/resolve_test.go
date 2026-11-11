@@ -17,6 +17,7 @@ type fakePlaid struct {
 	status   api.Response
 	services []api.ServiceEntry
 	routes   []api.RouteInfo
+	pods     []api.DirectPod
 	err      error
 	asked    int
 }
@@ -35,6 +36,8 @@ func (f *fakePlaid) ListServices() (*api.Response, error) {
 }
 
 func (f *fakePlaid) ListRoutes() ([]api.RouteInfo, error) { return f.routes, f.err }
+
+func (f *fakePlaid) ListDirectPods() ([]api.DirectPod, error) { return f.pods, f.err }
 
 func newTestResolver(t testing.TB, f *fakePlaid) (*APIResolver, *time.Time) {
 	now := time.Unix(1000, 0)
@@ -64,6 +67,39 @@ func TestResolveBackendOnAnotherNode(t *testing.T) {
 	want := Backend{Pod: netip.MustParseAddrPort("10.244.5.4:5201"), Host: netip.MustParseAddrPort("10.0.1.13:20065")}
 	if !ok || got != want {
 		t.Fatalf("got %v, %v; want the longest route's node: %v", got, ok, want)
+	}
+}
+
+// A pod whose list of listen ports plaidd has is reached at each port's slot: two ports that
+// are equal modulo 16 (12865 and 5201) at two host ports, for a Service's backend and for the
+// pod's own address. The ports of a pod whose list is not known are at their remainders.
+func TestResolveFindsThePortsSlot(t *testing.T) {
+	f := &fakePlaid{
+		status: exampleStatus(),
+		services: []api.ServiceEntry{{
+			VIP: "10.43.0.77", Port: 12865, Protocol: "tcp",
+			Backends: []api.BackendEntry{{IP: "10.244.5.4", Port: 12865, Eligible: true}},
+		}},
+		routes: []api.RouteInfo{{Subnet: "10.244.5.0/24", RemoteHostIP: "10.0.1.13"}},
+		pods:   []api.DirectPod{{IP: "10.244.5.4", ListenPorts: "12865,5201,12866"}, {IP: "10.244.5.5", ListenPorts: "bad"}},
+	}
+	r, _ := newTestResolver(t, f)
+	// 20000 + 4*16: 5201 and 12865 are 1 modulo 16, 12866 is 2; 12865 takes the first free slot, 0.
+	for dst, want := range map[string]string{
+		"10.43.0.77:12865": "10.0.1.13:20064",
+		"10.244.5.4:12865": "10.0.1.13:20064",
+		"10.244.5.4:5201":  "10.0.1.13:20065",
+		"10.244.5.4:12866": "10.0.1.13:20066",
+		"10.244.5.5:12865": "10.0.1.13:20081", // a list that cannot be read is not known
+		"10.244.5.6:12865": "10.0.1.13:20097",
+	} {
+		got, ok := r.Resolve(netip.MustParseAddrPort(dst))
+		if !ok || got.Host.String() != want {
+			t.Errorf("%s: %v, %v; want %s", dst, got, ok, want)
+		}
+	}
+	if got, ok := r.Resolve(netip.MustParseAddrPort("10.244.5.4:80")); ok {
+		t.Errorf("a port that the pod does not list: %v", got)
 	}
 }
 
@@ -222,13 +258,13 @@ func TestHostPort(t *testing.T) {
 	}{
 		{20000, net24, "10.244.5.0:0", 20000},
 		{20000, net24, "10.244.5.4:5201", 20065},
-		{20000, net24, "10.244.5.4:5217", 20065}, // equal modulo 16: the same host port
+		{20000, net24, "10.244.5.4:5217", 20065}, // equal modulo 16: the same remainder (see TestPortSlots)
 		{20000, net24, "10.244.5.4:5202", 20066},
 		{20000, net24, "10.244.5.255:65535", 24095}, // the last of 4096
 		{30000, netip.MustParsePrefix("10.244.5.128/25"), "10.244.5.130:80", 30032},
 		{20000, netip.MustParsePrefix("10.244.5.4/24"), "10.244.5.4:80", 20064}, // the network's host bits are ignored
 	} {
-		if got, ok := HostPort(tc.base, tc.net, pod(tc.pod)); !ok || got != tc.want {
+		if got, ok := HostPort(tc.base, tc.net, pod(tc.pod), nil); !ok || got != tc.want {
 			t.Errorf("%d %v %s: %d, %v; want %d", tc.base, tc.net, tc.pod, got, ok, tc.want)
 		}
 	}
@@ -243,7 +279,7 @@ func TestHostPort(t *testing.T) {
 		"a base in the system's ports":   {80, net24, "10.244.5.4:80"},
 		"no network":                     {20000, netip.Prefix{}, "10.244.5.4:80"},
 	} {
-		if got, ok := HostPort(c.base, c.net, pod(c.pod)); ok {
+		if got, ok := HostPort(c.base, c.net, pod(c.pod), nil); ok {
 			t.Errorf("%s: %d", name, got)
 		}
 	}
@@ -305,6 +341,8 @@ func (p *gatedPlaid) ListServices() (*api.Response, error) {
 }
 
 func (p *gatedPlaid) ListRoutes() ([]api.RouteInfo, error) { return nil, nil }
+
+func (p *gatedPlaid) ListDirectPods() ([]api.DirectPod, error) { return nil, nil }
 
 func (p *gatedPlaid) hold() chan struct{} {
 	p.mu.Lock()

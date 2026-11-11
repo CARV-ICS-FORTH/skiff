@@ -23,6 +23,7 @@ type Supervisor struct {
 	cfg      Config
 	cmd      *exec.Cmd
 	listener int
+	slots    map[uint16]int // the listen ports' slots among the pod's host ports (see Ports.Slots)
 	targets  *targets
 	threads  threadLocks // orders a task's answers and the calls that hold something (see threadLocks)
 	table    *Table
@@ -93,11 +94,15 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 	if cfg.PreambleTimeout <= 0 {
 		cfg.PreambleTimeout = DefaultPreambleTimeout
 	}
-	if own, shared := cfg.ListenPorts.Exclusive(); len(shared) > 0 {
+	slots, unserved := cfg.ListenPorts.Slots()
+	if len(unserved) > 0 {
 		if cfg.Logf != nil {
-			cfg.Logf("direct-listen-ports %v are served at the same host ports (equal modulo %d): none of them is swapped, they stay on the pod network", shared, PodPortsPerPod)
+			cfg.Logf("direct-listen-ports %v have no host port (a pod has %d): they stay on the pod network", unserved, PodPortsPerPod)
 		}
-		cfg.ListenPorts = own
+		cfg.ListenPorts = Ports{}
+		for port := range slots {
+			cfg.ListenPorts[port] = struct{}{}
+		}
 	}
 	runtimeDescriptors() // while no descriptor of the container's is in the table
 	// The watchdog is started here, on a thread that is not filtered, before the filter's.
@@ -135,6 +140,7 @@ func Start(cfg Config, cmd *exec.Cmd) (*Supervisor, error) {
 		stop:     make(chan struct{}),
 		loopDone: make(chan struct{}),
 		watchdog: wd,
+		slots:    slots,
 	}
 	s.targets.outOfReach = cfg.outOfReach
 	s.table.SetLiveness(cfg.Factory.LiveCookies, s.logf)

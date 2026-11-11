@@ -36,15 +36,18 @@ func (p Ports) Has(port uint16) bool {
 }
 
 // The host ports of the direct path. A pod's server listens on the host at a port that
-// follows from the pod's address and its own port, so that every supervisor can compute
-// where a pod is served and none has to be told (no allocator, nothing to keep):
+// follows from the pod's address and its list of listen ports, so that every supervisor can
+// compute where a pod is served and none has to be told (no allocator, nothing to keep). A pod
+// owns PodPortsPerPod host ports, from
 //
-//	host port = base + (pod address - first address of the node's pod network) * 16 + pod port mod 16
+//	first = base + (pod address - first address of the node's pod network) * 16
 //
-// A node's pod network of up to a /24 gives its pods 4096 ports from base. Two ports of one
-// pod that are equal modulo 16 get the same host port, which SO_REUSEPORT (copied from the
-// container's socket, for the servers that run workers on one port) would let both bind
-// without a word; so neither is swapped (see Ports.Exclusive).
+// and each of its listen ports has one of them, its slot (see Ports.Slots): port mod 16, unless
+// another port of the list with the same remainder is lower, in which case one of the slots that
+// no port of the list falls on. A node's pod network of up to a /24 gives its pods 4096 ports
+// from base. A port whose remainder no lower listed port shares is at first + port mod 16, which
+// a client computes from the address and the port alone; for the others it needs the server
+// pod's list, which plaidd reads from the pods' annotations (APIResolver).
 const (
 	// DefaultPortBase is where the host ports start: below the ephemeral range of Linux
 	// (32768 and up), where the nodes of the test cluster have nothing listening.
@@ -62,35 +65,71 @@ func CheckPortBase(base int) error {
 	return nil
 }
 
-// Exclusive splits the set into the ports that have a host port of their own and the ports
-// that share one with another port of the set (equal modulo PodPortsPerPod, whatever the pod
-// and the base), which are listed in order.
-func (p Ports) Exclusive() (own Ports, shared []uint16) {
-	byHostPort := make(map[uint16]int)
+// Slots gives each port of the set its slot among a pod's host ports: the lowest port of those
+// that are equal modulo PodPortsPerPod has its remainder, and the others, in order, the
+// remainders that no port of the set has, in order. Distinct ports have distinct slots. A set
+// of more than PodPortsPerPod ports leaves the highest of those that share a remainder without
+// one: they are listed in order, and are not served on the host.
+func (p Ports) Slots() (slots map[uint16]int, unserved []uint16) {
+	sorted := make([]uint16, 0, len(p))
 	for port := range p {
-		byHostPort[port%PodPortsPerPod]++
+		sorted = append(sorted, port)
 	}
-	own = Ports{}
-	for port := range p {
-		if byHostPort[port%PodPortsPerPod] > 1 {
-			shared = append(shared, port)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	slots = make(map[uint16]int, len(p))
+	var taken [PodPortsPerPod]bool
+	var displaced []uint16
+	for _, port := range sorted {
+		if r := int(port % PodPortsPerPod); !taken[r] {
+			taken[r] = true
+			slots[port] = r
 		} else {
-			own[port] = struct{}{}
+			displaced = append(displaced, port)
 		}
 	}
-	sort.Slice(shared, func(i, j int) bool { return shared[i] < shared[j] })
-	return own, shared
+	free := 0
+	for _, port := range displaced {
+		for free < PodPortsPerPod && taken[free] {
+			free++
+		}
+		if free == PodPortsPerPod {
+			unserved = append(unserved, port)
+			continue
+		}
+		taken[free] = true
+		slots[port] = free
+	}
+	return slots, unserved
 }
 
-// HostPort is the host port that serves port pod of a pod on a node whose pods have
-// nodeNet, from base. It says false for a pod outside nodeNet and for a pod network larger
-// than a /24, which has more pods than there are ports for.
-func HostPort(base int, nodeNet netip.Prefix, pod netip.AddrPort) (uint16, bool) {
-	a := pod.Addr().Unmap()
+// FirstHostPort is the first of the host ports of a pod on a node whose pods have nodeNet,
+// from base. It says false for a pod outside nodeNet and for a pod network larger than a
+// /24, which has more pods than there are ports for.
+func FirstHostPort(base int, nodeNet netip.Prefix, pod netip.Addr) (uint16, bool) {
+	a := pod.Unmap()
 	if !nodeNet.IsValid() || !nodeNet.Addr().Is4() || nodeNet.Bits() < 24 || !a.Is4() || !nodeNet.Contains(a) || CheckPortBase(base) != nil {
 		return 0, false
 	}
 	first, addr := nodeNet.Masked().Addr().As4(), a.As4()
 	index := int(addr[3]) - int(first[3]) // a /24 or smaller: only the last byte differs
-	return uint16(base + index*PodPortsPerPod + int(pod.Port())%PodPortsPerPod), true
+	return uint16(base + index*PodPortsPerPod), true
+}
+
+// HostPort is the host port that serves port pod of a pod whose listen ports are listen, on a
+// node whose pods have nodeNet, from base (see FirstHostPort). A nil listen is a pod whose list
+// is not known: the port is taken for one that shares its remainder with no other, at its
+// remainder. A port that is not in a known list has none.
+func HostPort(base int, nodeNet netip.Prefix, pod netip.AddrPort, listen Ports) (uint16, bool) {
+	first, ok := FirstHostPort(base, nodeNet, pod.Addr())
+	if !ok {
+		return 0, false
+	}
+	slot := int(pod.Port() % PodPortsPerPod)
+	if listen != nil {
+		slots, _ := listen.Slots()
+		if slot, ok = slots[pod.Port()]; !ok {
+			return 0, false
+		}
+	}
+	return first + uint16(slot), true
 }

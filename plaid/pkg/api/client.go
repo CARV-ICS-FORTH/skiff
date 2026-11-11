@@ -170,6 +170,18 @@ func (c *Client) ListRoutes() ([]RouteInfo, error) {
 	return resp.Routes, nil
 }
 
+// ListDirectPods returns the pods of the cluster that have listen ports for the direct path.
+func (c *Client) ListDirectPods() ([]DirectPod, error) {
+	resp, err := c.Send(&Request{Action: ActionListDirectPods})
+	if err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		return nil, fmt.Errorf("list direct pods failed: %s", resp.Error)
+	}
+	return resp.DirectPods, nil
+}
+
 // GetStatus retrieves daemon status.
 func (c *Client) GetStatus() (*Response, error) {
 	req := &Request{

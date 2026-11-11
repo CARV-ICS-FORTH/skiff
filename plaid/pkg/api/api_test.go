@@ -456,6 +456,33 @@ func TestReportDirect(t *testing.T) {
 	}
 }
 
+type podLister []DirectPod
+
+func (l podLister) HandleListDirectPods() ([]DirectPod, error) { return l, nil }
+
+// The pods' listen ports of the direct path reach a client; a daemon that has none (no
+// Kubernetes) lists none.
+func TestListDirectPods(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sockPath := filepath.Join(t.TempDir(), "d.sock")
+	handlers := &mockHandlers{}
+	srv := NewServer(sockPath, handlers, handlers, handlers)
+	if err := srv.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	srv.MarkReady()
+	client := NewClient(sockPath)
+	if pods, err := client.ListDirectPods(); err != nil || len(pods) != 0 {
+		t.Errorf("without a handler: %v, %v", pods, err)
+	}
+	srv.SetDirectPodsHandler(podLister{{IP: "10.244.1.5", ListenPorts: "12865,5201"}})
+	if pods, err := client.ListDirectPods(); err != nil || len(pods) != 1 || pods[0].ListenPorts != "12865,5201" || pods[0].IP != "10.244.1.5" {
+		t.Errorf("%v, %v", pods, err)
+	}
+}
+
 func TestDirectCountersAdd(t *testing.T) {
 	var total DirectCounters
 	total.Add(DirectCounters{Connects: 1, Errors: 2, Fallbacks: map[string]uint64{"a": 1}})

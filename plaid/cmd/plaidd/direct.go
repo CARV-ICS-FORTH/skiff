@@ -111,3 +111,34 @@ func (b *directBook) status() *api.DirectStatus {
 }
 
 func (d *PlaidDaemon) HandleReportDirect(r *api.DirectReport) error { return d.direct.report(r) }
+
+// directPods is the listen ports of the direct path of the cluster's pods, by address, as the
+// Kubernetes watch last pushed them (k8s.RunDirectPods), for the supervisors' resolvers. The
+// zero value is ready, and empty.
+type directPods struct {
+	mu   sync.Mutex
+	pods map[string]string
+}
+
+// SetDirectPods implements k8s.DirectPodSink.
+func (p *directPods) SetDirectPods(pods map[string]string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pods = pods
+}
+
+func (p *directPods) list() []api.DirectPod {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	list := make([]api.DirectPod, 0, len(p.pods))
+	for ip, ports := range p.pods {
+		list = append(list, api.DirectPod{IP: ip, ListenPorts: ports})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].IP < list[j].IP })
+	return list
+}
+
+// HandleListDirectPods implements api.DirectPodsHandler.
+func (d *PlaidDaemon) HandleListDirectPods() ([]api.DirectPod, error) {
+	return d.directPods.list(), nil
+}

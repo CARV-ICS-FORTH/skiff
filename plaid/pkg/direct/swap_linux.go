@@ -652,7 +652,7 @@ func (s *Supervisor) putFailed(call string, err error) reply {
 }
 
 // bind: a marked port is bound on the host, on the node's address, at the host port that follows
-// from the pod's address and the port (HostPort). listen then runs on the host socket. The
+// from the pod's address and the port's slot in its list of listen ports (HostPort, Ports.Slots). listen then runs on the host socket. The
 // container's own socket stays in the pod's network behind a proxy (see startProxy). If
 // the host port cannot be had (a process of the host holds it) the socket stays a socket of
 // the pod network: its clients find no ack at the host port and fall back to the overlay.
@@ -718,6 +718,8 @@ func (s *Supervisor) bind(n *notif) (r reply) {
 	if !ok {
 		return s.fallback("no-host-port", "bind %s: the pod has no host port for it", want)
 	}
+	// The resolver says where the port is at its remainder; it is at its slot.
+	hostPort += uint16(s.slots[want.Port()]) - want.Port()%PodPortsPerPod
 	sock, err := s.cfg.Factory.Socket(held.family)
 	if err != nil {
 		return s.failed("bind", want, err)

@@ -55,6 +55,7 @@ type PlaidDaemon struct {
 	services     *svc.Engine // tap mode only
 	nodePorts    *nodeport.Reconciler
 	direct       directBook // what the direct path's supervisors report
+	directPods   directPods // the cluster's pods that have listen ports of the direct path
 }
 
 type Config struct {
@@ -465,6 +466,7 @@ func NewPlaidDaemon(cfg Config) (*PlaidDaemon, error) {
 	d.apiServer.SetFilterHandler(d)
 	d.apiServer.SetServiceHandler(d)
 	d.apiServer.SetDirectHandler(d)
+	d.apiServer.SetDirectPodsHandler(d)
 	return d, nil
 }
 
@@ -569,6 +571,7 @@ func (d *PlaidDaemon) Start(ctx context.Context) error {
 		if d.services != nil {
 			go d.k8sCtrl.RunServices(ctx, d.services, d.nodePortSink())
 		}
+		go d.k8sCtrl.RunDirectPods(ctx, &d.directPods)
 
 		gwMAC, _ := net.ParseMAC(d.cfg.GatewayMAC)
 		go d.k8sCtrl.Run(ctx,

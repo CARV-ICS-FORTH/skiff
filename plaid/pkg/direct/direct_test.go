@@ -122,23 +122,45 @@ func TestPorts(t *testing.T) {
 	}
 }
 
-// Ports of a pod that are equal modulo 16 are served at one host port: they are told apart
-// from the ports that have one of their own, and the set is not changed.
-func TestPortsThatShareAHostPort(t *testing.T) {
-	p, _ := ParsePorts("8080,5201,8096,5202,40000")
-	own, shared := p.Exclusive()
-	if len(own) != 2 || !own.Has(5201) || !own.Has(5202) || fmt.Sprint(shared) != "[8080 8096 40000]" || len(p) != 5 {
-		t.Errorf("own %v, shared %v, set %v", own, shared, p)
+// Every port of a pod has a slot of its own: the lowest of the ports that are equal modulo 16
+// has its remainder, and the others the remainders that no port has, in order. A port that
+// shares its remainder with no other is at its remainder, which a client computes without the
+// list. Beyond 16 ports the highest that share a remainder have none.
+func TestPortSlots(t *testing.T) {
+	p, _ := ParsePorts("8096,5201,8080,5202,40000,12865")
+	slots, unserved := p.Slots()
+	// 5201 and 12865 are 1 modulo 16, 8080, 8096 and 40000 are 0, 5202 is 2.
+	want := map[uint16]int{8080: 0, 5201: 1, 5202: 2, 8096: 3, 12865: 4, 40000: 5}
+	if fmt.Sprint(slots) != fmt.Sprint(want) || len(unserved) != 0 {
+		t.Errorf("slots %v, unserved %v; want %v", slots, unserved, want)
 	}
-	for _, port := range []uint16{8080, 8096} {
-		a, _ := HostPort(DefaultPortBase, netip.MustParsePrefix("10.244.1.0/24"), netip.AddrPortFrom(netip.MustParseAddr("10.244.1.9"), port))
-		b, _ := HostPort(DefaultPortBase, netip.MustParsePrefix("10.244.1.0/24"), netip.AddrPortFrom(netip.MustParseAddr("10.244.1.9"), 8080))
-		if a != b {
-			t.Errorf("port %d is served at %d, 8080 at %d", port, a, b)
+	all := Ports{}
+	for port := uint16(1600); port < 1600+16*17; port += 16 { // 17 ports, all 0 modulo 16
+		all[port] = struct{}{}
+	}
+	slots, unserved = all.Slots()
+	seen := map[int]bool{}
+	for _, slot := range slots {
+		seen[slot] = true
+	}
+	if len(slots) != 16 || len(seen) != 16 || fmt.Sprint(unserved) != "[1856]" {
+		t.Errorf("17 ports: %v, unserved %v", slots, unserved)
+	}
+	if slots, unserved := (Ports{}).Slots(); len(slots) != 0 || len(unserved) != 0 {
+		t.Errorf("the empty set: %v, %v", slots, unserved)
+	}
+
+	net24, pod := netip.MustParsePrefix("10.244.1.0/24"), netip.MustParseAddr("10.244.1.9")
+	for port, want := range map[uint16]uint16{5201: 20145, 12865: 20148, 8080: 20144} {
+		if got, ok := HostPort(DefaultPortBase, net24, netip.AddrPortFrom(pod, port), p); !ok || got != want {
+			t.Errorf("port %d of the list: %d, %v; want %d", port, got, ok, want)
 		}
 	}
-	if own, shared := (Ports{}).Exclusive(); len(own) != 0 || len(shared) != 0 {
-		t.Errorf("the empty set: %v, %v", own, shared)
+	if got, ok := HostPort(DefaultPortBase, net24, netip.AddrPortFrom(pod, 12865), nil); !ok || got != 20145 {
+		t.Errorf("12865 of a list that is not known: %d, %v; want its remainder's 20145", got, ok)
+	}
+	if got, ok := HostPort(DefaultPortBase, net24, netip.AddrPortFrom(pod, 9999), p); ok {
+		t.Errorf("a port that is not in the list: %d", got)
 	}
 }
 

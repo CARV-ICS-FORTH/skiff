@@ -26,7 +26,8 @@ type Resolver interface {
 	// HostOf is the address of the node a pod is on, as the other nodes reach it.
 	HostOf(pod netip.Addr) (netip.Addr, bool)
 	// HostPort is the port on its node's address where the pod's port is served on the host
-	// (see the package's HostPort); false if the pod has none.
+	// if it has its remainder for its slot (see the package's HostPort with a nil list); false
+	// if the pod has none. A pod's own supervisor, which knows its list, moves it to the slot.
 	HostPort(pod netip.AddrPort) (uint16, bool)
 }
 
@@ -35,6 +36,7 @@ type PlaidAPI interface {
 	GetStatus() (*api.Response, error)
 	ListServices() (*api.Response, error)
 	ListRoutes() ([]api.RouteInfo, error)
+	ListDirectPods() ([]api.DirectPod, error)
 }
 
 // plaidd is asked for its tables in the background every refreshEvery, and not by the lookups
@@ -78,6 +80,7 @@ type tables struct {
 	nodeNet  netip.Prefix                 // the pods of this node
 	localIP  netip.Addr
 	routes   []route
+	listen   map[netip.Addr]Ports // the listen ports of the pods that have them
 }
 
 // question is an asking of plaidd that callers that come meanwhile wait for.
@@ -106,7 +109,8 @@ func (r *APIResolver) Close() { r.stopOnce.Do(func() { close(r.stop) }) }
 // backends, picked at random for each connection. A pod's address leads to that pod, whose
 // subnet is this node's or the node's it is routed to; the Service CIDR and the pod networks
 // are different ranges, so the address says which it is. The connection goes to the pod's
-// port, which the backend's target port or the destination itself names.
+// port, which the backend's target port or the destination itself names, at the host port of
+// its slot in the pod's list of listen ports (see the package's HostPort).
 func (r *APIResolver) Resolve(dst netip.AddrPort) (Backend, bool) {
 	b, known, ok := r.lookup(r.current(), dst)
 	if !known && r.reload(missRefresh) {
@@ -120,7 +124,7 @@ func (r *APIResolver) Resolve(dst netip.AddrPort) (Backend, bool) {
 // address that is not.
 func (r *APIResolver) lookup(t *tables, dst netip.AddrPort) (b Backend, known, ok bool) {
 	if node, ok := t.nodeOf(dst.Addr()); ok {
-		if port, ok := r.hostPort(node, dst); ok {
+		if port, ok := r.hostPort(t, node, dst); ok {
 			return Backend{Pod: dst, Host: netip.AddrPortFrom(node.host, port)}, true, true
 		}
 		return Backend{}, true, false
@@ -153,7 +157,7 @@ func (r *APIResolver) HostPort(pod netip.AddrPort) (uint16, bool) {
 	if !ok {
 		return 0, false
 	}
-	return r.hostPort(node, pod)
+	return r.hostPort(nil, node, pod)
 }
 
 // nodeOf is the node a pod is on: its pod network and its address.
@@ -171,10 +175,15 @@ func (t *tables) nodeOf(pod netip.Addr) (route, bool) {
 	return node, best >= 0
 }
 
-// hostPort is the host port of a pod on the node, and says (once for each pod network) when
-// the node's pod network is too large to have one.
-func (r *APIResolver) hostPort(node route, pod netip.AddrPort) (uint16, bool) {
-	port, ok := HostPort(r.base, node.subnet, pod)
+// hostPort is the host port of a pod on the node, at its slot in the pod's list of listen
+// ports if t has it (with a nil t, or a pod whose list plaidd has not seen, at its remainder),
+// and says (once for each pod network) when the node's pod network is too large to have one.
+func (r *APIResolver) hostPort(t *tables, node route, pod netip.AddrPort) (uint16, bool) {
+	var listen Ports
+	if t != nil {
+		listen = t.listen[pod.Addr().Unmap()]
+	}
+	port, ok := HostPort(r.base, node.subnet, pod, listen)
 	if !ok && r.Logf != nil && node.subnet.Bits() < 24 {
 		r.logMu.Lock()
 		first := !r.noPorts[node.subnet]
@@ -265,7 +274,18 @@ func (r *APIResolver) ask() (*tables, bool) {
 	if err != nil {
 		return nil, false
 	}
-	t := &tables{services: make(map[netip.AddrPort][]Backend)}
+	t := &tables{services: make(map[netip.AddrPort][]Backend), listen: make(map[netip.Addr]Ports)}
+	// The pods' lists of listen ports; a plaidd that has none to give leaves every port at its
+	// remainder, which is right for every pod whose ports do not share one.
+	if pods, err := r.client.ListDirectPods(); err == nil {
+		for _, p := range pods {
+			ip, err1 := netip.ParseAddr(p.IP)
+			ports, err2 := ParsePorts(p.ListenPorts)
+			if err1 == nil && err2 == nil {
+				t.listen[ip.Unmap()] = ports
+			}
+		}
+	}
 	t.nodeNet, _ = netip.ParsePrefix(status.NodeCIDR)
 	t.localIP = r.local
 	if !t.localIP.IsValid() {
@@ -299,7 +319,7 @@ func (r *APIResolver) ask() (*tables, bool) {
 			backends := t.services[key]
 			pod := netip.AddrPortFrom(ip, b.Port)
 			if node, ok := t.nodeOf(ip); ok {
-				if port, ok := r.hostPort(node, pod); ok {
+				if port, ok := r.hostPort(t, node, pod); ok {
 					backends = append(backends, Backend{Pod: pod, Host: netip.AddrPortFrom(node.host, port)})
 				}
 			}

@@ -42,6 +42,31 @@ func signals(tid int) (stop func()) {
 }
 
 func init() {
+	// servemany PORT...: a Go server on each port, each of which takes one connection.
+	helpers["servemany"] = func(args []string) int {
+		var wg sync.WaitGroup
+		for _, port := range args {
+			l, err := net.Listen("tcp", ":"+port)
+			if err != nil {
+				fmt.Println("error", err)
+				return 2
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				c, err := l.Accept()
+				if err != nil {
+					fmt.Println("error", err)
+					return
+				}
+				n, _ := io.Copy(io.Discard, c)
+				fmt.Println("accepted", describe(nil, c.(*net.TCPConn)), "received", n)
+			}()
+		}
+		fmt.Println("listening")
+		wg.Wait()
+		return 0
+	}
 	// sigdial ADDR [quiet]: a blocking connect on a thread that is signalled while the call is
 	// held (not by the helper if it is quiet: the test signals it).
 	helpers["sigdial"] = func(args []string) int {
@@ -462,50 +487,52 @@ func TestIdleConnectionsDoNotDelayAccept(t *testing.T) {
 	}
 }
 
-// Two ports of a pod that are served at one host port are swapped neither: both stay
-// listeners of the pod network, which would have refused the second, and a port of its own
-// is swapped.
-func TestPortsThatShareAHostPortAreNotSwapped(t *testing.T) {
-	var shared, own uint16
+// Two ports of a pod that are equal modulo 16 (netserver's 12865 and iperf3's 5201) are both
+// swapped, each at the host port of its slot, and a client that computes the slots from the
+// pod's list (as the resolver does from plaidd's) reaches each.
+func TestPortsEqualModulo16AreServedAtTheirSlots(t *testing.T) {
+	var low uint16
 	for {
-		shared = uint16(freePort(t))
-		if shared < 65000 && shared%PodPortsPerPod != 0 {
+		low = uint16(freePort(t))
+		if low < 65000 && low%PodPortsPerPod != 0 {
 			break
 		}
 	}
-	own = shared + 1 // not equal modulo 16 to either
-	marked := Ports{shared: {}, shared + PodPortsPerPod: {}, own: {}}
-	cfg := podConfig(t, "10.244.5.4", marked, fakeResolver{})
-	var mu sync.Mutex
-	var logs []string
-	cfg.Logf = func(format string, args ...any) {
-		mu.Lock()
-		logs = append(logs, fmt.Sprintf(format, args...))
-		mu.Unlock()
+	high := low + PodPortsPerPod
+	marked := Ports{low: {}, high: {}}
+	slots, _ := marked.Slots()
+	first := uint16(freePort(t)) // where the pod's host ports start
+	first -= first % PodPortsPerPod
+	home := first + low%PodPortsPerPod // both ports' remainder, which the resolver says
+	cfg := podConfig(t, "10.244.5.4", marked, hostPorts{fakeResolver{}, map[uint16]uint16{low: home, high: home}})
+	server, serverOut := runPod(t, cfg, "servemany", strconv.Itoa(int(low)), strconv.Itoa(int(high)))
+	serverOut.waitFor(t, "listening")
+
+	resolver := fakeResolver{}
+	for _, port := range []uint16{low, high} {
+		resolver[fmt.Sprintf("10.43.0.77:%d", port)] = Backend{Pod: netip.AddrPortFrom(netip.MustParseAddr("10.244.5.4"), port),
+			Host: netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), first+uint16(slots[port]))}
 	}
-	for _, port := range []uint16{shared, own} {
-		server, out := runPod(t, cfg, "serve", strconv.Itoa(int(port)))
-		out.waitFor(t, "listening")
-		server.cmd.Process.Kill()
-		server.Wait()
-		want := uint64(0)
-		if port == own {
-			want = 1
+	for _, port := range []uint16{low, high} {
+		client, out := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", fmt.Sprintf("10.43.0.77:%d", port), "100")
+		if err := client.Wait(); err != nil {
+			t.Fatalf("client: %v\n%s", err, out)
 		}
-		if got := server.Stats().Binds.Load(); got != want {
-			t.Errorf("port %d: %d binds, want %d", port, got, want)
-		}
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	said := 0
-	for _, l := range logs {
-		if strings.Contains(l, fmt.Sprintf("direct-listen-ports [%d %d]", shared, shared+PodPortsPerPod)) {
-			said++
+		if swapped(client) != 1 {
+			t.Errorf("the client of %d was not direct: %s", port, out)
 		}
 	}
-	if said != 2 { // once for each supervisor, which logs it at its start
-		t.Errorf("the ports were named %d times in %q", said, logs)
+	if err := server.Wait(); err != nil {
+		t.Fatalf("server: %v\n%s", err, serverOut)
+	}
+	so := serverOut.String()
+	for _, port := range []uint16{low, high} {
+		if !strings.Contains(so, fmt.Sprintf("accepted local=10.244.5.4:%d remote=10.244.1.9:", port)) {
+			t.Errorf("port %d did not take its client: %s", port, so)
+		}
+	}
+	if server.Stats().Binds.Load() != 2 || server.Stats().Accepted.Load() != 2 || len(server.Stats().Fallbacks.Snapshot()) != 0 {
+		t.Errorf("binds %d, accepted %d, fallbacks %v", server.Stats().Binds.Load(), server.Stats().Accepted.Load(), server.Stats().Fallbacks.Snapshot())
 	}
 }
 

@@ -19,6 +19,7 @@ const (
 	ActionSetServices      Action = "set_services"
 	ActionListServices     Action = "list_services"
 	ActionReportDirect     Action = "report_direct"
+	ActionListDirectPods   Action = "list_direct_pods"
 )
 
 // ServiceEntry is one Service address, port and protocol with its backends, as the
@@ -38,6 +39,14 @@ type ServiceEntry struct {
 type RouteInfo struct {
 	Subnet       string `json:"subnet"`
 	RemoteHostIP string `json:"remote_host_ip"`
+}
+
+// DirectPod is a pod of the cluster that has ports for the direct path's listeners: its
+// address and its plaid.skiff.io/direct-listen-ports annotation, as written ("5201,12865"),
+// from which a client's supervisor computes the pod's host ports.
+type DirectPod struct {
+	IP          string `json:"ip"`
+	ListenPorts string `json:"listen_ports"`
 }
 
 // BackendEntry is one backend; only eligible backends take new flows.
@@ -270,6 +279,9 @@ type Response struct {
 
 	// From list_routes: the overlay's routes (the remote nodes' subnets).
 	Routes []RouteInfo `json:"routes,omitempty"`
+
+	// From list_direct_pods: the pods that have listen ports for the direct path.
+	DirectPods []DirectPod `json:"direct_pods,omitempty"`
 
 	// The direct path's supervisors on this node, once one has reported.
 	Direct *DirectStatus `json:"direct,omitempty"`

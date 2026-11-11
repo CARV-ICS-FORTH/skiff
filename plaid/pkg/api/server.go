@@ -60,6 +60,11 @@ type DirectHandler interface {
 	HandleReportDirect(report *DirectReport) error
 }
 
+// DirectPodsHandler handles ListDirectPods requests: the pods' listen ports of the direct path.
+type DirectPodsHandler interface {
+	HandleListDirectPods() ([]DirectPod, error)
+}
+
 // Server is the IPC server listening on a UNIX domain socket.
 type Server struct {
 	socketPath    string
@@ -69,6 +74,7 @@ type Server struct {
 	filterHandler FilterHandler
 	svcHandler    ServiceHandler
 	directHandler DirectHandler
+	podsHandler   DirectPodsHandler
 	listener      net.Listener
 	lockFile      *os.File
 	mu            sync.Mutex
@@ -111,6 +117,13 @@ func (s *Server) SetDirectHandler(h DirectHandler) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.directHandler = h
+}
+
+// SetDirectPodsHandler registers a DirectPodsHandler with the server.
+func (s *Server) SetDirectPodsHandler(h DirectPodsHandler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.podsHandler = h
 }
 
 // Start begins listening on the UNIX domain socket.
@@ -402,6 +415,17 @@ func (s *Server) handleConn(conn net.Conn) {
 			resp = Response{Success: false, Error: err.Error()}
 		} else {
 			resp = Response{Success: true}
+		}
+	case ActionListDirectPods:
+		s.mu.Lock()
+		h := s.podsHandler
+		s.mu.Unlock()
+		if h == nil {
+			resp = Response{Success: true} // no Kubernetes, no pods
+		} else if pods, err := h.HandleListDirectPods(); err != nil {
+			resp = Response{Success: false, Error: err.Error()}
+		} else {
+			resp = Response{Success: true, DirectPods: pods}
 		}
 	default:
 		resp = Response{Success: false, Error: fmt.Sprintf("unknown action: %s", req.Action)}
