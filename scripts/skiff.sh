@@ -746,6 +746,9 @@ skiff_check_node() {
     # namespaces (kernel.apparmor_restrict_unprivileged_userns). The Apptainer package installs a
     # profile for /usr/bin/apptainer; a copy anywhere else, such as the one skiff.sh tools puts in
     # ~/.skiff/tools, has none and every container fails with "Could not write info to setgroups".
+    # The profile is not enough by itself: without a range of subordinate ids, --fakeroot falls back
+    # to a namespace of the user's own id, which the apptainer command makes itself, and the
+    # profile does not cover it ("no event received" for the user namespace mappings).
     # Asked of the system itself: can this program create a user namespace here?
     local restrict apptainer_path
     restrict=$(cat "$(_skiff_sys /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" 2>/dev/null || true)
@@ -753,7 +756,7 @@ skiff_check_node() {
     if [ "$restrict" = 1 ] && [ -n "$apptainer_path" ] && [ "$userns" != 0 ] && [ "$clone" != 0 ] \
         && [ "$apptainer_path" != /usr/bin/apptainer ] && command -v unshare >/dev/null 2>&1 \
         && ! unshare --user --map-root-user true >/dev/null 2>&1; then
-        echo "$host: AppArmor restricts user namespaces on this node to programs that have a profile (kernel.apparmor_restrict_unprivileged_userns is 1) and the Apptainer in use ($apptainer_path) has none, so no container can start. Skiff requires user namespaces: please contact your administrator and request either that kernel.apparmor_restrict_unprivileged_userns be set to 0 (sysctl, persisted in /etc/sysctl.d/), or that Apptainer be installed as a system package, which installs its AppArmor profile$([ -x /usr/bin/apptainer ] && echo " (this node has one, /usr/bin/apptainer: remove $SKIFF_TOOLS_DIR to use it)")" >&2
+        echo "$host: AppArmor restricts user namespaces on this node to programs that have a profile (kernel.apparmor_restrict_unprivileged_userns is 1) and the Apptainer in use ($apptainer_path) has none, so no container can start. Skiff requires user namespaces: please contact your administrator and request either that kernel.apparmor_restrict_unprivileged_userns be set to 0 (sysctl, persisted in /etc/sysctl.d/), or that Apptainer be installed as a system package, which installs its AppArmor profile, together with the package uidmap and a subordinate id range for $(id -un) (the profile does not cover Apptainer's --fakeroot without a range)$([ -x /usr/bin/apptainer ] && echo " (this node has one, /usr/bin/apptainer: remove $SKIFF_TOOLS_DIR to use it)")" >&2
         errors=$((errors + 1))
     fi
 

@@ -308,25 +308,33 @@ while [ ! -f "${NODE_CERT_DIR}/kubelet.crt" ]; do
 done
 chmod 600 "${NODE_CERT_DIR}/kubelet.crt"
 
-# Wait for kube-dns service (Controller creates it via K3s, Nodes wait for it)
+# Wait for kube-dns service (Controller creates it via K3s, Nodes wait for it). This is the
+# first request of a node to the API server on the controller's host. Each request is bounded:
+# without a limit, one to a port that a firewall between the nodes drops never returns, and the
+# wait never times out. The wait is measured in seconds, not in requests.
 echo "Waiting for kube-dns service..."
 export KUBECONFIG=/var/lib/skiff/kubeconfig
-DNS_WAIT=0
+API_SERVER="$(awk '$1 == "server:" {print $2; exit}' "$KUBECONFIG")"
+DNS_START=$SECONDS
 DNS_TIMEOUT=120
-while ! k3s kubectl get service -n kube-system kube-dns >/dev/null 2>&1; do
-    if [ "$DNS_WAIT" -ge "$DNS_TIMEOUT" ]; then
-        echo "ERROR: Timed out waiting for kube-dns service after ${DNS_TIMEOUT}s" >&2
+while ! DNS_ERROR="$(k3s kubectl --request-timeout=5s get service -n kube-system kube-dns 2>&1 >/dev/null)"; do
+    if [ $((SECONDS - DNS_START)) -ge "$DNS_TIMEOUT" ]; then
+        DNS_ERROR="${DNS_ERROR##*$'\n'}"
+        if k3s kubectl --request-timeout=5s get --raw /version >/dev/null 2>&1; then
+            echo "ERROR: Timed out waiting for kube-dns service after ${DNS_TIMEOUT}s (${DNS_ERROR})" >&2
+        else
+            echo "ERROR: The API server at ${API_SERVER#https://} was unreachable from this node for ${DNS_TIMEOUT}s (${DNS_ERROR}); check that no firewall between the nodes blocks that port" >&2
+        fi
         exit 1
     fi
     sleep 1
-    DNS_WAIT=$((DNS_WAIT + 1))
 done
 
 # The addresses of the API and DNS Services were derived from the Service network
 # before anything started; the cluster is the authority, so check what it created.
 for service in "default kubernetes $SKIFF_API_SERVICE_IP" "kube-system kube-dns $SKIFF_CLUSTER_DNS"; do
     read -r service_ns service_name service_want <<< "$service"
-    service_got="$(k3s kubectl get service -n "$service_ns" "$service_name" -o jsonpath='{.spec.clusterIP}')"
+    service_got="$(k3s kubectl --request-timeout=5s get service -n "$service_ns" "$service_name" -o jsonpath='{.spec.clusterIP}')"
     if [ "$service_got" != "$service_want" ]; then
         echo "ERROR: Service $service_ns/$service_name has address $service_got, but the configuration says $service_want" >&2
         exit 1

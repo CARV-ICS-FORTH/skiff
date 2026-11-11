@@ -361,11 +361,18 @@ touch "$FAKE_DIR/exec-fails"; sleep 6
 kill -0 "$BUBBLE_PID" 2>/dev/null || fail "a failing apptainer exec ended the bubble"
 rm -f "$FAKE_DIR/exec-fails"
 [ ! -e "$HOME/.skiff/job-results/unknown.cause" ] || fail "a cause was recorded for something that was not a failure"
-# Persistent: the entrypoint really is gone (twice in a row), the bubble ends and says why.
+# Persistent: the entrypoint really is gone (twice in a row), the bubble ends and says why,
+# with what the entrypoint said last (here, that the API server was unreachable, as when a
+# firewall between the nodes drops its port), in the job output and in the cause.
+unreachable='ERROR: The API server at 10.1.2.3:6443 was unreachable from this node for 120s (Unable to connect to the server: dial tcp 10.1.2.3:6443: i/o timeout); check that no firewall between the nodes blocks that port'
+printf 'Waiting for kube-dns service...\n%s\nTerminating cluster daemons...\n' "$unreachable" > "$log_dir/bubble1.out"
 touch "$FAKE_DIR/entrypoint-gone"
 wait_exit
 [ "$EXIT_RC" -eq 1 ] || fail "a missing entrypoint: exit $EXIT_RC, expected 1"
 grep -q '^process:  bubble entrypoint (in instance bubble1)' "$HOME/.skiff/job-results/unknown.cause" || fail "the cause does not name the entrypoint"
+grep -qF "detail:   $unreachable" "$HOME/.skiff/job-results/unknown.cause" || { cat "$HOME/.skiff/job-results/unknown.cause" >&2; fail "the cause does not carry the entrypoint's last error"; }
+grep -qF "$unreachable" "$LOG" || fail "the job output does not carry the entrypoint's last error"
+rm -f "$log_dir/bubble1.out"
 released
 
 # slirp4netns killed: the cause carries how it ended.
