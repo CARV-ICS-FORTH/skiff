@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -82,6 +83,23 @@ func acceptAndSay(l *net.TCPListener, word string) bool {
 	return true
 }
 
+// serveBoth is serveboth on a loopback that is up.
+func serveBoth(port string) int {
+	l, err := net.Listen("tcp", ":"+port)
+	if err != nil {
+		fmt.Println("error", err)
+		return 2
+	}
+	fmt.Println("listening")
+	go localDial(port)
+	for i := 0; i < 2; i++ {
+		if !acceptAndSay(l.(*net.TCPListener), "accepted") {
+			return 2
+		}
+	}
+	return 0
+}
+
 func waitForFile(path string) {
 	for {
 		if _, err := os.Stat(path); err == nil {
@@ -106,17 +124,33 @@ func init() {
 			fmt.Println("error lo", err)
 			return 2
 		}
+		return serveBoth(args[0])
+	}
+	helpers["servebothchild"] = func(args []string) int { return serveBoth(args[0]) }
+	// forkserve CTRL DATA: a server that, as netserver does without -f, takes a connection on
+	// its control port and has a child process listen on the data port: the child (the same
+	// binary, under the same filter) takes a client of another pod and one
+	// of its own pod.
+	helpers["forkserve"] = func(args []string) int {
+		if err := loUp(); err != nil { // here: the child's ioctl would be refused once a socket is swapped
+			fmt.Println("error lo", err)
+			return 2
+		}
 		l, err := net.Listen("tcp", ":"+args[0])
 		if err != nil {
 			fmt.Println("error", err)
 			return 2
 		}
 		fmt.Println("listening")
-		go localDial(args[0])
-		for i := 0; i < 2; i++ {
-			if !acceptAndSay(l.(*net.TCPListener), "accepted") {
-				return 2
-			}
+		if !acceptAndSay(l.(*net.TCPListener), "control") {
+			return 2
+		}
+		child := exec.Command(os.Args[0], args[1])
+		child.Env = append(os.Environ(), "DIRECT_TEST_HELPER=servebothchild")
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		if err := child.Run(); err != nil {
+			fmt.Println("error child", err)
+			return 2
 		}
 		return 0
 	}
@@ -319,6 +353,52 @@ func TestSwappedListenerIsReachableInThePod(t *testing.T) {
 	}
 	if server.Stats().Proxied.Load() != 1 || server.Stats().Accepted.Load() != 2 || server.Stats().ProxyFailed.Load() != 0 {
 		t.Errorf("proxied %d, accepted %d, failed %d", server.Stats().Proxied.Load(), server.Stats().Accepted.Load(), server.Stats().ProxyFailed.Load())
+	}
+}
+
+// A listener that a child process of the server opens (netserver's data port without -f) is
+// swapped and served as its parent's is: a client of another pod reaches it the direct way,
+// and one of its own pod through the pod-side socket.
+func TestAListenerOfAChildProcessIsServed(t *testing.T) {
+	requireLoopback(t)
+	ctrl, data := freePort(t), freePort(t)
+	ctrlHost, dataHost := freePort(t), freePort(t)
+	marked := Ports{uint16(ctrl): {}, uint16(data): {}}
+	cfg := podConfig(t, "10.244.5.4", marked, hostPorts{fakeResolver{}, map[uint16]uint16{uint16(ctrl): uint16(ctrlHost), uint16(data): uint16(dataHost)}})
+	server, serverOut := runPod(t, cfg, "forkserve", strconv.Itoa(ctrl), strconv.Itoa(data))
+	serverOut.waitFor(t, "listening")
+
+	resolver := fakeResolver{}
+	for port, host := range map[int]int{ctrl: ctrlHost, data: dataHost} {
+		resolver[fmt.Sprintf("10.43.0.77:%d", port)] = Backend{Pod: netip.MustParseAddrPort(fmt.Sprintf("10.244.5.4:%d", port)), Host: netip.MustParseAddrPort(fmt.Sprintf("127.0.0.1:%d", host))}
+	}
+	dial := func(port int) {
+		client, out := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "dial", fmt.Sprintf("10.43.0.77:%d", port), "5")
+		if err := client.Wait(); err != nil {
+			t.Fatalf("client: %v\n%s", err, out)
+		}
+		if swapped(client) != 1 {
+			t.Errorf("the client of port %d was not direct: %s", port, out)
+		}
+	}
+	dial(ctrl)
+	serverOut.waitFor(t, "control ")
+	for i := 0; strings.Count(serverOut.String(), "listening") < 2; i++ { // the child's comes after the parent's
+		if i == 500 {
+			t.Fatalf("the child does not listen: %s", serverOut)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	dial(data)
+	if err := server.Wait(); err != nil {
+		t.Fatalf("server: %v\n%s", err, serverOut)
+	}
+	out := serverOut.String()
+	if !strings.Contains(out, "remote=10.244.1.9:") || !strings.Contains(out, "accepted local=127.0.0.1:"+strconv.Itoa(data)) || strings.Contains(out, "error") {
+		t.Errorf("the child did not take both clients:\n%s", out)
+	}
+	if got := server.Stats().Binds.Load(); got != 2 || server.Stats().Accepted.Load() != 3 || server.Stats().Proxied.Load() != 1 || server.Stats().ProxyFailed.Load() != 0 {
+		t.Errorf("binds %d, accepted %d, proxied %d, failed %d", got, server.Stats().Accepted.Load(), server.Stats().Proxied.Load(), server.Stats().ProxyFailed.Load())
 	}
 }
 

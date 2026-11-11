@@ -286,7 +286,8 @@ func (s *Supervisor) listen(n *notif) reply {
 // is told the connection is made; the backend's supervisor is told, in the preamble, who
 // the client is and which pod it means, and says in the ack that it has the connection.
 // Whatever fails before that leaves the container's socket as it was and lets the call
-// through: the connect goes to the Service on the pod network.
+// through: the connect goes to the Service on the pod network. A socket the container bound
+// first goes the same way, with the port it bound (see boundPort).
 //
 // The connection to the backend's node is started as soon as the socket is known to be a
 // TCP one and has its options, and what is left to check about the container's socket (its
@@ -334,6 +335,10 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	}
 	if _, ok := s.hostSocket(held.dup); ok {
 		return failWith(unix.EISCONN) // a socket of the host's already: see onHostSocket
+	}
+	bound, ok := s.boundPort(held.dup)
+	if !ok {
+		return s.fallback("bound-elsewhere", "connect %s: the socket is bound to an address that is not the pod's", dst)
 	}
 	sock, dial, reused := s.dials.take(cookie)
 	if reused && dial.dst != dst {
@@ -392,9 +397,6 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	if _, err := unix.Getpeername(held.dup); err == nil {
 		return letThrough // connected already: the kernel says EISCONN
 	}
-	if sa, err := unix.Getsockname(held.dup); err == nil && addrPortOf(sa).Port() != 0 {
-		return letThrough // the container chose its address: the pod network's to give
-	}
 	tl.mark(phState)
 
 	if dialErr == unix.EINPROGRESS {
@@ -408,6 +410,9 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 		return s.fallback("connect-error", "connect %s: %v", dst, err)
 	}
 	local := netip.AddrPortFrom(s.cfg.PodIP, addrPortOf(sa).Port())
+	if bound != 0 {
+		local = netip.AddrPortFrom(s.cfg.PodIP, bound)
+	}
 	if !reused {
 		pre, err := NewPreamble(PreambleDirect, local, backend.Pod, addrPortOf(sa))
 		if err != nil {
@@ -450,6 +455,27 @@ func (s *Supervisor) connect(n *notif, tl *timeline) reply {
 	s.stats.Connects.Add(1)
 	s.logConn("connect %s: on the host, %s to %s, as %s", dst, addrPortOf(sa), backend.Host, local)
 	return succeed()
+}
+
+// boundPort is the port the container bound its socket to before the connect, 0 if it did not
+// bind it or left the port to the kernel (IP_BIND_ADDRESS_NO_PORT). Many clients bind before
+// they connect, to the wildcard address and port 0 (netperf, for both of its connections) or
+// to a port of their own; such a socket takes the direct path as an unbound one does. The bind
+// was made in the pod's network, where the port is the pod's: the host socket gets a port of
+// the host, and the container and the server are told the pod's address and the port the
+// container bound. (The pod's network forgets the port with the container's socket, which the
+// swap closes.) A socket bound to another address, the pod's loopback, is not one the direct
+// path can stand for: not ok.
+func (s *Supervisor) boundPort(dup int) (uint16, bool) {
+	sa, err := unix.Getsockname(dup)
+	if err != nil {
+		return 0, true
+	}
+	ap := addrPortOf(sa)
+	if !ap.Addr().IsUnspecified() && ap.Addr() != s.cfg.PodIP {
+		return 0, false
+	}
+	return ap.Port(), true
 }
 
 // keptDial is a connection that a connect gave up, kept for the container's socket that it

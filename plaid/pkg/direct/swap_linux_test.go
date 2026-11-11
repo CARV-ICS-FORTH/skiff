@@ -159,6 +159,30 @@ func init() {
 		fmt.Println("connect", err, "local", addrPortOf(local), "peer", addrPortOf(peer))
 		return 0
 	}
+	// bounddial ADDR LOCAL: a client that binds its socket before the connect, as netperf does
+	// for both of its connections (SO_REUSEADDR, then the local address it was given, the
+	// wildcard and port 0 by default), then sends a few bytes. IP_FREEBIND lets it bind an
+	// address that the empty network namespace does not have.
+	helpers["bounddial"] = func(args []string) int {
+		ap, local := netip.MustParseAddrPort(args[0]), netip.MustParseAddrPort(args[1])
+		fd, _ := unix.Socket(unix.AF_INET, unix.SOCK_STREAM, 0)
+		unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_REUSEADDR, 1)
+		unix.SetsockoptInt(fd, unix.IPPROTO_IP, unix.IP_FREEBIND, 1)
+		if err := unix.Bind(fd, sockaddrFor(local, unix.AF_INET)); err != nil {
+			fmt.Println("error bind", err)
+			return 2
+		}
+		bound, _ := unix.Getsockname(fd)
+		err := unix.Connect(fd, sockaddrFor(ap, unix.AF_INET))
+		sa, _ := unix.Getsockname(fd)
+		peer, _ := unix.Getpeername(fd)
+		fmt.Printf("connect %v bound=%s local=%s peer=%s\n", err, addrPortOf(bound), addrPortOf(sa), addrPortOf(peer))
+		if err == nil {
+			unix.Write(fd, make([]byte, 1000))
+		}
+		unix.Close(fd)
+		return 0
+	}
 }
 
 // describe prints the addresses of a listener or a connection: what Go reports, and what
@@ -441,6 +465,53 @@ func TestDirectRawSockets(t *testing.T) {
 		!strings.Contains(so, "nonblock true cloexec true") {
 		t.Errorf("server: %s (client %s)", so, cl)
 	}
+}
+
+// A client that binds its socket before the connect (netperf: the wildcard and port 0, or a
+// port of its choice) takes the direct path: it keeps the port it bound, at its pod address,
+// and the server sees that. One bound to another address of the pod (its loopback) stays on
+// the pod network, and that is counted.
+func TestABoundClientTakesTheDirectPath(t *testing.T) {
+	port := freePort(t)
+	p := strconv.Itoa(port)
+	vip := "10.43.0.80:" + p
+	marked := Ports{uint16(port): {}}
+	resolver := fakeResolver{vip: {Pod: netip.MustParseAddrPort("10.244.5.4:" + p), Host: netip.MustParseAddrPort("127.0.0.1:" + p)}}
+	own := freePort(t)
+	for _, local := range []string{"0.0.0.0:0", fmt.Sprintf("10.244.1.9:%d", own)} {
+		t.Run(local, func(t *testing.T) {
+			server, serverOut := runPod(t, podConfig(t, "10.244.5.4", marked, fakeResolver{}), "serve", p)
+			serverOut.waitFor(t, "listening")
+			client, clientOut := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "bounddial", vip, local)
+			if err := client.Wait(); err != nil {
+				t.Fatalf("client: %v\n%s", err, clientOut)
+			}
+			if err := server.Wait(); err != nil {
+				t.Fatalf("server: %v\n%s", err, serverOut)
+			}
+			cl, so := clientOut.String(), serverOut.String()
+			bound := netip.MustParseAddrPort(tokenOf(cl, "bound"))
+			want := fmt.Sprintf("10.244.1.9:%d", bound.Port())
+			if bound.Port() == 0 || !strings.Contains(cl, "connect <nil> bound=") || tokenOf(cl, "local") != want || tokenOf(cl, "peer") != vip {
+				t.Errorf("client: %s; want it at %s, connected to %s", cl, want, vip)
+			}
+			if got := field(t, so, "accepted", "remote"); got != want {
+				t.Errorf("the server sees %s, want %s", got, want)
+			}
+			if !strings.Contains(so, "received 1000") || client.Stats().Connects.Load() != 1 || server.Stats().Accepted.Load() != 1 {
+				t.Errorf("connects %d, accepted %d: %s", client.Stats().Connects.Load(), server.Stats().Accepted.Load(), so)
+			}
+		})
+	}
+	t.Run("loopback", func(t *testing.T) {
+		client, out := runPod(t, podConfig(t, "10.244.1.9", marked, resolver), "bounddial", vip, "127.0.0.1:0")
+		if err := client.Wait(); err != nil {
+			t.Fatalf("client: %v\n%s", err, out)
+		}
+		if got := client.Stats().Fallbacks.Snapshot(); got["bound-elsewhere"] != 1 || swapped(client) != 0 {
+			t.Errorf("fallbacks %v, swapped %d: %s", got, swapped(client), out)
+		}
+	})
 }
 
 // What is not marked is not touched: another port, an address that is no Service's.

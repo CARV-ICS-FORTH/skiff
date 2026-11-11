@@ -214,6 +214,12 @@ func (p *localProxy) forward(c *net.TCPConn) {
 		default:
 		}
 		p.s.stats.ProxyFailed.Add(1)
+		if !p.owner.holds() {
+			// The usual case: a process that listened and has ended or closed the listener (a
+			// forking server's child after its test), and the proxy has not noticed yet.
+			p.s.logf("proxy: %s: the listener of the container is closed (its process ended or closed it), the connection is closed: %v", p.addr, err)
+			return
+		}
 		p.s.logf("proxy: %s: %v", p.addr, err)
 		return
 	}
