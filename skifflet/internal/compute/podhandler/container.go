@@ -97,7 +97,7 @@ func workingDirOf(container *corev1.Container, imageDir string) (string, error) 
 
 // ensureImage has the container's image on the node, with the kubelet's events: Pulled
 // "already present on machine" for an image it does not pull, else Pulling, and Pulled with
-// the time the pull took once it has succeeded. A failed pull's events are prepareContainer's.
+// the time the pull took and the image file's size once it has succeeded. A failed pull's events are prepareContainer's.
 func (h *PodHandler) ensureImage(ctx context.Context, container *corev1.Container, policy corev1.PullPolicy) (*image.Image, error) {
 	event := func(reason, format string, args ...any) {
 		if h.lifecycle != nil {
@@ -118,7 +118,14 @@ func (h *PodHandler) ensureImage(ctx context.Context, container *corev1.Containe
 	if err != nil {
 		return nil, &ImagePullError{Image: container.Image, Err: err}
 	}
-	event("Pulled", "Successfully pulled image %q in %v", container.Image, time.Since(start).Truncate(time.Millisecond))
+	took := time.Since(start).Truncate(time.Millisecond)
+	fi, err := os.Stat(img.Filepath)
+	if err != nil {
+		// The size is not known: say what is.
+		event("Pulled", "Successfully pulled image %q in %v (%v including waiting)", container.Image, took, took)
+		return img, nil
+	}
+	event("Pulled", "Successfully pulled image %q in %v (%v including waiting). Image size: %v bytes.", container.Image, took, took, fi.Size())
 	return img, nil
 }
 

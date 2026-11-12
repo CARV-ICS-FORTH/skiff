@@ -111,12 +111,12 @@ func TestContainerEvents_InitAndApplicationContainer(t *testing.T) {
 
 	expectEvents(t, events,
 		`Normal Pulling spec.initContainers\{setup\} Pulling image "registry.example/team/tool:1.0"`,
-		`Normal Pulled spec.initContainers\{setup\} Successfully pulled image "registry.example/team/tool:1.0" in [0-9.]+m?s`,
-		`Normal Created spec.initContainers\{setup\} Created container: setup`,
-		`Normal Started spec.initContainers\{setup\} Started container setup`,
+		`Normal Pulled spec.initContainers\{setup\} Successfully pulled image "registry.example/team/tool:1.0" in [0-9.]+m?s \([0-9.]+m?s including waiting\)\. Image size: [1-9][0-9]* bytes\.`,
+		`Normal Created spec.initContainers\{setup\} Container created`,
+		`Normal Started spec.initContainers\{setup\} Container started`,
 		`Normal Pulled spec.containers\{app\} Container image "registry.example/team/tool:1.0" already present on machine`,
-		`Normal Created spec.containers\{app\} Created container: app`,
-		`Normal Started spec.containers\{app\} Started container app`,
+		`Normal Created spec.containers\{app\} Container created`,
+		`Normal Started spec.containers\{app\} Container started`,
 	)
 	if _, err := image.ResolveLocal(compute.Skiff.ImageDir(), img); err != nil {
 		t.Fatalf("the pulled image is not on the node: %v", err)
@@ -152,8 +152,8 @@ func TestContainerEvents_FailedLaunchAndStop(t *testing.T) {
 	go a.Wait(cmd)
 	pl.ReleaseLiveResources(time.Second)
 	expectEvents(t, events,
-		`Normal Created spec.containers\{app\} Created container: app`,
-		`Normal Started spec.containers\{app\} Started container app`,
+		`Normal Created spec.containers\{app\} Container created`,
+		`Normal Started spec.containers\{app\} Container started`,
 		`Normal Killing spec.containers\{app\} Stopping container app`,
 	)
 }

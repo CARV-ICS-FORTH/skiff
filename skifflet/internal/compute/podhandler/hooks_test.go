@@ -200,7 +200,7 @@ func TestStop_FailingPreStopStillTerminates(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	r.a.Stop(10*time.Second, "test")
 	r.waitFor(t, "term")
-	if e := r.event(t); !strings.Contains(e, "FailedPreStopHook") || !strings.Contains(e, "exited with code 3") {
+	if e := r.event(t); !strings.Contains(e, "FailedPreStopHook") || !strings.Contains(e, "PreStopHook failed") || strings.Contains(e, "exited with code 3") {
 		t.Fatalf("event %q", e)
 	}
 }
@@ -368,7 +368,7 @@ func TestPostStart_FailureStopsTheContainer(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("a container whose PostStart hook failed was not stopped")
 	}
-	if e := r.event(t); !strings.Contains(e, "FailedPostStartHook") {
+	if e := r.event(t); !strings.Contains(e, "FailedPostStartHook") || !strings.Contains(e, "PostStartHook failed") {
 		t.Fatalf("event %q", e)
 	}
 	if containerState(r.pl, "app").State.Running != nil {

@@ -124,6 +124,7 @@ func (a *Attempt) runPostStart(podIP string, runExec execRunner) {
 	// unpacked: the kubelet's "started" is the application's, so wait for it. (Any
 	// handler may expect the application to exist, not only exec.)
 	_, err := a.target(a.ctx, hookTargetWait, a.ctx)
+	waitFailed := err != nil
 	if err == nil {
 		err = a.runHook(a.ctx, hookPostStart, a.hook(hookPostStart), a.ctx)
 	}
@@ -131,7 +132,10 @@ func (a *Attempt) runPostStart(podIP string, runExec execRunner) {
 		if a.ctx.Err() != nil {
 			return // the attempt or the pod ended while the hook ran
 		}
-		a.event(corev1.EventTypeWarning, "FailedPostStartHook", "PostStart hook failed: %v", err)
+		if waitFailed { // runHook logs the hook's own failures
+			a.logger.Info("the PostStart hook could not run", "action", "hook", "hook", hookPostStart, "reason", err.Error())
+		}
+		a.event(corev1.EventTypeWarning, "FailedPostStartHook", "PostStartHook failed")
 		a.Stop(TerminationGrace(nil, a.pl.GetPod()), "the PostStart hook failed")
 		return
 	}
