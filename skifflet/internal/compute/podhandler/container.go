@@ -79,6 +79,12 @@ func (e *ImagePullError) Reason() string {
 // replace it, since their images are files that are not SIFs.
 var imageConfigOf = func(ctx context.Context, img *image.Image) (image.Config, error) { return img.Config(ctx) }
 
+// unpackedImageOf is the image unpacked for this node, which every container of the image
+// starts from (see image.Image.Unpacked); tests replace it.
+var unpackedImageOf = func(ctx context.Context, img *image.Image) (string, error) {
+	return img.Unpacked(ctx, compute.Skiff.UnpackedImagesDir())
+}
+
 // workingDirOf is the directory a container starts in, as with the kubelet's runtime: its
 // workingDir, else its image's WORKDIR, else /. It must be an absolute path.
 func workingDirOf(container *corev1.Container, imageDir string) (string, error) {
@@ -306,6 +312,14 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		return Container{}, err
 	}
 
+	// The image as the container starts from it: unpacked once for the node, when its first
+	// container gets here; the others wait for that, and then find it. One that cannot be
+	// unpacked (the scratch directory is full, say) is tried again as one that cannot be pulled.
+	unpacked, err := unpackedImageOf(pullCtx, img)
+	if err != nil {
+		return Container{}, &ImagePullError{Image: container.Image, Err: err}
+	}
+
 	c := Container{
 		Name:          container.Name,
 		InstanceName:  containerID,
@@ -315,6 +329,7 @@ func (h *PodHandler) buildContainer(ctx context.Context, container *corev1.Conta
 		Privileged:    sc.Privileged != nil && *sc.Privileged,
 		Capabilities:  sc.Capabilities,
 		ImageFilePath: img.Filepath,
+		ImageRootPath: unpacked,
 		WorkingDir:    workingDir,
 		StopSignal:    stopSignal,
 		TerminationMessagePath: func() string {

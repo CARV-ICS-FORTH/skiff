@@ -137,6 +137,13 @@ func NewVirtualK8S(config InitConfig) (*VirtualK8S, error) {
 		return nil
 	})
 
+	/*---------------------------------------------------
+	 * Remove the images a prior run unpacked for this node
+	 *---------------------------------------------------*/
+	if err := claimUnpackedImages(); err != nil {
+		logger.Info("WARNING: Failed to remove the images a prior run unpacked; they take room until they can be removed", "path", compute.Skiff.UnpackedImagesDir(), "err", err)
+	}
+
 	return &VirtualK8S{
 		InitConfig: config,
 		Logger:     logger,

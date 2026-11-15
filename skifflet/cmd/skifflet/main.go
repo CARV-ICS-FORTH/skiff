@@ -26,6 +26,7 @@ import (
 	"skifflet/cmd/skifflet/commands"
 	"skifflet/cmd/skifflet/commands/root"
 	"skifflet/internal/compute/podhandler"
+	"skifflet/internal/provider"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -56,6 +57,11 @@ func main() {
 		// the job's end allows), and only then does the rest.
 		if n := podhandler.GlobalRegistry.DrainAll(podhandler.DrainBudget); n > 0 {
 			log.G(ctx).Infof("stopped the %d pod(s) of this node", n)
+		}
+		// Nothing reads the images unpacked for the node any more, and the node is not left
+		// with them (what is not removed in time is removed when Skifflet next starts here).
+		if err := provider.RemoveUnpackedImages(); err != nil {
+			log.G(ctx).Warnf("the images unpacked for this node are not all removed: %v", err)
 		}
 		cancel()
 	}()

@@ -205,6 +205,21 @@ func TestSkiffPath_CheckVolumePath(t *testing.T) {
 	}
 }
 
+// The images unpacked for a node are in its scratch directory, which is node-local, and are
+// neither among its pods' directories nor in the state directory, which the nodes share.
+func TestSkiffPath_UnpackedImagesDir(t *testing.T) {
+	home, scratch := t.TempDir(), filepath.Join(t.TempDir(), "scratch")
+	skiff := SkiffWithTmp(home, scratch)
+	if got, want := skiff.UnpackedImagesDir(), filepath.Join(scratch, ".unpacked"); got != want {
+		t.Fatalf("UnpackedImagesDir %s, want %s", got, want)
+	}
+	for _, other := range []string{skiff.PodsDir(), skiff.String()} {
+		if skiff.UnpackedImagesDir() == other || strings.HasPrefix(skiff.UnpackedImagesDir(), other+"/") {
+			t.Errorf("the unpacked images are in %s", other)
+		}
+	}
+}
+
 // The directories a container sees as /tmp and /var/tmp are its own and its attempt's, and
 // are listed in attempt order.
 func TestContainerPath_AttemptTmp(t *testing.T) {
@@ -216,13 +231,13 @@ func TestContainerPath_AttemptTmp(t *testing.T) {
 	if got, want := app.AttemptVarTmp(2), filepath.Join(pod.String(), "scratch", "app", "2", "var-tmp"); got != want {
 		t.Errorf("AttemptVarTmp %s, want %s", got, want)
 	}
-	// The container's writable layer and the directory Apptainer unpacks its image in belong
-	// to the attempt too.
+	// The container's writable layer and Apptainer's own temporary directory belong to the
+	// attempt too.
 	if got, want := app.AttemptOverlayDir(2), filepath.Join(pod.String(), "scratch", "app", "2", "overlay"); got != want {
 		t.Errorf("AttemptOverlayDir %s, want %s", got, want)
 	}
-	if got, want := app.AttemptUnpackDir(2), filepath.Join(pod.String(), "scratch", "app", "2", "rootfs"); got != want {
-		t.Errorf("AttemptUnpackDir %s, want %s", got, want)
+	if got, want := app.AttemptApptainerTmp(2), filepath.Join(pod.String(), "scratch", "app", "2", "apptainer-tmp"); got != want {
+		t.Errorf("AttemptApptainerTmp %s, want %s", got, want)
 	}
 	for _, dir := range []string{app.AttemptTmp(10), app.AttemptTmp(2), app.AttemptTmp(9)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {

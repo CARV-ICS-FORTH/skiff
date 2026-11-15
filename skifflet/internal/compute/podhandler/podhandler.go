@@ -104,8 +104,8 @@ func SafeRemovePodDirectory(podDir string) error {
 // prepareAttemptScratch gives attempt N of a container its own /tmp and /var/tmp, empty
 // (a container's temporary files are gone when it is restarted, as in Kubernetes, where
 // they are part of the writable layer of the container that ran), its writable layer (an
-// empty overlay directory, see ContainerPath.AttemptOverlayDir) and the directory Apptainer
-// unpacks the image in (see ContainerPath.AttemptUnpackDir). What the attempts before it left is removed
+// empty overlay directory, see ContainerPath.AttemptOverlayDir) and Apptainer's own temporary
+// directory (see ContainerPath.AttemptApptainerTmp). What the attempts before it left is removed
 // first, so a pod keeps one set per container, and a restart can never see its
 // predecessor's files. The temporary directories are world-writable with the sticky bit,
 // like a /tmp, whatever user the container runs as.
@@ -131,7 +131,7 @@ func prepareAttemptScratch(container endpoint.ContainerPath, attempt int, workin
 			return err
 		}
 	}
-	for _, dir := range []string{container.AttemptOverlayDir(attempt), container.AttemptUnpackDir(attempt)} {
+	for _, dir := range []string{container.AttemptOverlayDir(attempt), container.AttemptApptainerTmp(attempt)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
@@ -387,8 +387,8 @@ var bindVariables = []string{"APPTAINER_BIND", "SINGULARITY_BIND", "APPTAINER_BI
 // launchEnv is the environment of an Apptainer process of this pod: the
 // process's own, without the bubble's bind mounts (a container gets the volumes of
 // its pod and nothing else), with Apptainer's temporary directory tmp (inside the pod
-// directory: the pod's own for the sandbox, the attempt's for a container, where its
-// image is unpacked), and Apptainer quiet. Its informational messages ("Cleaning up image...")
+// directory: the pod's own for the sandbox, the attempt's for a container), and Apptainer
+// quiet. Its informational messages ("Cleaning up image...")
 // would otherwise be taken for the container's own output and end up in its log; its
 // warnings and errors still appear.
 func (h *PodHandler) launchEnv(tmp string) []string {
@@ -441,7 +441,7 @@ func (h *PodHandler) runAttempt(c *Container, spec *corev1.Container, init bool,
 	cmd := exec.Command(bin, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Dir = "/" // the container starts in /, as in Kubernetes without a working directory
-	cmd.Env = h.launchEnv(h.podDirectory.Container(spec.Name).AttemptUnpackDir(a.ID))
+	cmd.Env = h.launchEnv(h.podDirectory.Container(spec.Name).AttemptApptainerTmp(a.ID))
 	cmd.Stdout = logs.Stdout()
 	cmd.Stderr = logs.Stderr()
 

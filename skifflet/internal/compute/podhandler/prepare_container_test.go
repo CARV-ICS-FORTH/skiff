@@ -2,9 +2,11 @@ package podhandler
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 
 	"skifflet/internal/compute"
 	"skifflet/internal/compute/endpoint"
+	"skifflet/internal/compute/image"
 )
 
 // handlerFor builds a handler over a lifecycle whose pod has these containers, with
@@ -193,6 +196,53 @@ func TestPrepareContainer_ImageFailureBacksOff(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("still backing off after the image appeared")
+	}
+}
+
+// An image that is on the node and cannot be unpacked for it (its scratch directory is full)
+// does not fail the pod either: the container waits with ErrImagePull and what the unpacking
+// said, whatever its pull policy (the image is there: ErrImageNeverPull would say it is not),
+// then with ImagePullBackOff, and it starts from the copy once the image can be unpacked.
+func TestPrepareContainer_UnpackFailureBacksOff(t *testing.T) {
+	useConfig(t, &fakeConfig{})
+	old := backOffUnit
+	backOffUnit = 50 * time.Millisecond
+	t.Cleanup(func() { backOffUnit = old })
+	var full atomic.Bool
+	full.Store(true)
+	withUnpacking(t, func(_ context.Context, img *image.Image) (string, error) {
+		if full.Load() {
+			return "", errors.New("cannot unpack image " + img.Filepath + ": no space left on device")
+		}
+		return unpackedFor(img.Filepath), nil
+	})
+	h, imageFile := handlerFor(t, corev1.Container{Name: "app"})
+	spec := &h.Pod.Spec.Containers[0]
+	type prepared struct {
+		c  Container
+		ok bool
+	}
+	done := make(chan prepared, 1)
+	go func() { c, ok := h.prepareContainer(context.Background(), spec, false, 0); done <- prepared{c, ok} }()
+	eventually(t, "the container to wait for its image to be unpacked", func() bool {
+		w := containerState(h.lifecycle, "app").State.Waiting
+		return w != nil && w.Reason == "ErrImagePull" && strings.Contains(w.Message, "no space left on device")
+	})
+	eventually(t, "the container to back off", func() bool {
+		w := containerState(h.lifecycle, "app").State.Waiting
+		return w != nil && w.Reason == "ImagePullBackOff"
+	})
+	if phase := h.lifecycle.GetPodStatus().Phase; phase == corev1.PodFailed {
+		t.Fatal("an image that could not be unpacked failed the pod")
+	}
+	full.Store(false)
+	select {
+	case p := <-done:
+		if !p.ok || p.c.ImageRootPath != unpackedFor(imageFile) {
+			t.Fatalf("prepared %v from %q, want the container prepared from the unpacked copy %q", p.ok, p.c.ImageRootPath, unpackedFor(imageFile))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still backing off after the image could be unpacked")
 	}
 }
 
