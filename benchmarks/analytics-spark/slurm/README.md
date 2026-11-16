@@ -51,8 +51,8 @@ The launcher rejects insufficient allocation CPUs and explicit memory limits
 before starting services. Native CPU binding, cgroups and network paths can
 differ from Skiff; record them when comparing results.
 
-Spark scratch is job-private tmpfs under `/dev/shm`, bound at the same path
-inside the container. MinIO uses a job-private directory under
+Spark scratch is a job-private directory under `SPARK_SCRATCH_ROOT` (default
+`/dev/shm`), bound at `/spark-scratch` inside the container. MinIO uses a job-private directory under
 `MINIO_DATA_ROOT`, defaulting to shared user state. Match its backing
 filesystem to the comparison deployment explicitly. Drivers use client deploy
 mode inside compute-node Slurm steps. Generation and queries are separate
@@ -118,3 +118,8 @@ Validate without a scheduler or container run:
 The aggregate validator runs from the benchmark root; this directory also has
 `validate-local.sh` for the native adapter checks. Local mocked tests cannot
 qualify a real multi-node runtime, filesystem, GPU driver or cancellation path.
+
+For the Skiff comparison, use the CPU-only `NATIVE_RESOURCE_MODE=whole-node`
+mode described in the [comparison audit](../COMPARISON.md). It shares the
+allocation CPU/memory envelope between roles while retaining Spark task slots
+and JVM heaps; bounded role steps remain the default.

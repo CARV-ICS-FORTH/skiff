@@ -109,5 +109,7 @@ if [[ "$BENCHMARK_MODE" == gpu ]]; then
     "$apptainer_bin" exec "$SPARK_IMAGE_HOST_PATH" test -x /opt/spark/work-dir/gpu-discovery.sh
     echo "GPU capacity and image checked; executor CUDA access is checked by the application."
 fi
+"$apptainer_bin" exec --cleanenv --no-home --bind "$SPARK_BENCHMARK_ROOT:/comparison-source:ro" \
+    "$SPARK_IMAGE_HOST_PATH" python3 /comparison-source/source_identity.py /comparison-source
 sha256sum "$SPARK_IMAGE_HOST_PATH"
 echo "Cluster and image preflight passed. No benchmark was submitted."

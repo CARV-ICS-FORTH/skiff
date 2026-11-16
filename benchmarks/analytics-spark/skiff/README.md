@@ -54,7 +54,7 @@ SCALE_FACTOR=25 GENERATION_PARTITIONS=160 SHUFFLE_PARTITIONS=160 ./skiff/run.sh
 ./skiff/status.sh <application-name>
 ```
 
-The driver and executors use Spark scratch at `/dev/shm`. MinIO uses
+The driver and executors mount a Spark emptyDir at `/spark-scratch`. MinIO uses
 `emptyDir`; replacing its pod or deleting the namespace removes generated data
 and temporary S3 outputs. Each run has a distinct S3 prefix. Controller-side
 results remain under `../results/skiff/` relative to this directory, or under
@@ -77,3 +77,7 @@ Cleanup preserves the prepared SIF and controller-side results. Use
 `config.env` to adapt the deployment to your installation. The default `hour`
 profile is a sizing estimate; use the [calibration helper](../README.md#tuning-and-calibration)
 to tune runtime on your hardware.
+
+For paired runs, `CONTROL_NODE` pins the driver and MinIO to that hostname
+label. See the [comparison audit](../COMPARISON.md) for CPU/memory enforcement,
+actual scratch backing, source identity and remaining platform differences.
