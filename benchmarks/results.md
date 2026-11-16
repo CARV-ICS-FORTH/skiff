@@ -1,277 +1,481 @@
-# Benchmark results
+# MeluXina benchmark results
 
-Successful runs reviewed through 2026-10-19, retained once per benchmark,
-execution platform and site. The existing Knot records were reviewed on
-2026-10-15; the ten-node MeluXina Spark runs were collected on 2026-10-19.
-These are individual measured runs, not averages across independent
-submissions. Failed attempts, setup checks and superseded runs are excluded
-from the result tables.
+This report contains validated MeluXina workloads. Failed setup attempts,
+superseded runs and results from other sites are excluded. Job 5428654 is
+retained because all four workload phases passed; its post-run checker failed,
+then passed corrected offline revalidation. Its Slurm FAILED status is preserved.
+Reviewed through 2026-11-06 across `origin/main` (`7d7eb78`),
+`origin/benchmarks` (`a775858`) and `origin/feat/parallel-startup` (`f93bc0b`).
+Duplicate job IDs are retained once. Each value comes from one run, not an
+average of repeated runs. Raw run outputs and supporting evidence are archived separately and are not
+included with these benchmark changes.
+The Skiff Ray GPU measurement was added on 2026-11-10.
 
-## Successful runs
+## Summary
 
-| Benchmark | Site | Platform | Date | Nodes | Run | Workload wall time |
-| --- | --- | --- | --- | ---: | --- | ---: |
-| Micro Spark | Knot | Skiff / Kubernetes | 2026-10-07 | 3 | `20261007t111827-6a2be420z` | 36.683 s |
-| Spark Knot: generation | Knot | Skiff / Kubernetes | 2026-10-07 | 3 | `20261007t144200-c1c1f3a9z` | 231.966 s |
-| Spark Knot: queries | Knot | Skiff / Kubernetes | 2026-10-07 | 3 | same run, separate application | 201.500 s |
-| Dask matrix | Knot | Skiff / Kubernetes | see execution record | 3 | controlled three-worker rerun, Slurm allocation 103 | 36.137 s |
-| Spark Knot: generation | Knot | Native Slurm / Apptainer | 2026-10-14 | 2 | job 710, `710.Ojpk9x` | 225.441 s |
-| Spark Knot: queries | Knot | Native Slurm / Apptainer | 2026-10-14 | 2 | same job, separate application | 214.306 s |
-| Dask matrix | Knot | Native Slurm / Apptainer | 2026-10-13 | 2 | job 635, `635.ihEZ6O` | 21.948 s |
-| Spark Knot: generation | MeluXina | Skiff / Kubernetes | 2026-10-19 | 10 | job 5357975, `meluxina-5357975` | 92.908 s |
-| Spark Knot: queries | MeluXina | Skiff / Kubernetes | 2026-10-19 | 10 | same job, separate application | 98.775 s |
-| Spark Knot: generation | MeluXina | Native Slurm / Apptainer | 2026-10-19 | 10 | job 5358076, `5358076.8IZPUC` | 141.639 s |
-| Spark Knot: queries | MeluXina | Native Slurm / Apptainer | 2026-10-19 | 10 | same job, separate application | 117.940 s |
+| Benchmark | Nodes | Native workload time | Skiff workload time | Skiff/native workload | Native total job time | Skiff total job time | Skiff/native total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Spark analytics, historical unequal CPU limits | 10 | 259.579 s | 191.683 s | 0.738× | 338 s | 465 s | 1.376× |
+| Spark analytics, resource-parity rerun | 10 | 200.972 s | 191.585 s | 0.953× | — | — | — |
+| Ray retail CPU | 20 | 1521.836 s | 1483.617 s | 0.975× | 1549 s | 1644 s | 1.061× |
+| BERT CPU, 3 epochs | 10 | 1808.898 s | 1846.017 s | 1.021× | 1829 s | 1996 s | 1.091× |
+| BERT CPU, 12 epochs | 20 | — | 3882.588 s | — | — | 4162 s | — |
+| Ray retail GPU | 5 | 2194.426 s | 2160.932 s | 0.985× | 2312 s (smoke + full) | 2297 s (smoke + full) | 0.994× |
 
-The supplied Micro Spark, Spark Knot and three-worker Dask numbers match the
-retained successful records; they are included once, not counted as new runs.
-The three-worker Dask record does not preserve an exact execution timestamp,
-so none is inferred from the date of its Git commit.
+The Spark resource-parity rerun used one shared **543 s** allocation, native
+first and Skiff second; independent backend allocation times do not exist.
+Skiff's combined workload time was 9.387 s / 4.7% shorter. In the historical
+independent Spark and Ray CPU allocations, Skiff completed the measured
+workload sooner but used the allocation longer:
 
-## Micro Spark
+- Historical Spark workload time was 67.896 s shorter on Skiff, while total job time was
+  127 s longer.
+- Ray workload time was 38.219 s shorter on Skiff, while total job time was
+  95 s longer.
+- Ten-node BERT took 37.119 s longer inside the application on Skiff (2.1%),
+  and 167 s longer for the allocation (9.1%).
+- Twenty-node BERT has no matching platform peer. Both five-node Ray GPU
+  allocations include an integrated smoke before the full application. The GPU
+  ratios are observational; exact tmpfs-capacity matching failed.
 
-Historical results are retained here after removal of the smaller benchmark.
-The maintained Spark workload is now [analytics-spark](analytics-spark/README.md).
+These are observed differences from single runs. They are not proof that one
+platform is generally faster.
 
-Spark 3.5.3, three one-core executors with 512 MiB heap each, one on each of
-`k8s-node1`, `k8s-node2`, and `k8s-node3`. The workload used 100,000 records,
-three partitions and three query repetitions, plus RDD, SQL, caching and
-MLlib K-means checks. Structured status was `PASS`; the application completed
-in one attempt. All three executors participated, with 19, 22 and 48 completed
-tasks and zero failed tasks. Driver and executors had zero restarts.
+## Timing definitions
 
-| Metric | Value |
+- **Workload time** is measured by the benchmark and excludes platform startup
+  and final cleanup: Spark is the sum of generation and query timers, Ray is
+  the complete invocation timer (including application startup/shutdown), and
+  BERT is the application timer (including imports and distributed setup).
+  These scopes differ; compare within each benchmark. Ray phase sums are
+  reported separately and exclude gaps outside the individual phase timers.
+- **Non-workload time** is total job time minus workload time. It includes
+  startup, validation, gaps outside the benchmark timer and cleanup.
+- **Total job time** is the Slurm allocation from start to end. It excludes
+  queue waiting. For cancelled lifecycle jobs, accounting End can precede
+  observed allocation release; use the separately recorded release boundary.
+
+| Benchmark | Platform | Workload time | Non-workload time | Total job time |
+| --- | --- | ---: | ---: | ---: |
+| Spark analytics | Native Slurm | 259.579 s | 78.421 s | 338 s |
+| Spark analytics | Skiff | 191.683 s | 273.317 s | 465 s |
+| Ray retail | Native Slurm | 1521.836 s | 27.164 s | 1549 s |
+| Ray retail | Skiff | 1483.617 s | 160.383 s | 1644 s |
+| BERT CPU, 10 nodes | Native Slurm | 1808.898 s | 20.102 s | 1829 s |
+| BERT CPU, 10 nodes | Skiff | 1846.017 s | 149.983 s | 1996 s |
+| BERT CPU, 20 nodes | Skiff | 3882.588 s | 279.412 s | 4162 s |
+
+## Spark analytics
+
+### Resource-parity rerun: 2026-11-06
+
+Both backends completed generation and queries in job **5428654**, on the
+same ten exclusive CPU nodes. Native ran first, Skiff second, with fresh data
+prefixes. The SF1 workload retained all 24 tables, 24 generation/shuffle
+partitions, the same 16 queries × 3 repetitions, four task slots and 8 GiB heap
+per executor, and four driver cores with 4 GiB heap. All ten executors
+participated: 616 generation and 3195 query tasks per backend, with zero failed
+Spark tasks. Query ordering and output row counts matched; complete query
+result-value equality was not independently certified.
+
+| Workload measurement | Native Slurm | Skiff | Skiff/native |
+| --- | ---: | ---: | ---: |
+| Generation | 93.991 s | 89.710 s | 0.954× |
+| Queries | 106.981 s | 101.875 s | 0.952× |
+| Combined workload | 200.972 s | 191.585 s | 0.953× |
+| Generation task CPU utilization | 59.7% | 67.2% | — |
+| Query task CPU utilization | 62.2% | 60.7% | — |
+| Generation JVM GC | 11.337 s | 6.628 s | — |
+| Query JVM GC | 7.611 s | 3.860 s | — |
+| Query remote shuffle read | 136.75 MiB | 96.72 MiB | — |
+| Query memory / disk spill | 0 B / 0 B | 0 B / 0 B | — |
+
+The corrected post-run checker passed the retained evidence: driver and all
+executor probes had CPU affinity **0–255**, driver JVM processor visibility
+was **256**, NUMA memory nodes were **0–7**, address-space limits were unlimited,
+and no finite CPU or memory limit appeared in the captured visible cgroup
+ancestors. Source hashes, workload settings, topology and per-physical-node
+scratch capacity matched. Four Spark task slots therefore did not impose a
+four-CPU OS restriction on either backend. These observations cover visible
+process state, rather than every possible site enforcement mechanism.
+
+Native whole-node steps shared allocation memory and CPUs. Both used
+`/spark-scratch` on node-local tmpfs; native executor working files/logs also
+moved to local scratch. The driver and MinIO were co-located on `mel0050`;
+MinIO was configured with local tmpfs backing on both sides. An independent
+in-MinIO resource snapshot was not retained. All ten native preflight gates
+verified that benchmark.py, runtime.py and all 103 SQL files matched the shared
+application SIF. Both adapters explicitly matched the executor Python path
+and resource-registration threshold. See the [backend audit](analytics-spark/COMPARISON.md).
+
+The observed workload gap shrank from **26.2%** in the old pair to **4.7%**.
+This is consistent with resource restrictions contributing to the old result,
+but CPU affinity was not the only change: native MinIO moved from Lustre to
+tmpfs, source/probe instrumentation changed, and scratch/log placement and
+registration settings were matched. Network paths, platform services, image
+unpacking and shuffle locality still differ. Native ran first and caches were
+not controlled. One paired observation does not establish a causal CPU effect,
+a general platform speedup or a statistical variation estimate.
+
+| Controller timing boundary | Duration |
 | --- | ---: |
-| Workload wall time | 36.683 s |
-| Aggregate executor task / CPU time | 25.027 s / 17.990 s |
-| Task CPU utilization | 71.9% |
-| Aggregate JVM GC time | 0.225 s |
-| Shuffle remote read / total read / written | 2.00 MiB / 3.02 MiB / 3.14 MiB |
-| Shuffle fetch wait / write time | 0.000 s / 0.103 s |
-| Memory / disk spill | 0 B / 0 B |
-| Completed stages | 45 |
+| Native launcher through native cleanup | 239.424 s |
+| Skiff cluster launch through supervisor cleanup | 296.521 s |
+| Skiff workload wrapper only | 245.044 s |
+| Shared Slurm allocation | 543 s |
 
-Source: [selected original metrics](evidence/knot-platform/micro-spark-skiff.json).
+The Skiff interval includes cluster startup, operator/MinIO installation,
+preflight, both applications and cleanup. The workload wrapper is a nested
+interval, not an additional cost. These controller intervals are separate from
+the application timers and are not independent Slurm allocation times.
 
-## Spark Knot analytics on Knot
+Slurm records **FAILED, exit 1:0**, because the original final checker looked
+up full pod names while Spark reported shortened hostname suffixes. All four
+workload summaries were already PASS. Revalidation maps exact names or unique
+suffixes to saved placement records and rejects missing/ambiguous mappings;
+three regression checks passed. Original job accounting and the original
+failed checker result are preserved. Supervisor cleanup completed, ownership
+and the kubeconfig alias were absent, and the allocation left the queue.
+The earlier probe-import failure, job 5428470, produced no workload result.
 
-Both platforms used Spark 4.0.4, TPC-DS scale factor 1, all 24 tables,
-24 generation and shuffle partitions, four cores and 8 GiB heap per executor,
-and a four-core driver with 4 GiB heap. The original query selection was
-`q1,q10,q11,q12,q13,q14a,q14b,q15,q16,q17,q18,q19,q2,q20,q21,q22`, executed
-in that order for three iterations: 48 query executions. Generation and
-queries both produced `PASS` records, and all expected executors participated.
-The Skiff applications each completed in one attempt; Slurm job 710 completed
-with exit `0:0` and launcher exit `0`.
+The shared application SIF was `5f2383962d319d3b…`; the retained Skiff runtime
+was `0860ebeab76357f1…`, reused from the prior parallel-startup deployment.
+This run does not qualify a freshly rebuilt current working tree.
 
-| Metric | Skiff: generate (3 nodes) | Skiff: query (3 nodes) | Slurm: generate (2 nodes) | Slurm: query (2 nodes) |
-| --- | ---: | ---: | ---: | ---: |
-| Workload wall time | 231.966 s | 201.500 s | 225.441 s | 214.306 s |
-| Aggregate executor task time | 345.255 s | 596.376 s | 377.302 s | 572.087 s |
-| Aggregate executor CPU time | 286.838 s | 348.289 s | 258.966 s | 328.764 s |
-| Task CPU utilization | 83.1% | 58.4% | 68.6% | 57.5% |
-| Aggregate JVM GC time | 2.769 s | 2.719 s | 7.375 s | 6.938 s |
-| Remote shuffle read | 0 B | 36.63 MiB | 0 B | 79.76 MiB |
-| Total shuffle read | 0 B | 689.84 MiB | 0 B | 689.84 MiB |
-| Shuffle written | 0 B | 552.79 MiB | 0 B | 552.79 MiB |
-| Shuffle fetch wait | 0.000 s | 0.030 s | 0.000 s | 0.033 s |
-| Shuffle write time | 0.000 s | 3.017 s | 0.000 s | 2.688 s |
-| Data read | 0 B | 1.17 GiB | 0 B | 1.17 GiB |
-| Data written | 355.57 MiB | 3.52 KiB | 355.57 MiB | 3.52 KiB |
-| Memory / disk spill | 0 B / 0 B | 0 B / 0 B | 0 B / 0 B | 0 B / 0 B |
-| Completed stages | 25 | 452 | 25 | 452 |
+Source: compact paired-run evidence (archived separately).
+The checksum-verified original archive and separate corrected report are under
+the ignored local directory
+`analytics-spark/results/parity-20261106/collection-5428654/`.
 
-Native Slurm used `k8s-node1` and `k8s-node3`, with one executor per node,
-explicit CPU binding to cores, tmpfs Spark scratch and shared-home MinIO
-storage. Its application-step elapsed times were 241 s for generation and
-229 s for queries; total allocation runtime was 503 s (8m23s), excluding
-queue time. These include startup/shutdown and are distinct from the workload
-wall times above. Credentials and temporary MinIO data were removed and
-benchmark service ports were closed after completion.
+### Historical runs: 2026-10-19
 
-Sources: [Skiff phase summaries](evidence/knot-platform/spark-knot-skiff.json),
-[Slurm phase summaries](evidence/knot-platform/spark-knot-slurm.json), and
-[Slurm setup and run record](analytics-spark/slurm/README.md#knot-platform-run-2026-10-14).
-The selected JSON preserves per-query minimum, median and maximum timings.
+Native job **5358076** and Skiff job **5357975** completed successfully on
+2026-10-19. Each used 10 CPU nodes, the same application image, benchmark
+source, input and executor budget. Both phases passed validation, all 10
+executors participated, and no Spark task failed. Spark 4.0.4 used TPC-DS scale
+factor 1, all 24 tables, 24 generation/shuffle partitions and 16 ordered queries
+repeated three times (48 executions). Each node hosted one four-core executor
+with 8 GiB heap; the four-core driver had 4 GiB heap. That is 40 configured
+executor cores within 2560 allocated logical CPUs. Both runs completed 616
+generation and 3194 query tasks. This is a TPC-DS-derived workload, not an
+audited TPC result.
 
-## Spark Knot analytics on MeluXina
+| Measurement | Native Slurm | Skiff | Skiff/native |
+| --- | ---: | ---: | ---: |
+| Data generation | 141.639 s | 92.908 s | 0.656× |
+| Queries | 117.940 s | 98.775 s | 0.837× |
+| Combined workload | 259.579 s | 191.683 s | 0.738× |
+| Non-workload time | 78.421 s | 273.317 s | 3.485× |
+| Total job time | 338 s | 465 s | 1.376× |
 
-Slurm job **5357975** completed with exit `0:0` and benchmark exit `0` on
-2026-10-19. The allocation ran from **10:12:32 to 10:20:17 UTC**, taking
-465 s (7m45s), including cluster startup, installation, both applications and
-cleanup. This allocation time is distinct from the workload timings below.
+Skiff used less time inside both workload phases. Its task CPU utilization was
+also higher: 68.2% versus 52.0% during generation, and 62.5% versus 45.4%
+during queries. These percentages describe time inside Spark tasks, not total
+CPU use across the allocation.
 
-The freshly rebuilt local Skiff was `0.1.0-e1bad50`, commit
-`e1bad5010a35bb8bb663c7ff7bd54013decc1217`, with Apptainer 1.5.4.
-Ten exclusive CPU nodes each provided 256 logical CPUs and 480 GiB memory.
-The workload used one four-core executor per node, each with 8 GiB heap and
-2 GiB overhead, and a four-core driver with 4 GiB heap and 1 GiB overhead.
-Those executor resources describe 40 configured Spark cores, rather than
-use of all 2560 logical CPUs in the allocation.
+The total job result went the other way. Skiff spent 194.896 s more outside the
+workload timer, so its allocation lasted 127 s longer overall.
 
-Spark 4.0.4 / Python 3.10.12 retained scale factor 1, all 24 tables,
-24 generation/shuffle partitions and the original 16-query order listed
-above, repeated three times (48 executions). Both structured phase results
-were `PASS`, and both applications completed in one submission/execution
-attempt. All ten executors participated in each phase, completing 616
-generation tasks and 3194 query tasks, with **zero failed Spark tasks**.
-Both drivers exited `0` with zero restarts.
+The configured Spark task slots match, but effective CPU restrictions do not.
+The native launcher uses `srun --exact --cpu-bind=cores` and requests four CPUs
+for each worker and driver. The retained native affinity records confirm masks
+such as `0-1,128-129` for workers and `5-6,133-134` for the driver: four logical
+CPU IDs per role. Native MinIO was similarly restricted. Workers launch their
+executors as child processes within those steps.
 
-Native Slurm job **5358076**, run `5358076.8IZPUC`, also completed with exit
-`0:0` and launcher exit `0`, from **10:48:12 to 10:53:50 UTC** on 2026-10-19.
-Its total allocation time was 338 s (5m38s), excluding queue time. It used
-Apptainer and Spark standalone directly, without Skiff or Kubernetes, with
-the same Spark SIF, benchmark/query sources, workload and ten four-core
-executors. Both phases passed the native result validator: all 24 tables and
-48 ordered query executions, all ten executors active and participating,
-616 generation / 3194 query tasks completed, and zero failed Spark tasks.
-Application-step times were 152 s for generation and 136 s for queries,
-including Spark startup/shutdown; workload timings below exclude session startup.
+Skiff declares four cores and a `4000m` container limit, but Skifflet does not
+enforce per-container CPU limits or affinity; its bubble step requests all node
+CPUs. This behavior also existed at the measured `e1bad50` revision. Four Spark
+task slots therefore do not establish the same OS CPU budget on both backends.
+The retained Skiff evidence does not include executor/driver affinity and quota
+measurements, so actual CPU availability and extra CPU consumption cannot be
+quantified retrospectively. The binding mismatch is a plausible contributor,
+not a measured explanation of the timing gap.
 
-| Metric | Skiff: generate (10 nodes) | Skiff: query (10 nodes) | Slurm: generate (10 nodes) | Slurm: query (10 nodes) |
-| --- | ---: | ---: | ---: | ---: |
-| Workload wall time | 92.908 s | 98.775 s | 141.639 s | 117.940 s |
-| Aggregate executor task time | 200.428 s | 369.415 s | 283.036 s | 488.678 s |
-| Aggregate executor CPU time | 136.718 s | 230.956 s | 147.116 s | 221.830 s |
-| Task CPU utilization | 68.2% | 62.5% | 52.0% | 45.4% |
-| Aggregate JVM GC time | 6.243 s | 4.927 s | 6.329 s | 6.389 s |
-| Remote shuffle read | 0 B | 115.08 MiB | 0 B | 115.80 MiB |
-| Total shuffle read | 0 B | 689.84 MiB | 0 B | 689.84 MiB |
-| Shuffle written | 0 B | 552.79 MiB | 0 B | 552.79 MiB |
-| Shuffle fetch wait | 0.000 s | 0.014 s | 0.000 s | 0.142 s |
-| Shuffle write time | 0.000 s | 1.151 s | 0.000 s | 1.165 s |
-| Data read | 0 B | 1.17 GiB | 0 B | 1.17 GiB |
-| Data written | 355.57 MiB | 3.51 KiB | 355.57 MiB | 3.52 KiB |
-| Memory / disk spill | 0 B / 0 B | 0 B / 0 B | 0 B / 0 B | 0 B / 0 B |
-| Completed stages | 25 | 452 | 25 | 452 |
+Native Spark also used the physical InfiniBand interface and shared Lustre
+storage for the data service; Skiff used virtual networking and node-local
+tmpfs. These CPU, storage and network differences prevent interpreting the
+ratios as platform overhead or a controlled speedup. A matched rerun should
+keep Spark task slots unchanged and verify actual CPU masks and cgroup quotas
+inside both backends, including the driver and MinIO. Setting `CPU_BIND=none`
+alone is not evidence of equal CPU availability.
 
-Skiff placement samples confirm ten distinct physical nodes in both phases:
-`mel0066`, `mel0097`, `mel0128`, `mel0202`, `mel0217`, `mel0272`,
-`mel0303`, `mel0325`, `mel0375`, and `mel0441`.
+The top-level Slurm jobs and benchmark validators succeeded. Native service
+steps and Skiff cluster steps were stopped during planned teardown. The saved
+Skiff application records marked executors failed despite completed
+applications; driver exit was zero and no Spark task failed, but clean
+executor shutdown was not independently confirmed.
 
-Native Slurm used `mel0029`, `mel0039`, `mel0061`, `mel0178`, `mel0312`,
-`mel0316`, `mel0373`, `mel0426`, `mel0452`, and `mel0466`. Its role resource
-files record actual CPU affinity with `CPU_BIND=cores`; Spark scratch was
-tmpfs, while MinIO data was on shared-home **Lustre**. Skiff's MinIO emptyDir
-was on node-local tmpfs. Native Spark used `ib0` directly; Skiff used its
-virtual network. These differences and single-run sampling prevent attributing
-the timing difference to platform overhead or a controlled speedup.
+Sources: [Native evidence](evidence/meluxina/spark-knot-slurm.json) and
+[Skiff evidence](evidence/meluxina/spark-knot-skiff.json). Workload details and
+commands are in the [Spark benchmark README](analytics-spark/README.md).
 
-Native workers retried initial master connections before registration, then
-completed both workloads. Worker logs show executor termination requested
-after each application. The native driver steps completed with exit `0:0`;
-long-running service steps record `FAILED`, exit `255:0`, following the
-launcher's teardown. Final allocation/launcher exits were zero. Cleanup
-inspection confirmed credentials and temporary MinIO data were removed.
+## Ray retail CPU
 
-The saved Skiff SparkApplication records label all ten executors `FAILED` in each
-phase despite application `COMPLETED`, driver exit `0` and zero failed Spark
-tasks at metric capture. Executor exit codes/events/logs were not retained,
-so the cause is unconfirmed; clean executor shutdown is not established.
-Separately, the wrapper sent SIGTERM to the cluster after
-`BENCHMARK_SUCCEEDED`; cancelled long-running Slurm cluster steps belong to
-that teardown. The cluster log confirms cleanup completed. Final allocation
-status comes from post-exit `sacct`; the in-trap `slurm-final.txt` still shows
-`RUNNING` because it predates the batch process exit.
+Native job **5377862** and Skiff job **5378198** completed successfully on
+2026-10-23. Each used 20 CPU nodes. Source, configuration, package versions,
+application image, Ray resource limits and generated input checksums matched.
+All recorded phase artifacts passed checksum validation.
 
-The original benchmark code, SQL and inputs were preserved. The staged
-SparkApplication manifests added only
-`spark.kubernetes.jars.avoidDownloadSchemes=local` to avoid deleting the
-image-local JAR during Spark's Kubernetes submission. Executor count and
-image paths were environment overrides. The earlier pre-workload failure,
-job 5357831, is excluded from these measurements.
+| Phase | Native Slurm | Skiff | Skiff/native |
+| --- | ---: | ---: | ---: |
+| Data generation | 233.762 s | 218.154 s | 0.933× |
+| Parameter tuning | 132.210 s | 128.430 s | 0.971× |
+| Distributed training | 176.403 s | 204.090 s | 1.157× |
+| Batch inference | 13.186 s | 12.850 s | 0.975× |
+| Policy training | 401.905 s | 389.195 s | 0.968× |
+| Policy evaluation | 7.647 s | 7.308 s | 0.956× |
+| Online serving | 551.230 s | 518.634 s | 0.941× |
+| Recovery test | 3.396 s | 3.143 s | 0.926× |
+| Complete workload | 1521.836 s | 1483.617 s | 0.975× |
+| Non-workload time | 27.164 s | 160.383 s | 5.904× |
+| Total job time | 1549 s | 1644 s | 1.061× |
 
-Sources: [Skiff metrics and provenance](evidence/meluxina/spark-knot-skiff.json)
-and [native Slurm metrics and provenance](evidence/meluxina/spark-knot-slurm.json).
-Complete archives, logs, summaries, accounting and reports are retained locally
-in the ignored directories
-`analytics-spark/results/skiff/meluxina-5357975-collection/` and
-`analytics-spark/results/slurm/meluxina-5358076-collection/`.
-Both collection checksums and driver-log JSON records were checked. The Skiff
-report was reproduced byte for byte; the native summaries passed the existing
-native validator using local source-path mapping. Neither single run establishes
-a speedup or platform overhead relative to the smaller Knot allocations.
+Skiff was faster in every measured phase except distributed training. Across
+the complete workload it was 2.5% faster, but time outside the application timer
+made the total allocation 6.1% longer.
 
-## Dask matrix
+The serving results show the same pattern:
 
-Both Knot runs used Dask/Distributed 2024.1.0, NumPy 1.26.3, deterministic
-8000 × 8000 matrices, 4000 × 4000 chunks, one Dask thread and two BLAS threads
-per worker. Both executed 20 tasks and returned an 8000 × 8000 result of
-488.28 MiB with mean **2000.165832**. Every worker participated.
-
-| Metric | Skiff (3 nodes / 3 workers) | Native Slurm (2 nodes / 2 workers) |
+| Serving metric | Native Slurm | Skiff |
 | --- | ---: | ---: |
-| Computation wall time | 36.137 s | 21.948 s |
-| Aggregate task compute time | 33.018 s | 30.909 s |
-| Aggregate task transfer time | 47.584 s | 18.211 s |
-| Tasks by worker | 8 / 7 / 5 | 10 / 10 |
-| Compute time by worker | 12.332 / 11.580 / 9.106 s | 15.392 / 15.518 s |
-| Worker CPU samples | 216 | 90 |
-| Maximum worker CPU | 279.7% | 244.2% |
-| Mean worker CPU | 79.0% | 154.7% |
+| Throughput | 111.830 requests/s | 118.738 requests/s |
+| Median latency | 395.793 ms | 379.557 ms |
+| p95 latency | 954.462 ms | 889.185 ms |
+| p99 latency | 1067.283 ms | 965.198 ms |
+| Requests / client errors | 60,000 / 0 | 60,000 / 0 |
 
-The Skiff client Job was `Complete`, exit `0`, with zero restarts or observed
-OOMs; workers occupied all three nodes. Native Slurm job 635 used nodes 1 and
-3, completed with exit `0:0` and launcher exit `0`, and took 33 s including
-startup and cleanup. Its scheduler and client ran on node 1. An HTML
-performance report was generated but is not versioned here.
+Forecast test MAE was 4.9544 native / 4.9626 Skiff, against the same 9.6965
+seasonal baseline; WAPE was 0.13161 / 0.13183. Each run processed 6.72 million
+training rows, six tuning trials, 16 training epochs over 20 ranks, and 120 PPO
+iterations / 1,966,080 sampled steps. Ray exposed 32 CPUs per node (640 total)
+within 5120 allocated logical CPUs, with a 16 GiB object store and 60 GiB heap
+budget per node. Twenty forecast and twenty policy replicas served requests.
+The summed phase times were 1519.738 s native / 1481.804 s Skiff, distinct from
+the complete invocation timers above.
 
-Sources: [Skiff selected result](evidence/knot-platform/dask-matrix-skiff.json)
-and [Slurm selected result](evidence/knot-platform/dask-matrix-slurm.json).
+Sampled resource use was similar:
 
-## BERT: interrupted after epoch 1
+| Resource metric | Native Slurm | Skiff |
+| --- | ---: | ---: |
+| Mean host CPU | 1.666% | 1.809% |
+| Peak synchronized mean host CPU | 12.860% | 12.975% |
+| Peak visible Ray-process RSS / PSS | 180.53 / 117.88 GiB | 178.53 / 115.92 GiB |
+| Peak host memory used | 207.68 GiB | 216.04 GiB |
 
-On 2026-10-15, the user requested cancellation after the first epoch and its
-evaluation completed. This is a partial result, excluded from the successful
-full-run tables above. Job `kubeflow/fine-tune-bert` used Slurm allocation 715,
-with one CPU training process on each of `k8s-node1` and `k8s-node3`, four CPU
-units and 16G memory per process. The workload was full fine-tuning of
-`bert-base-cased`: 3600 training / 400 validation examples, sequence length
-128, per-process batch 8, global batch 16, and three planned epochs / 675 steps.
+Both runs completed every phase and validated their results. The Skiff logs
+contained seven internal serving-proxy errors, but requests around them still
+returned successfully and the benchmark recorded zero client errors. The
+worker termination in the logs belongs to the planned recovery test.
 
-| Observed first-epoch metric | Value |
+The comparison tool did not certify this pair as fully like-for-like. Both runs
+limited Ray's object store to 16 GiB per node, but the underlying temporary
+filesystems exposed different total capacities: about 427.70 GiB per native
+node and 251.59 GiB per Skiff node. The phase ratios therefore remain useful
+observations, not a controlled speedup claim.
+
+Sources: Native evidence (archived separately) and
+Skiff evidence (archived separately). Workload details and
+commands are in the [Ray benchmark README](ray-retail/README.md).
+
+## Ray retail GPU
+
+Native Slurm job **5424547** completed with exit **`0:0`** on 2026-11-05,
+from **13:54:30 to 14:33:02 UTC**, with scheduler elapsed **2312 s (38m32s)**.
+The allocation was confirmed absent from `squeue` at **14:34:38 UTC**, after
+Slurm's `COMPLETING` state cleared. That observation is not an exact release
+latency measurement.
+
+A single allocation ran an integrated smoke across all five nodes, validated
+its evidence, released its Ray GPU reservations, and automatically continued
+into the full benchmark. The smoke passed in **79.891 s**, including application
+startup/shutdown, with **69.319 s** summed phase time. The full application
+passed in **2194.426 s**, with **2188.215 s (36m28.215s)** summed phase time.
+Scheduler time includes both stages; it must not be added to their times.
+All eight phases completed in each stage; remote and local offline validators
+confirmed their artifacts and identities. There was one GPU submission.
+
+Hosts were `mel2001`, `mel2103`, `mel2119`, `mel2169` and `mel2193`. Each
+exclusive node reserved four NVIDIA A100-SXM4-40GB GPUs and 128 logical CPUs.
+Ray advertised **one GPU and 32 CPUs per node**: five usable Ray GPUs and
+160 Ray CPUs within a 20-GPU / 640-CPU allocation. PPO used one GPU learner;
+this workflow does not saturate all allocated GPUs. Each Ray node used a
+16 GiB tmpfs object store and a 60 GiB heap budget, with shared Lustre scratch
+for results and data. Native communication used `ib0`.
+
+The resolved five-node GPU profile used 10,000 series, 1000 days and 400 raw
+blocks: **6.72 million training, 1.5 million validation and 1.5 million test
+rows**. Six Tune trials each completed six epochs. Final training used five
+CUDA/NCCL ranks for all 16 epochs, each reporting **21,495,808 samples** and
+1312 steps per epoch. PPO completed 120 iterations / 1,966,080 sampled steps
+with verified checkpoint restoration, followed by 1200 evaluation episodes
+per policy. HTTP serving used five forecast and five policy replicas, and
+all ten replicas handled requests.
+
+| Full workload phase | Seconds |
 | --- | ---: |
-| Completed epoch | 1 of 3 |
-| Steps at that epoch boundary | 225 of 675 |
-| Validation loss | 1.1165157556533813 |
-| Validation accuracy | 50.5% |
-| Validation runtime | 32.3974 s |
-| Time from training-start log to evaluation start | 3316.645 s (55m16.645s) |
-| Time from training-start log through first evaluation metrics | 3349.043 s (55m49.043s) |
+| Data preparation | 1095.123 |
+| Tune | 100.529 |
+| Five-rank NCCL training | 85.972 |
+| GPU batch inference | 7.789 |
+| PPO training and restore | 391.740 |
+| Policy evaluation | 16.388 |
+| HTTP serving | 488.938 |
+| Actor recovery | 1.735 |
 
-The epoch metrics were emitted at **10:58:24 UTC**. Training continued briefly
-into the next epoch before cancellation; the exact final step is unknown.
-The PyTorchJob was deleted and the Skiff allocation was signalled to stop at
-11:00:49 UTC. Slurm ended the allocation at 11:01:21 UTC and released both
-nodes. Slurm records `FAILED`, exit `143:0`, following the requested SIGTERM;
-this was an intentional early stop. No checkpoint existed in `test_trainer`
-at capture time, and final model export was not reached.
+Forecast test MAE was **4.9868**, versus **9.6965** for the seasonal baseline;
+WAPE was **0.13248**. Serving completed **60,000 requests with zero errors**,
+verified against direct inference, in **477.316 s** of load generation:
+**125.703 requests/s**, with p50/p95/p99 latency **344.959 / 831.707 / 893.388 ms**.
+The serving phase includes deployment and teardown. Recovery intentionally
+terminated one actor and verified restored and duplicate totals of 18.
 
-Source: [selected epoch metrics and provenance](evidence/knot-platform/bert-skiff-partial.json).
-Logs, pre-cancellation job/pod state and the notebook were retained in remote
-staging under `benchmarks/bert-notebook-knot/shutdown-20261015/`, with a local
-ignored copy under `bert-distr-training/knot/artifacts/shutdown-20261015/`.
+The image used Ray 2.49.2, PyTorch 2.8.0+cu128 and CUDA 12.8. CPU data
+preparation accounts for about half the full phase time. Ray Serve reported
+that its default per-replica `max_ongoing_requests=5` constrained the configured
+batch size of 32. The integrated smoke warms libraries, GPUs and caches;
+cold-start behavior was not isolated.
 
-## Interpretation and retention
+This five-node GPU profile differs from the twenty-node CPU runs in hardware,
+rank count and software. Its longer phase sum does not measure a GPU speedup
+or slowdown. A Skiff run of the same five-node GPU profile is recorded below.
 
-- Site, hardware, node and worker counts differ across these runs. They
-  do not establish platform overhead or a speedup; a comparison requires
-  matched topology, resources, storage, image/source identities and repeated
-  independent runs.
-- Spark task CPU utilization is aggregate task CPU time divided by aggregate
-  task runtime, not whole-cluster utilization. Dask CPU percentages are
-  sampled process metrics and can exceed 100%; they have a different definition.
-- Aggregate task compute, transfer and wait times can overlap across workers
-  and exceed wall time. Zero blocking shuffle fetch wait does not imply no
-  network transfer. Spark workload wall time excludes session startup.
-- Spark Knot is TPC-DS-derived, not an audited TPC result.
-- Compact evidence contains selected original metrics, run identity and
-  provenance. Raw logs, stage traces, HTML reports, pod dumps, credentials,
-  model/data files and image archives are not part of the versioned results.
-  Existing local and remote diagnostic artifacts are left in place.
-- Older Vagrant Dask validation used different hardware and profiles; it is
-  superseded here by the real Knot runs.
-- BERT was intentionally stopped after epoch 1. It has no completed three-epoch
-  result and is excluded from the successful tables. The current unified
-  benchmark retains this measurement only as a sizing input; see its
-  [README](bert-distr-training/README.md#one-hour-sizing-estimate).
+Source: native GPU evidence (archived separately),
+including image/source/config hashes, validators and post-exit accounting.
+
+### Skiff GPU measurement: 2026-11-10
+
+Skiff job **5440754** completed all eight phases with exit **`0:0`** on five
+GPU nodes, and its allocation was confirmed released. Smoke and full-workload
+validators passed, including all 435 smoke and 1395 full-workload artifact
+checks. Its total job time was **2297 s (38m17s)**. The full benchmark took
+**2160.932 s (36m00.932s)**, with **2155.164 s** summed phase time; smoke took
+**62.644 s** separately.
+
+The profile, source, dependencies, CUDA SIF, Ray budgets, 400 raw-block
+checksums and OS CPU affinity matched native job 5424547. The Skiff pod
+entrypoints explicitly restricted descendants to CPUs **0–15,64–79**, matching
+native access; Ray's 32-CPU scheduling budget alone did not impose that restriction.
+Each pod ran on a different physical host: `mel2020`, `mel2092`, `mel2096`,
+`mel2152` and `mel2176`. Placement was reconstructed from retained Ray IPs and
+startup-node PodCIDRs. Application logs and evidence were collected, but a
+relative-path error in supervisor cleanup prevented final pod-log/event collection.
+Cluster shutdown completed and Slurm release was verified.
+
+| Full workload phase | Native seconds | Skiff seconds |
+| --- | ---: | ---: |
+| Data preparation | 1095.123 | 1081.305 |
+| Tune | 100.529 | 99.051 |
+| Five-rank NCCL training | 85.972 | 81.007 |
+| GPU batch inference | 7.789 | 7.395 |
+| PPO training and restore | 391.740 | 384.978 |
+| Policy evaluation | 16.388 | 16.179 |
+| HTTP serving | 488.938 | 483.888 |
+| Actor recovery | 1.735 | 1.363 |
+
+Skiff completed 60,000 HTTP requests with zero errors at **126.513 requests/s**.
+Its full application time was **33.494 s (1.53%) shorter** in this single pair.
+The built-in comparison **refused certification** because host tmpfs capacities
+vary slightly between the physical nodes, despite matching tmpfs backing type,
+16 GiB object-store budgets and image identities. These ratios are observational,
+not a harness-certified comparison or evidence of a general platform speedup.
+An initial volume-path rejection and a stopped run with unequal CPU affinity
+are retained separately and excluded from the measurements.
+
+Source: Skiff GPU evidence (archived separately),
+including raw collection checksum, matched identities and comparison refusal.
+
+## BERT CPU training
+
+### Matched ten-node runs
+
+Skiff job **5368311** and native job **5368574** completed on 2026-10-21
+with allocation and benchmark exits zero. Both used ten exclusive CPU nodes,
+one rank per node, 32 PyTorch threads per rank and verified affinity to all
+256 logical CPUs per rank. Source hashes, CPU image, dependencies and assets
+matched: `bert-base-cased`, Yelp Review Full, 28,800 training / 3200 validation
+examples, sequence length 128, three epochs, global batch 80 and 1080 steps.
+
+| Measurement | Native Slurm | Skiff | Skiff/native |
+| --- | ---: | ---: | ---: |
+| Training (including epoch evaluation) | 1792.691 s | 1833.706 s | 1.023× |
+| Complete application | 1808.898 s | 1846.017 s | 1.021× |
+| Outside application timer | 20.102 s | 149.983 s | 7.461× |
+| Total job time | 1829 s | 1996 s | 1.091× |
+| Training throughput | 48.214 samples/s | 47.133 samples/s | 0.978× |
+| Final validation accuracy | 58.84375% | 58.84375% | — |
+| Final validation loss | 1.056114 | 1.056114 | — |
+
+Mean training loss (0.817420) and all three epoch losses/accuracies matched.
+Skiff's ten pods completed with zero restarts. Native training and batch steps
+completed with exit `0:0`; model export was retained but not independently
+re-evaluated. Native job 5368574 supersedes the earlier 32-CPU-bound job 5363796,
+which is excluded from this comparison.
+
+The 41.015 s training difference is 2.29% of native time. Physical nodes and
+start times differed; caches, NUMA policy and transport were not controlled.
+The application difference is an observation from one run per platform.
+
+Sources: ten-node Skiff evidence (archived separately) and
+matched native evidence (archived separately). The native file's
+historical `skiff_evidence` field names `bert-skiff.json`; its referenced job
+5368311 now lives in `bert-skiff-max.json`. The twenty-node file is a different
+run, not the native comparison peer.
+
+### Twenty-node run and sizing comparison
+
+Skiff job **5387226** completed successfully on 20 CPU nodes on 2026-10-26.
+All 20 training pods completed on different nodes with zero restarts and zero
+container errors. The result validator passed.
+
+| Time boundary | Duration |
+| --- | ---: |
+| Cluster ready after allocation start | 117 s |
+| Full startup to measured application | approximately 144–145 s |
+| PyTorchJob lifetime | 3892 s (1h04m52s) |
+| Measured application | 3882.588 s (1h04m42.588s) |
+| Training | 3869.677 s (1h04m29.677s) |
+| Post-application validation and cleanup | approximately 134–135 s |
+| Total Slurm job time | 4162 s (1h09m22s) |
+
+The 279.412 s outside the application timer was 6.71% of the allocation. At
+the recorded wrapper boundaries it splits into 134 s before benchmark launch,
+21.412 s inside the launcher but outside the application timer, and 124 s of
+cluster teardown.
+
+| Result | Value |
+| --- | ---: |
+| Training throughput | 89.326 samples/s |
+| Final training loss | 0.343162 |
+| Final validation loss | 2.219731 |
+| Final validation accuracy | 57.6875% |
+| Best validation accuracy | 59.0000% at epoch 4 |
+| Lowest validation loss | 0.951355 at epoch 2 |
+
+An earlier 10-node MeluXina Skiff run took 1833.706 s for three epochs and
+processed 47.133 samples/s. The 20-node run processed four times as many
+examples across epochs on twice as many nodes. It took 2.110 times as long and
+delivered 1.895 times the throughput. This is useful for sizing, but it is not
+a repeated scaling study. The runs also used different global batch sizes, so
+their validation results do not isolate the effect of the longer schedule.
+
+This run used the same 28,800 training / 3200 validation examples and
+sequence length 128, with 12 epochs, one rank and 32 CPU threads per node,
+64 GiB requested memory per pod, global batch 160 and 2160 optimizer steps.
+There is no matching twenty-node native result; the ten-node native run above
+uses a different epoch count and batch size.
+
+Source: Skiff evidence (archived separately). Workload details
+and commands are in the [BERT benchmark README](bert-distr-training/README.md).
+
+## Comparison limits and evidence
+
+- Each reported value is an individual observation; additional controlled
+  repetitions are needed to estimate normal variation.
+- Compare total job time for end-to-end resource cost and workload time for
+  application behavior. They answer different questions.
+- Spark and Ray used matching workload settings and application identities,
+  but the platform storage and network paths were not identical.
+- Ten-node BERT has a matched native peer; twenty-node BERT and Ray GPU do not.
+- Compact evidence files contain run identity, selected metrics and provenance.
+  Large logs, model files and generated data remain outside Git.
