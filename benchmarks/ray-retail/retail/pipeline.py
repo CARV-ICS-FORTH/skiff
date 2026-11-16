@@ -22,6 +22,7 @@ def check_resources(config, nodes):
         c["workers"] * c["cpus_per_worker"] + 1,
         min(t["trials"], t["concurrency"]) * c["cpus_per_worker"],
         rl["env_runners"] + rl["cpus_per_learner"],
+        config.get('batch', {}).get('workers', 1) * config.get('batch', {}).get('cpus_per_worker', 1),
         2 * s["replicas"] * s["cpus_per_replica"] + 2,
     )
     if total < required:
@@ -30,6 +31,15 @@ def check_resources(config, nodes):
         )
     if any(r.get("CPU", 0) < c["cpus_per_worker"] for r in resources):
         raise ValueError("Each node must fit a training worker")
+    if config.get('deployment', {}).get('physical_cores'):
+        # Standalone RLlib starts runners before requesting its remote learner.
+        # Total free CPUs are insufficient if all nodes have fewer than one
+        # learner's CPUs free. Leave placement room even when runners spread,
+        # accounting for one additional coordination CPU.
+        blocking_runners = sum(max(0, int(r.get('CPU', 0)) - rl['cpus_per_learner'] + 1)
+                               for r in resources)
+        if rl['env_runners'] + 1 >= blocking_runners:
+            raise ValueError('PPO runners can fragment every node below the learner CPU request')
     if config["device"] == "cuda" and any(r.get("GPU", 0) < 1 for r in resources):
         raise ValueError(
             "GPU profile requires an allocated GPU on every participating node"
@@ -73,7 +83,10 @@ def node_details(output):
             "free_bytes": usage.free,
         }
 
+    from .telemetry import probe
+
     return {
+        "effective_resources": probe(),
         "node_id": ray.get_runtime_context().get_node_id(),
         "hostname": platform.node(),
         "cpu_count": psutil.cpu_count(),
@@ -128,6 +141,8 @@ def run(args):
     }
     # Every adapter mounts this source at the same path on all its Ray nodes.
     runtime_env["env_vars"]["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+    if 'GLOO_SOCKET_IFNAME' in os.environ:
+        runtime_env['env_vars']['GLOO_SOCKET_IFNAME'] = os.environ['GLOO_SOCKET_IFNAME']
     if config["device"] == "cpu":
         runtime_env["env_vars"]["CUDA_VISIBLE_DEVICES"] = ""
     local = args.address == "local"
@@ -171,6 +186,22 @@ def run(args):
                 for n in nodes
             ]
         )
+        if config.get('deployment', {}).get('physical_cores'):
+            from .deployment import resources as deployment_resources
+            from .telemetry import require_resources
+
+            budget = deployment_resources(config)
+            if len({n['effective_resources']['hostname'] for n in details}) != 10:
+                raise ValueError('Experiment requires ten distinct workload hostnames')
+            for detail in details:
+                require_resources(detail['effective_resources'], budget)
+            for node in nodes:
+                r = node['Resources']
+                if any(r.get(k) != v for k, v in (
+                    ('CPU', budget['ray_cpus']), ('memory', budget['heap_bytes']),
+                    ('object_store_memory', budget['object_store_bytes']),
+                )):
+                    raise ValueError('Ray resources differ from experiment contract')
         identity = {
             "config": digest(config),
             "source": source_digest(),
@@ -203,13 +234,20 @@ def run(args):
             )
 
         def sample():
+            iteration = 0
             while not stop.is_set():
                 try:
                     samples.extend(
                         ray.get([s.sample.remote() for s in samplers], timeout=10)
                     )
+                    if config.get('deployment') and iteration % 5 == 0:
+                        from ray._private.internal_api import memory_summary
+
+                        samples.append({'at': time.time(), 'scope': 'cluster_object_store',
+                                        'memory_summary': memory_summary(stats_only=True)})
                 except Exception as error:
                     samples.append({"at": time.time(), "sampling_error": str(error)})
+                iteration += 1
                 stop.wait(2)
 
         monitor = threading.Thread(target=sample, daemon=True)

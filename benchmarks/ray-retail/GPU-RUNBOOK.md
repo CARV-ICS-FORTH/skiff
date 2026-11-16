@@ -4,8 +4,10 @@ Target: MeluXina, an all-node smoke gate followed automatically by five-node mea
 using the same application/SIF on native Slurm and Skiff. Nothing here submits
 a job automatically. Native Slurm job **5424547** passed the integrated five-node
 GPU smoke and full benchmark on 2026-11-05; see the
-[measured results](../results.md#ray-retail-gpu-on-meluxina). Skiff GPU execution
-has not been measured.
+[measured results](../results.md#ray-retail-gpu).
+Skiff GPU job **5440754** passed the same profile on 2026-11-10 with matched
+CPU affinity; the exact-capacity comparison guard refused the pair because
+host tmpfs capacities vary slightly. See the measured results for limitations.
 
 | Profile | Nodes / training ranks / forecast replicas | Data series | Deadline |
 | --- | --- | ---: | --- |

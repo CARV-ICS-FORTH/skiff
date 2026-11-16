@@ -15,7 +15,8 @@ for path in root.rglob("*.py"):
 for path in (root / "configs").glob("*.json"):
     json.loads(path.read_text())
 PY
-SCRIPTS=(validate-local.sh slurm/retail.slurm slurm/node.sh slurm/meluxina-20-node.slurm slurm/meluxina-node.sh slurm/meluxina-gpu.slurm)
+SCRIPTS=(validate-local.sh slurm/retail.slurm slurm/node.sh slurm/meluxina-20-node.slurm slurm/meluxina-node.sh slurm/meluxina-gpu.slurm
+    experiment/ten-node.slurm experiment/native-node.sh experiment/skiff-cluster.sh)
 for script in "${SCRIPTS[@]}"; do bash -n "$script"; done
 if command -v shellcheck >/dev/null; then
     shellcheck --severity=warning "${SCRIPTS[@]}"

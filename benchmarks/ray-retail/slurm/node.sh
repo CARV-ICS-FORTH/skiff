@@ -17,9 +17,18 @@ COMMAND=("${RETAIL_PYTHON:-python3}" -u -m retail.cluster_node "$ROLE"
     --object-store-bytes "${RETAIL_OBJECT_STORE_BYTES:-17179869184}"
     --heap-bytes "${RETAIL_HEAP_BYTES:-64424509440}"
     --object-store-dir "${RETAIL_OBJECT_STORE_DIR:?}")
+if [[ ${RETAIL_PHYSICAL_CORES:-0} -gt 0 ]]; then COMMAND+=(--physical-cores "$RETAIL_PHYSICAL_CORES"); fi
 if [[ -n ${RETAIL_OVERLAY:-} ]]; then COMMAND+=(--overlay "$RETAIL_OVERLAY"); fi
 COMMAND+=("$@")
 if [[ -n ${RETAIL_SIF:-} ]]; then
+    # Bind sources must exist on the host before Apptainer starts the adapter.
+    mkdir -p -- "$RETAIL_OUTPUT"
+    OPERATIONS_BIND=()
+    if [[ ${RETAIL_PHYSICAL_CORES:-0} -gt 0 ]]; then
+        OPERATIONS_DIR="$(dirname -- "$RETAIL_OUTPUT")/operations"
+        mkdir -p -- "$OPERATIONS_DIR"
+        OPERATIONS_BIND=(--bind "$OPERATIONS_DIR:$OPERATIONS_DIR")
+    fi
     RETAIL_CONTAINER_SHA256=$(sha256sum "$RETAIL_SIF" | awk '{print $1}')
     export RETAIL_CONTAINER_SHA256
     ACCELERATOR=()
@@ -27,6 +36,7 @@ if [[ -n ${RETAIL_SIF:-} ]]; then
         ACCELERATOR=(--nv --env "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:?Slurm GPU visibility is required}")
     fi
     exec apptainer exec --cleanenv "${ACCELERATOR[@]}" --bind "$RETAIL_ROOT:$RETAIL_ROOT:ro" \
+        "${OPERATIONS_BIND[@]}" \
         --bind "$RETAIL_OUTPUT:$RETAIL_OUTPUT" \
         --bind "$RETAIL_OBJECT_STORE_DIR:$RETAIL_OBJECT_STORE_DIR" \
         --env "RETAIL_CONTAINER_SHA256=$RETAIL_CONTAINER_SHA256" \

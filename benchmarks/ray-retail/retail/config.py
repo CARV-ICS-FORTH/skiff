@@ -81,6 +81,19 @@ def load(path=DEFAULT_CONFIG, overlay=None, overrides=()):
 
 
 def validate(c):
+    from .deployment import validate_config
+
+    validate_config(c)
+    if 'threads' in c['serve'] and (type(c['serve']['threads']) is not int
+            or not 1 <= c['serve']['threads'] <= c['serve']['cpus_per_replica']):
+        raise ValueError('Serving threads must fit the CPU reservation')
+    if 'batch' in c:
+        batch = c['batch']
+        if any(type(batch.get(k)) is not int or batch[k] < 1
+               for k in ('workers', 'cpus_per_worker', 'threads')):
+            raise ValueError('Batch resources must be positive integers')
+        if batch['threads'] > batch['cpus_per_worker']:
+            raise ValueError('Batch threads exceed CPU reservation')
     if (
         type(c["schema_version"]) is not int
         or c["schema_version"] != 1
