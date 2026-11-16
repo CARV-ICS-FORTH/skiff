@@ -1,0 +1,511 @@
+{
+  "benchmark": "bert-distr-training",
+  "site": "MeluXina",
+  "platform": "native Slurm / Apptainer",
+  "date": "2026-10-21",
+  "run_id": "native-matched-5368574",
+  "nodes": [
+    "mel0013",
+    "mel0053",
+    "mel0100",
+    "mel0223",
+    "mel0359",
+    "mel0389",
+    "mel0399",
+    "mel0427",
+    "mel0509",
+    "mel0533"
+  ],
+  "assets": {
+    "dataset": "yelp_review_full",
+    "labels": 5,
+    "model": "bert-base-cased",
+    "prepared_at_unix": 1792494247.3428214,
+    "samples": 32000,
+    "schema": 1
+  },
+  "backend": "slurm",
+  "final_evaluation": {
+    "epoch": 3.0,
+    "eval_accuracy": 0.5884375,
+    "eval_loss": 1.0561143159866333,
+    "eval_runtime": 7.2529,
+    "eval_samples_per_second": 441.203,
+    "eval_steps_per_second": 2.758,
+    "step": 1080
+  },
+  "profile": {
+    "cpu_threads": 32,
+    "dataloader_workers": 4,
+    "dataset": "yelp_review_full",
+    "device": "cpu",
+    "distributed_timeout_seconds": 600,
+    "epochs": 3,
+    "eval_batch_size": 16,
+    "evaluate": true,
+    "gpus_per_node": 0,
+    "gradient_accumulation_steps": 1,
+    "learning_rate": 5e-05,
+    "log_steps": 20,
+    "max_sequence_length": 128,
+    "memory_gib": 64,
+    "model": "bert-base-cased",
+    "nodes": 10,
+    "processes_per_node": 1,
+    "samples": 32000,
+    "save_model": true,
+    "seed": 42,
+    "tokenizer_processes": 8,
+    "train_batch_size": 8,
+    "validation_samples": 3200,
+    "warmup_ratio": 0.0,
+    "weight_decay": 0.0
+  },
+  "ranks": [
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0013",
+      "local_rank": 0,
+      "node": "mel0013",
+      "pid": 5853,
+      "rank": 0,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0053",
+      "local_rank": 0,
+      "node": "mel0053",
+      "pid": 23858,
+      "rank": 1,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0100",
+      "local_rank": 0,
+      "node": "mel0100",
+      "pid": 27369,
+      "rank": 2,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0223",
+      "local_rank": 0,
+      "node": "mel0223",
+      "pid": 21828,
+      "rank": 3,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0359",
+      "local_rank": 0,
+      "node": "mel0359",
+      "pid": 9114,
+      "rank": 4,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0389",
+      "local_rank": 0,
+      "node": "mel0389",
+      "pid": 18799,
+      "rank": 5,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0399",
+      "local_rank": 0,
+      "node": "mel0399",
+      "pid": 10738,
+      "rank": 6,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0427",
+      "local_rank": 0,
+      "node": "mel0427",
+      "pid": 9019,
+      "rank": 7,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0509",
+      "local_rank": 0,
+      "node": "mel0509",
+      "pid": 12849,
+      "rank": 8,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "mel0533",
+      "local_rank": 0,
+      "node": "mel0533",
+      "pid": 18411,
+      "rank": 9,
+      "visible_gpus": 0
+    }
+  ],
+  "resolved": {
+    "device": "cpu",
+    "global_batch_size": 80,
+    "nodes": 10,
+    "optimizer_steps": 1080,
+    "optimizer_steps_per_epoch": 360,
+    "training_samples": 28800,
+    "validation_samples": 3200,
+    "world_size": 10
+  },
+  "runtime": {
+    "datasets": "2.19.2",
+    "image_sha256": "bd2f52446a8066108b810d7cfb258fbbd15e4df5a1551d230d0e70243046afae",
+    "python": "3.11.14",
+    "torch": "2.7.1+cpu",
+    "transformers": "4.28.0"
+  },
+  "schema": 1,
+  "source_sha256": {
+    "config.py": "8b57c5adbc8a4e6e2956c294563f135fe185c0a684daad2f3ee870f0f59d1223",
+    "prepare_assets.py": "7206a383ec46a27dcde7bc4284a13b71bb575e0b2f61799aeafda1aaf86e1ffc",
+    "requirements.txt": "8c39912857c4a5a3ac4766bfd142be24924a3fd76876c41f3a26978f2c5885b0",
+    "run.py": "3acd2f0b818784d48ea65abb6b036db630b2e22e6ffff422e0da934fc131ea5e",
+    "train.py": "af7d23434874b36bf4949d32ef89d30960d08fd0a59f0b933a09608bccd0b4b8"
+  },
+  "status": "complete",
+  "timing": {
+    "application_seconds": 1808.898015875835,
+    "training_seconds": 1792.6906171720475
+  },
+  "training_metrics": {
+    "epoch": 3.0,
+    "train_loss": 0.8174199369218614,
+    "train_runtime": 1791.9945,
+    "train_samples_per_second": 48.214,
+    "train_steps_per_second": 0.603
+  },
+  "slurm": {
+    "job_id": "5368574",
+    "state": "COMPLETED",
+    "exit_code": "0:0",
+    "benchmark_exit_code": 0,
+    "start_time_utc": "2026-10-21T10:29:30Z",
+    "end_time_utc": "2026-10-21T10:59:59Z",
+    "elapsed_seconds": 1829,
+    "partition": "cpu",
+    "account": "p200528",
+    "qos": "short",
+    "constraint": "zen2",
+    "exclusive_nodes": 10,
+    "allocated_logical_cpus": 2560,
+    "requested_task_cpus": 2560,
+    "cpus_per_task": 256,
+    "memory_request": "--mem=0 (all node memory), matching Skiff whole-node allocation; workload profile remains memory_gib=64.",
+    "cpu_bind": "none",
+    "memory_bind": "none",
+    "training_step": {
+      "job_id": "5368574.0",
+      "state": "COMPLETED",
+      "exit_code": "0:0",
+      "elapsed_seconds": 1822,
+      "allocated_cpus": 2560
+    },
+    "batch_step": {
+      "job_id": "5368574.batch",
+      "state": "COMPLETED",
+      "exit_code": "0:0"
+    }
+  },
+  "node_resource_checks": [
+    {
+      "node": "mel0013",
+      "rank": 0,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621892,
+      "resource_record_sha256": "0ae7eef3b6e3e402171f184af9c80928dd7cd35d7d11e3510281849d6b36204f"
+    },
+    {
+      "node": "mel0053",
+      "rank": 1,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621848,
+      "resource_record_sha256": "abe37835b3b2671a0435232e5986ae94ba6f91574f437474f5e2320e45057ac3"
+    },
+    {
+      "node": "mel0100",
+      "rank": 2,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621892,
+      "resource_record_sha256": "428c9d4d9211934e128c69841ddffe0ef688496a7b5c383f8e7d08d3ad10b6b2"
+    },
+    {
+      "node": "mel0223",
+      "rank": 3,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621836,
+      "resource_record_sha256": "788d9a13ab5f49079c732dc072e1e96ff4f8e055f586d652716349cbba6903da"
+    },
+    {
+      "node": "mel0359",
+      "rank": 4,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621864,
+      "resource_record_sha256": "7285022ff9967bdb03b48adf9a162b5c8308d20f38850518de15b31fd1be4776"
+    },
+    {
+      "node": "mel0389",
+      "rank": 5,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621880,
+      "resource_record_sha256": "deff4cd2bfc1e91c466e1f50c66a4bf9bfdbf72f7cdcebe02b4f39168b31cfc7"
+    },
+    {
+      "node": "mel0399",
+      "rank": 6,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621876,
+      "resource_record_sha256": "9a3e3ef0928156d27eae42d257a433b21293788711c7459fea386bb2c1cbe1d7"
+    },
+    {
+      "node": "mel0427",
+      "rank": 7,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621860,
+      "resource_record_sha256": "e134be6db1454995ef130313049df5f356578783a36cde6e17eccbca4a33d13b"
+    },
+    {
+      "node": "mel0509",
+      "rank": 8,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621860,
+      "resource_record_sha256": "587afd37f4c3fd933b224b0e88de59393c22a6394a146dd62a57dd3f6137e4a4"
+    },
+    {
+      "node": "mel0533",
+      "rank": 9,
+      "cpu_affinity_count": 256,
+      "cpu_affinity_list": "0-255",
+      "hardware_logical_cpus": 256,
+      "address_space_rlimit": [
+        -1,
+        -1
+      ],
+      "memtotal_kib": 527621832,
+      "resource_record_sha256": "e5b4bfeb2b6a5484612b03991e0fe2b6fd6df1566bf7f1162bf134e97438e2ea"
+    }
+  ],
+  "epoch_evaluations": [
+    {
+      "epoch": 1,
+      "step": 360,
+      "eval_loss": 0.9525532722473145,
+      "eval_accuracy": 0.5759375,
+      "master_eval_runtime": 7.4649,
+      "matching_rank_log_records": 10
+    },
+    {
+      "epoch": 2,
+      "step": 720,
+      "eval_loss": 0.9544602036476135,
+      "eval_accuracy": 0.588125,
+      "master_eval_runtime": 7.2637,
+      "matching_rank_log_records": 10
+    },
+    {
+      "epoch": 3,
+      "step": 1080,
+      "eval_loss": 1.0561143159866333,
+      "eval_accuracy": 0.5884375,
+      "master_eval_runtime": 7.2529,
+      "matching_rank_log_records": 10
+    }
+  ],
+  "inspection": {
+    "collection_date": "2026-10-21",
+    "checks": [
+      "Original result and replacement evidence pass existing schema-1 validator; backend=slurm, epoch 3, step 1080.",
+      "Allocation, batch and training step all COMPLETED, exit 0:0; wrapper benchmark.exit=0 and success/parity markers.",
+      "Exact completed Skiff profile, scale, assets manifest, recorded source hashes and runtime/image identity match.",
+      "All ten actual-container startup resource records show affinity IDs 0-255, 256 hardware logical CPUs, unlimited address-space rlimit and correct node/rank mapping; final training rank affinity is also 256.",
+      "Three epoch evaluation records re-extracted from all ten task logs; all losses and accuracies match across ranks and with Skiff; mean training loss also matches.",
+      "Remote SHA-256 identities match 45 collected files; CPU SIF independently hashed remotely; retained source files match result hashes.",
+      "Archive integrity, model export existence (433327307 bytes) and original output fields verified; model weights not downloaded or independently re-evaluated."
+    ],
+    "timing_definitions": {
+      "training_seconds": "Rank-zero wall time around Trainer.train() and a completion barrier; includes evaluation at each epoch.",
+      "application_seconds": "Rank-zero run() wall time through imports, initialization, preprocessing, training, model export and rank gathering; excludes launcher startup, final result write, final barrier and process teardown.",
+      "train_runtime": "Trainer-reported runtime; distinct from the outer training_seconds timer.",
+      "allocation_elapsed_seconds": "Scheduler allocation start to end; excludes queue time."
+    },
+    "comparison": {
+      "skiff_slurm_job": "5368311",
+      "skiff_evidence": "bert-skiff.json",
+      "matched": [
+        "profile and scale",
+        "recorded training source hashes",
+        "reused assets directory and manifest",
+        "CPU SIF SHA-256 and dependency versions",
+        "ten exclusive 256-CPU Zen2 nodes",
+        "256-CPU affinity per training rank",
+        "32 configured PyTorch threads per rank",
+        "whole-node allocation memory",
+        "all three epoch losses/accuracies and mean training loss"
+      ],
+      "remaining_differences": [
+        "Different physical nodes and start times; the original Skiff nodes were drained by a site health check.",
+        "Native processes use Slurm/Apptainer; Skiff uses operator-managed pods and cluster services with virtual networking.",
+        "Native explicitly disables CPU and memory binding. Previous Skiff NUMA memory policy, caches, per-flow transport and system-service load were not measured.",
+        "One run per platform; no statistical estimate of platform overhead or causal attribution to communication."
+      ],
+      "training_difference_seconds_skiff_minus_native": 41.01510835578665,
+      "training_difference_percent_of_native": 2.287907794178534,
+      "application_difference_seconds_skiff_minus_native": 37.11947713722475,
+      "interpretation": "This replaces the earlier 32-CPU-bound native result in the active comparison. Workload, image/source identities, CPU affinity and whole-node memory allocation match Skiff; physical nodes and platform execution remain distinct."
+    },
+    "warnings": "CPU pin-memory warnings and AdamW deprecation notices are present in task stderr; final accounting and result validation pass.",
+    "capability_scope": "Complete native CPU distributed BERT training/evaluation/export across ten nodes with verified 256-CPU affinity. Does not validate Skiff limit enforcement, GPU behavior or a controlled platform speedup."
+  },
+  "supersedes": {
+    "slurm_job_id": "5363796",
+    "run_id": "meluxina-cpu-20261020T124115Z",
+    "reason": "User requested replacing the 32-CPU-bound native record with this rerun matching Skiff rank affinity and whole-node memory.",
+    "previous_raw_collection": "benchmarks/bert-distr-training/results/slurm/meluxina-5363796-collection",
+    "previous_compact_evidence_ignored_archive": "benchmarks/bert-distr-training/results/slurm/meluxina-5363796-collection/superseded-evidence.json"
+  },
+  "provenance": {
+    "remote_deployment": "/home/users/u102006/kampadais/skiff-bert-86cb22b",
+    "remote_benchmark_root": "/home/users/u102006/kampadais/.skiff-bert-86cb22b/benchmarks/bert-distr-training",
+    "original_result": "results/native-matched-5368574/result.json",
+    "original_result_sha256": "afaa24c49fc99dae763092e39c41c96ec316749425415b0029788c1e50725c34",
+    "local_raw_collection": "benchmarks/bert-distr-training/results/slurm/meluxina-5368574-collection",
+    "collection_archive_sha256": "ca12dc884a28b6803f28424fe4e3c72a26d4c55d593219634715d2190a445118",
+    "accounting_sha256": "ebd446af5fdee6d24eae0e7818f7a1d5932e5d6ff25354d037c232ddf0b26dfd",
+    "remote_file_identities_sha256": "f95765b8b2a8f885f59878f94751c94cebc521871518fd4edd584a51fd4eece2",
+    "batch_log_sha256": "7e7c04826235047e82ca6432fdd5229f128dfec5638d2908aa3ffcdcbd161ed7",
+    "artifact_sha256": {
+      "benchmark.exit": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "check-and-launch.py": "c97701e8c49a17fc4ee984f3ab88549882485e878d6a82ad9d72bf960aba7835",
+      "configuration-parity.json": "dd0c16bb352a5edfb9846573db51c6861c10f4ea074d393a213b782f57678d84",
+      "finished-at.txt": "5ed69530bfca164672b71b8a2f23b47b90e2929bb65d8c504c4fb4ebecf82b9d",
+      "matched-native.slurm": "6898f11261c813eb53c3f703e76b007a66ac5c57b38e461d176fec96a780950e",
+      "matched-node.sh": "f7c0b166bd466315f4256b5f1d0b30aef2cc72ee38db9f5dd0529a0b88ecb570",
+      "node-resources-mel0013.json": "0ae7eef3b6e3e402171f184af9c80928dd7cd35d7d11e3510281849d6b36204f",
+      "node-resources-mel0053.json": "abe37835b3b2671a0435232e5986ae94ba6f91574f437474f5e2320e45057ac3",
+      "node-resources-mel0100.json": "428c9d4d9211934e128c69841ddffe0ef688496a7b5c383f8e7d08d3ad10b6b2",
+      "node-resources-mel0223.json": "788d9a13ab5f49079c732dc072e1e96ff4f8e055f586d652716349cbba6903da",
+      "node-resources-mel0359.json": "7285022ff9967bdb03b48adf9a162b5c8308d20f38850518de15b31fd1be4776",
+      "node-resources-mel0389.json": "deff4cd2bfc1e91c466e1f50c66a4bf9bfdbf72f7cdcebe02b4f39168b31cfc7",
+      "node-resources-mel0399.json": "9a3e3ef0928156d27eae42d257a433b21293788711c7459fea386bb2c1cbe1d7",
+      "node-resources-mel0427.json": "e134be6db1454995ef130313049df5f356578783a36cde6e17eccbca4a33d13b",
+      "node-resources-mel0509.json": "587afd37f4c3fd933b224b0e88de59393c22a6394a146dd62a57dd3f6137e4a4",
+      "node-resources-mel0533.json": "e5b4bfeb2b6a5484612b03991e0fe2b6fd6df1566bf7f1162bf134e97438e2ea",
+      "profile.json": "868af20e81b72f16608fb44f172b0ee2afd098cbd10795feda7198454758afa4",
+      "result.json": "afaa24c49fc99dae763092e39c41c96ec316749425415b0029788c1e50725c34",
+      "slurm-final-in-trap.txt": "bf2c2315cd25a0980058a2486c3dc9a226eea182d842f16da797b80cde2a5474",
+      "slurm-initial.txt": "2fd5bce3ebaf1c6ddea2e30b39297899a17790179e4535471daa95d7d42d8ff4",
+      "started-at.txt": "1ae56ebde43d1708b083baedb54c2bd269553522821c78ce8df8436f592cddb3",
+      "submission-preflight.json": "dd0c16bb352a5edfb9846573db51c6861c10f4ea074d393a213b782f57678d84",
+      "task-0.err": "508ec27cfb748bf8f2bf1488b1649a0704b2245ad5880b4d6f9514d023ce4966",
+      "task-0.out": "a5eff7ca744189357df26084518b3ff710633034408489a809a717b054dd659f",
+      "task-1.err": "b0ed8711e520484b4db8d7c9d7dc8ddf2d36ad1fa195a0f12c76cf9421855e17",
+      "task-1.out": "d1c122af5a10a2c88d79e996f5be6591491cd0bae1f31ef0329359b0ee5f2c44",
+      "task-2.err": "3ed76ea53a2cdc5a1f465d96df5c2ea10d6e6cc3ee39df273b7058a7928ae083",
+      "task-2.out": "9fe0eb5e5bfbc5d3d81b629eeddce73ccbca115573444aa7efb8c919b6375992",
+      "task-3.err": "2e7aaba27d2aa5dfe33a054e16886e0e74185a5d7fdcaf376e5d60ee6a840ddb",
+      "task-3.out": "886ec889ad619dbaa0ae0a418427cc6f5c06d9d4aa18dd9c462a2303e1691de0",
+      "task-4.err": "c969db4d6bb957d995453c861ccb5e2cc0f371f7eebd885cf5315a8c3cec2590",
+      "task-4.out": "3cc04609d7c9b92c29ef78921b8a1dde5407aa8649fdcd4e818e39356e70b995",
+      "task-5.err": "a2498a6000865e999cf438c5289e0fe33562f25eed798cf366fb9f45f9d8d7d3",
+      "task-5.out": "1780d070abd7886a655996037d7a06b3eeeec197e12cb70d1cbb5e9620641f69",
+      "task-6.err": "645cba30d125d0f9fb7cc12db66a87a1b1427d51ce9c73a70b5f6af457ed55dc",
+      "task-6.out": "1898fa96715ef7f989a137e1a8fe67b310bb75549ec89e06d6860303cf1f00cb",
+      "task-7.err": "bc18c5e16881da00c3a3c545378167fa8cfd5a95e2649b5923f23a6b6572fb7f",
+      "task-7.out": "4661b65976e13a1bf798b317488b976db1198b7ef2099111450a4118be501df7",
+      "task-8.err": "fd0c738cb0775e0c93db3dc5e453549258dac8af9e86bbeb2debced7329c7a46",
+      "task-8.out": "63c61ef669dcbeee9c613e18426ea168cf7a02bc6465334f75263fe26fee4f30",
+      "task-9.err": "7b7d49029a3710534370181c3d9c29d4aeb084c364f4f3e69d5a5333e44a51d4",
+      "task-9.out": "cf40b67514f2f7c8b81f3d97047314c00bf0fcdde9d0082febe1cf7134920ba6",
+      "training-source.py": "af7d23434874b36bf4949d32ef89d30960d08fd0a59f0b933a09608bccd0b4b8",
+      "verify-parity.py": "77fd9a25fe29c9b997bfaff085b42b41bb44644e7702d51901432d926c768382"
+    },
+    "source_adaptation": "Same staged training source as Skiff: keep_in_memory=True for dataset loading, selection and splitting. Shared workload source was not modified for this rerun.",
+    "launch_adaptation": "Isolated native wrapper requests 256 CPUs/task and whole-node memory, disables CPU/memory binding, checks actual container affinity before exec of unchanged shared launch.py and validates parity after training.",
+    "model_export": {
+      "file": "results/native-matched-5368574/model/pytorch_model.bin",
+      "bytes": 433327307,
+      "downloaded": false,
+      "independently_evaluated": false
+    },
+    "retention": "All original result fields plus selected accounting, startup resource checks, epoch metrics and provenance. Full task logs, resource dumps, launcher helpers and archives are ignored locally; model/data/images remain remotely."
+  }
+}

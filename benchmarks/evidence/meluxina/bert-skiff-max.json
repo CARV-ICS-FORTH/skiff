@@ -1,0 +1,560 @@
+{
+  "benchmark": "bert-distr-training",
+  "site": "MeluXina",
+  "platform": "Skiff / Kubernetes",
+  "date": "2026-10-21",
+  "run_id": "skiff-cpu-5368311",
+  "nodes": [
+    "mel0072",
+    "mel0084",
+    "mel0189",
+    "mel0282",
+    "mel0372",
+    "mel0454",
+    "mel0480",
+    "mel0521",
+    "mel0536",
+    "mel0553"
+  ],
+  "assets": {
+    "dataset": "yelp_review_full",
+    "labels": 5,
+    "model": "bert-base-cased",
+    "prepared_at_unix": 1792494247.3428214,
+    "samples": 32000,
+    "schema": 1
+  },
+  "backend": "skiff",
+  "final_evaluation": {
+    "epoch": 3.0,
+    "eval_accuracy": 0.5884375,
+    "eval_loss": 1.0561143159866333,
+    "eval_runtime": 7.4931,
+    "eval_samples_per_second": 427.057,
+    "eval_steps_per_second": 2.669,
+    "step": 1080
+  },
+  "profile": {
+    "cpu_threads": 32,
+    "dataloader_workers": 4,
+    "dataset": "yelp_review_full",
+    "device": "cpu",
+    "distributed_timeout_seconds": 600,
+    "epochs": 3,
+    "eval_batch_size": 16,
+    "evaluate": true,
+    "gpus_per_node": 0,
+    "gradient_accumulation_steps": 1,
+    "learning_rate": 5e-05,
+    "log_steps": 20,
+    "max_sequence_length": 128,
+    "memory_gib": 64,
+    "model": "bert-base-cased",
+    "nodes": 10,
+    "processes_per_node": 1,
+    "samples": 32000,
+    "save_model": true,
+    "seed": 42,
+    "tokenizer_processes": 8,
+    "train_batch_size": 8,
+    "validation_samples": 3200,
+    "warmup_ratio": 0.0,
+    "weight_decay": 0.0
+  },
+  "ranks": [
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-master-0",
+      "local_rank": 0,
+      "node": "mel0480",
+      "pid": 203,
+      "rank": 0,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-worker-0",
+      "local_rank": 0,
+      "node": "mel0553",
+      "pid": 204,
+      "rank": 1,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-worker-1",
+      "local_rank": 0,
+      "node": "mel0072",
+      "pid": 202,
+      "rank": 2,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-worker-2",
+      "local_rank": 0,
+      "node": "mel0521",
+      "pid": 201,
+      "rank": 3,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-worker-3",
+      "local_rank": 0,
+      "node": "mel0282",
+      "pid": 202,
+      "rank": 4,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-worker-4",
+      "local_rank": 0,
+      "node": "mel0189",
+      "pid": 202,
+      "rank": 5,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-worker-5",
+      "local_rank": 0,
+      "node": "mel0454",
+      "pid": 205,
+      "rank": 6,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-worker-6",
+      "local_rank": 0,
+      "node": "mel0372",
+      "pid": 203,
+      "rank": 7,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-worker-7",
+      "local_rank": 0,
+      "node": "mel0084",
+      "pid": 205,
+      "rank": 8,
+      "visible_gpus": 0
+    },
+    {
+      "cpu_affinity": 256,
+      "gpu_name": null,
+      "hostname": "bert-skiff-cpu-5368311-worker-8",
+      "local_rank": 0,
+      "node": "mel0536",
+      "pid": 204,
+      "rank": 9,
+      "visible_gpus": 0
+    }
+  ],
+  "resolved": {
+    "device": "cpu",
+    "global_batch_size": 80,
+    "nodes": 10,
+    "optimizer_steps": 1080,
+    "optimizer_steps_per_epoch": 360,
+    "training_samples": 28800,
+    "validation_samples": 3200,
+    "world_size": 10
+  },
+  "runtime": {
+    "datasets": "2.19.2",
+    "image_sha256": "bd2f52446a8066108b810d7cfb258fbbd15e4df5a1551d230d0e70243046afae",
+    "python": "3.11.14",
+    "torch": "2.7.1+cpu",
+    "transformers": "4.28.0"
+  },
+  "schema": 1,
+  "source_sha256": {
+    "config.py": "8b57c5adbc8a4e6e2956c294563f135fe185c0a684daad2f3ee870f0f59d1223",
+    "prepare_assets.py": "7206a383ec46a27dcde7bc4284a13b71bb575e0b2f61799aeafda1aaf86e1ffc",
+    "requirements.txt": "8c39912857c4a5a3ac4766bfd142be24924a3fd76876c41f3a26978f2c5885b0",
+    "run.py": "3acd2f0b818784d48ea65abb6b036db630b2e22e6ffff422e0da934fc131ea5e",
+    "train.py": "af7d23434874b36bf4949d32ef89d30960d08fd0a59f0b933a09608bccd0b4b8"
+  },
+  "status": "complete",
+  "timing": {
+    "application_seconds": 1846.0174930130597,
+    "training_seconds": 1833.7057255278341
+  },
+  "training_metrics": {
+    "epoch": 3.0,
+    "train_loss": 0.8174199369218614,
+    "train_runtime": 1833.1037,
+    "train_samples_per_second": 47.133,
+    "train_steps_per_second": 0.589
+  },
+  "slurm": {
+    "job_id": "5368311",
+    "state": "COMPLETED",
+    "exit_code": "0:0",
+    "benchmark_exit_code": 0,
+    "start_time_utc": "2026-10-21T09:29:57Z",
+    "end_time_utc": "2026-10-21T10:03:13Z",
+    "elapsed_seconds": 1996,
+    "partition": "cpu",
+    "account": "p200528",
+    "qos": "short",
+    "exclusive_nodes": 10,
+    "allocated_logical_cpus": 2560,
+    "memory_request": "All node memory (--mem=0); workload pods request 64 GiB per node.",
+    "batch_step": {
+      "state": "COMPLETED",
+      "exit_code": "0:0"
+    },
+    "cleanup": "After benchmark success, the wrapper signalled the Skiff cluster to stop. Ten long-running bubble steps .21-.30 are CANCELLED (0:9); final allocation and batch exits are zero, and cluster log records cleanup complete.",
+    "accounting_note": "Final accounting captured after exit; slurm-final-in-trap.txt predates batch-process exit."
+  },
+  "kubernetes": {
+    "namespace": "bert-cpu-5368311",
+    "pytorchjob": "bert-skiff-cpu-5368311",
+    "start_time_utc": "2026-10-21T09:31:18Z",
+    "completion_time_utc": "2026-10-21T10:02:15Z",
+    "succeeded": true,
+    "succeeded_masters": 1,
+    "succeeded_workers": 9,
+    "pods": [
+      {
+        "name": "bert-skiff-cpu-5368311-master-0",
+        "rank": 0,
+        "node": "mel0480",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:19Z",
+        "finished_at_utc": "2026-10-21T10:02:15Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      },
+      {
+        "name": "bert-skiff-cpu-5368311-worker-0",
+        "rank": 1,
+        "node": "mel0553",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:23Z",
+        "finished_at_utc": "2026-10-21T10:02:16Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      },
+      {
+        "name": "bert-skiff-cpu-5368311-worker-1",
+        "rank": 2,
+        "node": "mel0072",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:24Z",
+        "finished_at_utc": "2026-10-21T10:02:15Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      },
+      {
+        "name": "bert-skiff-cpu-5368311-worker-2",
+        "rank": 3,
+        "node": "mel0521",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:24Z",
+        "finished_at_utc": "2026-10-21T10:02:15Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      },
+      {
+        "name": "bert-skiff-cpu-5368311-worker-3",
+        "rank": 4,
+        "node": "mel0282",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:24Z",
+        "finished_at_utc": "2026-10-21T10:02:16Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      },
+      {
+        "name": "bert-skiff-cpu-5368311-worker-4",
+        "rank": 5,
+        "node": "mel0189",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:24Z",
+        "finished_at_utc": "2026-10-21T10:02:15Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      },
+      {
+        "name": "bert-skiff-cpu-5368311-worker-5",
+        "rank": 6,
+        "node": "mel0454",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:24Z",
+        "finished_at_utc": "2026-10-21T10:02:15Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      },
+      {
+        "name": "bert-skiff-cpu-5368311-worker-6",
+        "rank": 7,
+        "node": "mel0372",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:23Z",
+        "finished_at_utc": "2026-10-21T10:02:15Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      },
+      {
+        "name": "bert-skiff-cpu-5368311-worker-7",
+        "rank": 8,
+        "node": "mel0084",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:24Z",
+        "finished_at_utc": "2026-10-21T10:02:15Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      },
+      {
+        "name": "bert-skiff-cpu-5368311-worker-8",
+        "rank": 9,
+        "node": "mel0536",
+        "phase": "Succeeded",
+        "exit_code": 0,
+        "restarts": 0,
+        "started_at_utc": "2026-10-21T09:31:24Z",
+        "finished_at_utc": "2026-10-21T10:02:16Z",
+        "resources": {
+          "limits": {
+            "cpu": "32",
+            "memory": "64Gi"
+          },
+          "requests": {
+            "cpu": "32",
+            "memory": "64Gi"
+          }
+        }
+      }
+    ]
+  },
+  "deployment_runtime": {
+    "skiff_version": "0.1.0-86cb22b",
+    "apptainer_version": "apptainer://1.5.4",
+    "architecture": "amd64",
+    "base_git_commit": "86cb22bc4067b407d338720bc3472314c718a25e",
+    "training_operator_release": "v1.9.2",
+    "network_configuration": {
+      "pod_mtu": 1994,
+      "bubble_link_mtu": 2044,
+      "slirp_mtu": 65520,
+      "rdma": "auto; cluster preflight reports active InfiniBand mlx5_0:1. Retained logs do not establish per-flow RDMA use or measured throughput."
+    }
+  },
+  "epoch_evaluations": [
+    {
+      "epoch": 1,
+      "step": 360,
+      "eval_loss": 0.9525532722473145,
+      "eval_accuracy": 0.5759375,
+      "master_eval_runtime": 7.2748,
+      "matching_rank_log_records": 10
+    },
+    {
+      "epoch": 2,
+      "step": 720,
+      "eval_loss": 0.9544602036476135,
+      "eval_accuracy": 0.588125,
+      "master_eval_runtime": 7.374,
+      "matching_rank_log_records": 10
+    },
+    {
+      "epoch": 3,
+      "step": 1080,
+      "eval_loss": 1.0561143159866333,
+      "eval_accuracy": 0.5884375,
+      "master_eval_runtime": 7.4931,
+      "matching_rank_log_records": 10
+    }
+  ],
+  "inspection": {
+    "collection_date": "2026-10-21",
+    "checks": [
+      "Original result and compact evidence pass the existing schema-1 validator; backend=skiff, final epoch 3 and step 1080.",
+      "Final Slurm allocation and batch COMPLETED with exit 0:0; wrapper benchmark.exit=0 and success marker.",
+      "PyTorchJob Succeeded; one master and nine workers, ten training containers Succeeded with exit 0 and zero restarts; all nine init containers exit 0.",
+      "Ten unique ranks map exactly from pod hostnames to ten distinct physical nodes; actual pod requests/limits are 32 CPUs and 64 GiB; rank affinity is 256 CPUs and no GPUs.",
+      "All three epoch metrics re-extracted independently from ten pod logs; losses and accuracies match across ranks and with native run.",
+      "Exact native profile, resolved scale, assets manifest, recorded source hashes and dependency/image identity match; retained source snapshots verified against result.",
+      "Remote SHA-256 identities verified for 32 collected artifacts; CPU SIF independently hashed remotely; model weights exist (433327307 bytes).",
+      "Archive integrity and duplicate result copies checked; cluster cleanup marker present."
+    ],
+    "timing_definitions": {
+      "training_seconds": "Rank-zero wall time around Trainer.train() and a completion barrier; includes evaluation at each epoch.",
+      "application_seconds": "Rank-zero run() wall time through imports, initialization, preprocessing, training, model export and rank gathering; excludes launcher startup, final result write, final barrier and process teardown.",
+      "train_runtime": "Trainer-reported runtime; distinct from the outer training_seconds timer.",
+      "allocation_elapsed_seconds": "Scheduler allocation start to end; excludes queue time."
+    },
+    "comparison": {
+      "native_slurm_job": "5368574",
+      "native_evidence": "bert-slurm.json",
+      "matched": [
+        "profile",
+        "resolved scale",
+        "recorded source hashes",
+        "assets manifest and reused assets directory",
+        "CPU SIF SHA-256",
+        "dependency versions",
+        "256-CPU rank affinity",
+        "32 configured PyTorch threads",
+        "whole-node memory allocation",
+        "all three epoch losses and accuracies",
+        "mean training loss"
+      ],
+      "differences": [
+        "Different physical nodes and start times; one submission per platform.",
+        "Native executes through Slurm/Apptainer with CPU/memory binding disabled; Skiff uses operator-managed pods, cluster services and virtual networking.",
+        "Past Skiff NUMA memory policy, cache state, per-flow transport and service load were not captured."
+      ],
+      "interpretation": "Active comparison uses replacement native job 5368574 with matching workload and 256-CPU rank affinity. Earlier 32-CPU-bound native job 5363796 is superseded. Single-run sampling and different nodes prevent a statistical or causal platform-overhead claim."
+    },
+    "warnings": "Single-ID namespace warnings; securityContext fields not applied for CoreDNS/metrics-server; operator warns replica restart policy overrides pod template. Early batch-log AssertionErrors are readiness polling before all ten nodes registered, not training failures.",
+    "capability_scope": "Ten-node Skiff CPU distributed BERT training, Kubernetes operator/replica lifecycle, anti-affinity placement, shared assets/results, evaluation and model export. Does not establish GPU execution, all security-context fields, CPU/memory limit enforcement or independent model predictive quality."
+  },
+  "provenance": {
+    "remote_deployment": "/home/users/u102006/kampadais/skiff-bert-86cb22b",
+    "remote_benchmark_root": "/home/users/u102006/kampadais/.skiff-bert-86cb22b/benchmarks/bert-distr-training",
+    "original_result": "results/skiff-cpu-5368311/result.json",
+    "original_result_sha256": "8d58f90e317993cf48f1967188eb0fecb51aa1ab4a7a8b6f88b1ac8e1a9aa44e",
+    "local_raw_collection": "benchmarks/bert-distr-training/results/skiff/meluxina-5368311-collection",
+    "collection_archive_sha256": "ce1602e1eb5cf6337783a50affa69fcc2bfcbb4c258a4471e06e48eda6f69474",
+    "accounting_sha256": "4adb8aaa4eafccac24fda6c0382d0f663e3efbc11a0d2629595e40db07bd1f53",
+    "remote_file_identities_sha256": "b427dc81195ea1da4d1e4cd4fdcf0eb775ae9667a88d06c5f0b6e46c1f4cf277",
+    "artifact_sha256": {
+      "configuration-parity.json": "27adefb1ec6bfe8be14d408e40ba276e8adeca488886f6c9d84d183103e29823",
+      "training-resources.json": "21f4d19e668f89f3ca1950148676982ef52775487025bee8e8b9acac760d6f22",
+      "pytorchjob-manifest.json": "9a4b4900f8a09112228da3539cde1bcc6520a29325f497ba3af4c171c56140be",
+      "nodes-ready.json": "54f44b48a002d248ddacd0ae8ab477479d3b3d9439a5218290a9248bbfc5f479",
+      "events.txt": "bfec780496a4354440c9d2d7b017c5fb1d03e21e5f4bc130c7635f518bb89597",
+      "submitted-wrapper.slurm": "69290501fb1081dbdd613a0a1e038e21d534b367b7a8d4ee144f2e847033a320",
+      "train.py": "af7d23434874b36bf4949d32ef89d30960d08fd0a59f0b933a09608bccd0b4b8",
+      "verify-configuration.py": "4867991d6772e408fea912ad1fdc98ab1d5b716da68248b7f8cda10f1651d5d6"
+    },
+    "pod_log_sha256": {
+      "bert-skiff-cpu-5368311-master-0": "39a7ac41781a3e7e4207be3d3f308c0dc9e2b34cb7b9becc328f3c24a975258c",
+      "bert-skiff-cpu-5368311-worker-0": "ed98f36e35735000bfd2037c83265710c4c04e9ba74e82e3db9d3b32f91296ed",
+      "bert-skiff-cpu-5368311-worker-1": "e6d33888ec0d5922b26961461e7a263443f56073c4abb455697e86928bc576f9",
+      "bert-skiff-cpu-5368311-worker-2": "7149fd7b4c5f8a15985dfd46ecedb3d123f370bbc2afb6fb754f6a597a05c9bf",
+      "bert-skiff-cpu-5368311-worker-3": "d726f3e2c79a7714578882000344ba660ab433c24be826775d6e564c20485892",
+      "bert-skiff-cpu-5368311-worker-4": "eb64b9fc2348bedd3d4e678870c996ab3d226b7773a8f01c7021b06e999a69a1",
+      "bert-skiff-cpu-5368311-worker-5": "742ba7c1b83f003748c4fc56b16a916b768685558d103ea7aa07eb5bb44531b4",
+      "bert-skiff-cpu-5368311-worker-6": "570e50895219aaee27c02a8dfed69d9cfdb26ffddcc7b2a8b33924f92bc8303f",
+      "bert-skiff-cpu-5368311-worker-7": "b57cf8a2c2380564937283ff224bfd11380ee5b0b635535081315dfaee2433af",
+      "bert-skiff-cpu-5368311-worker-8": "64ab16b1c3032ce876271cc000b08dd4b79642143b05da24db83a7a14d524387"
+    },
+    "batch_log_sha256": "82c5b6eef7444ddd63070933446c837dc06390536ced5eeb849cc9b4eed4eb2d",
+    "cluster_log_sha256": "ecd5cf5367028b899b254daf3cbd3bb294f3bd7bcef6276c3ff3adeb3a6c5485",
+    "source_adaptation": "Same staged train.py as native run: keep_in_memory=True for dataset loading, selection and splitting; tokenization already keeps data in memory.",
+    "model_export": {
+      "file": "results/skiff-cpu-5368311/model/pytorch_model.bin",
+      "bytes": 433327307,
+      "downloaded": false,
+      "independently_evaluated": false
+    },
+    "retention": "All original result fields plus selected completion, placement, epoch and provenance evidence. Complete logs and pod/node dumps remain in ignored local collection; model/data/image files and credentials are not versioned."
+  }
+}

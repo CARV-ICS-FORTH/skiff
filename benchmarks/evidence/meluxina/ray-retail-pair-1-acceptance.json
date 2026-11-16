@@ -1,0 +1,151 @@
+{
+  "acceptance": {
+    "accepted_at_utc": "2026-11-13T11:43:17.197356+00:00",
+    "authorized_by": "user",
+    "job_id": "5454052",
+    "original_campaign": "/home/users/u102006/.skiff/experiments/campaign-20261113-r9-pairs",
+    "original_failure": "Missing/failed official bubble cleanup verification: mel0523",
+    "reason": "User explicitly accepted the completed first pair despite its cleanup defect and requested continuation with pair 2.",
+    "scope": "official_cleanup_only"
+  },
+  "active": {
+    "job": "5454239",
+    "run": "pair-2-skiff"
+  },
+  "campaign": "/home/users/u102006/.skiff/experiments/campaign-20261113-r11-pairs",
+  "collected_at_utc": "2026-11-13T11:46:17.011755+00:00",
+  "host_summary": {
+    "mel0047": {
+      "mean_physical_cpu_busy_percent": 33.65888277452616,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    },
+    "mel0136": {
+      "mean_physical_cpu_busy_percent": 32.52340039113169,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    },
+    "mel0174": {
+      "mean_physical_cpu_busy_percent": 32.06460400810318,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    },
+    "mel0239": {
+      "mean_physical_cpu_busy_percent": 30.663347239058425,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    },
+    "mel0385": {
+      "mean_physical_cpu_busy_percent": 31.439463269074086,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    },
+    "mel0411": {
+      "mean_physical_cpu_busy_percent": 30.303678100834727,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    },
+    "mel0433": {
+      "mean_physical_cpu_busy_percent": 30.85862307264248,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    },
+    "mel0510": {
+      "mean_physical_cpu_busy_percent": 32.27082075717619,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    },
+    "mel0523": {
+      "mean_physical_cpu_busy_percent": 33.827998441778746,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    },
+    "mel0536": {
+      "mean_physical_cpu_busy_percent": 30.697651430779132,
+      "transport_deviations": [],
+      "transport_kind": "rdma"
+    }
+  },
+  "runs": [
+    {
+      "id": "pilot-slurm",
+      "job_id": "5450474",
+      "validation": "PASS"
+    },
+    {
+      "id": "pilot-skiff",
+      "job_id": "5453825",
+      "validation": "PASS"
+    },
+    {
+      "id": "pair-1-slurm",
+      "job_id": "5453941",
+      "validation": "PASS"
+    },
+    {
+      "failure": "Missing/failed official bubble cleanup verification: mel0523",
+      "id": "pair-1-skiff",
+      "job_id": "5454052",
+      "validation": "ACCEPTED_WITH_CLEANUP_EXCEPTION"
+    },
+    {
+      "id": "pair-2-skiff",
+      "job_id": "5454239"
+    },
+    {
+      "id": "pair-2-slurm"
+    },
+    {
+      "id": "pair-3-slurm"
+    },
+    {
+      "id": "pair-3-skiff"
+    },
+    {
+      "id": "pair-4-skiff"
+    },
+    {
+      "id": "pair-4-slurm"
+    },
+    {
+      "id": "pair-5-slurm"
+    },
+    {
+      "id": "pair-5-skiff"
+    }
+  ],
+  "validation_summary": {
+    "allocation_to_application_seconds": 68.10787296295166,
+    "application_end_to_backend_stopped_seconds": 19.45369601249695,
+    "application_seconds": 1195.8904155349592,
+    "backend": "skiff",
+    "cleanup_exception": {
+      "accepted_at_utc": "2026-11-13T11:43:17.197356+00:00",
+      "authorized_by": "user",
+      "job_id": "5454052",
+      "original_campaign": "/home/users/u102006/.skiff/experiments/campaign-20261113-r9-pairs",
+      "original_failure": "Missing/failed official bubble cleanup verification: mel0523",
+      "reason": "User explicitly accepted the completed first pair despite its cleanup defect and requested continuation with pair 2.",
+      "scope": "official_cleanup_only"
+    },
+    "mean_physical_cpu_busy_percent": 31.83084694851048,
+    "node_hours": 3.563888888888889,
+    "observed_cleanup_error": "Missing/failed official bubble cleanup verification: mel0239",
+    "phase_seconds": {
+      "batch": 41.00106132798828,
+      "data": 562.5512560140342,
+      "evaluation": 12.519043638021685,
+      "policy": 172.85344622901175,
+      "recovery": 3.2183886249549687,
+      "serve": 181.27175016701221,
+      "train": 180.22473769495264,
+      "tune": 35.33249930804595
+    },
+    "platform_cleanup_seconds": 13.39037611009553,
+    "ray_startup_seconds": 6.2968489659251645,
+    "release_observation_interval_seconds": 2,
+    "release_observed_after_shutdown_seconds": 57.75133228302002,
+    "schema_version": 1,
+    "status": "ACCEPTED_WITH_CLEANUP_EXCEPTION"
+  }
+}

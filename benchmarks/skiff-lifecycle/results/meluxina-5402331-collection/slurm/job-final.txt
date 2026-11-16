@@ -1,0 +1,33 @@
+JobId=5402331 JobName=skiff-cluster
+   SLUID=s88XM667NG0X00
+   UserId=u102006(102006) GroupId=hpcusers(555) MCS_label=N/A
+   Priority=444027 Nice=0 Account=p200528 QOS=test
+   JobState=FAILED Reason=NonZeroExitCode Dependency=(null)
+   Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=143:0
+   DerivedExitCode=255:0
+   RunTime=00:00:46 TimeLimit=00:15:00 TimeMin=N/A
+   SubmitTime=2026-10-30T12:03:00 EligibleTime=2026-10-30T12:03:00
+   AccrueTime=2026-10-30T12:03:00
+   StartTime=2026-10-30T12:03:01 EndTime=2026-10-30T12:03:47 Deadline=N/A
+   PreemptEligibleTime=2026-10-30T12:03:01 PreemptTime=None
+   SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-10-30T12:03:01 Scheduler=Main
+   Partition=cpu AllocNode:Sid=login02:2686078
+   ReqNodeList=(null) ExcNodeList=(null)
+   NodeList=mel[0129,0132]
+   BatchHost=mel0129
+   NumNodes=2 NumCPUs=512 NumTasks=2 CPUs/Task=256 ReqB:S:C:T=0:0:*:*
+   ReqTRES=cpu=2,mem=960G,node=2,billing=2
+   AllocTRES=cpu=512,mem=960G,node=2,billing=512,gres/cpun=2
+   Socks/Node=* NtasksPerN:B:S:C=1:0:*:* CoreSpec=*
+   JOB_GRES=cpuN:2
+     Nodes=mel[0129,0132] CPU_IDs=0-255 Mem=491520 GRES=
+   MinCPUsNode=256 MinMemoryNode=0 MinTmpDiskNode=0
+   Features=zen2 DelayBoot=00:00:00
+   OverSubscribe=NO Contiguous=0 Licenses=(null) LicensesAlloc=(null) Network=(null)
+   Command=/project/home/p200528/skiff-lifecycle-a9da5aa/scripts/skiff.slurm
+   SubmitLine=sbatch --parsable --account=p200528 --partition=cpu --qos=test --constraint=zen2 --time=00:15:00 --nodes=2 --export=ALL,SKIFF_TIMING=1 --output=/project/home/p200528/skiff-lifecycle-a9da5aa/results/two-node-command-timing-r3-20261030T110300Z/skiff-cluster-%j.out /project/home/p200528/skiff-lifecycle-a9da5aa/scripts/skiff.slurm
+   WorkDir=/mnt/tier2/project/p200528/skiff-lifecycle-a9da5aa
+   StdErr=
+   StdIn=/dev/null
+   StdOut=/project/home/p200528/skiff-lifecycle-a9da5aa/results/two-node-command-timing-r3-20261030T110300Z/skiff-cluster-5402331.out
+

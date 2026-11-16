@@ -1,0 +1,4 @@
+time:     2026-10-30T11:53:28+0100
+host:     mel0126
+process:  the supervisor of job 5402280
+observed: received SIGTERM: the job was told to end (cancelled, stopped, or at its time limit)

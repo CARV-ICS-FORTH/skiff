@@ -1,0 +1,215 @@
+{
+  "site": "MeluXina (login.lxp.lu)",
+  "benchmark": "ray-retail",
+  "platform": "native-slurm",
+  "date": "2026-10-23",
+  "slurm": {
+    "job_id": "5377862",
+    "job_name": "ray-retail-native",
+    "state": "COMPLETED",
+    "exit_code": "0:0",
+    "start_time_utc": "2026-10-23T12:09:01+00:00",
+    "end_time_utc": "2026-10-23T12:34:50+00:00",
+    "elapsed_seconds": 1549,
+    "allocated_nodes": 20,
+    "allocated_logical_cpus": 5120,
+    "requested_memory": "9600G",
+    "application_step_elapsed_seconds": 1545,
+    "application_step_max_rss_bytes": 17465712640,
+    "application_step_total_cpu": "00:25:56.041"
+  },
+  "run": {
+    "name": "native-01",
+    "status": "complete",
+    "invocations": 1,
+    "invocation_seconds": 1521.8357884470024,
+    "phase_seconds": 1519.7382702980249,
+    "manifest_created_at_utc": "2026-10-23T12:09:24.048372+00:00"
+  },
+  "identity": {
+    "backend": "slurm",
+    "config_sha256": "0b09cb8476533fb0d1c36b0c3724464d84370538960bc943d7dc06469c585070",
+    "source_sha256": "37d43e49974ff6866ca2de0d9ed507256b4f62ba873b57780dade12f42a28f6a",
+    "container_sha256": "61871467a5136109bb2821821b0680520a26da6205bf4f325f9881921d1f86e0",
+    "architecture": "x86_64",
+    "python": "3.11.17",
+    "packages": {
+      "ray": "2.49.2",
+      "torch": "2.8.0+cpu",
+      "protobuf": "6.33.5",
+      "numpy": "2.2.6",
+      "pandas": "2.2.3",
+      "pyarrow": "20.0.0"
+    }
+  },
+  "nodes": [
+    "mel0063",
+    "mel0075",
+    "mel0106",
+    "mel0159",
+    "mel0171",
+    "mel0172",
+    "mel0185",
+    "mel0220",
+    "mel0241",
+    "mel0281",
+    "mel0350",
+    "mel0362",
+    "mel0395",
+    "mel0415",
+    "mel0423",
+    "mel0459",
+    "mel0460",
+    "mel0509",
+    "mel0520",
+    "mel0543"
+  ],
+  "ray_resources": {
+    "nodes": 20,
+    "cpus_per_node": 32,
+    "total_cpus": 640,
+    "heap_bytes_per_node": 64424509440,
+    "object_store_bytes_per_node": 17179869184,
+    "object_store_filesystem": "tmpfs",
+    "shared_output_filesystem": "lustre"
+  },
+  "workload": {
+    "data": {
+      "seconds": 233.7622407010058,
+      "blocks": 400,
+      "participating_nodes": 20,
+      "rows": {
+        "train": 6720000,
+        "validation": 1500000,
+        "test": 1500000
+      }
+    },
+    "tune": {
+      "seconds": 132.20969683799194,
+      "trials": 6,
+      "participating_nodes": 6,
+      "adaptive": false,
+      "best": {
+        "hidden": 64,
+        "learning_rate": 0.001,
+        "epochs": 6,
+        "mae": 5.239521781158447
+      }
+    },
+    "train": {
+      "seconds": 176.40285771500203,
+      "ranks": 20,
+      "participating_nodes": 20,
+      "epochs": 16,
+      "samples_across_all_epochs_and_ranks": 107479040,
+      "validation_mae": 5.281509752845764
+    },
+    "batch": {
+      "seconds": 13.185717220010702,
+      "rows": 1500000,
+      "mae": 4.954368146277845,
+      "seasonal_mae": 9.696457314840332,
+      "wape": 0.13161440260418708
+    },
+    "policy": {
+      "seconds": 401.9052248210064,
+      "iterations": 120,
+      "sampled_steps": 1966080,
+      "first_episode_return_mean": -136.2516366324798,
+      "final_episode_return_mean": -22.781115113818647,
+      "best_episode_return_mean": -21.955408272240344,
+      "best_iteration": 65,
+      "restore_verified": true
+    },
+    "evaluation": {
+      "seconds": 7.646813301020302,
+      "workers": 20,
+      "policies": {
+        "forecast_base_stock": {
+          "episodes": 1200,
+          "mean_cost": 3471.3921250000003,
+          "cost_std": 1279.7970117392574,
+          "fill_rate": 0.8321572697234844
+        },
+        "ppo": {
+          "episodes": 1200,
+          "mean_cost": 769.2011249999999,
+          "cost_std": 245.8412388717246,
+          "fill_rate": 0.9938275726597847
+        },
+        "reorder_point": {
+          "episodes": 1200,
+          "mean_cost": 3912.346,
+          "cost_std": 1459.6438765873675,
+          "fill_rate": 0.8002785982540082
+        }
+      }
+    },
+    "serve": {
+      "seconds": 551.2301619609934,
+      "measured_request_seconds": 536.5296539069968,
+      "requests": 60000,
+      "errors": 0,
+      "requests_per_second": 111.82979274879096,
+      "latency_ms": {
+        "p50": 395.79321950441226,
+        "p95": 954.4624225076404,
+        "p99": 1067.2833323906525
+      },
+      "forecast_replicas": 20,
+      "policy_replicas": 20,
+      "autoscale": false,
+      "direct_inference_verified": true
+    },
+    "recovery": {
+      "seconds": 3.3955577409942634,
+      "intentional_actor_failures": 1,
+      "restored_total": 18,
+      "duplicate_total": 18
+    }
+  },
+  "resource_samples": {
+    "samples": 12960,
+    "samples_per_node": 648,
+    "minimum_node_span_seconds": 1517.9860129356384,
+    "maximum_node_span_seconds": 1519.5067477226257,
+    "mean_host_cpu_percent_across_node_samples": 1.6656404320987654,
+    "peak_synchronized_mean_host_cpu_percent": 12.86,
+    "peak_aggregate_ray_process_rss_bytes": 193843777536,
+    "peak_aggregate_ray_process_pss_bytes": 126569466880,
+    "peak_aggregate_host_memory_used_bytes": 222996652032,
+    "scope": "Host CPU and memory include node activity; Ray process RSS/PSS covers visible Ray processes. Samples were aligned by per-node sequence index; maximum timestamp skew was 1.546276 seconds."
+  },
+  "log_inspection": {
+    "phase_start_markers": 8,
+    "phase_completion_markers": 8,
+    "complete_result_markers": 1,
+    "tracebacks": 1,
+    "serve_proxy_internal_attribute_errors": 1,
+    "serve_queue_length_deadline_log_records": 25,
+    "wait_complete_rpc_error_log_records": 1,
+    "intentional_recovery_worker_deaths": 1,
+    "assessment": "The single Ray Serve proxy AttributeError was handled internally; adjacent requests returned HTTP 200 and the benchmark recorded 60000 requests with zero client errors. The recovery worker death was intentional. Ray Data schema-hash, Tune snapshot, Serve queue-length and request-batching warnings did not stop a phase."
+  },
+  "raw_artifacts": {
+    "manifest": {
+      "bytes": 1155775,
+      "sha256": "34733ba0afd2d9f3685500a8f4b58678195db64268704832b3128d436eea50d4"
+    },
+    "resources": {
+      "bytes": 6150523,
+      "sha256": "b42ff6a262e8612742e9a8dcb5d5b6c9f4c4f65f0d26da3188ab29def3d880f3"
+    },
+    "log": {
+      "bytes": 12560414,
+      "sha256": "6f90a1d86f175a03f80755536e410baef5fb5fe64e40a1f4b90d6f9544b204eb"
+    }
+  },
+  "provenance": {
+    "remote_deployment": "~/kampadais/ray-retail-slurm-9d00096",
+    "remote_result": "results/native-01",
+    "local_collection": "/run/media/kampadais/extra_space/ray-retail-native-5377862-collection",
+    "inspection_date": "2026-10-23",
+    "notes": "Selected values are copied from the completed manifest, resource trace, Slurm accounting and launcher log. The versioned evidence omits generated datasets, checkpoints and per-request logs."
+  }
+}

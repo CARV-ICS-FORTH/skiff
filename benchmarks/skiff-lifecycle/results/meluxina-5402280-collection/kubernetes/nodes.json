@@ -1,0 +1,241 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": {
+                "annotations": {
+                    "node.alpha.kubernetes.io/ttl": "0",
+                    "virtual-kubelet.io/last-applied-node-status": "{\"capacity\":{\"cpu\":\"256\",\"ephemeral-storage\":\"263810936Ki\",\"memory\":\"480Gi\",\"pods\":\"110\"},\"allocatable\":{\"cpu\":\"255900m\",\"ephemeral-storage\":\"263810936Ki\",\"memory\":\"491008Mi\",\"pods\":\"110\"},\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\",\"lastHeartbeatTime\":\"2026-10-30T10:53:26Z\",\"lastTransitionTime\":\"2026-10-30T10:53:16Z\",\"reason\":\"KubeletReady\",\"message\":\"Skifflet is ready\"},{\"type\":\"MemoryPressure\",\"status\":\"False\",\"lastHeartbeatTime\":\"2026-10-30T10:53:26Z\",\"lastTransitionTime\":\"2026-10-30T10:53:14Z\",\"reason\":\"KubeletHasSufficientMemory\",\"message\":\"kubelet has sufficient memory available\"},{\"type\":\"DiskPressure\",\"status\":\"False\",\"lastHeartbeatTime\":\"2026-10-30T10:53:26Z\",\"lastTransitionTime\":\"2026-10-30T10:53:14Z\",\"reason\":\"KubeletHasNoDiskPressure\",\"message\":\"kubelet has no disk pressure\"},{\"type\":\"PIDPressure\",\"status\":\"False\",\"lastHeartbeatTime\":\"2026-10-30T10:53:26Z\",\"lastTransitionTime\":\"2026-10-30T10:53:14Z\",\"reason\":\"KubeletHasNoPIDPressure\",\"message\":\"kubelet has no PID pressure\"},{\"type\":\"NetworkUnavailable\",\"status\":\"False\",\"lastHeartbeatTime\":\"2026-10-30T10:53:26Z\",\"lastTransitionTime\":\"2026-10-30T10:53:14Z\",\"reason\":\"RouteCreated\",\"message\":\"RouteController created a route\"}],\"addresses\":[{\"type\":\"ExternalIP\",\"address\":\"10.3.23.126\"},{\"type\":\"InternalIP\",\"address\":\"10.3.23.126\"}],\"daemonEndpoints\":{\"kubeletEndpoint\":{\"Port\":10250}},\"nodeInfo\":{\"machineID\":\"\",\"systemUUID\":\"\",\"bootID\":\"4597c7ee-e9f7-44e7-b2a5-80586b04d253\",\"kernelVersion\":\"4.18.0-553.174.1.el8_10.0.1.x86_64\",\"osImage\":\"skiff\",\"containerRuntimeVersion\":\"apptainer://1.5.4\",\"kubeletVersion\":\"0.1.0-a9da5aa-lifecycle\",\"kubeProxyVersion\":\"\",\"operatingSystem\":\"linux\",\"architecture\":\"amd64\"}}",
+                    "virtual-kubelet.io/last-applied-object-meta": "{\"name\":\"mel0126\",\"uid\":\"068fd605-3988-44d9-8f65-e080c9f05236\",\"labels\":{\"kubernetes.io/arch\":\"amd64\",\"kubernetes.io/hostname\":\"mel0126\",\"kubernetes.io/os\":\"linux\",\"kubernetes.io/role\":\"agent\"}}"
+                },
+                "creationTimestamp": "2026-10-30T10:53:14Z",
+                "finalizers": [
+                    "wrangler.cattle.io/node"
+                ],
+                "labels": {
+                    "beta.kubernetes.io/arch": "amd64",
+                    "beta.kubernetes.io/os": "linux",
+                    "kubernetes.io/arch": "amd64",
+                    "kubernetes.io/hostname": "mel0126",
+                    "kubernetes.io/os": "linux",
+                    "kubernetes.io/role": "agent"
+                },
+                "name": "mel0126",
+                "resourceVersion": "489",
+                "uid": "068fd605-3988-44d9-8f65-e080c9f05236"
+            },
+            "spec": {
+                "podCIDR": "10.244.0.0/24",
+                "podCIDRs": [
+                    "10.244.0.0/24"
+                ]
+            },
+            "status": {
+                "addresses": [
+                    {
+                        "address": "10.3.23.126",
+                        "type": "ExternalIP"
+                    },
+                    {
+                        "address": "10.3.23.126",
+                        "type": "InternalIP"
+                    }
+                ],
+                "allocatable": {
+                    "cpu": "255900m",
+                    "ephemeral-storage": "263810936Ki",
+                    "memory": "491008Mi",
+                    "pods": "110"
+                },
+                "capacity": {
+                    "cpu": "256",
+                    "ephemeral-storage": "263810936Ki",
+                    "memory": "480Gi",
+                    "pods": "110"
+                },
+                "conditions": [
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:26Z",
+                        "lastTransitionTime": "2026-10-30T10:53:16Z",
+                        "message": "Skifflet is ready",
+                        "reason": "KubeletReady",
+                        "status": "True",
+                        "type": "Ready"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:26Z",
+                        "lastTransitionTime": "2026-10-30T10:53:14Z",
+                        "message": "kubelet has sufficient memory available",
+                        "reason": "KubeletHasSufficientMemory",
+                        "status": "False",
+                        "type": "MemoryPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:26Z",
+                        "lastTransitionTime": "2026-10-30T10:53:14Z",
+                        "message": "kubelet has no disk pressure",
+                        "reason": "KubeletHasNoDiskPressure",
+                        "status": "False",
+                        "type": "DiskPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:26Z",
+                        "lastTransitionTime": "2026-10-30T10:53:14Z",
+                        "message": "kubelet has no PID pressure",
+                        "reason": "KubeletHasNoPIDPressure",
+                        "status": "False",
+                        "type": "PIDPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:26Z",
+                        "lastTransitionTime": "2026-10-30T10:53:14Z",
+                        "message": "RouteController created a route",
+                        "reason": "RouteCreated",
+                        "status": "False",
+                        "type": "NetworkUnavailable"
+                    }
+                ],
+                "daemonEndpoints": {
+                    "kubeletEndpoint": {
+                        "Port": 10250
+                    }
+                },
+                "nodeInfo": {
+                    "architecture": "amd64",
+                    "bootID": "4597c7ee-e9f7-44e7-b2a5-80586b04d253",
+                    "containerRuntimeVersion": "apptainer://1.5.4",
+                    "kernelVersion": "4.18.0-553.174.1.el8_10.0.1.x86_64",
+                    "kubeProxyVersion": "",
+                    "kubeletVersion": "0.1.0-a9da5aa-lifecycle",
+                    "machineID": "",
+                    "operatingSystem": "linux",
+                    "osImage": "skiff",
+                    "systemUUID": ""
+                },
+                "phase": "Running"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": {
+                "annotations": {
+                    "node.alpha.kubernetes.io/ttl": "0",
+                    "virtual-kubelet.io/last-applied-node-status": "{\"capacity\":{\"cpu\":\"256\",\"ephemeral-storage\":\"263810932Ki\",\"memory\":\"480Gi\",\"pods\":\"110\"},\"allocatable\":{\"cpu\":\"255900m\",\"ephemeral-storage\":\"263810932Ki\",\"memory\":\"491008Mi\",\"pods\":\"110\"},\"phase\":\"Running\",\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\",\"lastHeartbeatTime\":\"2026-10-30T10:53:18Z\",\"lastTransitionTime\":\"2026-10-30T10:53:18Z\",\"reason\":\"KubeletReady\",\"message\":\"Skifflet is ready\"},{\"type\":\"MemoryPressure\",\"status\":\"False\",\"lastHeartbeatTime\":\"2026-10-30T10:53:18Z\",\"lastTransitionTime\":\"2026-10-30T10:53:17Z\",\"reason\":\"KubeletHasSufficientMemory\",\"message\":\"kubelet has sufficient memory available\"},{\"type\":\"DiskPressure\",\"status\":\"False\",\"lastHeartbeatTime\":\"2026-10-30T10:53:18Z\",\"lastTransitionTime\":\"2026-10-30T10:53:17Z\",\"reason\":\"KubeletHasNoDiskPressure\",\"message\":\"kubelet has no disk pressure\"},{\"type\":\"PIDPressure\",\"status\":\"False\",\"lastHeartbeatTime\":\"2026-10-30T10:53:18Z\",\"lastTransitionTime\":\"2026-10-30T10:53:17Z\",\"reason\":\"KubeletHasNoPIDPressure\",\"message\":\"kubelet has no PID pressure\"},{\"type\":\"NetworkUnavailable\",\"status\":\"False\",\"lastHeartbeatTime\":\"2026-10-30T10:53:18Z\",\"lastTransitionTime\":\"2026-10-30T10:53:17Z\",\"reason\":\"RouteCreated\",\"message\":\"RouteController created a route\"}],\"addresses\":[{\"type\":\"ExternalIP\",\"address\":\"10.3.23.132\"},{\"type\":\"InternalIP\",\"address\":\"10.3.23.132\"}],\"daemonEndpoints\":{\"kubeletEndpoint\":{\"Port\":10250}},\"nodeInfo\":{\"machineID\":\"\",\"systemUUID\":\"\",\"bootID\":\"62d2b094-2bb4-4726-bbaf-56a3f0b02a62\",\"kernelVersion\":\"4.18.0-553.174.1.el8_10.0.1.x86_64\",\"osImage\":\"skiff\",\"containerRuntimeVersion\":\"apptainer://1.5.4\",\"kubeletVersion\":\"0.1.0-a9da5aa-lifecycle\",\"kubeProxyVersion\":\"\",\"operatingSystem\":\"linux\",\"architecture\":\"amd64\"}}",
+                    "virtual-kubelet.io/last-applied-object-meta": "{\"name\":\"mel0132\",\"uid\":\"7ba5acde-a153-4981-b56e-da71f309b8f1\",\"labels\":{\"kubernetes.io/arch\":\"amd64\",\"kubernetes.io/hostname\":\"mel0132\",\"kubernetes.io/os\":\"linux\",\"kubernetes.io/role\":\"agent\"}}"
+                },
+                "creationTimestamp": "2026-10-30T10:53:17Z",
+                "finalizers": [
+                    "wrangler.cattle.io/node"
+                ],
+                "labels": {
+                    "beta.kubernetes.io/arch": "amd64",
+                    "beta.kubernetes.io/os": "linux",
+                    "kubernetes.io/arch": "amd64",
+                    "kubernetes.io/hostname": "mel0132",
+                    "kubernetes.io/os": "linux",
+                    "kubernetes.io/role": "agent"
+                },
+                "name": "mel0132",
+                "resourceVersion": "456",
+                "uid": "7ba5acde-a153-4981-b56e-da71f309b8f1"
+            },
+            "spec": {
+                "podCIDR": "10.244.2.0/24",
+                "podCIDRs": [
+                    "10.244.2.0/24"
+                ]
+            },
+            "status": {
+                "addresses": [
+                    {
+                        "address": "10.3.23.132",
+                        "type": "ExternalIP"
+                    },
+                    {
+                        "address": "10.3.23.132",
+                        "type": "InternalIP"
+                    }
+                ],
+                "allocatable": {
+                    "cpu": "255900m",
+                    "ephemeral-storage": "263810932Ki",
+                    "memory": "491008Mi",
+                    "pods": "110"
+                },
+                "capacity": {
+                    "cpu": "256",
+                    "ephemeral-storage": "263810932Ki",
+                    "memory": "480Gi",
+                    "pods": "110"
+                },
+                "conditions": [
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:18Z",
+                        "lastTransitionTime": "2026-10-30T10:53:18Z",
+                        "message": "Skifflet is ready",
+                        "reason": "KubeletReady",
+                        "status": "True",
+                        "type": "Ready"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:18Z",
+                        "lastTransitionTime": "2026-10-30T10:53:17Z",
+                        "message": "kubelet has sufficient memory available",
+                        "reason": "KubeletHasSufficientMemory",
+                        "status": "False",
+                        "type": "MemoryPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:18Z",
+                        "lastTransitionTime": "2026-10-30T10:53:17Z",
+                        "message": "kubelet has no disk pressure",
+                        "reason": "KubeletHasNoDiskPressure",
+                        "status": "False",
+                        "type": "DiskPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:18Z",
+                        "lastTransitionTime": "2026-10-30T10:53:17Z",
+                        "message": "kubelet has no PID pressure",
+                        "reason": "KubeletHasNoPIDPressure",
+                        "status": "False",
+                        "type": "PIDPressure"
+                    },
+                    {
+                        "lastHeartbeatTime": "2026-10-30T10:53:18Z",
+                        "lastTransitionTime": "2026-10-30T10:53:17Z",
+                        "message": "RouteController created a route",
+                        "reason": "RouteCreated",
+                        "status": "False",
+                        "type": "NetworkUnavailable"
+                    }
+                ],
+                "daemonEndpoints": {
+                    "kubeletEndpoint": {
+                        "Port": 10250
+                    }
+                },
+                "nodeInfo": {
+                    "architecture": "amd64",
+                    "bootID": "62d2b094-2bb4-4726-bbaf-56a3f0b02a62",
+                    "containerRuntimeVersion": "apptainer://1.5.4",
+                    "kernelVersion": "4.18.0-553.174.1.el8_10.0.1.x86_64",
+                    "kubeProxyVersion": "",
+                    "kubeletVersion": "0.1.0-a9da5aa-lifecycle",
+                    "machineID": "",
+                    "operatingSystem": "linux",
+                    "osImage": "skiff",
+                    "systemUUID": ""
+                },
+                "phase": "Running"
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

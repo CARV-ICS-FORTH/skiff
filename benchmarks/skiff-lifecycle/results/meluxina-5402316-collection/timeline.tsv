@@ -1,0 +1,132 @@
+epoch_ns	utc	since_allocation_seconds	since_previous_seconds	event	role	host	bubble_id	detail	source	precision
+1793358070000000000	2026-10-30T11:01:10Z	-1.000000000		slurm_job_submitted	slurm			state=FAILED precision=seconds	steps-final.psv	seconds
+1793358070078732489	2026-10-30T11:01:10.080580480Z	-0.921267511	0.078732489	submission_started	benchmark	login03.meluxina.lxp.lu		nodes=2	observer.tsv	nanoseconds
+1793358070140749817	2026-10-30T11:01:10.142706578Z	-0.859250183	0.062017328	job_submitted	benchmark	login03.meluxina.lxp.lu		nodes=2	observer.tsv	nanoseconds
+1793358070177834946	2026-10-30T11:01:10.179851878Z	-0.822165054	0.037085129	slurm_job_observed	benchmark	login03.meluxina.lxp.lu		state=PENDING	observer.tsv	nanoseconds
+1793358071000000000	2026-10-30T11:01:11Z	0.000000000	0.822165054	allocation_started	slurm			state=FAILED precision=seconds	steps-final.psv	seconds
+1793358072216615962	2026-10-30T11:01:12.218622784Z	1.216615962	1.216615962	slurm_job_observed	benchmark	login03.meluxina.lxp.lu		state=CONFIGURING	observer.tsv	nanoseconds
+1793358072223391972	2026-10-30T11:01:12.225690546Z	1.223391972	0.006776010	allocation_running_observed	benchmark	login03.meluxina.lxp.lu		state=CONFIGURING	observer.tsv	nanoseconds
+1793358075612890673	2026-10-30T11:01:15.614058425Z	4.612890673	3.389498701	process_started	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358075645622138	2026-10-30T11:01:15.646739489Z	4.645622138	0.032731465	network_probe_started	supervisor	mel0216		nodes=2	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358075651454456	2026-10-30T11:01:15.652658838Z	4.651454456	0.005832318	controller_network_probe_started	supervisor	mel0216		node=mel0216	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358076004363971	2026-10-30T11:01:16.005612093Z	5.004363971	0.352909515	controller_network_probe_finished	supervisor	mel0216		node=mel0216	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358076012410051	2026-10-30T11:01:16.013711993Z	5.012410051	0.008046080	node_network_probe_started	supervisor	mel0216		node=mel0216	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358076337131695	2026-10-30T11:01:16.338448588Z	5.337131695	0.324721644	node_network_probe_finished	supervisor	mel0216		node=mel0216	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358076343439528	2026-10-30T11:01:16.344716790Z	5.343439528	0.006307833	node_network_probe_started	supervisor	mel0216		node=mel0220	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358076717501163	2026-10-30T11:01:16.718645354Z	5.717501163	0.374061635	node_network_probe_finished	supervisor	mel0216		node=mel0220	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358076727553742	2026-10-30T11:01:16.728710714Z	5.727553742	0.010052579	network_probe_finished	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358076745253278	2026-10-30T11:01:16.746436320Z	5.745253278	0.017699536	node_preflight_started	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358076751234408	2026-10-30T11:01:16.752459600Z	5.751234408	0.005981130	node_check_started	supervisor	mel0216		node=mel0216 role=controller	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358081494269054	2026-10-30T11:01:21.495457826Z	10.494269054	4.743034646	command_measured	command	mel0216		command=apptainer --version caller=skiff_node_report duration_ns=4481570090	host-command-mel0216-19266.tsv	nanoseconds
+1793358081568893833	2026-10-30T11:01:21.570025175Z	10.568893833	0.074624779	command_measured	command	mel0216		command=slirp4netns --version caller=skiff_node_report duration_ns=44355820	host-command-mel0216-19266.tsv	nanoseconds
+1793358081623599395	2026-10-30T11:01:21.624746266Z	10.623599395	0.054705562	command_measured	command	mel0216		command=apptainer --version caller=skiff_check_node duration_ns=27435242	host-command-mel0216-19266.tsv	nanoseconds
+1793358081633870007	2026-10-30T11:01:21.634963778Z	10.633870007	0.010270612	command_measured	command	mel0216		command=slirp4netns --version caller=skiff_check_node duration_ns=2411854	host-command-mel0216-19266.tsv	nanoseconds
+1793358082161128898	2026-10-30T11:01:22.162467541Z	11.161128898	0.527258891	node_check_finished	supervisor	mel0216		node=mel0216 role=controller	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358082167703633	2026-10-30T11:01:22.169053086Z	11.167703633	0.006574735	node_check_started	supervisor	mel0216		node=mel0220 role=node	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358083861135270	2026-10-30T11:01:23.862312990Z	12.861135270	1.693431637	command_measured	command	mel0220		command=apptainer --version caller=skiff_node_report duration_ns=1400167126	host-command-mel0220-7676.tsv	nanoseconds
+1793358083919198247	2026-10-30T11:01:23.920358477Z	12.919198247	0.058062977	command_measured	command	mel0220		command=slirp4netns --version caller=skiff_node_report duration_ns=24709264	host-command-mel0220-7676.tsv	nanoseconds
+1793358084022906710	2026-10-30T11:01:24.024072170Z	13.022906710	0.103708463	command_measured	command	mel0220		command=apptainer --version caller=skiff_check_node duration_ns=75994449	host-command-mel0220-7676.tsv	nanoseconds
+1793358084032831681	2026-10-30T11:01:24.033969761Z	13.032831681	0.009924971	command_measured	command	mel0220		command=slirp4netns --version caller=skiff_check_node duration_ns=2447980	host-command-mel0220-7676.tsv	nanoseconds
+1793358084660586896	2026-10-30T11:01:24.661795068Z	13.660586896	0.627755215	node_check_finished	supervisor	mel0216		node=mel0220 role=node	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358084667121451	2026-10-30T11:01:24.668450194Z	13.667121451	0.006534555	node_preflight_finished	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358084686956167	2026-10-30T11:01:24.688105139Z	13.686956167	0.019834716	image_prepare_started	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358084695016147	2026-10-30T11:01:24.696199939Z	13.695016147	0.008059980	image_prepare_finished	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358084701270509	2026-10-30T11:01:24.702522472Z	13.701270509	0.006254362	controller_launch_started	supervisor	mel0216		node=mel0216 bubble=1	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358084969426504	2026-10-30T11:01:24.970760508Z	13.969426504	0.268155995	process_started	bubble	mel0216	1		host-bubble-mel0216-19564.tsv	nanoseconds
+1793358085054478057	2026-10-30T11:01:25.056435766Z	14.054478057	0.085051553	command_measured	command	mel0216	1	command=apptainer --version caller=skiff_check_node duration_ns=43714873	host-command-mel0216-19564.tsv	nanoseconds
+1793358085163842749	2026-10-30T11:01:25.165643637Z	14.163842749	0.109364692	command_measured	command	mel0216	1	command=slirp4netns --version caller=skiff_check_node duration_ns=79487068	host-command-mel0216-19564.tsv	nanoseconds
+1793358085292597204	2026-10-30T11:01:25.293955548Z	14.292597204	0.128754455	local_preflight_complete	bubble	mel0216	1		host-bubble-mel0216-19564.tsv	nanoseconds
+1793358085314957096	2026-10-30T11:01:25.316750444Z	14.314957096	0.022359892	overlay_helper_started	bubble	mel0216	1		host-bubble-mel0216-19564.tsv	nanoseconds
+1793358085343554239	2026-10-30T11:01:25.344869272Z	14.343554239	0.028597143	instance_run_started	bubble	mel0216	1		host-bubble-mel0216-19564.tsv	nanoseconds
+1793358089425764800	2026-10-30T11:01:29.427404816Z	18.425764800	4.082210561	process_started	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358089472313941	2026-10-30T11:01:29.473942617Z	18.472313941	0.046549141	tap_wait_started	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358089589829926	2026-10-30T11:01:29.591107808Z	18.589829926	0.117515985	instance_run_returned	bubble	mel0216	1		host-bubble-mel0216-19564.tsv	nanoseconds
+1793358089632439746	2026-10-30T11:01:29.633715339Z	18.632439746	0.042609820	instance_pid_found	bubble	mel0216	1		host-bubble-mel0216-19564.tsv	nanoseconds
+1793358089639244314	2026-10-30T11:01:29.640588837Z	18.639244314	0.006804568	slirp_started	bubble	mel0216	1		host-bubble-mel0216-19564.tsv	nanoseconds
+1793358089669451073	2026-10-30T11:01:29.670812336Z	18.669451073	0.030206759	host_network_ready	bubble	mel0216	1		host-bubble-mel0216-19564.tsv	nanoseconds
+1793358089740197743	2026-10-30T11:01:29.742440195Z	18.740197743	0.070746670	tap_ready	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358089769821627	2026-10-30T11:01:29.772105809Z	18.769821627	0.029623884	k3s_starting	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358094010047432	2026-10-30T11:01:34.011884240Z	23.010047432	4.240225805	k3s_kubeconfig_ready	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358094229944230	2026-10-30T11:01:34.232351253Z	23.229944230	0.219896798	shared_ca_ready	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358094623511277	2026-10-30T11:01:34.625521656Z	23.623511277	0.393567047	node_csr_created	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358094728866410	2026-10-30T11:01:34.730493146Z	23.728866410	0.105355133	controller_initialized	supervisor	mel0216		node=mel0216 bubble=1	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358094751565315	2026-10-30T11:01:34.752797357Z	23.751565315	0.022698905	worker_launch_started	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358094757963848	2026-10-30T11:01:34.759263101Z	23.757963848	0.006398533	worker_launch_node_started	supervisor	mel0216		node=mel0220 bubble=2	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358094764865746	2026-10-30T11:01:34.766184329Z	23.764865746	0.006901898	worker_launch_node_finished	supervisor	mel0216		node=mel0220 bubble=2 pid=21846	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358094772450381	2026-10-30T11:01:34.774507272Z	23.772450381	0.007584635	worker_launch_finished	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358094781955805	2026-10-30T11:01:34.783892055Z	23.781955805	0.009505424	bubble_supervision_started	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358095096262670	2026-10-30T11:01:35.097532150Z	24.096262670	0.314306865	process_started	bubble	mel0220	2		host-bubble-mel0220-7910.tsv	nanoseconds
+1793358095647328514	2026-10-30T11:01:35.649560646Z	24.647328514	0.551065844	node_certificate_ready	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358096771310319	2026-10-30T11:01:36.773030729Z	25.771310319	1.123981805	command_measured	command	mel0220	2	command=apptainer --version caller=skiff_check_node duration_ns=1608988330	host-command-mel0220-7910.tsv	nanoseconds
+1793358096829653756	2026-10-30T11:01:36.831309616Z	25.829653756	0.058343437	command_measured	command	mel0220	2	command=slirp4netns --version caller=skiff_check_node duration_ns=20189202	host-command-mel0220-7910.tsv	nanoseconds
+1793358096915340377	2026-10-30T11:01:36.916652537Z	25.915340377	0.085686621	local_preflight_complete	bubble	mel0220	2		host-bubble-mel0220-7910.tsv	nanoseconds
+1793358096937107349	2026-10-30T11:01:36.938361820Z	25.937107349	0.021766972	overlay_helper_started	bubble	mel0220	2		host-bubble-mel0220-7910.tsv	nanoseconds
+1793358096963407073	2026-10-30T11:01:36.965287853Z	25.963407073	0.026299724	instance_run_started	bubble	mel0220	2		host-bubble-mel0220-7910.tsv	nanoseconds
+1793358097954248936	2026-10-30T11:01:37.956103266Z	26.954248936	0.990841863	process_started	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358098014499073	2026-10-30T11:01:38.016383274Z	27.014499073	0.060250137	tap_wait_started	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358098047509090	2026-10-30T11:01:38.049673921Z	27.047509090	0.033010017	kube_dns_service_ready	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358098177549864	2026-10-30T11:01:38.178917024Z	27.177549864	0.130040774	instance_run_returned	bubble	mel0220	2		host-bubble-mel0220-7910.tsv	nanoseconds
+1793358098233841781	2026-10-30T11:01:38.235251361Z	27.233841781	0.056291917	instance_pid_found	bubble	mel0220	2		host-bubble-mel0220-7910.tsv	nanoseconds
+1793358098241349822	2026-10-30T11:01:38.242726762Z	27.241349822	0.007508041	slirp_started	bubble	mel0220	2		host-bubble-mel0220-7910.tsv	nanoseconds
+1793358098248445612	2026-10-30T11:01:38.250378253Z	27.248445612	0.007095790	tap_ready	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358098255819373	2026-10-30T11:01:38.257316654Z	27.255819373	0.007373761	host_network_ready	bubble	mel0220	2		host-bubble-mel0220-7910.tsv	nanoseconds
+1793358098284895567	2026-10-30T11:01:38.287248177Z	27.284895567	0.029076194	shared_ca_ready	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358098466207056	2026-10-30T11:01:38.480876931Z	27.466207056	0.181311489	skifflet_started	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358098664815752	2026-10-30T11:01:38.714870998Z	27.664815752	0.198608696	plaidd_started	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358098797870891	2026-10-30T11:01:38.799929271Z	27.797870891	0.133055139	node_csr_created	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358099815070558	2026-10-30T11:01:39.817180928Z	28.815070558	1.017199667	node_certificate_ready	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358100045063920	2026-10-30T11:01:40.047311953Z	29.045063920	0.229993362	kubernetes_nodes_observed	benchmark	login03.meluxina.lxp.lu		total=1 ready=0	observer.tsv	nanoseconds
+1793358101902797048	2026-10-30T11:01:41.905036178Z	30.902797048	1.857733128	kube_dns_service_ready	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358101930323387	2026-10-30T11:01:41.932586939Z	30.930323387	0.027526339	plaidd_ready	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358102238312309	2026-10-30T11:01:42.250801321Z	31.238312309	0.307988922	skifflet_started	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358102338025692	2026-10-30T11:01:42.380342167Z	31.338025692	0.099713383	plaidd_started	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358102362783827	2026-10-30T11:01:42.364720799Z	31.362783827	0.024758135	kubernetes_nodes_observed	benchmark	login03.meluxina.lxp.lu		total=1 ready=1	observer.tsv	nanoseconds
+1793358103481905696	2026-10-30T11:01:43.483644866Z	32.481905696	1.119121869	kubernetes_nodes_observed	benchmark	login03.meluxina.lxp.lu		total=2 ready=1	observer.tsv	nanoseconds
+1793358104557506889	2026-10-30T11:01:44.559368779Z	33.557506889	1.075601193	plaidd_ready	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358104599534556	2026-10-30T11:01:44.601889570Z	33.599534556	0.042027667	kubernetes_nodes_observed	benchmark	login03.meluxina.lxp.lu		total=2 ready=2	observer.tsv	nanoseconds
+1793358104614213063	2026-10-30T11:01:44.616291635Z	33.614213063	0.014678507	all_kubernetes_nodes_ready	benchmark	login03.meluxina.lxp.lu		total=2 ready=2	observer.tsv	nanoseconds
+1793358104641937677	2026-10-30T11:01:44.644093100Z	33.641937677	0.027724614	skiff_entrypoints_observed	benchmark	login03.meluxina.lxp.lu		ready=0 expected=2	observer.tsv	nanoseconds
+1793358105328968275	2026-10-30T11:01:45.331317665Z	34.328968275	0.687030598	api_and_dns_ready	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358105340435736	2026-10-30T11:01:45.342637226Z	34.340435736	0.011467461	process_ready	entrypoint	mel0220	2	node	entrypoint-2-mel0220-141.tsv	nanoseconds
+1793358105718298342	2026-10-30T11:01:45.720655606Z	34.718298342	0.377862606	skiff_entrypoints_observed	benchmark	login03.meluxina.lxp.lu		ready=1 expected=2	observer.tsv	nanoseconds
+1793358107053040580	2026-10-30T11:01:47.055086980Z	36.053040580	1.334742238	api_and_dns_ready	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358107074102379	2026-10-30T11:01:47.076080548Z	36.074102379	0.021061799	process_ready	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358107819486647	2026-10-30T11:01:47.821737471Z	36.819486647	0.745384268	skiff_entrypoints_observed	benchmark	login03.meluxina.lxp.lu		ready=2 expected=2	observer.tsv	nanoseconds
+1793358107835407592	2026-10-30T11:01:47.837780666Z	36.835407592	0.015920945	all_skiff_entrypoints_ready	benchmark	login03.meluxina.lxp.lu		ready=2 expected=2	observer.tsv	nanoseconds
+1793358107847127831	2026-10-30T11:01:47.848988262Z	36.847127831	0.011720239	manifest_apply_started	benchmark	login03.meluxina.lxp.lu		manifest=/project/home/p200528/skiff-lifecycle-a9da5aa/benchmarks/skiff-lifecycle/timestamp-per-node.yaml	observer.tsv	nanoseconds
+1793358108000000000	2026-10-30T11:01:48Z	37.000000000	0.152872169	pod_container_started	pod	mel0216		pod=timestamp-per-node-65ttt	pods.json	seconds
+1793358108000000000	2026-10-30T11:01:48Z	37.000000000	0.000000000	pod_created	pod	mel0216		pod=timestamp-per-node-65ttt	pods.json	seconds
+1793358108000000000	2026-10-30T11:01:48Z	37.000000000	0.000000000	pod_created	pod	mel0220		pod=timestamp-per-node-krxf7	pods.json	seconds
+1793358108000000000	2026-10-30T11:01:48Z	37.000000000	0.000000000	pod_initialized_true	pod	mel0216		pod=timestamp-per-node-65ttt	pods.json	seconds
+1793358108000000000	2026-10-30T11:01:48Z	37.000000000	0.000000000	pod_initialized_true	pod	mel0220		pod=timestamp-per-node-krxf7	pods.json	seconds
+1793358108000000000	2026-10-30T11:01:48Z	37.000000000	0.000000000	pod_pod_scheduled_true	pod	mel0216		pod=timestamp-per-node-65ttt	pods.json	seconds
+1793358108000000000	2026-10-30T11:01:48Z	37.000000000	0.000000000	pod_pod_scheduled_true	pod	mel0220		pod=timestamp-per-node-krxf7	pods.json	seconds
+1793358108476883201	2026-10-30T11:01:48.479284506Z	37.476883201	0.476883201	manifest_apply_finished	benchmark	login03.meluxina.lxp.lu			observer.tsv	nanoseconds
+1793358108567915191	2026-10-30T11:01:48.570237844Z	37.567915191	0.091031990	daemonset_observed	benchmark	login03.meluxina.lxp.lu		desired=2 current=2 ready=0 available=0 misscheduled=0	observer.tsv	nanoseconds
+1793358109000000000	2026-10-30T11:01:49Z	38.000000000	0.432084809	pod_timestamp_printed	pod	mel0216		pod=timestamp-per-node-65ttt	pod-markers.tsv	seconds
+1793358109000000000	2026-10-30T11:01:49Z	38.000000000	0.000000000	pod_timestamp_printed	pod	mel0220		pod=timestamp-per-node-krxf7	pod-markers.tsv	seconds
+1793358109000000000	2026-10-30T11:01:49Z	38.000000000	0.000000000	pod_container_started	pod	mel0220		pod=timestamp-per-node-krxf7	pods.json	seconds
+1793358109000000000	2026-10-30T11:01:49Z	38.000000000	0.000000000	pod_containers_ready_true	pod	mel0216		pod=timestamp-per-node-65ttt	pods.json	seconds
+1793358109000000000	2026-10-30T11:01:49Z	38.000000000	0.000000000	pod_ready_true	pod	mel0216		pod=timestamp-per-node-65ttt	pods.json	seconds
+1793358110000000000	2026-10-30T11:01:50Z	39.000000000	1.000000000	pod_containers_ready_true	pod	mel0220		pod=timestamp-per-node-krxf7	pods.json	seconds
+1793358110000000000	2026-10-30T11:01:50Z	39.000000000	0.000000000	pod_ready_true	pod	mel0220		pod=timestamp-per-node-krxf7	pods.json	seconds
+1793358110720092708	2026-10-30T11:01:50.722338851Z	39.720092708	0.720092708	daemonset_observed	benchmark	login03.meluxina.lxp.lu		desired=2 current=2 ready=2 available=2 misscheduled=0	observer.tsv	nanoseconds
+1793358110729007521	2026-10-30T11:01:50.731620316Z	39.729007521	0.008914813	all_timestamp_pods_ready	benchmark	login03.meluxina.lxp.lu		desired=2 current=2 ready=2 available=2 misscheduled=0	observer.tsv	nanoseconds
+1793358111134008810	2026-10-30T11:01:51.135972141Z	40.134008810	0.405001289	all_pod_markers_collected	benchmark	login03.meluxina.lxp.lu		pods=2 distinct_nodes=2	observer.tsv	nanoseconds
+1793358111570951947	2026-10-30T11:01:51.573126751Z	40.570951947	0.436943137	kubernetes_state_collected	benchmark	login03.meluxina.lxp.lu			observer.tsv	nanoseconds
+1793358111578726604	2026-10-30T11:01:51.581246479Z	40.578726604	0.007774657	shutdown_requested	benchmark	login03.meluxina.lxp.lu		signal=TERM target=batch	observer.tsv	nanoseconds
+1793358113133590563	2026-10-30T11:01:53.135909457Z	42.133590563	1.554863959	shutdown_signal_sent	benchmark	login03.meluxina.lxp.lu			observer.tsv	nanoseconds
+1793358113154780207	2026-10-30T11:01:53.156792567Z	42.154780207	0.021189644	cleanup_started	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358114216411429	2026-10-30T11:01:54.218277247Z	43.216411429	1.061631222	bubble_wait_finished	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358114340970102	2026-10-30T11:01:54.342937962Z	43.340970102	0.124558673	bubble_sweep_started	supervisor	mel0216		node=mel0216 bubble=1	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358114664117262	2026-10-30T11:01:54.666614947Z	43.664117262	0.323147160	cleanup_started	entrypoint	mel0216	1	controller	entrypoint-1-mel0216-141.tsv	nanoseconds
+1793358117023919688	2026-10-30T11:01:57.025721226Z	46.023919688	2.359802426	bubble_sweep_finished	supervisor	mel0216		node=mel0216 bubble=1 status=0	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358117033087219	2026-10-30T11:01:57.035224530Z	46.033087219	0.009167531	bubble_sweep_started	supervisor	mel0216		node=mel0220 bubble=2	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358118000000000	2026-10-30T11:01:58Z	47.000000000	0.966912781	allocation_ended	slurm			state=FAILED precision=seconds	steps-final.psv	seconds
+1793358118081709462	2026-10-30T11:01:58.083575771Z	47.081709462	0.081709462	bubble_sweep_finished	supervisor	mel0216		node=mel0220 bubble=2 status=0	host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358118110440797	2026-10-30T11:01:58.112042212Z	47.110440797	0.028731335	cleanup_finished	supervisor	mel0216			host-supervisor-mel0216-18820.tsv	nanoseconds
+1793358160592046173	2026-10-30T11:02:40.594361330Z	89.592046173	42.481605376	allocation_finished_observed	benchmark	login03.meluxina.lxp.lu			observer.tsv	nanoseconds
+1793358160675012435	2026-10-30T11:02:40.677266311Z	89.675012435	0.082966262	final_accounting_observed	benchmark	login03.meluxina.lxp.lu			observer.tsv	nanoseconds
+1793358160946085444	2026-10-30T11:02:40.947796686Z	89.946085444	0.271073009	final_evidence_collected	benchmark	login03.meluxina.lxp.lu			observer.tsv	nanoseconds
+1793358161979172602	2026-10-30T11:02:41.980754523Z	90.979172602	1.033087158	report_written	benchmark	login03.meluxina.lxp.lu			observer.tsv	nanoseconds
+1793358162006455304	2026-10-30T11:02:42.008604319Z	91.006455304	0.027282702	benchmark_failed_rc_1	benchmark	login03.meluxina.lxp.lu			observer.tsv	nanoseconds

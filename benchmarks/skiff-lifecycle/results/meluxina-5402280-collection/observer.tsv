@@ -1,0 +1,29 @@
+schema	epoch_ns	utc	event	role	host	pid	job_id	bubble_id	detail
+1	1793357567338646866	2026-10-30T10:52:47.340618827Z	submission_started	benchmark	login03.meluxina.lxp.lu	685146			nodes=2
+1	1793357567401856587	2026-10-30T10:52:47.404142491Z	job_submitted	benchmark	login03.meluxina.lxp.lu	685146	5402280		nodes=2
+1	1793357567435617385	2026-10-30T10:52:47.437866159Z	slurm_job_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		state=PENDING
+1	1793357569734075681	2026-10-30T10:52:49.736028832Z	slurm_job_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		state=CONFIGURING
+1	1793357569741182542	2026-10-30T10:52:49.742969533Z	allocation_running_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		state=CONFIGURING
+1	1793357594389011108	2026-10-30T10:53:14.391017449Z	kubernetes_nodes_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		total=1 ready=0
+1	1793357596634391971	2026-10-30T10:53:16.636528594Z	kubernetes_nodes_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		total=1 ready=1
+1	1793357597749270762	2026-10-30T10:53:17.751247684Z	kubernetes_nodes_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		total=2 ready=1
+1	1793357598870132318	2026-10-30T10:53:18.872461861Z	kubernetes_nodes_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		total=2 ready=2
+1	1793357598888160934	2026-10-30T10:53:18.890455197Z	all_kubernetes_nodes_ready	benchmark	login03.meluxina.lxp.lu	685146	5402280		total=2 ready=2
+1	1793357598915642065	2026-10-30T10:53:18.918080960Z	skiff_entrypoints_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		ready=0 expected=2
+1	1793357602687851996	2026-10-30T10:53:22.690262740Z	skiff_entrypoints_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		ready=1 expected=2
+1	1793357604777670804	2026-10-30T10:53:24.779736306Z	skiff_entrypoints_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		ready=2 expected=2
+1	1793357604786185432	2026-10-30T10:53:24.788005343Z	all_skiff_entrypoints_ready	benchmark	login03.meluxina.lxp.lu	685146	5402280		ready=2 expected=2
+1	1793357604796583211	2026-10-30T10:53:24.798523213Z	manifest_apply_started	benchmark	login03.meluxina.lxp.lu	685146	5402280		manifest=/project/home/p200528/skiff-lifecycle-a9da5aa/benchmarks/skiff-lifecycle/timestamp-per-node.yaml
+1	1793357605036057245	2026-10-30T10:53:25.038534479Z	manifest_apply_finished	benchmark	login03.meluxina.lxp.lu	685146	5402280		
+1	1793357605119150458	2026-10-30T10:53:25.121688093Z	daemonset_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		desired=2 current=2 ready=0 available=0 misscheduled=0
+1	1793357607273377423	2026-10-30T10:53:27.275331484Z	daemonset_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		desired=2 current=2 ready=2 available=2 misscheduled=0
+1	1793357607281590170	2026-10-30T10:53:27.283879223Z	all_timestamp_pods_ready	benchmark	login03.meluxina.lxp.lu	685146	5402280		desired=2 current=2 ready=2 available=2 misscheduled=0
+1	1793357607757009536	2026-10-30T10:53:27.758932827Z	all_pod_markers_collected	benchmark	login03.meluxina.lxp.lu	685146	5402280		pods=2 distinct_nodes=2
+1	1793357608177309009	2026-10-30T10:53:28.179576232Z	kubernetes_state_collected	benchmark	login03.meluxina.lxp.lu	685146	5402280		
+1	1793357608185730187	2026-10-30T10:53:28.188075050Z	shutdown_requested	benchmark	login03.meluxina.lxp.lu	685146	5402280		signal=TERM target=batch
+1	1793357608220508765	2026-10-30T10:53:28.222447806Z	shutdown_signal_sent	benchmark	login03.meluxina.lxp.lu	685146	5402280		
+1	1793357655331164358	2026-10-30T10:54:15.333556922Z	allocation_finished_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		
+1	1793357655394180327	2026-10-30T10:54:15.396536790Z	final_accounting_observed	benchmark	login03.meluxina.lxp.lu	685146	5402280		
+1	1793357655638226537	2026-10-30T10:54:15.639806206Z	final_evidence_collected	benchmark	login03.meluxina.lxp.lu	685146	5402280		
+1	1793357656737255554	2026-10-30T10:54:16.739152994Z	report_written	benchmark	login03.meluxina.lxp.lu	685146	5402280		
+1	1793357656764566849	2026-10-30T10:54:16.766938212Z	benchmark_failed_rc_1	benchmark	login03.meluxina.lxp.lu	685146	5402280		

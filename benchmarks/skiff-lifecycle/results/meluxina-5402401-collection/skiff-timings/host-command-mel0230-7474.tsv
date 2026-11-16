@@ -1,0 +1,5 @@
+schema	epoch_ns	utc	event	role	host	pid	job_id	bubble_id	detail
+1	1793359078885859819	2026-10-30T11:17:58.887062180Z	command_measured	command	mel0230	7474	5402401		command=apptainer --version caller=skiff_node_report duration_ns=1162250201
+1	1793359078932245117	2026-10-30T11:17:58.933446378Z	command_measured	command	mel0230	7474	5402401		command=slirp4netns --version caller=skiff_node_report duration_ns=7026070
+1	1793359078986802535	2026-10-30T11:17:58.987981166Z	command_measured	command	mel0230	7474	5402401		command=apptainer --version caller=skiff_check_node duration_ns=26399836
+1	1793359078997323266	2026-10-30T11:17:58.998509716Z	command_measured	command	mel0230	7474	5402401		command=slirp4netns --version caller=skiff_check_node duration_ns=2470532

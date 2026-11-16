@@ -1,0 +1,527 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:25Z",
+                "generateName": "timestamp-per-node-",
+                "generation": 1,
+                "labels": {
+                    "app.kubernetes.io/name": "skiff-lifecycle-benchmark",
+                    "controller-revision-hash": "7d6fcdfc5b",
+                    "pod-template-generation": "1"
+                },
+                "name": "timestamp-per-node-ltmxs",
+                "namespace": "skiff-lifecycle-benchmark",
+                "ownerReferences": [
+                    {
+                        "apiVersion": "apps/v1",
+                        "blockOwnerDeletion": true,
+                        "controller": true,
+                        "kind": "DaemonSet",
+                        "name": "timestamp-per-node",
+                        "uid": "e3e0425d-e4d3-4c8b-8cdc-21ae7e4d2ff3"
+                    }
+                ],
+                "resourceVersion": "491",
+                "uid": "1a5bbd43-e3cd-4624-bf5a-46901fc0be2b"
+            },
+            "spec": {
+                "affinity": {
+                    "nodeAffinity": {
+                        "requiredDuringSchedulingIgnoredDuringExecution": {
+                            "nodeSelectorTerms": [
+                                {
+                                    "matchFields": [
+                                        {
+                                            "key": "metadata.name",
+                                            "operator": "In",
+                                            "values": [
+                                                "mel0126"
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                },
+                "containers": [
+                    {
+                        "args": [
+                            "epoch_seconds=\"$(date +%s)\"\nutc=\"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"\nprintf 'SKIFF_LIFECYCLE_POD epoch_seconds=%s utc=%s node=%s pod=%s\\n' \\\n  \"$epoch_seconds\" \"$utc\" \"$NODE_NAME\" \"$POD_NAME\"\ntouch /tmp/timestamp-printed\ntrap 'exit 0' TERM INT\nwhile :; do\n  sleep 3600 \u0026\n  wait \"$!\"\ndone\n"
+                        ],
+                        "command": [
+                            "/bin/sh",
+                            "-c"
+                        ],
+                        "env": [
+                            {
+                                "name": "NODE_NAME",
+                                "valueFrom": {
+                                    "fieldRef": {
+                                        "apiVersion": "v1",
+                                        "fieldPath": "spec.nodeName"
+                                    }
+                                }
+                            },
+                            {
+                                "name": "POD_NAME",
+                                "valueFrom": {
+                                    "fieldRef": {
+                                        "apiVersion": "v1",
+                                        "fieldPath": "metadata.name"
+                                    }
+                                }
+                            }
+                        ],
+                        "image": "rancher/mirrored-library-busybox:1.37.0",
+                        "imagePullPolicy": "IfNotPresent",
+                        "name": "timestamp",
+                        "readinessProbe": {
+                            "exec": {
+                                "command": [
+                                    "test",
+                                    "-e",
+                                    "/tmp/timestamp-printed"
+                                ]
+                            },
+                            "failureThreshold": 3,
+                            "periodSeconds": 1,
+                            "successThreshold": 1,
+                            "timeoutSeconds": 1
+                        },
+                        "resources": {
+                            "limits": {
+                                "memory": "8Mi"
+                            },
+                            "requests": {
+                                "cpu": "1m",
+                                "memory": "1Mi"
+                            }
+                        },
+                        "terminationMessagePath": "/dev/termination-log",
+                        "terminationMessagePolicy": "File",
+                        "volumeMounts": [
+                            {
+                                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                "name": "kube-api-access-74sdm",
+                                "readOnly": true
+                            }
+                        ]
+                    }
+                ],
+                "dnsPolicy": "ClusterFirst",
+                "enableServiceLinks": true,
+                "nodeName": "mel0126",
+                "preemptionPolicy": "PreemptLowerPriority",
+                "priority": 0,
+                "restartPolicy": "Always",
+                "schedulerName": "default-scheduler",
+                "securityContext": {},
+                "serviceAccount": "default",
+                "serviceAccountName": "default",
+                "terminationGracePeriodSeconds": 2,
+                "tolerations": [
+                    {
+                        "effect": "NoExecute",
+                        "key": "node.kubernetes.io/not-ready",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoExecute",
+                        "key": "node.kubernetes.io/unreachable",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/disk-pressure",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/memory-pressure",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/pid-pressure",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/unschedulable",
+                        "operator": "Exists"
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "kube-api-access-74sdm",
+                        "projected": {
+                            "defaultMode": 420,
+                            "sources": [
+                                {
+                                    "serviceAccountToken": {
+                                        "expirationSeconds": 3607,
+                                        "path": "token"
+                                    }
+                                },
+                                {
+                                    "configMap": {
+                                        "items": [
+                                            {
+                                                "key": "ca.crt",
+                                                "path": "ca.crt"
+                                            }
+                                        ],
+                                        "name": "kube-root-ca.crt"
+                                    }
+                                },
+                                {
+                                    "downwardAPI": {
+                                        "items": [
+                                            {
+                                                "fieldRef": {
+                                                    "apiVersion": "v1",
+                                                    "fieldPath": "metadata.namespace"
+                                                },
+                                                "path": "namespace"
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "status": {
+                "conditions": [
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-10-30T10:53:25Z",
+                        "status": "True",
+                        "type": "PodScheduled"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-10-30T10:53:25Z",
+                        "message": "all init containers in the pod have started successfully",
+                        "reason": "Initialized",
+                        "status": "True",
+                        "type": "Initialized"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-10-30T10:53:26Z",
+                        "message": "all containers are ready",
+                        "reason": "ContainersReady",
+                        "status": "True",
+                        "type": "ContainersReady"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-10-30T10:53:26Z",
+                        "message": "all containers are ready",
+                        "reason": "ContainersReady",
+                        "status": "True",
+                        "type": "Ready"
+                    }
+                ],
+                "containerStatuses": [
+                    {
+                        "containerID": "pid://9861:66352726",
+                        "image": "rancher/mirrored-library-busybox:1.37.0",
+                        "imageID": "/root/.skiff/.images/rancher_mirrored-library-busybox_1.37.0_6235f988acd54f97_amd64.sif",
+                        "lastState": {},
+                        "name": "timestamp",
+                        "ready": true,
+                        "restartCount": 0,
+                        "started": true,
+                        "state": {
+                            "running": {
+                                "startedAt": "2026-10-30T10:53:25Z"
+                            }
+                        }
+                    }
+                ],
+                "hostIP": "10.3.23.126",
+                "message": "at least one container is still running",
+                "phase": "Running",
+                "podIP": "10.244.0.7",
+                "podIPs": [
+                    {
+                        "ip": "10.244.0.7"
+                    }
+                ],
+                "qosClass": "Burstable",
+                "reason": "Running"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:25Z",
+                "generateName": "timestamp-per-node-",
+                "generation": 1,
+                "labels": {
+                    "app.kubernetes.io/name": "skiff-lifecycle-benchmark",
+                    "controller-revision-hash": "7d6fcdfc5b",
+                    "pod-template-generation": "1"
+                },
+                "name": "timestamp-per-node-wf66c",
+                "namespace": "skiff-lifecycle-benchmark",
+                "ownerReferences": [
+                    {
+                        "apiVersion": "apps/v1",
+                        "blockOwnerDeletion": true,
+                        "controller": true,
+                        "kind": "DaemonSet",
+                        "name": "timestamp-per-node",
+                        "uid": "e3e0425d-e4d3-4c8b-8cdc-21ae7e4d2ff3"
+                    }
+                ],
+                "resourceVersion": "493",
+                "uid": "7574b8a0-ef16-4cbd-9241-3310806e87a1"
+            },
+            "spec": {
+                "affinity": {
+                    "nodeAffinity": {
+                        "requiredDuringSchedulingIgnoredDuringExecution": {
+                            "nodeSelectorTerms": [
+                                {
+                                    "matchFields": [
+                                        {
+                                            "key": "metadata.name",
+                                            "operator": "In",
+                                            "values": [
+                                                "mel0132"
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                },
+                "containers": [
+                    {
+                        "args": [
+                            "epoch_seconds=\"$(date +%s)\"\nutc=\"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"\nprintf 'SKIFF_LIFECYCLE_POD epoch_seconds=%s utc=%s node=%s pod=%s\\n' \\\n  \"$epoch_seconds\" \"$utc\" \"$NODE_NAME\" \"$POD_NAME\"\ntouch /tmp/timestamp-printed\ntrap 'exit 0' TERM INT\nwhile :; do\n  sleep 3600 \u0026\n  wait \"$!\"\ndone\n"
+                        ],
+                        "command": [
+                            "/bin/sh",
+                            "-c"
+                        ],
+                        "env": [
+                            {
+                                "name": "NODE_NAME",
+                                "valueFrom": {
+                                    "fieldRef": {
+                                        "apiVersion": "v1",
+                                        "fieldPath": "spec.nodeName"
+                                    }
+                                }
+                            },
+                            {
+                                "name": "POD_NAME",
+                                "valueFrom": {
+                                    "fieldRef": {
+                                        "apiVersion": "v1",
+                                        "fieldPath": "metadata.name"
+                                    }
+                                }
+                            }
+                        ],
+                        "image": "rancher/mirrored-library-busybox:1.37.0",
+                        "imagePullPolicy": "IfNotPresent",
+                        "name": "timestamp",
+                        "readinessProbe": {
+                            "exec": {
+                                "command": [
+                                    "test",
+                                    "-e",
+                                    "/tmp/timestamp-printed"
+                                ]
+                            },
+                            "failureThreshold": 3,
+                            "periodSeconds": 1,
+                            "successThreshold": 1,
+                            "timeoutSeconds": 1
+                        },
+                        "resources": {
+                            "limits": {
+                                "memory": "8Mi"
+                            },
+                            "requests": {
+                                "cpu": "1m",
+                                "memory": "1Mi"
+                            }
+                        },
+                        "terminationMessagePath": "/dev/termination-log",
+                        "terminationMessagePolicy": "File",
+                        "volumeMounts": [
+                            {
+                                "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+                                "name": "kube-api-access-z95xx",
+                                "readOnly": true
+                            }
+                        ]
+                    }
+                ],
+                "dnsPolicy": "ClusterFirst",
+                "enableServiceLinks": true,
+                "nodeName": "mel0132",
+                "preemptionPolicy": "PreemptLowerPriority",
+                "priority": 0,
+                "restartPolicy": "Always",
+                "schedulerName": "default-scheduler",
+                "securityContext": {},
+                "serviceAccount": "default",
+                "serviceAccountName": "default",
+                "terminationGracePeriodSeconds": 2,
+                "tolerations": [
+                    {
+                        "effect": "NoExecute",
+                        "key": "node.kubernetes.io/not-ready",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoExecute",
+                        "key": "node.kubernetes.io/unreachable",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/disk-pressure",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/memory-pressure",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/pid-pressure",
+                        "operator": "Exists"
+                    },
+                    {
+                        "effect": "NoSchedule",
+                        "key": "node.kubernetes.io/unschedulable",
+                        "operator": "Exists"
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "kube-api-access-z95xx",
+                        "projected": {
+                            "defaultMode": 420,
+                            "sources": [
+                                {
+                                    "serviceAccountToken": {
+                                        "expirationSeconds": 3607,
+                                        "path": "token"
+                                    }
+                                },
+                                {
+                                    "configMap": {
+                                        "items": [
+                                            {
+                                                "key": "ca.crt",
+                                                "path": "ca.crt"
+                                            }
+                                        ],
+                                        "name": "kube-root-ca.crt"
+                                    }
+                                },
+                                {
+                                    "downwardAPI": {
+                                        "items": [
+                                            {
+                                                "fieldRef": {
+                                                    "apiVersion": "v1",
+                                                    "fieldPath": "metadata.namespace"
+                                                },
+                                                "path": "namespace"
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "status": {
+                "conditions": [
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-10-30T10:53:25Z",
+                        "status": "True",
+                        "type": "PodScheduled"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-10-30T10:53:25Z",
+                        "message": "all init containers in the pod have started successfully",
+                        "reason": "Initialized",
+                        "status": "True",
+                        "type": "Initialized"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-10-30T10:53:27Z",
+                        "message": "all containers are ready",
+                        "reason": "ContainersReady",
+                        "status": "True",
+                        "type": "ContainersReady"
+                    },
+                    {
+                        "lastProbeTime": null,
+                        "lastTransitionTime": "2026-10-30T10:53:27Z",
+                        "message": "all containers are ready",
+                        "reason": "ContainersReady",
+                        "status": "True",
+                        "type": "Ready"
+                    }
+                ],
+                "containerStatuses": [
+                    {
+                        "containerID": "pid://2266:75322489",
+                        "image": "rancher/mirrored-library-busybox:1.37.0",
+                        "imageID": "/root/.skiff/.images/rancher_mirrored-library-busybox_1.37.0_6235f988acd54f97_amd64.sif",
+                        "lastState": {},
+                        "name": "timestamp",
+                        "ready": true,
+                        "restartCount": 0,
+                        "started": true,
+                        "state": {
+                            "running": {
+                                "startedAt": "2026-10-30T10:53:26Z"
+                            }
+                        }
+                    }
+                ],
+                "hostIP": "10.3.23.132",
+                "message": "at least one container is still running",
+                "phase": "Running",
+                "podIP": "10.244.2.4",
+                "podIPs": [
+                    {
+                        "ip": "10.244.2.4"
+                    }
+                ],
+                "qosClass": "Burstable",
+                "reason": "Running"
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

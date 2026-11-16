@@ -1,0 +1,111 @@
+{
+    "apiVersion": "apps/v1",
+    "kind": "DaemonSet",
+    "metadata": {
+        "annotations": {
+            "deprecated.daemonset.template.generation": "1",
+            "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"apps/v1\",\"kind\":\"DaemonSet\",\"metadata\":{\"annotations\":{},\"labels\":{\"app.kubernetes.io/name\":\"skiff-lifecycle-benchmark\"},\"name\":\"timestamp-per-node\",\"namespace\":\"skiff-lifecycle-benchmark\"},\"spec\":{\"selector\":{\"matchLabels\":{\"app.kubernetes.io/name\":\"skiff-lifecycle-benchmark\"}},\"template\":{\"metadata\":{\"labels\":{\"app.kubernetes.io/name\":\"skiff-lifecycle-benchmark\"}},\"spec\":{\"containers\":[{\"args\":[\"epoch_seconds=\\\"$(date +%s)\\\"\\nutc=\\\"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\\\"\\nprintf 'SKIFF_LIFECYCLE_POD epoch_seconds=%s utc=%s node=%s pod=%s\\\\n' \\\\\\n  \\\"$epoch_seconds\\\" \\\"$utc\\\" \\\"$NODE_NAME\\\" \\\"$POD_NAME\\\"\\ntouch /tmp/timestamp-printed\\ntrap 'exit 0' TERM INT\\nwhile :; do\\n  sleep 3600 \\u0026\\n  wait \\\"$!\\\"\\ndone\\n\"],\"command\":[\"/bin/sh\",\"-c\"],\"env\":[{\"name\":\"NODE_NAME\",\"valueFrom\":{\"fieldRef\":{\"fieldPath\":\"spec.nodeName\"}}},{\"name\":\"POD_NAME\",\"valueFrom\":{\"fieldRef\":{\"fieldPath\":\"metadata.name\"}}}],\"image\":\"rancher/mirrored-library-busybox:1.37.0\",\"imagePullPolicy\":\"IfNotPresent\",\"name\":\"timestamp\",\"readinessProbe\":{\"exec\":{\"command\":[\"test\",\"-e\",\"/tmp/timestamp-printed\"]},\"initialDelaySeconds\":0,\"periodSeconds\":1,\"timeoutSeconds\":1},\"resources\":{\"limits\":{\"memory\":\"8Mi\"},\"requests\":{\"cpu\":\"1m\",\"memory\":\"1Mi\"}}}],\"terminationGracePeriodSeconds\":2}},\"updateStrategy\":{\"type\":\"OnDelete\"}}}\n"
+        },
+        "creationTimestamp": "2026-10-30T11:01:48Z",
+        "generation": 1,
+        "labels": {
+            "app.kubernetes.io/name": "skiff-lifecycle-benchmark"
+        },
+        "name": "timestamp-per-node",
+        "namespace": "skiff-lifecycle-benchmark",
+        "resourceVersion": "490",
+        "uid": "0676b0c9-082e-496b-acef-60c06f15d10c"
+    },
+    "spec": {
+        "revisionHistoryLimit": 10,
+        "selector": {
+            "matchLabels": {
+                "app.kubernetes.io/name": "skiff-lifecycle-benchmark"
+            }
+        },
+        "template": {
+            "metadata": {
+                "labels": {
+                    "app.kubernetes.io/name": "skiff-lifecycle-benchmark"
+                }
+            },
+            "spec": {
+                "containers": [
+                    {
+                        "args": [
+                            "epoch_seconds=\"$(date +%s)\"\nutc=\"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"\nprintf 'SKIFF_LIFECYCLE_POD epoch_seconds=%s utc=%s node=%s pod=%s\\n' \\\n  \"$epoch_seconds\" \"$utc\" \"$NODE_NAME\" \"$POD_NAME\"\ntouch /tmp/timestamp-printed\ntrap 'exit 0' TERM INT\nwhile :; do\n  sleep 3600 \u0026\n  wait \"$!\"\ndone\n"
+                        ],
+                        "command": [
+                            "/bin/sh",
+                            "-c"
+                        ],
+                        "env": [
+                            {
+                                "name": "NODE_NAME",
+                                "valueFrom": {
+                                    "fieldRef": {
+                                        "apiVersion": "v1",
+                                        "fieldPath": "spec.nodeName"
+                                    }
+                                }
+                            },
+                            {
+                                "name": "POD_NAME",
+                                "valueFrom": {
+                                    "fieldRef": {
+                                        "apiVersion": "v1",
+                                        "fieldPath": "metadata.name"
+                                    }
+                                }
+                            }
+                        ],
+                        "image": "rancher/mirrored-library-busybox:1.37.0",
+                        "imagePullPolicy": "IfNotPresent",
+                        "name": "timestamp",
+                        "readinessProbe": {
+                            "exec": {
+                                "command": [
+                                    "test",
+                                    "-e",
+                                    "/tmp/timestamp-printed"
+                                ]
+                            },
+                            "failureThreshold": 3,
+                            "periodSeconds": 1,
+                            "successThreshold": 1,
+                            "timeoutSeconds": 1
+                        },
+                        "resources": {
+                            "limits": {
+                                "memory": "8Mi"
+                            },
+                            "requests": {
+                                "cpu": "1m",
+                                "memory": "1Mi"
+                            }
+                        },
+                        "terminationMessagePath": "/dev/termination-log",
+                        "terminationMessagePolicy": "File"
+                    }
+                ],
+                "dnsPolicy": "ClusterFirst",
+                "restartPolicy": "Always",
+                "schedulerName": "default-scheduler",
+                "securityContext": {},
+                "terminationGracePeriodSeconds": 2
+            }
+        },
+        "updateStrategy": {
+            "type": "OnDelete"
+        }
+    },
+    "status": {
+        "currentNumberScheduled": 2,
+        "desiredNumberScheduled": 2,
+        "numberAvailable": 2,
+        "numberMisscheduled": 0,
+        "numberReady": 2,
+        "observedGeneration": 1,
+        "updatedNumberScheduled": 2
+    }
+}

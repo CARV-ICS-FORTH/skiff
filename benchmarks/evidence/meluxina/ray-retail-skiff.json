@@ -1,0 +1,259 @@
+{
+  "site": "MeluXina (login.lxp.lu)",
+  "benchmark": "ray-retail",
+  "platform": "skiff",
+  "date": "2026-10-23",
+  "slurm": {
+    "job_id": "5378198",
+    "job_name": "ray-retail-skiff",
+    "state": "COMPLETED",
+    "exit_code": "0:0",
+    "start_time_utc": "2026-10-23T13:25:44+00:00",
+    "end_time_utc": "2026-10-23T13:53:08+00:00",
+    "elapsed_seconds": 1644,
+    "allocated_nodes": 20,
+    "allocated_logical_cpus": 5120,
+    "requested_memory": "9600G"
+  },
+  "skiff": {
+    "version": "0.1.0-86cb22b",
+    "commit": "86cb22bc4067b407d338720bc3472314c718a25e",
+    "ready_nodes": 20,
+    "completed_pods": 20,
+    "pods_per_physical_node": 1,
+    "result_validation_marker": true,
+    "pass_marker": true
+  },
+  "run": {
+    "name": "skiff-04",
+    "status": "complete",
+    "invocations": 1,
+    "invocation_seconds": 1483.6172187030024,
+    "phase_seconds": 1481.8038390620204,
+    "manifest_created_at_utc": "2026-10-23T13:27:17.078613+00:00"
+  },
+  "identity": {
+    "backend": "skiff",
+    "config_sha256": "0b09cb8476533fb0d1c36b0c3724464d84370538960bc943d7dc06469c585070",
+    "source_sha256": "37d43e49974ff6866ca2de0d9ed507256b4f62ba873b57780dade12f42a28f6a",
+    "container_sha256": "61871467a5136109bb2821821b0680520a26da6205bf4f325f9881921d1f86e0",
+    "architecture": "x86_64",
+    "python": "3.11.17",
+    "packages": {
+      "ray": "2.49.2",
+      "torch": "2.8.0+cpu",
+      "protobuf": "6.33.5",
+      "numpy": "2.2.6",
+      "pandas": "2.2.3",
+      "pyarrow": "20.0.0"
+    }
+  },
+  "physical_nodes": [
+    "mel0060",
+    "mel0080",
+    "mel0108",
+    "mel0158",
+    "mel0171",
+    "mel0178",
+    "mel0183",
+    "mel0226",
+    "mel0243",
+    "mel0284",
+    "mel0354",
+    "mel0363",
+    "mel0394",
+    "mel0407",
+    "mel0436",
+    "mel0471",
+    "mel0472",
+    "mel0520",
+    "mel0548",
+    "mel0565"
+  ],
+  "ray_resources": {
+    "nodes": 20,
+    "cpus_per_node": 32,
+    "total_cpus": 640,
+    "heap_bytes_per_node": 64424509440,
+    "object_store_bytes_per_node": 17179869184,
+    "object_store_filesystem": "tmpfs",
+    "object_store_backing_capacity_bytes_min": 270142373888,
+    "object_store_backing_capacity_bytes_max": 270142410752,
+    "shared_output_filesystem": "lustre"
+  },
+  "workload": {
+    "data": {
+      "seconds": 218.15442481799982,
+      "blocks": 400,
+      "participating_nodes": 20,
+      "rows": {
+        "train": 6720000,
+        "validation": 1500000,
+        "test": 1500000
+      }
+    },
+    "tune": {
+      "seconds": 128.4304507090128,
+      "trials": 6,
+      "participating_nodes": 6,
+      "adaptive": false,
+      "best": {
+        "hidden": 64,
+        "learning_rate": 0.001,
+        "epochs": 6,
+        "mae": 5.231574137369791
+      }
+    },
+    "train": {
+      "seconds": 204.09004349599127,
+      "ranks": 20,
+      "participating_nodes": 20,
+      "epochs": 16,
+      "samples_across_all_epochs_and_ranks": 107479040,
+      "validation_mae": 5.266567080052694
+    },
+    "batch": {
+      "seconds": 12.849612260004506,
+      "rows": 1500000,
+      "mae": 4.962639920351009,
+      "seasonal_mae": 9.696457314840332,
+      "wape": 0.13183414497515605
+    },
+    "policy": {
+      "seconds": 389.19457103998866,
+      "iterations": 120,
+      "sampled_steps": 1966080,
+      "first_episode_return_mean": -136.3406991324798,
+      "final_episode_return_mean": -23.006226074876963,
+      "best_episode_return_mean": -22.0038084588295,
+      "best_iteration": 104,
+      "restore_verified": true
+    },
+    "evaluation": {
+      "seconds": 7.307888237002771,
+      "workers": 20,
+      "policies": {
+        "forecast_base_stock": {
+          "episodes": 1200,
+          "mean_cost": 3436.6681249999997,
+          "cost_std": 1254.5560323537723,
+          "fill_rate": 0.8337796886532222
+        },
+        "ppo": {
+          "episodes": 1200,
+          "mean_cost": 770.54275,
+          "cost_std": 251.97439461832414,
+          "fill_rate": 0.9930746372014513
+        },
+        "reorder_point": {
+          "episodes": 1200,
+          "mean_cost": 3912.346,
+          "cost_std": 1459.6438765873675,
+          "fill_rate": 0.8002785982540082
+        }
+      }
+    },
+    "serve": {
+      "seconds": 518.6339748500031,
+      "measured_request_seconds": 505.3150197190116,
+      "requests": 60000,
+      "errors": 0,
+      "requests_per_second": 118.73781237170418,
+      "latency_ms": {
+        "p50": 379.5574480027426,
+        "p95": 889.1848740182468,
+        "p99": 965.1984497130616
+      },
+      "forecast_replicas": 20,
+      "policy_replicas": 20,
+      "autoscale": false,
+      "direct_inference_verified": true
+    },
+    "recovery": {
+      "seconds": 3.1428736520174425,
+      "intentional_actor_failures": 1,
+      "restored_total": 18,
+      "duplicate_total": 18
+    }
+  },
+  "resource_samples": {
+    "samples": 13740,
+    "samples_per_node": 687,
+    "minimum_node_span_seconds": 1479.5484397411346,
+    "maximum_node_span_seconds": 1480.9841513633728,
+    "mean_host_cpu_percent_across_node_samples": 1.808886462882096,
+    "peak_synchronized_mean_host_cpu_percent": 12.975,
+    "peak_aggregate_ray_process_rss_bytes": 191695667200,
+    "peak_aggregate_ray_process_pss_bytes": 124473131008,
+    "peak_aggregate_host_memory_used_bytes": 231970660352,
+    "aggregate_visible_ray_process_cpu_seconds_delta": 7757.97,
+    "scope": "Host CPU and memory include node activity; Ray process RSS/PSS covers visible Ray processes. Samples were aligned by per-node sequence index; maximum timestamp skew was 1.443672 seconds."
+  },
+  "log_inspection": {
+    "phase_start_markers": 8,
+    "phase_completion_markers": 8,
+    "complete_result_markers": 1,
+    "tracebacks": 7,
+    "serve_proxy_internal_attribute_errors": 7,
+    "serve_queue_length_deadline_log_records": 2,
+    "intentional_recovery_worker_deaths": 1,
+    "assessment": "Seven Ray Serve proxy AttributeErrors occurred while fulfilling pending requests. Ray handled them internally; adjacent requests returned HTTP 200 and the benchmark recorded 60000 requests with zero client errors. The recovery worker death was intentional. Ray Data schema-hash and Serve queue-length warnings did not stop a phase."
+  },
+  "raw_artifacts": {
+    "manifest": {
+      "bytes": 1125301,
+      "sha256": "27693b51dc8ee141cdc29e83ce3f3272e24f2ae42f1643ed48d361115b06c996"
+    },
+    "resources": {
+      "bytes": 6526939,
+      "sha256": "301acc4e424e1351141b8b9ec248051443e4fb47f583c882e0881eae6db1c41a"
+    },
+    "head_log": {
+      "bytes": 13093474,
+      "sha256": "8de48b07ca36f787255d6ec6654612203af1ff7b3a62ea6fe0e4ba0a9d46bcdb"
+    },
+    "batch_log": {
+      "bytes": 5963,
+      "sha256": "1dfa8f153150e903c852fda35f99b7c62da7b62bef5de597691ed8eab330f5da"
+    },
+    "cluster_log": {
+      "bytes": 147879,
+      "sha256": "8f9db78fb356000336173e7fa04cb66260d76e226d391940dc4644ffa6cf8938"
+    }
+  },
+  "native_comparison": {
+    "native_job_id": "5377862",
+    "native_run": "native-01",
+    "built_in_comparison_status": "refused",
+    "reason": "The tmpfs backing capacities differ even though both runs expose the same 16 GiB Ray object-store budget: native 459242037248-459242098688 bytes, Skiff 270142373888-270142410752 bytes.",
+    "matching_checks": {
+      "complete_runs": true,
+      "config": true,
+      "source": true,
+      "environment": true,
+      "container_identity": true,
+      "ray_resource_budgets": true,
+      "raw_data_block_checksums": 400,
+      "verified_artifact_checksums_per_run": 5250
+    },
+    "observed_skiff_over_native": {
+      "invocation": 0.9748865350426532,
+      "data": 0.9332320915636277,
+      "tune": 0.9714147583772907,
+      "train": 1.1569542928024494,
+      "batch": 0.9745099220316873,
+      "policy": 0.9683740021377463,
+      "evaluation": 0.9556776070402676,
+      "serve": 0.9408664667495157,
+      "recovery": 0.9255839222151375
+    },
+    "assessment": "The ratios are observational and are not a harness-certified like-for-like comparison because the storage-capacity guard rejected the pair."
+  },
+  "provenance": {
+    "remote_deployment": "~/kampadais/ray-retail-skiff-9d00096",
+    "remote_result": "~/kampadais/.skiff-ray-9d00096/ray-results/skiff-04",
+    "local_collection": "/run/media/kampadais/extra_space/ray-retail-skiff-5378198-collection",
+    "inspection_date": "2026-10-26",
+    "notes": "Selected values are copied from the completed manifest, resource trace, Slurm accounting and logs. All 5250 phase artifact checksums were revalidated locally. The versioned evidence omits generated datasets, checkpoints and per-request logs."
+  }
+}

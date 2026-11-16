@@ -1,0 +1,220 @@
+{
+  "site": "MeluXina (login.lxp.lu)",
+  "benchmark": "bert-distr-training",
+  "platform": "skiff",
+  "date": "2026-10-26",
+  "slurm": {
+    "job_id": "5387226",
+    "job_name": "bert-skiff-hour",
+    "state": "COMPLETED",
+    "exit_code": "0:0",
+    "submit_time_utc": "2026-10-26T11:57:11+00:00",
+    "start_time_utc": "2026-10-26T11:57:12+00:00",
+    "end_time_utc": "2026-10-26T13:06:34+00:00",
+    "elapsed_seconds": 4162,
+    "allocated_nodes": 20,
+    "allocated_logical_cpus": 5120,
+    "requested_memory": "9600G"
+  },
+  "skiff": {
+    "version": "0.1.0-86cb22b",
+    "base_commit": "86cb22bc4067b407d338720bc3472314c718a25e",
+    "sif_sha256": "11db6aac87150d6e5d5684dbaf33911e0301da7c39d0fd073c53355ffe88a4f2",
+    "runtime_patch": "The bubble entrypoint TAP wait was corrected to measure 30 seconds of elapsed time while polling every 0.1 seconds.",
+    "ready_nodes": 20,
+    "pytorchjob_succeeded": true,
+    "completed_pods": 20,
+    "pod_restarts": 0,
+    "pods_per_physical_node": 1,
+    "result_validation_marker": true,
+    "pass_marker": true
+  },
+  "run": {
+    "name": "skiff-cpu-hour-5387226",
+    "namespace": "bert-hour-5387226",
+    "status": "complete",
+    "benchmark_exit_code": 0,
+    "cluster_ready_at_utc": "2026-10-26T11:59:09+00:00",
+    "benchmark_started_at_utc": "2026-10-26T11:59:26+00:00",
+    "pytorchjob_succeeded_at_utc": "2026-10-26T13:04:22+00:00",
+    "benchmark_finished_at_utc": "2026-10-26T13:04:30+00:00",
+    "wrapper_finished_at_utc": "2026-10-26T13:06:34+00:00"
+  },
+  "timing": {
+    "training_seconds": 3869.677111374971,
+    "application_seconds": 3882.5879006960313,
+    "benchmark_wrapper_seconds": 3904,
+    "pytorchjob_created_to_succeeded_seconds": 3892,
+    "master_container_wall_seconds": 3891,
+    "worker_container_wall_seconds": 3889,
+    "allocation_seconds": 4162,
+    "total_non_application_seconds": 279.4120993039687,
+    "startup_and_shutdown_overhead_seconds": 279.4120993039687,
+    "allocation_start_to_cluster_ready_seconds": 117,
+    "allocation_start_to_benchmark_wrapper_seconds": 134,
+    "benchmark_wrapper_outside_application_seconds": 21.4120993039687,
+    "benchmark_wrapper_finish_to_allocation_end_seconds": 124,
+    "original_result_mtime_utc": "2026-10-26T13:04:19+00:00",
+    "inferred_application_start_utc": "2026-10-26T11:59:36.4Z to 2026-10-26T11:59:37.4Z",
+    "allocation_start_to_application_start_seconds": "approximately 144.4 to 145.4",
+    "allocation_start_to_application_start_percent": "approximately 3.47 to 3.49",
+    "allocation_start_to_cluster_ready_percent": 2.811148486304661,
+    "application_finish_to_allocation_end_seconds": "approximately 134.0 to 135.0",
+    "total_non_application_percent": 6.713409401825293,
+    "application_timer_scope": "Starts inside each rank before library imports, distributed initialization, dataset loading and tokenization; stops after training, epoch evaluations and model export, during final result assembly and immediately before result.json creation.",
+    "boundary_note": "The application start range is inferred by subtracting the high-resolution application timer from the original result file mtime, which has one-second resolution. The 279.412-second total non-application residual is exact at the recorded boundaries; its finest defensible split is 134 seconds before wrapper invocation, 21.412 seconds inside the wrapper but outside the application timer, and 124 seconds after wrapper completion."
+  },
+  "workload": {
+    "device": "cpu",
+    "model": "bert-base-cased",
+    "dataset": "yelp_review_full",
+    "samples": 32000,
+    "training_samples": 28800,
+    "validation_samples": 3200,
+    "epochs": 12,
+    "sequence_length": 128,
+    "nodes": 20,
+    "processes_per_node": 1,
+    "world_size": 20,
+    "cpu_threads_per_process": 32,
+    "cpu_request_per_pod": 32,
+    "memory_request_gib_per_pod": 64,
+    "train_batch_size_per_process": 8,
+    "global_batch_size": 160,
+    "optimizer_steps": 2160,
+    "optimizer_steps_per_epoch": 180
+  },
+  "metrics": {
+    "training": {
+      "loss": 0.34316197101164747,
+      "trainer_runtime_seconds": 3868.9538,
+      "samples_per_second": 89.326,
+      "steps_per_second": 0.558
+    },
+    "final_evaluation": {
+      "epoch": 12.0,
+      "loss": 2.2197306156158447,
+      "accuracy": 0.576875,
+      "runtime_seconds": 4.2931,
+      "samples_per_second": 745.378,
+      "steps_per_second": 2.329
+    },
+    "best_observed_evaluation_accuracy": {
+      "epoch": 4.0,
+      "accuracy": 0.59,
+      "loss": 1.1867194175720215
+    },
+    "lowest_observed_evaluation_loss": {
+      "epoch": 2.0,
+      "loss": 0.9513546824455261,
+      "accuracy": 0.5871875
+    },
+    "evaluation_history": [
+      {"epoch": 1.0, "loss": 0.9647712707519531, "accuracy": 0.5765625},
+      {"epoch": 2.0, "loss": 0.9513546824455261, "accuracy": 0.5871875},
+      {"epoch": 3.0, "loss": 1.0350265502929688, "accuracy": 0.5853125},
+      {"epoch": 4.0, "loss": 1.1867194175720215, "accuracy": 0.59},
+      {"epoch": 5.0, "loss": 1.383378028869629, "accuracy": 0.5859375},
+      {"epoch": 6.0, "loss": 1.5991929769515991, "accuracy": 0.584375},
+      {"epoch": 7.0, "loss": 1.764970064163208, "accuracy": 0.58125},
+      {"epoch": 8.0, "loss": 1.862284541130066, "accuracy": 0.5765625},
+      {"epoch": 9.0, "loss": 1.9695876836776733, "accuracy": 0.580625},
+      {"epoch": 10.0, "loss": 2.120358943939209, "accuracy": 0.571875},
+      {"epoch": 11.0, "loss": 2.1725733280181885, "accuracy": 0.57875},
+      {"epoch": 12.0, "loss": 2.2197306156158447, "accuracy": 0.576875}
+    ]
+  },
+  "runtime": {
+    "architecture": "x86_64",
+    "python": "3.11.14",
+    "torch": "2.7.1+cpu",
+    "transformers": "4.28.0",
+    "datasets": "2.19.2",
+    "bert_image_sha256": "bd2f52446a8066108b810d7cfb258fbbd15e4df5a1551d230d0e70243046afae",
+    "result_sha256": "0d2cdae22e14a1374873587df3ecbc666dbcbd0f71e2f8a9098b10f639544245"
+  },
+  "physical_nodes": [
+    "mel0056",
+    "mel0078",
+    "mel0107",
+    "mel0136",
+    "mel0144",
+    "mel0161",
+    "mel0175",
+    "mel0216",
+    "mel0266",
+    "mel0281",
+    "mel0340",
+    "mel0353",
+    "mel0394",
+    "mel0415",
+    "mel0420",
+    "mel0464",
+    "mel0473",
+    "mel0546",
+    "mel0567",
+    "mel0571"
+  ],
+  "model_export": {
+    "retained_remotely": true,
+    "files": 7,
+    "total_file_bytes": 434215644,
+    "weights_bytes": 433327307,
+    "weights_sha256": "1da02d37839eaaf03114071c85b425753b3d7e44ef0394656fe8bbed2d278aca"
+  },
+  "ten_node_baseline": {
+    "job_id": "5368311",
+    "date": "2026-10-21",
+    "nodes": 10,
+    "epochs": 3,
+    "optimizer_steps": 1080,
+    "training_seconds": 1833.7057255278341,
+    "application_seconds": 1846.0174930130597,
+    "allocation_seconds": 1996,
+    "training_samples_per_second": 47.133,
+    "training_loss": 0.8174199369218614,
+    "evaluation_loss": 1.0561143159866333,
+    "evaluation_accuracy": 0.5884375,
+    "observed_twenty_over_ten_training_time": 2.110304318464775,
+    "observed_twenty_over_ten_training_throughput": 1.895190206437103,
+    "assessment": "The 20-node run processed four times as many training examples across epochs. Doubling the nodes ideally predicts twice the baseline training time; the observed time was about 5.5% above that single-run estimate. This is a sizing observation, not a repeated scaling study. The runs also differ in global batch size, so their validation metrics do not isolate the effect of epoch count."
+  },
+  "log_inspection": {
+    "workload_tracebacks": 0,
+    "readiness_poll_assertion_tracebacks": 4,
+    "training_warnings": "Each CPU rank emitted the expected Transformers AdamW deprecation and pin_memory-without-accelerator warnings.",
+    "teardown": "The wrapper deliberately terminated long-running bubble and networking processes after BENCHMARK_SUCCEEDED; the cluster log ends with Cluster cleanup complete.",
+    "assessment": "The readiness assertions occurred only while the node count and Ready state were converging. They did not abort the polling loop or workload. No pod restarted, and all training containers exited 0."
+  },
+  "raw_artifacts": {
+    "result": {
+      "bytes": 6998,
+      "sha256": "0d2cdae22e14a1374873587df3ecbc666dbcbd0f71e2f8a9098b10f639544245"
+    },
+    "training_resources": {
+      "bytes": 284389,
+      "sha256": "805fc1a0416ef5ec1ba1c4cfc7b0490cf5581ed84d2de0a4c7d4ef321ae9b81b"
+    },
+    "ready_nodes": {
+      "bytes": 139095,
+      "sha256": "54a934bad5a33062d4ba7e0a82113918aae312428038186dd6b62a1cab31a6b9"
+    },
+    "batch_log": {
+      "bytes": 3932,
+      "sha256": "dc52d9ca55de08e75a2f4b6cd3023802d1fd58f7db90c0c992ab2d0d9ae0f9a4"
+    },
+    "cluster_log": {
+      "bytes": 247586,
+      "sha256": "40519f20616fc9c869fcb3dda253ac6ea2d022b7f2574e6d87b840315d36afd8"
+    }
+  },
+  "provenance": {
+    "remote_deployment": "~/kampadais/skiff-bert-86cb22b",
+    "remote_state": "~/kampadais/.skiff-bert-86cb22b",
+    "remote_result_record": "~/kampadais/skiff-bert-86cb22b/results/skiff-cpu-hour-5387226",
+    "remote_model_output": "~/kampadais/.skiff-bert-86cb22b/benchmarks/bert-distr-training/results/skiff-cpu-hour-5387226",
+    "local_collection": "benchmarks/bert-distr-training/results/skiff/meluxina-5387226-collection",
+    "inspection_date": "2026-10-26",
+    "notes": "The complete small run record and wrapper/cluster logs were copied locally and hash-checked. The 415 MiB exported model remains remote and is represented here by file metadata and checksums."
+  }
+}

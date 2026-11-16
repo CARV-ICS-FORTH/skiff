@@ -1,0 +1,33 @@
+JobId=5402401 JobName=skiff-cluster
+   SLUID=s88XM668FT2W00
+   UserId=u102006(102006) GroupId=hpcusers(555) MCS_label=N/A
+   Priority=444027 Nice=0 Account=p200528 QOS=test
+   JobState=FAILED Reason=NonZeroExitCode Dependency=(null)
+   Requeue=0 Restarts=0 BatchFlag=1 Reboot=0 ExitCode=143:0
+   DerivedExitCode=255:0
+   RunTime=00:03:03 TimeLimit=00:30:00 TimeMin=N/A
+   SubmitTime=2026-10-30T12:17:22 EligibleTime=2026-10-30T12:17:22
+   AccrueTime=2026-10-30T12:17:22
+   StartTime=2026-10-30T12:17:23 EndTime=2026-10-30T12:20:26 Deadline=N/A
+   PreemptEligibleTime=2026-10-30T12:17:23 PreemptTime=None
+   SuspendTime=None SecsPreSuspend=0 LastSchedEval=2026-10-30T12:17:23 Scheduler=Main
+   Partition=cpu AllocNode:Sid=login03:2085752
+   ReqNodeList=(null) ExcNodeList=(null)
+   NodeList=mel[0047,0057,0099,0132,0134,0144,0159,0220,0230,0244,0336,0348,0386,0404,0417,0422,0429,0506,0518,0533]
+   BatchHost=mel0047
+   NumNodes=20 NumCPUs=5120 NumTasks=20 CPUs/Task=256 ReqB:S:C:T=0:0:*:*
+   ReqTRES=cpu=20,mem=9600G,node=20,billing=20
+   AllocTRES=cpu=5120,mem=9600G,node=20,billing=5120,gres/cpun=20
+   Socks/Node=* NtasksPerN:B:S:C=1:0:*:* CoreSpec=*
+   JOB_GRES=cpuN:20
+     Nodes=mel[0047,0057,0099,0132,0134,0144,0159,0220,0230,0244,0336,0348,0386,0404,0417,0422,0429,0506,0518,0533] CPU_IDs=0-255 Mem=491520 GRES=
+   MinCPUsNode=256 MinMemoryNode=0 MinTmpDiskNode=0
+   Features=(null) DelayBoot=00:00:00
+   OverSubscribe=NO Contiguous=0 Licenses=(null) LicensesAlloc=(null) Network=(null)
+   Command=/project/home/p200528/skiff-lifecycle-a9da5aa/scripts/skiff.slurm
+   SubmitLine=sbatch --parsable --account=p200528 --partition=cpu --qos=test --time=00:30:00 --nodes=20 --export=ALL,SKIFF_TIMING=1 --output=/project/home/p200528/skiff-lifecycle-a9da5aa/results/twenty-node-command-timing-20261030T111722Z/skiff-cluster-%j.out /project/home/p200528/skiff-lifecycle-a9da5aa/scripts/skiff.slurm
+   WorkDir=/mnt/tier2/project/p200528/skiff-lifecycle-a9da5aa
+   StdErr=
+   StdIn=/dev/null
+   StdOut=/project/home/p200528/skiff-lifecycle-a9da5aa/results/twenty-node-command-timing-20261030T111722Z/skiff-cluster-5402401.out
+

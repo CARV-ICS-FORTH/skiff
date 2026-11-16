@@ -1,0 +1,1342 @@
+{
+  "active": null,
+  "application_comparison": {
+    "left_backend": "slurm",
+    "left_batch": {
+      "artifacts": [],
+      "mae": 4.998346019807841,
+      "rows": 6000000,
+      "seasonal_mae": 9.696431315601245,
+      "wape": 0.1327900589011015
+    },
+    "left_inventory": {
+      "forecast_base_stock": {
+        "cost_std": 1274.2573841309786,
+        "episodes": 1200,
+        "fill_rate": 0.8349014109177294,
+        "mean_cost": 3412.3479166666666
+      },
+      "ppo": {
+        "cost_std": 252.0390412930853,
+        "episodes": 1200,
+        "fill_rate": 0.9917539713773997,
+        "mean_cost": 786.95125
+      },
+      "reorder_point": {
+        "cost_std": 1428.1840230454222,
+        "episodes": 1200,
+        "fill_rate": 0.7988236425832856,
+        "mean_cost": 3892.345541666666
+      }
+    },
+    "left_serving": {
+      "artifacts": [],
+      "autoscale": false,
+      "client_node_id": "9d9ef2243bc97a3503d026b6b1fbb10ed5f2b5fee6ac82e2dcd42733",
+      "direct_inference_verified": true,
+      "elapsed_seconds": 183.56034153397195,
+      "errors": 0,
+      "forecast_replica_ids": [
+        "052658d6bf292924d128059202000000",
+        "0bc3365d8423b6f5665ab51902000000",
+        "37803f4f27c7d50e793dbdb002000000",
+        "3c2ec47ddef22253b2a9f89e02000000",
+        "68ae659620ae79b2da734c6b02000000",
+        "83919c0c0019e35e142f4ed602000000",
+        "8b368fa965d94d28fdf478da02000000",
+        "953998fedfdd8a6c8731d4ca02000000",
+        "bb8220248811186c46981cbb02000000",
+        "fe2f3c978b7db00702c6412602000000"
+      ],
+      "latency_ms": {
+        "p50": 1615.1489159674384,
+        "p95": 5270.483999577117,
+        "p99": 6262.5060857227045
+      },
+      "policy_replica_ids": [
+        "10cc7e12e03b025a04fa97a502000000",
+        "19b999496929b7adf219dfba02000000",
+        "1e3a221ce7c2885a5c474cea02000000",
+        "22ec1a6e46f6eeab8367d16402000000",
+        "433c14e13fb09e1c61d25c5902000000",
+        "56c73a72f6e662fd5a38e37702000000",
+        "5840c20629607e012c1e1a9802000000",
+        "5c110a439e5b69fba4757f9302000000",
+        "9ee0cd2d87ed24829348139502000000",
+        "c4cb6ff5f28c0d06307316d902000000"
+      ],
+      "requests": 20000,
+      "requests_per_second": 108.95599688290268,
+      "status": "ServeStatus(proxies={'9d9ef2243bc97a3503d026b6b1fbb10ed5f2b5fee6ac82e2dcd42733': <ProxyStatus.HEALTHY: 'HEALTHY'>}, applications={'retail': ApplicationStatusOverview(status=<ApplicationStatus.RUNNING: 'RUNNING'>, message='', last_deployed_time_s=1794567065.5180984, deployments={'ForecastDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 10}, message=''), 'PolicyDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 10}, message=''), 'RetailAPI': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 1}, message='')})}, target_capacity=None)"
+    },
+    "phases": [
+      {
+        "left_seconds": 47.99178284290247,
+        "phase": "batch",
+        "right_over_left": 0.8543350319408264,
+        "right_seconds": 41.00106132798828
+      },
+      {
+        "left_seconds": 569.0180680489866,
+        "phase": "data",
+        "right_over_left": 0.9886351376202772,
+        "right_seconds": 562.5512560140342
+      },
+      {
+        "left_seconds": 12.74011234997306,
+        "phase": "evaluation",
+        "right_over_left": 0.9826478208450146,
+        "right_seconds": 12.519043638021685
+      },
+      {
+        "left_seconds": 182.31409743998665,
+        "phase": "policy",
+        "right_over_left": 0.9481079557542766,
+        "right_seconds": 172.85344622901175
+      },
+      {
+        "left_seconds": 3.495924469898455,
+        "phase": "recovery",
+        "right_over_left": 0.9206116014996321,
+        "right_seconds": 3.2183886249549687
+      },
+      {
+        "left_seconds": 198.53331425308716,
+        "phase": "serve",
+        "right_over_left": 0.9130545714656727,
+        "right_seconds": 181.27175016701221
+      },
+      {
+        "left_seconds": 193.069287093007,
+        "phase": "train",
+        "right_over_left": 0.9334718142307804,
+        "right_seconds": 180.22473769495264
+      },
+      {
+        "left_seconds": 36.037336720037274,
+        "phase": "tune",
+        "right_over_left": 0.9804414677625325,
+        "right_seconds": 35.33249930804595
+      }
+    ],
+    "right_backend": "skiff",
+    "right_batch": {
+      "artifacts": [],
+      "mae": 4.995572357315567,
+      "rows": 6000000,
+      "seasonal_mae": 9.696431315601245,
+      "wape": 0.1327163715644781
+    },
+    "right_inventory": {
+      "forecast_base_stock": {
+        "cost_std": 1247.7350106714043,
+        "episodes": 1200,
+        "fill_rate": 0.833375854489165,
+        "mean_cost": 3422.112291666666
+      },
+      "ppo": {
+        "cost_std": 255.16011249898182,
+        "episodes": 1200,
+        "fill_rate": 0.9921811131327439,
+        "mean_cost": 796.7264166666666
+      },
+      "reorder_point": {
+        "cost_std": 1428.1840230454222,
+        "episodes": 1200,
+        "fill_rate": 0.7988236425832856,
+        "mean_cost": 3892.345541666666
+      }
+    },
+    "right_serving": {
+      "artifacts": [],
+      "autoscale": false,
+      "client_node_id": "7b024a726eca8641794a943f9a4b2715bb57882cd52e7e3644003c68",
+      "direct_inference_verified": true,
+      "elapsed_seconds": 168.67871841206215,
+      "errors": 0,
+      "forecast_replica_ids": [
+        "1e0b69bd2e9df81e0aa3902302000000",
+        "1ee4998c8acbed387b0e685502000000",
+        "2be936a4e7117b252d84fb5602000000",
+        "2f3eee80275635d4f2bd2e2202000000",
+        "4a6b7b7a76e059b15234cef902000000",
+        "85f73986567d8869fb507e4202000000",
+        "ad5cec124418a77962e632e602000000",
+        "b1538cf2390b12045b7a3c0802000000",
+        "d56c500cfc43f3dd475839d502000000",
+        "fd02333251a0aff6c07f8c2c02000000"
+      ],
+      "latency_ms": {
+        "p50": 1478.162965446245,
+        "p95": 4902.019380504498,
+        "p99": 5500.3640416252865
+      },
+      "policy_replica_ids": [
+        "1027e734a7fe822ca109c7d202000000",
+        "42085d802cfb66235f9992d502000000",
+        "46c2abc848712c194503abbb02000000",
+        "7906c34532cd1196221dcb5002000000",
+        "8621bfad5e21c9decd36c49702000000",
+        "9ad8e4e8a3821371c87ff2e302000000",
+        "b78ce71974c55849a5dca1f702000000",
+        "cbd367728269862588139d4002000000",
+        "cd23f79e3946cb0813e85fc802000000",
+        "f246ce0ce0a547b112ca983702000000"
+      ],
+      "requests": 20000,
+      "requests_per_second": 118.56860301216166,
+      "status": "ServeStatus(proxies={'7b024a726eca8641794a943f9a4b2715bb57882cd52e7e3644003c68': <ProxyStatus.HEALTHY: 'HEALTHY'>}, applications={'retail': ApplicationStatusOverview(status=<ApplicationStatus.RUNNING: 'RUNNING'>, message='', last_deployed_time_s=1794568517.8709164, deployments={'ForecastDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 10}, message=''), 'PolicyDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 10}, message=''), 'RetailAPI': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 1}, message='')})}, target_capacity=None)"
+    },
+    "schema_version": 1
+  },
+  "application_comparison_status": "PASS (does not certify run cleanup)",
+  "campaign": "/home/users/u102006/.skiff/experiments/campaign-20261113-r9-pairs",
+  "collected_at_utc": "2026-11-13T11:27:30.954932+00:00",
+  "qualified": {
+    "at": 1794565989.0736265,
+    "minimum_busy_percent": null,
+    "scope": "per-host application-window average on physical-core representatives",
+    "utilization_policy": "report_observed"
+  },
+  "runs": {
+    "pair-1-skiff": {
+      "application_seconds": 1195.8904155349592,
+      "application_status": "complete",
+      "cleanup_checks": [
+        {
+          "at": 1794568719.3699627,
+          "event": "bubble_cleanup_verified",
+          "host": "mel0047",
+          "instance_absent": false,
+          "monotonic": 840130.999905761,
+          "payload_exit_code": -15,
+          "pid": 21119,
+          "schema_version": 1,
+          "scope": "after official supervisor final sweep"
+        }
+      ],
+      "config": {
+        "batch": {
+          "cpus_per_worker": 8,
+          "threads": 8,
+          "workers": 150
+        },
+        "data": {
+          "blocks": 2560,
+          "days": 1000,
+          "max_pending": 1280,
+          "series": 40000,
+          "train_end": 700,
+          "validation_end": 850
+        },
+        "deadline_seconds": 2700,
+        "deployment": {
+          "heap_bytes": 412316860416,
+          "minimum_memory_bytes": 515396075520,
+          "object_store_bytes": 68719476736,
+          "physical_cores": 128,
+          "pod_memory_bytes": 506806140928,
+          "ray_cpus": 128
+        },
+        "device": "cpu",
+        "expected_nodes": 10,
+        "rl": {
+          "batch_size": 65536,
+          "cpus_per_learner": 16,
+          "env_runners": 1100,
+          "epochs": 4,
+          "evaluation_episodes": 1200,
+          "hidden": 128,
+          "horizon": 84,
+          "iterations": 8,
+          "layers": 2,
+          "minibatch_size": 512
+        },
+        "schema_version": 1,
+        "seed": 731,
+        "serve": {
+          "autoscale": false,
+          "batch_size": 32,
+          "concurrency": 256,
+          "cpus_per_replica": 8,
+          "port": 18080,
+          "replicas": 10,
+          "requests": 20000,
+          "threads": 8
+        },
+        "train": {
+          "batch_size": 2048,
+          "cpus_per_worker": 31,
+          "epochs": 4,
+          "hidden": 512,
+          "layers": 3,
+          "lr": 0.001,
+          "max_batches": 128,
+          "threads": 31,
+          "use_tuned": false,
+          "workers": 40
+        },
+        "tune": {
+          "adaptive": false,
+          "concurrency": 40,
+          "epochs": 2,
+          "trials": 40
+        }
+      },
+      "diagnostic_host_events": [
+        {
+          "at": 1794567480.6934607,
+          "backend": "skiff",
+          "event": "host_collector_started",
+          "host": "mel0523",
+          "monotonic": 832855.32624209,
+          "pid": 30797,
+          "schema_version": 1
+        },
+        {
+          "at": 1794568707.6719677,
+          "event": "host_shutdown_requested",
+          "host": "mel0523",
+          "monotonic": 834082.30475038,
+          "pid": 30797,
+          "schema_version": 1,
+          "signal": 15
+        },
+        {
+          "at": 1794568707.6778703,
+          "event": "payload_stopped",
+          "exit_code": -15,
+          "host": "mel0523",
+          "monotonic": 834082.310651432,
+          "pid": 30797,
+          "schema_version": 1
+        },
+        {
+          "at": 1794568707.7117302,
+          "event": "bubble_cleanup_observed",
+          "host": "mel0523",
+          "instance_absent": false,
+          "monotonic": 834082.344511886,
+          "payload_exit_code": -15,
+          "pid": 30797,
+          "schema_version": 1,
+          "scope": "post-payload named-instance check; not entrypoint subphase timing"
+        },
+        {
+          "alive": false,
+          "at": 1794568707.73775,
+          "event": "host_collector_stopped",
+          "host": "mel0523",
+          "monotonic": 834082.370531218,
+          "pid": 30797,
+          "schema_version": 1
+        }
+      ],
+      "driver_events": [
+        {
+          "at": 1794567442.372846,
+          "backend": "skiff",
+          "event": "backend_launch_started",
+          "host": "mel0047",
+          "monotonic": 838854.002790198,
+          "pid": 21823,
+          "schema_version": 1
+        },
+        {
+          "at": 1794567491.9587116,
+          "backend": "skiff",
+          "event": "platform_ready",
+          "host": "mel0047",
+          "monotonic": 838903.588654418,
+          "pid": 21823,
+          "schema_version": 1
+        },
+        {
+          "at": 1794567493.2790887,
+          "backend": "skiff",
+          "event": "manifest_apply_started",
+          "host": "mel0047",
+          "monotonic": 838904.909031638,
+          "pid": 21823,
+          "schema_version": 1
+        },
+        {
+          "at": 1794567494.251266,
+          "backend": "skiff",
+          "event": "manifest_apply_finished",
+          "host": "mel0047",
+          "monotonic": 838905.881209902,
+          "pid": 21823,
+          "schema_version": 1
+        },
+        {
+          "at": 1794568705.214173,
+          "backend": "skiff",
+          "event": "all_workload_containers_stopped",
+          "host": "mel0047",
+          "monotonic": 840116.844116408,
+          "pid": 21823,
+          "schema_version": 1
+        },
+        {
+          "at": 1794568706.0616071,
+          "backend": "skiff",
+          "event": "backend_shutdown_requested",
+          "host": "mel0047",
+          "monotonic": 840117.691551677,
+          "pid": 21823,
+          "schema_version": 1
+        },
+        {
+          "at": 1794568719.4519846,
+          "backend": "skiff",
+          "event": "backend_stopped",
+          "exit_code": 0,
+          "host": "mel0047",
+          "monotonic": 840131.081927787,
+          "pid": 21823,
+          "schema_version": 1
+        }
+      ],
+      "entry": {
+        "backend": "skiff",
+        "charged_node_hours": 3.563888888888889,
+        "failure": "Missing/failed official bubble cleanup verification: mel0523",
+        "id": "pair-1-skiff",
+        "job_id": "5454052",
+        "pair": 1,
+        "pilot": false,
+        "submitted_at": 1794567433.1845236
+      },
+      "evidence_path": "/home/users/u102006/.skiff/experiments/campaign-20261113-r9-pairs/pair-1-skiff",
+      "identity": {
+        "backend": "skiff",
+        "config": "3c1c8c897c88360e41591962c45d3efaadb7043468fd0fc6ab4b338463a98cb6",
+        "environment": {
+          "architecture": "x86_64",
+          "packages": {
+            "grpcio": "1.84.0",
+            "gymnasium": "1.1.1",
+            "numpy": "2.2.6",
+            "pandas": "2.2.3",
+            "protobuf": "6.33.5",
+            "psutil": "7.0.0",
+            "pyarrow": "20.0.0",
+            "pydantic": "2.14.1",
+            "ray": "2.49.2",
+            "torch": "2.8.0+cpu"
+          },
+          "python": "3.11.17",
+          "system": "Linux",
+          "train_api": "0"
+        },
+        "source": "3c803d277297badbe26c60cd25a4e5533ddb0aafd2791d0b2c7693d7af9a7c1a"
+      },
+      "observer": {
+        "accounting_end": "2026-11-13T11:18:39",
+        "allocation_start": 1794567436.0,
+        "elapsed_seconds": 1283,
+        "exit_code": "0:0",
+        "job_id": "5454052",
+        "last_active_at": 1794568761.7669184,
+        "nodes": 10,
+        "poll_interval_seconds": 2,
+        "released_at": 1794568763.8129394,
+        "state": "COMPLETED",
+        "submitted_at": 1794567433.1845236
+      },
+      "phase_results": {
+        "batch": {
+          "artifacts": [],
+          "mae": 4.995572357315567,
+          "rows": 6000000,
+          "seasonal_mae": 9.696431315601245,
+          "wape": 0.1327163715644781
+        },
+        "evaluation": {
+          "artifacts": [],
+          "policies": {
+            "forecast_base_stock": {
+              "cost_std": 1247.7350106714043,
+              "episodes": 1200,
+              "fill_rate": 0.833375854489165,
+              "mean_cost": 3422.112291666666
+            },
+            "ppo": {
+              "cost_std": 255.16011249898182,
+              "episodes": 1200,
+              "fill_rate": 0.9921811131327439,
+              "mean_cost": 796.7264166666666
+            },
+            "reorder_point": {
+              "cost_std": 1428.1840230454222,
+              "episodes": 1200,
+              "fill_rate": 0.7988236425832856,
+              "mean_cost": 3892.345541666666
+            }
+          },
+          "workers": [
+            {
+              "node_id": "f3886b44d578781b25227fb844384639549fdaf96c9f77ef0bbc2c90",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1291.4499563877778,
+                  "episodes": 120,
+                  "fill_rate": 0.8328538571764983,
+                  "mean_cost": 3517.662916666667
+                },
+                "ppo": {
+                  "cost_std": 254.3798439669831,
+                  "episodes": 120,
+                  "fill_rate": 0.992524464577372,
+                  "mean_cost": 800.5300000000001
+                },
+                "reorder_point": {
+                  "cost_std": 1461.1349215734642,
+                  "episodes": 120,
+                  "fill_rate": 0.7985348170373082,
+                  "mean_cost": 3991.6954166666665
+                }
+              }
+            },
+            {
+              "node_id": "7b024a726eca8641794a943f9a4b2715bb57882cd52e7e3644003c68",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1238.7542831795415,
+                  "episodes": 120,
+                  "fill_rate": 0.8334014226105748,
+                  "mean_cost": 3580.0529166666665
+                },
+                "ppo": {
+                  "cost_std": 274.7444858406195,
+                  "episodes": 120,
+                  "fill_rate": 0.9923202985179578,
+                  "mean_cost": 829.1079166666666
+                },
+                "reorder_point": {
+                  "cost_std": 1474.887290825074,
+                  "episodes": 120,
+                  "fill_rate": 0.7971722816554306,
+                  "mean_cost": 4115.940416666666
+                }
+              }
+            },
+            {
+              "node_id": "be7b7e1fa76e37016224aa2edba71577bfef49548d905a025eeb0f5d",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1182.9337522641154,
+                  "episodes": 120,
+                  "fill_rate": 0.8351103552942992,
+                  "mean_cost": 3190.022916666667
+                },
+                "ppo": {
+                  "cost_std": 243.0462644787682,
+                  "episodes": 120,
+                  "fill_rate": 0.9917654458240871,
+                  "mean_cost": 761.9625
+                },
+                "reorder_point": {
+                  "cost_std": 1453.7028125101178,
+                  "episodes": 120,
+                  "fill_rate": 0.7958840972312532,
+                  "mean_cost": 3740.4479166666665
+                }
+              }
+            },
+            {
+              "node_id": "7415218813915e85362371b994e6911be2e2fe2211f1a2b9808b3117",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1264.5882386338142,
+                  "episodes": 120,
+                  "fill_rate": 0.8320718534985007,
+                  "mean_cost": 3471.724166666667
+                },
+                "ppo": {
+                  "cost_std": 257.052840707844,
+                  "episodes": 120,
+                  "fill_rate": 0.9920424285262281,
+                  "mean_cost": 806.1091666666667
+                },
+                "reorder_point": {
+                  "cost_std": 1376.6825894760539,
+                  "episodes": 120,
+                  "fill_rate": 0.7999254578991289,
+                  "mean_cost": 3873.4954166666666
+                }
+              }
+            },
+            {
+              "node_id": "2596f6710215b5dd9cd0f8915028a28ef5ae5e6dc7795910fa5f6b60",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1232.0412824553832,
+                  "episodes": 120,
+                  "fill_rate": 0.8338853760484178,
+                  "mean_cost": 3270.5058333333336
+                },
+                "ppo": {
+                  "cost_std": 240.95573867089678,
+                  "episodes": 120,
+                  "fill_rate": 0.9927456695454498,
+                  "mean_cost": 753.7262499999999
+                },
+                "reorder_point": {
+                  "cost_std": 1419.5721805735463,
+                  "episodes": 120,
+                  "fill_rate": 0.7966613529433901,
+                  "mean_cost": 3768.7599999999998
+                }
+              }
+            },
+            {
+              "node_id": "826d744c6a54f421d15de1d7251e416355b8a1512576514f5c1a436f",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1225.1271171545122,
+                  "episodes": 120,
+                  "fill_rate": 0.8343368637299418,
+                  "mean_cost": 3487.0329166666666
+                },
+                "ppo": {
+                  "cost_std": 256.44294459110307,
+                  "episodes": 120,
+                  "fill_rate": 0.9918986342364569,
+                  "mean_cost": 818.5316666666665
+                },
+                "reorder_point": {
+                  "cost_std": 1368.588951813905,
+                  "episodes": 120,
+                  "fill_rate": 0.8006906326005251,
+                  "mean_cost": 3936.4674999999997
+                }
+              }
+            },
+            {
+              "node_id": "0ac364600b6dc971469f122ce85e7218957ba77d3ef3b92b030659b7",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1182.9680829060037,
+                  "episodes": 120,
+                  "fill_rate": 0.8334225082232589,
+                  "mean_cost": 3427.2391666666663
+                },
+                "ppo": {
+                  "cost_std": 240.6143189227518,
+                  "episodes": 120,
+                  "fill_rate": 0.9928314742595942,
+                  "mean_cost": 790.6070833333332
+                },
+                "reorder_point": {
+                  "cost_std": 1434.7199271835736,
+                  "episodes": 120,
+                  "fill_rate": 0.8026018173445721,
+                  "mean_cost": 3869.515833333333
+                }
+              }
+            },
+            {
+              "node_id": "3a0d1719d97dddf5f85f0d79dbd6fd6860b5056d53e3692ba94853ec",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1274.925379608262,
+                  "episodes": 120,
+                  "fill_rate": 0.8323427260739632,
+                  "mean_cost": 3332.4087500000005
+                },
+                "ppo": {
+                  "cost_std": 249.25136164755395,
+                  "episodes": 120,
+                  "fill_rate": 0.9917108368967751,
+                  "mean_cost": 778.9154166666667
+                },
+                "reorder_point": {
+                  "cost_std": 1385.0367057981384,
+                  "episodes": 120,
+                  "fill_rate": 0.7963085234530538,
+                  "mean_cost": 3790.632083333333
+                }
+              }
+            },
+            {
+              "node_id": "bf3fc906dbf219473f29b4c3f4214c33c596760468852942a8ee2fe5",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1171.6105716408313,
+                  "episodes": 120,
+                  "fill_rate": 0.8344205730988397,
+                  "mean_cost": 3504.7816666666663
+                },
+                "ppo": {
+                  "cost_std": 248.7335917410768,
+                  "episodes": 120,
+                  "fill_rate": 0.9922151139305793,
+                  "mean_cost": 826.3725
+                },
+                "reorder_point": {
+                  "cost_std": 1338.7555039490942,
+                  "episodes": 120,
+                  "fill_rate": 0.8034901359263993,
+                  "mean_cost": 3924.2004166666666
+                }
+              }
+            },
+            {
+              "node_id": "321a61ac81052411b866e773d153e3b9560a85861440cc73ae7a5479",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1348.4645189271964,
+                  "episodes": 120,
+                  "fill_rate": 0.8319130091373557,
+                  "mean_cost": 3439.6916666666666
+                },
+                "ppo": {
+                  "cost_std": 272.16446428992566,
+                  "episodes": 120,
+                  "fill_rate": 0.9917567650129406,
+                  "mean_cost": 801.4016666666666
+                },
+                "reorder_point": {
+                  "cost_std": 1519.3265382028071,
+                  "episodes": 120,
+                  "fill_rate": 0.7969673097417952,
+                  "mean_cost": 3912.3004166666665
+                }
+              }
+            }
+          ]
+        },
+        "recovery": {
+          "artifacts": [
+            "/report/recovery/ledger.json",
+            "/report/recovery/crashed"
+          ],
+          "duplicate_total": 18,
+          "intentional_actor_failures": 1,
+          "restored_total": 18
+        },
+        "serve": {
+          "artifacts": [],
+          "autoscale": false,
+          "client_node_id": "7b024a726eca8641794a943f9a4b2715bb57882cd52e7e3644003c68",
+          "direct_inference_verified": true,
+          "elapsed_seconds": 168.67871841206215,
+          "errors": 0,
+          "forecast_replica_ids": [
+            "1e0b69bd2e9df81e0aa3902302000000",
+            "1ee4998c8acbed387b0e685502000000",
+            "2be936a4e7117b252d84fb5602000000",
+            "2f3eee80275635d4f2bd2e2202000000",
+            "4a6b7b7a76e059b15234cef902000000",
+            "85f73986567d8869fb507e4202000000",
+            "ad5cec124418a77962e632e602000000",
+            "b1538cf2390b12045b7a3c0802000000",
+            "d56c500cfc43f3dd475839d502000000",
+            "fd02333251a0aff6c07f8c2c02000000"
+          ],
+          "latency_ms": {
+            "p50": 1478.162965446245,
+            "p95": 4902.019380504498,
+            "p99": 5500.3640416252865
+          },
+          "policy_replica_ids": [
+            "1027e734a7fe822ca109c7d202000000",
+            "42085d802cfb66235f9992d502000000",
+            "46c2abc848712c194503abbb02000000",
+            "7906c34532cd1196221dcb5002000000",
+            "8621bfad5e21c9decd36c49702000000",
+            "9ad8e4e8a3821371c87ff2e302000000",
+            "b78ce71974c55849a5dca1f702000000",
+            "cbd367728269862588139d4002000000",
+            "cd23f79e3946cb0813e85fc802000000",
+            "f246ce0ce0a547b112ca983702000000"
+          ],
+          "requests": 20000,
+          "requests_per_second": 118.56860301216166,
+          "status": "ServeStatus(proxies={'7b024a726eca8641794a943f9a4b2715bb57882cd52e7e3644003c68': <ProxyStatus.HEALTHY: 'HEALTHY'>}, applications={'retail': ApplicationStatusOverview(status=<ApplicationStatus.RUNNING: 'RUNNING'>, message='', last_deployed_time_s=1794568517.8709164, deployments={'ForecastDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 10}, message=''), 'PolicyDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 10}, message=''), 'RetailAPI': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 1}, message='')})}, target_capacity=None)"
+        }
+      },
+      "phase_seconds": {
+        "batch": 41.00106132798828,
+        "data": 562.5512560140342,
+        "evaluation": 12.519043638021685,
+        "policy": 172.85344622901175,
+        "recovery": 3.2183886249549687,
+        "serve": 181.27175016701221,
+        "train": 180.22473769495264,
+        "tune": 35.33249930804595
+      },
+      "ray_startup_seconds": 6.2968489659251645,
+      "train_validation_mae": 5.239239102522532,
+      "validation_status": "FAILED"
+    },
+    "pair-1-slurm": {
+      "application_seconds": 1252.452433241997,
+      "application_status": "complete",
+      "cleanup_checks": [],
+      "config": {
+        "batch": {
+          "cpus_per_worker": 8,
+          "threads": 8,
+          "workers": 150
+        },
+        "data": {
+          "blocks": 2560,
+          "days": 1000,
+          "max_pending": 1280,
+          "series": 40000,
+          "train_end": 700,
+          "validation_end": 850
+        },
+        "deadline_seconds": 2700,
+        "deployment": {
+          "heap_bytes": 412316860416,
+          "minimum_memory_bytes": 515396075520,
+          "object_store_bytes": 68719476736,
+          "physical_cores": 128,
+          "pod_memory_bytes": 506806140928,
+          "ray_cpus": 128
+        },
+        "device": "cpu",
+        "expected_nodes": 10,
+        "rl": {
+          "batch_size": 65536,
+          "cpus_per_learner": 16,
+          "env_runners": 1100,
+          "epochs": 4,
+          "evaluation_episodes": 1200,
+          "hidden": 128,
+          "horizon": 84,
+          "iterations": 8,
+          "layers": 2,
+          "minibatch_size": 512
+        },
+        "schema_version": 1,
+        "seed": 731,
+        "serve": {
+          "autoscale": false,
+          "batch_size": 32,
+          "concurrency": 256,
+          "cpus_per_replica": 8,
+          "port": 18080,
+          "replicas": 10,
+          "requests": 20000,
+          "threads": 8
+        },
+        "train": {
+          "batch_size": 2048,
+          "cpus_per_worker": 31,
+          "epochs": 4,
+          "hidden": 512,
+          "layers": 3,
+          "lr": 0.001,
+          "max_batches": 128,
+          "threads": 31,
+          "use_tuned": false,
+          "workers": 40
+        },
+        "tune": {
+          "adaptive": false,
+          "concurrency": 40,
+          "epochs": 2,
+          "trials": 40
+        }
+      },
+      "diagnostic_host_events": [
+        {
+          "at": 1794565997.3728375,
+          "backend": "slurm",
+          "event": "host_collector_started",
+          "host": "mel0523",
+          "monotonic": 831372.005619473,
+          "pid": 7635,
+          "schema_version": 1
+        },
+        {
+          "at": 1794567268.8103018,
+          "event": "payload_stopped",
+          "exit_code": 0,
+          "host": "mel0523",
+          "monotonic": 832643.443083616,
+          "pid": 7635,
+          "schema_version": 1
+        },
+        {
+          "alive": false,
+          "at": 1794567268.822445,
+          "event": "host_collector_stopped",
+          "host": "mel0523",
+          "monotonic": 832643.455225952,
+          "pid": 7635,
+          "schema_version": 1
+        }
+      ],
+      "driver_events": [
+        {
+          "at": 1794565996.7235513,
+          "backend": "slurm",
+          "event": "backend_launch_started",
+          "host": "mel0047",
+          "monotonic": 837408.353495278,
+          "pid": 18108,
+          "schema_version": 1
+        },
+        {
+          "at": 1794567269.1206565,
+          "backend": "slurm",
+          "event": "backend_shutdown_requested",
+          "host": "mel0047",
+          "monotonic": 838680.750601513,
+          "pid": 18108,
+          "schema_version": 1
+        },
+        {
+          "at": 1794567269.1238346,
+          "backend": "slurm",
+          "event": "backend_stopped",
+          "exit_code": 0,
+          "host": "mel0047",
+          "monotonic": 838680.753777341,
+          "pid": 18108,
+          "schema_version": 1
+        }
+      ],
+      "entry": {
+        "backend": "slurm",
+        "charged_node_hours": 3.55,
+        "id": "pair-1-slurm",
+        "job_id": "5453941",
+        "pair": 1,
+        "pilot": false,
+        "submitted_at": 1794565990.8306556,
+        "validation": "PASS"
+      },
+      "evidence_path": "/home/users/u102006/.skiff/experiments/campaign-20261113-r9-pairs/pair-1-slurm",
+      "host_summary": {
+        "mel0047": {
+          "mean_physical_cpu_busy_percent": 34.696546429649416,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        },
+        "mel0136": {
+          "mean_physical_cpu_busy_percent": 30.83228987083777,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        },
+        "mel0174": {
+          "mean_physical_cpu_busy_percent": 30.018367599169714,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        },
+        "mel0240": {
+          "mean_physical_cpu_busy_percent": 31.75420354474036,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        },
+        "mel0385": {
+          "mean_physical_cpu_busy_percent": 30.908693287856902,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        },
+        "mel0411": {
+          "mean_physical_cpu_busy_percent": 28.802290075323693,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        },
+        "mel0434": {
+          "mean_physical_cpu_busy_percent": 29.54042843210643,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        },
+        "mel0510": {
+          "mean_physical_cpu_busy_percent": 30.88360459485652,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        },
+        "mel0523": {
+          "mean_physical_cpu_busy_percent": 31.27377634278159,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        },
+        "mel0536": {
+          "mean_physical_cpu_busy_percent": 30.078560945433477,
+          "transport_deviations": [],
+          "transport_kind": "gloo_tcp_ipoib"
+        }
+      },
+      "identity": {
+        "backend": "slurm",
+        "config": "3c1c8c897c88360e41591962c45d3efaadb7043468fd0fc6ab4b338463a98cb6",
+        "environment": {
+          "architecture": "x86_64",
+          "packages": {
+            "grpcio": "1.84.0",
+            "gymnasium": "1.1.1",
+            "numpy": "2.2.6",
+            "pandas": "2.2.3",
+            "protobuf": "6.33.5",
+            "psutil": "7.0.0",
+            "pyarrow": "20.0.0",
+            "pydantic": "2.14.1",
+            "ray": "2.49.2",
+            "torch": "2.8.0+cpu"
+          },
+          "python": "3.11.17",
+          "system": "Linux",
+          "train_api": "0"
+        },
+        "source": "3c803d277297badbe26c60cd25a4e5533ddb0aafd2791d0b2c7693d7af9a7c1a"
+      },
+      "observer": {
+        "accounting_end": "2026-11-13T10:54:29",
+        "allocation_start": 1794565991.0,
+        "elapsed_seconds": 1278,
+        "exit_code": "0:0",
+        "job_id": "5453941",
+        "last_active_at": 1794567313.0312374,
+        "nodes": 10,
+        "poll_interval_seconds": 2,
+        "released_at": 1794567315.0590951,
+        "state": "COMPLETED",
+        "submitted_at": 1794565990.8306556
+      },
+      "phase_results": {
+        "batch": {
+          "artifacts": [],
+          "mae": 4.998346019807841,
+          "rows": 6000000,
+          "seasonal_mae": 9.696431315601245,
+          "wape": 0.1327900589011015
+        },
+        "evaluation": {
+          "artifacts": [],
+          "policies": {
+            "forecast_base_stock": {
+              "cost_std": 1274.2573841309786,
+              "episodes": 1200,
+              "fill_rate": 0.8349014109177294,
+              "mean_cost": 3412.3479166666666
+            },
+            "ppo": {
+              "cost_std": 252.0390412930853,
+              "episodes": 1200,
+              "fill_rate": 0.9917539713773997,
+              "mean_cost": 786.95125
+            },
+            "reorder_point": {
+              "cost_std": 1428.1840230454222,
+              "episodes": 1200,
+              "fill_rate": 0.7988236425832856,
+              "mean_cost": 3892.345541666666
+            }
+          },
+          "workers": [
+            {
+              "node_id": "a1226796d72f1a6ba9ee973542cb12971522e6a23b908a2df5c1715c",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1310.0066098030209,
+                  "episodes": 120,
+                  "fill_rate": 0.8348893924715083,
+                  "mean_cost": 3496.35125
+                },
+                "ppo": {
+                  "cost_std": 252.0219452219142,
+                  "episodes": 120,
+                  "fill_rate": 0.991206735811796,
+                  "mean_cost": 808.8362500000001
+                },
+                "reorder_point": {
+                  "cost_std": 1461.1349215734642,
+                  "episodes": 120,
+                  "fill_rate": 0.7985348170373082,
+                  "mean_cost": 3991.6954166666665
+                }
+              }
+            },
+            {
+              "node_id": "f66e9a143c30a0f72fc56623201488ab8190347c7170f9b30bb82593",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1264.6560191625204,
+                  "episodes": 120,
+                  "fill_rate": 0.8343303345324161,
+                  "mean_cost": 3578.6404166666666
+                },
+                "ppo": {
+                  "cost_std": 268.5346475886409,
+                  "episodes": 120,
+                  "fill_rate": 0.9922111110514807,
+                  "mean_cost": 809.1183333333333
+                },
+                "reorder_point": {
+                  "cost_std": 1474.887290825074,
+                  "episodes": 120,
+                  "fill_rate": 0.7971722816554306,
+                  "mean_cost": 4115.940416666666
+                }
+              }
+            },
+            {
+              "node_id": "f8d544b2b037f8182da9bdd7daead043994832488832302647fb17a0",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1216.4300955373444,
+                  "episodes": 120,
+                  "fill_rate": 0.8363837048595719,
+                  "mean_cost": 3189.0604166666667
+                },
+                "ppo": {
+                  "cost_std": 243.30415419228302,
+                  "episodes": 120,
+                  "fill_rate": 0.9913448134362433,
+                  "mean_cost": 754.5883333333333
+                },
+                "reorder_point": {
+                  "cost_std": 1453.7028125101178,
+                  "episodes": 120,
+                  "fill_rate": 0.7958840972312532,
+                  "mean_cost": 3740.4479166666665
+                }
+              }
+            },
+            {
+              "node_id": "735eb8a7f19946b33de96543a7e885068e35952f00bbd5fd113d8575",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1280.5185447195445,
+                  "episodes": 120,
+                  "fill_rate": 0.83347319404784,
+                  "mean_cost": 3460.260416666667
+                },
+                "ppo": {
+                  "cost_std": 247.92939848400167,
+                  "episodes": 120,
+                  "fill_rate": 0.991752828287135,
+                  "mean_cost": 791.4891666666665
+                },
+                "reorder_point": {
+                  "cost_std": 1376.6825894760539,
+                  "episodes": 120,
+                  "fill_rate": 0.7999254578991289,
+                  "mean_cost": 3873.4954166666666
+                }
+              }
+            },
+            {
+              "node_id": "9d9ef2243bc97a3503d026b6b1fbb10ed5f2b5fee6ac82e2dcd42733",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1262.3536660075254,
+                  "episodes": 120,
+                  "fill_rate": 0.8360817574126522,
+                  "mean_cost": 3252.599166666667
+                },
+                "ppo": {
+                  "cost_std": 235.30332849767197,
+                  "episodes": 120,
+                  "fill_rate": 0.9923584586501272,
+                  "mean_cost": 744.5575
+                },
+                "reorder_point": {
+                  "cost_std": 1419.5721805735463,
+                  "episodes": 120,
+                  "fill_rate": 0.7966613529433901,
+                  "mean_cost": 3768.7599999999998
+                }
+              }
+            },
+            {
+              "node_id": "f0e9e409b5b72bf379d581b42afaa0858af854b0daae5cb1018ea625",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1244.9092129375422,
+                  "episodes": 120,
+                  "fill_rate": 0.835596905457853,
+                  "mean_cost": 3477.7237499999997
+                },
+                "ppo": {
+                  "cost_std": 254.90024089466792,
+                  "episodes": 120,
+                  "fill_rate": 0.9919486477775064,
+                  "mean_cost": 800.6854166666667
+                },
+                "reorder_point": {
+                  "cost_std": 1368.588951813905,
+                  "episodes": 120,
+                  "fill_rate": 0.8006906326005251,
+                  "mean_cost": 3936.4674999999997
+                }
+              }
+            },
+            {
+              "node_id": "48a90a7f81d5fce82612a85a557435d04dd698dc5e92c330692a042c",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1206.5876489947884,
+                  "episodes": 120,
+                  "fill_rate": 0.8347919867640097,
+                  "mean_cost": 3414.5762499999996
+                },
+                "ppo": {
+                  "cost_std": 234.23457040373484,
+                  "episodes": 120,
+                  "fill_rate": 0.9925549265111716,
+                  "mean_cost": 778.5416666666666
+                },
+                "reorder_point": {
+                  "cost_std": 1434.7199271835736,
+                  "episodes": 120,
+                  "fill_rate": 0.8026018173445721,
+                  "mean_cost": 3869.515833333333
+                }
+              }
+            },
+            {
+              "node_id": "d8954f0349c62268bf5b4f9898deef7db80873051a36bfa7418318a6",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1308.5577803433912,
+                  "episodes": 120,
+                  "fill_rate": 0.8342240394353434,
+                  "mean_cost": 3320.951666666667
+                },
+                "ppo": {
+                  "cost_std": 242.95717125107953,
+                  "episodes": 120,
+                  "fill_rate": 0.991399414779205,
+                  "mean_cost": 764.7704166666667
+                },
+                "reorder_point": {
+                  "cost_std": 1385.0367057981384,
+                  "episodes": 120,
+                  "fill_rate": 0.7963085234530538,
+                  "mean_cost": 3790.632083333333
+                }
+              }
+            },
+            {
+              "node_id": "202d46853379a9cdcb5de3b9317fe9dd3f9ddf138a6ef78514761a8c",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1207.3096255776004,
+                  "episodes": 120,
+                  "fill_rate": 0.8359275138068721,
+                  "mean_cost": 3495.9304166666657
+                },
+                "ppo": {
+                  "cost_std": 252.29482678691113,
+                  "episodes": 120,
+                  "fill_rate": 0.9916463807300526,
+                  "mean_cost": 821.3762499999999
+                },
+                "reorder_point": {
+                  "cost_std": 1338.7555039490942,
+                  "episodes": 120,
+                  "fill_rate": 0.8034901359263993,
+                  "mean_cost": 3924.2004166666666
+                }
+              }
+            },
+            {
+              "node_id": "9cc70d0aa3a5e4d7f74f93463740bd99049f02b868af4eebd038a7b8",
+              "policies": {
+                "forecast_base_stock": {
+                  "cost_std": 1378.6514290602342,
+                  "episodes": 120,
+                  "fill_rate": 0.8333152803892269,
+                  "mean_cost": 3437.3854166666665
+                },
+                "ppo": {
+                  "cost_std": 274.24554888391333,
+                  "episodes": 120,
+                  "fill_rate": 0.9911163967392795,
+                  "mean_cost": 795.5491666666666
+                },
+                "reorder_point": {
+                  "cost_std": 1519.3265382028071,
+                  "episodes": 120,
+                  "fill_rate": 0.7969673097417952,
+                  "mean_cost": 3912.3004166666665
+                }
+              }
+            }
+          ]
+        },
+        "recovery": {
+          "artifacts": [
+            "/mnt/tier2/project/p200528/ray-ten-node-20261112/state/experiments/campaign-20261113-r9-pairs/pair-1-slurm/application/recovery/ledger.json",
+            "/mnt/tier2/project/p200528/ray-ten-node-20261112/state/experiments/campaign-20261113-r9-pairs/pair-1-slurm/application/recovery/crashed"
+          ],
+          "duplicate_total": 18,
+          "intentional_actor_failures": 1,
+          "restored_total": 18
+        },
+        "serve": {
+          "artifacts": [],
+          "autoscale": false,
+          "client_node_id": "9d9ef2243bc97a3503d026b6b1fbb10ed5f2b5fee6ac82e2dcd42733",
+          "direct_inference_verified": true,
+          "elapsed_seconds": 183.56034153397195,
+          "errors": 0,
+          "forecast_replica_ids": [
+            "052658d6bf292924d128059202000000",
+            "0bc3365d8423b6f5665ab51902000000",
+            "37803f4f27c7d50e793dbdb002000000",
+            "3c2ec47ddef22253b2a9f89e02000000",
+            "68ae659620ae79b2da734c6b02000000",
+            "83919c0c0019e35e142f4ed602000000",
+            "8b368fa965d94d28fdf478da02000000",
+            "953998fedfdd8a6c8731d4ca02000000",
+            "bb8220248811186c46981cbb02000000",
+            "fe2f3c978b7db00702c6412602000000"
+          ],
+          "latency_ms": {
+            "p50": 1615.1489159674384,
+            "p95": 5270.483999577117,
+            "p99": 6262.5060857227045
+          },
+          "policy_replica_ids": [
+            "10cc7e12e03b025a04fa97a502000000",
+            "19b999496929b7adf219dfba02000000",
+            "1e3a221ce7c2885a5c474cea02000000",
+            "22ec1a6e46f6eeab8367d16402000000",
+            "433c14e13fb09e1c61d25c5902000000",
+            "56c73a72f6e662fd5a38e37702000000",
+            "5840c20629607e012c1e1a9802000000",
+            "5c110a439e5b69fba4757f9302000000",
+            "9ee0cd2d87ed24829348139502000000",
+            "c4cb6ff5f28c0d06307316d902000000"
+          ],
+          "requests": 20000,
+          "requests_per_second": 108.95599688290268,
+          "status": "ServeStatus(proxies={'9d9ef2243bc97a3503d026b6b1fbb10ed5f2b5fee6ac82e2dcd42733': <ProxyStatus.HEALTHY: 'HEALTHY'>}, applications={'retail': ApplicationStatusOverview(status=<ApplicationStatus.RUNNING: 'RUNNING'>, message='', last_deployed_time_s=1794567065.5180984, deployments={'ForecastDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 10}, message=''), 'PolicyDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 10}, message=''), 'RetailAPI': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 1}, message='')})}, target_capacity=None)"
+        }
+      },
+      "phase_seconds": {
+        "batch": 47.99178284290247,
+        "data": 569.0180680489866,
+        "evaluation": 12.74011234997306,
+        "policy": 182.31409743998665,
+        "recovery": 3.495924469898455,
+        "serve": 198.53331425308716,
+        "train": 193.069287093007,
+        "tune": 36.037336720037274
+      },
+      "ray_startup_seconds": 7.485669672023505,
+      "train_validation_mae": 5.2357088858604435,
+      "validation_status": "PASS",
+      "validation_summary": {
+        "allocation_to_application_seconds": 21.956075429916382,
+        "application_end_to_backend_stopped_seconds": 3.7153255939483643,
+        "application_seconds": 1252.452433241997,
+        "mean_physical_cpu_busy_percent": 30.878876112275588,
+        "node_hours": 3.55,
+        "platform_cleanup_seconds": 3.3222970962524414,
+        "ray_startup_seconds": 7.485669672023505
+      }
+    }
+  }
+}

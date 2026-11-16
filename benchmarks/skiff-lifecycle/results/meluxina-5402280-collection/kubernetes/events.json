@@ -1,0 +1,1647 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:09Z",
+            "involvedObject": {
+                "kind": "Node",
+                "name": "mel0126",
+                "uid": "mel0126"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:09Z",
+            "message": "Node and Certificate Authority certificates managed by k3s are OK",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:09Z",
+                "name": "mel0126.18e34939f7e127b2",
+                "namespace": "default",
+                "resourceVersion": "208",
+                "uid": "d8692c83-e900-45c7-bc07-dda0cdb6eb05"
+            },
+            "reason": "CertificateExpirationOK",
+            "reportingComponent": "k3s-cert-monitor",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "k3s-cert-monitor",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:14Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Node",
+                "name": "mel0126",
+                "uid": "068fd605-3988-44d9-8f65-e080c9f05236"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:14Z",
+            "message": "Node mel0126 event: Registered Node mel0126 in Controller",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:14Z",
+                "name": "mel0126.18e3493b19589c6b",
+                "namespace": "default",
+                "resourceVersion": "353",
+                "uid": "9f8c3bde-75fa-459d-86ad-218597a2b344"
+            },
+            "reason": "RegisteredNode",
+            "reportingComponent": "node-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "node-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:14Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Node",
+                "name": "mel0126",
+                "uid": "068fd605-3988-44d9-8f65-e080c9f05236"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:14Z",
+            "message": "Node mel0126 status is now: CIDRAssignmentFailed",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:14Z",
+                "name": "mel0126.18e3493b1a648a4f",
+                "namespace": "default",
+                "resourceVersion": "356",
+                "uid": "ec4277a2-f58d-4205-99a2-f191003084e3"
+            },
+            "reason": "CIDRAssignmentFailed",
+            "reportingComponent": "cidrAllocator",
+            "reportingInstance": "",
+            "source": {
+                "component": "cidrAllocator"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:17Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Node",
+                "name": "mel0132",
+                "uid": "7ba5acde-a153-4981-b56e-da71f309b8f1"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:17Z",
+            "message": "Node mel0132 status is now: CIDRAssignmentFailed",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:17Z",
+                "name": "mel0132.18e3493bc2304fc4",
+                "namespace": "default",
+                "resourceVersion": "450",
+                "uid": "5c023ffe-3080-46a6-a30e-083b4e155d6d"
+            },
+            "reason": "CIDRAssignmentFailed",
+            "reportingComponent": "cidrAllocator",
+            "reportingInstance": "",
+            "source": {
+                "component": "cidrAllocator"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:18Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Node",
+                "name": "mel0132",
+                "uid": "7ba5acde-a153-4981-b56e-da71f309b8f1"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:18Z",
+            "message": "Node mel0132 event: Registered Node mel0132 in Controller",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:18Z",
+                "name": "mel0132.18e3493c07e1bd03",
+                "namespace": "default",
+                "resourceVersion": "457",
+                "uid": "ef7d8be5-8e77-4058-99d4-471085ff9595"
+            },
+            "reason": "RegisteredNode",
+            "reportingComponent": "node-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "node-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "aggregated-metrics-reader",
+                "namespace": "kube-system",
+                "resourceVersion": "259",
+                "uid": "aae9061a-320c-4021-9ae4-f804be6efcb5"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/aggregated-metrics-reader.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "aggregated-metrics-reader.18e3493a6a3c8f0a",
+                "namespace": "kube-system",
+                "resourceVersion": "260",
+                "uid": "eede58a4-7882-44a5-93a4-67853ef4e927"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "aggregated-metrics-reader",
+                "namespace": "kube-system",
+                "resourceVersion": "259",
+                "uid": "aae9061a-320c-4021-9ae4-f804be6efcb5"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/aggregated-metrics-reader.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "aggregated-metrics-reader.18e3493a6fe754c4",
+                "namespace": "kube-system",
+                "resourceVersion": "263",
+                "uid": "78799230-5577-4c55-9895-c5dc76f551b9"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "auth-delegator",
+                "namespace": "kube-system",
+                "resourceVersion": "264",
+                "uid": "4ea694f6-02cf-4a3f-aef2-c79dadc135c3"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/auth-delegator.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "auth-delegator.18e3493a702f9152",
+                "namespace": "kube-system",
+                "resourceVersion": "265",
+                "uid": "838d1901-780f-4f12-83d5-ac76639ca5de"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "auth-delegator",
+                "namespace": "kube-system",
+                "resourceVersion": "264",
+                "uid": "4ea694f6-02cf-4a3f-aef2-c79dadc135c3"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/auth-delegator.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "auth-delegator.18e3493a706f7e5a",
+                "namespace": "kube-system",
+                "resourceVersion": "267",
+                "uid": "f99e6041-413a-4a71-8ffc-decd0b0ebc13"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "auth-reader",
+                "namespace": "kube-system",
+                "resourceVersion": "269",
+                "uid": "51e0db3f-e20f-4536-9430-1baee1c5d954"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/auth-reader.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "auth-reader.18e3493a70c9627b",
+                "namespace": "kube-system",
+                "resourceVersion": "270",
+                "uid": "a5a5938d-513e-48d8-a765-64add600bcca"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "auth-reader",
+                "namespace": "kube-system",
+                "resourceVersion": "269",
+                "uid": "51e0db3f-e20f-4536-9430-1baee1c5d954"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/auth-reader.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "auth-reader.18e3493a7101913b",
+                "namespace": "kube-system",
+                "resourceVersion": "272",
+                "uid": "b5ff2205-49d5-4759-9889-6c24bd8b194f"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "ccm",
+                "namespace": "kube-system"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Deleting manifest at \"/var/lib/rancher/k3s/server/manifests/ccm.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "ccm.18e3493a5cb7678c",
+                "namespace": "kube-system",
+                "resourceVersion": "244",
+                "uid": "2338fe65-f109-4e8e-ac2e-7034c5957c91"
+            },
+            "reason": "DeletingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "action": "Scheduling",
+            "apiVersion": "v1",
+            "eventTime": "2026-10-30T10:53:15.863746Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "coredns-84796fbbc9-9dhhh",
+                "namespace": "kube-system",
+                "resourceVersion": "398",
+                "uid": "f67ea45e-9da0-4e0e-88cb-e883ed0834e9"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "0/1 nodes are available: 1 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling.",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:15Z",
+                "name": "coredns-84796fbbc9-9dhhh.18e3493b58b51f7a",
+                "namespace": "kube-system",
+                "resourceVersion": "407",
+                "uid": "78f10def-18df-40f4-8fe7-2fc84c3c917a"
+            },
+            "reason": "FailedScheduling",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-mel0126",
+            "source": {},
+            "type": "Warning"
+        },
+        {
+            "action": "Binding",
+            "apiVersion": "v1",
+            "eventTime": "2026-10-30T10:53:16.250838Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "coredns-84796fbbc9-9dhhh",
+                "namespace": "kube-system",
+                "resourceVersion": "408",
+                "uid": "f67ea45e-9da0-4e0e-88cb-e883ed0834e9"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "Successfully assigned kube-system/coredns-84796fbbc9-9dhhh to mel0126",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:16Z",
+                "name": "coredns-84796fbbc9-9dhhh.18e3493b6fc7ad50",
+                "namespace": "kube-system",
+                "resourceVersion": "420",
+                "uid": "7fb06acb-603e-4d04-b788-b8e815ddaf74"
+            },
+            "reason": "Scheduled",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-mel0126",
+            "source": {},
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:16Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "coredns-84796fbbc9-9dhhh",
+                "namespace": "kube-system",
+                "resourceVersion": "418",
+                "uid": "f67ea45e-9da0-4e0e-88cb-e883ed0834e9"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:16Z",
+            "message": "Create pod in provider successfully",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:16Z",
+                "name": "coredns-84796fbbc9-9dhhh.18e3493b7077bbd9",
+                "namespace": "kube-system",
+                "resourceVersion": "424",
+                "uid": "9e355697-f9b6-4fed-a6ad-160067b7b582"
+            },
+            "reason": "ProviderCreateSuccess",
+            "reportingComponent": "skifflet-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "skifflet-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:16Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "coredns-84796fbbc9-9dhhh",
+                "namespace": "kube-system",
+                "resourceVersion": "418",
+                "uid": "f67ea45e-9da0-4e0e-88cb-e883ed0834e9"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:16Z",
+            "message": "securityContext fields accepted and not applied (containers run without privileges, with a writable root filesystem of their own, and their volumes are writable by any user; only runAsUser, runAsGroup and runAsNonRoot are applied): container coredns: capabilities, readOnlyRootFilesystem",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:16Z",
+                "name": "coredns-84796fbbc9-9dhhh.18e3493b70787b41",
+                "namespace": "kube-system",
+                "resourceVersion": "425",
+                "uid": "229d91ee-5145-414a-a018-d1375fa72fc4"
+            },
+            "reason": "SecurityContextNotApplied",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "kubelet",
+                "host": "mel0126"
+            },
+            "type": "Warning"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:15Z",
+            "involvedObject": {
+                "apiVersion": "apps/v1",
+                "kind": "ReplicaSet",
+                "name": "coredns-84796fbbc9",
+                "namespace": "kube-system",
+                "resourceVersion": "365",
+                "uid": "adcea622-6501-40ea-a66a-f9da4fd4f757"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:15Z",
+            "message": "Created pod: coredns-84796fbbc9-9dhhh",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:15Z",
+                "name": "coredns-84796fbbc9.18e3493b57081e52",
+                "namespace": "kube-system",
+                "resourceVersion": "402",
+                "uid": "a4085b5d-5f65-4c41-967c-acc2afe955cb"
+            },
+            "reason": "SuccessfulCreate",
+            "reportingComponent": "replicaset-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "replicaset-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "coredns",
+                "namespace": "kube-system",
+                "resourceVersion": "245",
+                "uid": "1c2df359-4448-440e-a411-3031585eba61"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/coredns.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "coredns.18e3493a5d1f4a67",
+                "namespace": "kube-system",
+                "resourceVersion": "247",
+                "uid": "7b039d9e-05dc-4f82-a3aa-394bf8b9160c"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "coredns",
+                "namespace": "kube-system",
+                "resourceVersion": "245",
+                "uid": "1c2df359-4448-440e-a411-3031585eba61"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/coredns.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "coredns.18e3493a646ffdbf",
+                "namespace": "kube-system",
+                "resourceVersion": "255",
+                "uid": "79f442e4-677a-4f9b-b848-e885a1992135"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:15Z",
+            "involvedObject": {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "name": "coredns",
+                "namespace": "kube-system",
+                "resourceVersion": "345",
+                "uid": "c01c3c78-4bc5-44c5-b2ae-ca98d458d553"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:15Z",
+            "message": "Scaled up replica set coredns-84796fbbc9 from 0 to 1",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:15Z",
+                "name": "coredns.18e3493b3a98a5ff",
+                "namespace": "kube-system",
+                "resourceVersion": "367",
+                "uid": "3009f1fe-1229-481c-b9ce-ab7ff75a842a"
+            },
+            "reason": "ScalingReplicaSet",
+            "reportingComponent": "deployment-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "deployment-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "action": "Scheduling",
+            "apiVersion": "v1",
+            "eventTime": "2026-10-30T10:53:15.800183Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "local-path-provisioner-6f749b4dcb-r92p7",
+                "namespace": "kube-system",
+                "resourceVersion": "391",
+                "uid": "31b03c7f-fd7d-449c-8b35-2e504aee5c52"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "0/1 nodes are available: 1 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling.",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:15Z",
+                "name": "local-path-provisioner-6f749b4dcb-r92p7.18e3493b54eb3c1f",
+                "namespace": "kube-system",
+                "resourceVersion": "397",
+                "uid": "211311d1-610b-43a6-815a-5399cde504a1"
+            },
+            "reason": "FailedScheduling",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-mel0126",
+            "source": {},
+            "type": "Warning"
+        },
+        {
+            "action": "Binding",
+            "apiVersion": "v1",
+            "eventTime": "2026-10-30T10:53:16.259205Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "local-path-provisioner-6f749b4dcb-r92p7",
+                "namespace": "kube-system",
+                "resourceVersion": "400",
+                "uid": "31b03c7f-fd7d-449c-8b35-2e504aee5c52"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "Successfully assigned kube-system/local-path-provisioner-6f749b4dcb-r92p7 to mel0126",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:16Z",
+                "name": "local-path-provisioner-6f749b4dcb-r92p7.18e3493b70474945",
+                "namespace": "kube-system",
+                "resourceVersion": "423",
+                "uid": "1a5db609-a4ef-4985-ad5e-0a99c78b6f6b"
+            },
+            "reason": "Scheduled",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-mel0126",
+            "source": {},
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:16Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "local-path-provisioner-6f749b4dcb-r92p7",
+                "namespace": "kube-system",
+                "resourceVersion": "422",
+                "uid": "31b03c7f-fd7d-449c-8b35-2e504aee5c52"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:16Z",
+            "message": "Create pod in provider successfully",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:16Z",
+                "name": "local-path-provisioner-6f749b4dcb-r92p7.18e3493b709d2f3d",
+                "namespace": "kube-system",
+                "resourceVersion": "428",
+                "uid": "13a63a73-3cb7-437a-bb6e-1a332622dac5"
+            },
+            "reason": "ProviderCreateSuccess",
+            "reportingComponent": "skifflet-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "skifflet-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:15Z",
+            "involvedObject": {
+                "apiVersion": "apps/v1",
+                "kind": "ReplicaSet",
+                "name": "local-path-provisioner-6f749b4dcb",
+                "namespace": "kube-system",
+                "resourceVersion": "360",
+                "uid": "48b2f830-3ae9-4729-9204-4b7e8327e423"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:15Z",
+            "message": "Created pod: local-path-provisioner-6f749b4dcb-r92p7",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:15Z",
+                "name": "local-path-provisioner-6f749b4dcb.18e3493b54e2a03b",
+                "namespace": "kube-system",
+                "resourceVersion": "393",
+                "uid": "7e75b1d6-d671-49af-91ba-1d0d9523077e"
+            },
+            "reason": "SuccessfulCreate",
+            "reportingComponent": "replicaset-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "replicaset-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:15Z",
+            "involvedObject": {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "name": "local-path-provisioner",
+                "namespace": "kube-system",
+                "resourceVersion": "328",
+                "uid": "f1f55f78-d950-41f8-80ad-b6b450845c52"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:15Z",
+            "message": "Scaled up replica set local-path-provisioner-6f749b4dcb from 0 to 1",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:15Z",
+                "name": "local-path-provisioner.18e3493b3a256adb",
+                "namespace": "kube-system",
+                "resourceVersion": "364",
+                "uid": "66b6bc1a-f8ca-4e29-aab1-a2372e2e9ed7"
+            },
+            "reason": "ScalingReplicaSet",
+            "reportingComponent": "deployment-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "deployment-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "local-storage",
+                "namespace": "kube-system"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Deleting manifest at \"/var/lib/rancher/k3s/server/manifests/local-storage.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "local-storage.18e3493a6a0687bd",
+                "namespace": "kube-system",
+                "resourceVersion": "258",
+                "uid": "6c478639-51f2-482a-a29b-9edffd5a7952"
+            },
+            "reason": "DeletingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "metrics-apiservice",
+                "namespace": "kube-system",
+                "resourceVersion": "274",
+                "uid": "7a2f5d77-cc79-4077-85e4-0a0d51043b4b"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/metrics-apiservice.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "metrics-apiservice.18e3493a716086fc",
+                "namespace": "kube-system",
+                "resourceVersion": "275",
+                "uid": "33016db1-25e0-435e-bd6a-b05ef1f81e3b"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "metrics-apiservice",
+                "namespace": "kube-system",
+                "resourceVersion": "274",
+                "uid": "7a2f5d77-cc79-4077-85e4-0a0d51043b4b"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/metrics-apiservice.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "metrics-apiservice.18e3493a71a801ac",
+                "namespace": "kube-system",
+                "resourceVersion": "279",
+                "uid": "f90308ff-1658-420e-87db-c276ddbb8381"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "action": "Scheduling",
+            "apiVersion": "v1",
+            "eventTime": "2026-10-30T10:53:15.846846Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "metrics-server-6dc596dfb8-mkl27",
+                "namespace": "kube-system",
+                "resourceVersion": "392",
+                "uid": "e8fa9f6c-5b4b-4f16-b71b-047ac3b3d4af"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "0/1 nodes are available: 1 node(s) had untolerated taint(s). no new claims to deallocate, preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling.",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:15Z",
+                "name": "metrics-server-6dc596dfb8-mkl27.18e3493b57b337fa",
+                "namespace": "kube-system",
+                "resourceVersion": "403",
+                "uid": "b64b89bb-9cd6-4342-9330-e716d7d85584"
+            },
+            "reason": "FailedScheduling",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-mel0126",
+            "source": {},
+            "type": "Warning"
+        },
+        {
+            "action": "Binding",
+            "apiVersion": "v1",
+            "eventTime": "2026-10-30T10:53:16.254401Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "metrics-server-6dc596dfb8-mkl27",
+                "namespace": "kube-system",
+                "resourceVersion": "404",
+                "uid": "e8fa9f6c-5b4b-4f16-b71b-047ac3b3d4af"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "Successfully assigned kube-system/metrics-server-6dc596dfb8-mkl27 to mel0126",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:16Z",
+                "name": "metrics-server-6dc596dfb8-mkl27.18e3493b6ffdfd81",
+                "namespace": "kube-system",
+                "resourceVersion": "421",
+                "uid": "b6f52b29-b21f-464e-95aa-6f225059cbc8"
+            },
+            "reason": "Scheduled",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-mel0126",
+            "source": {},
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:16Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "metrics-server-6dc596dfb8-mkl27",
+                "namespace": "kube-system",
+                "resourceVersion": "419",
+                "uid": "e8fa9f6c-5b4b-4f16-b71b-047ac3b3d4af"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:16Z",
+            "message": "securityContext fields accepted and not applied (containers run without privileges, with a writable root filesystem of their own, and their volumes are writable by any user; only runAsUser, runAsGroup and runAsNonRoot are applied): container metrics-server: readOnlyRootFilesystem",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:16Z",
+                "name": "metrics-server-6dc596dfb8-mkl27.18e3493b7089dd88",
+                "namespace": "kube-system",
+                "resourceVersion": "426",
+                "uid": "ba5fe8fc-10e6-4517-9c3a-0f0110b078f2"
+            },
+            "reason": "SecurityContextNotApplied",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "kubelet",
+                "host": "mel0126"
+            },
+            "type": "Warning"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:16Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "metrics-server-6dc596dfb8-mkl27",
+                "namespace": "kube-system",
+                "resourceVersion": "419",
+                "uid": "e8fa9f6c-5b4b-4f16-b71b-047ac3b3d4af"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:16Z",
+            "message": "Create pod in provider successfully",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:16Z",
+                "name": "metrics-server-6dc596dfb8-mkl27.18e3493b708b164e",
+                "namespace": "kube-system",
+                "resourceVersion": "427",
+                "uid": "6478b1ba-e0b3-483f-b54f-1757dd848a35"
+            },
+            "reason": "ProviderCreateSuccess",
+            "reportingComponent": "skifflet-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "skifflet-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:15Z",
+            "involvedObject": {
+                "apiVersion": "apps/v1",
+                "kind": "ReplicaSet",
+                "name": "metrics-server-6dc596dfb8",
+                "namespace": "kube-system",
+                "resourceVersion": "359",
+                "uid": "0ed1d059-0d5e-4daf-9914-e7a61881ecd2"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:15Z",
+            "message": "Created pod: metrics-server-6dc596dfb8-mkl27",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:15Z",
+                "name": "metrics-server-6dc596dfb8.18e3493b54f1d2c7",
+                "namespace": "kube-system",
+                "resourceVersion": "395",
+                "uid": "5e66cb0c-bba0-4712-9348-6dbc38a8c0d7"
+            },
+            "reason": "SuccessfulCreate",
+            "reportingComponent": "replicaset-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "replicaset-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:11Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "metrics-server-deployment",
+                "namespace": "kube-system",
+                "resourceVersion": "280",
+                "uid": "88371afe-7e6f-41ee-8b06-c6abe146b10d"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:11Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/metrics-server-deployment.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:11Z",
+                "name": "metrics-server-deployment.18e3493a721531f6",
+                "namespace": "kube-system",
+                "resourceVersion": "281",
+                "uid": "e3d47d10-e6f0-4a52-944b-f5bb5ef2d0ed"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "metrics-server-deployment",
+                "namespace": "kube-system",
+                "resourceVersion": "280",
+                "uid": "88371afe-7e6f-41ee-8b06-c6abe146b10d"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/metrics-server-deployment.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "metrics-server-deployment.18e3493a729c6a60",
+                "namespace": "kube-system",
+                "resourceVersion": "284",
+                "uid": "e4f0a3ac-cb93-42db-9663-fc48f5577cb4"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "metrics-server-service",
+                "namespace": "kube-system",
+                "resourceVersion": "286",
+                "uid": "4e67119a-2c9b-4970-9c71-eb200b6671b4"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/metrics-server-service.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "metrics-server-service.18e3493a72f3d5ff",
+                "namespace": "kube-system",
+                "resourceVersion": "287",
+                "uid": "d2d92b75-5843-41ff-8696-77f507537fff"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "metrics-server-service",
+                "namespace": "kube-system",
+                "resourceVersion": "286",
+                "uid": "4e67119a-2c9b-4970-9c71-eb200b6671b4"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/metrics-server-service.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "metrics-server-service.18e3493a7346496a",
+                "namespace": "kube-system",
+                "resourceVersion": "290",
+                "uid": "523b83ec-e3b2-4185-839f-ac8bba65e5ef"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:15Z",
+            "involvedObject": {
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "name": "metrics-server",
+                "namespace": "kube-system",
+                "resourceVersion": "283",
+                "uid": "b07b10fe-45f5-4b43-9d8e-287066179017"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:15Z",
+            "message": "Scaled up replica set metrics-server-6dc596dfb8 from 0 to 1",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:15Z",
+                "name": "metrics-server.18e3493b3a15cc76",
+                "namespace": "kube-system",
+                "resourceVersion": "361",
+                "uid": "0a6d7148-c4de-4612-98cc-9cce19da0363"
+            },
+            "reason": "ScalingReplicaSet",
+            "reportingComponent": "deployment-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "deployment-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "resource-reader",
+                "namespace": "kube-system",
+                "resourceVersion": "292",
+                "uid": "3d4475ca-7fad-4e3b-b1d5-4c6d1182870f"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/resource-reader.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "resource-reader.18e3493a73a2e3c5",
+                "namespace": "kube-system",
+                "resourceVersion": "293",
+                "uid": "ceceaa10-6ed4-42a8-8ebf-f9c15411e356"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "resource-reader",
+                "namespace": "kube-system",
+                "resourceVersion": "292",
+                "uid": "3d4475ca-7fad-4e3b-b1d5-4c6d1182870f"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/metrics-server/resource-reader.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "resource-reader.18e3493a766adadc",
+                "namespace": "kube-system",
+                "resourceVersion": "297",
+                "uid": "d71190fe-9eb8-4863-a0ac-34dc9edbb32d"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "rolebindings",
+                "namespace": "kube-system",
+                "resourceVersion": "299",
+                "uid": "b5b33d26-075d-4373-ad79-8af15fa4ef42"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/rolebindings.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "rolebindings.18e3493a76bdd70a",
+                "namespace": "kube-system",
+                "resourceVersion": "300",
+                "uid": "2d678efa-7bef-49c8-b7b1-71c061ce677c"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "rolebindings",
+                "namespace": "kube-system",
+                "resourceVersion": "299",
+                "uid": "b5b33d26-075d-4373-ad79-8af15fa4ef42"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/rolebindings.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "rolebindings.18e3493a7d19a602",
+                "namespace": "kube-system",
+                "resourceVersion": "307",
+                "uid": "35df4fcd-80eb-4f49-8e17-3b2944b4e03b"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "runtimes",
+                "namespace": "kube-system",
+                "resourceVersion": "309",
+                "uid": "001ac5c4-d29e-4337-a1aa-3cb5d9d57cf9"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/runtimes.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "runtimes.18e3493a7d89ab4d",
+                "namespace": "kube-system",
+                "resourceVersion": "310",
+                "uid": "d97d3493-356f-4ab7-aa87-48eda89ca94a"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "runtimes",
+                "namespace": "kube-system",
+                "resourceVersion": "309",
+                "uid": "001ac5c4-d29e-4337-a1aa-3cb5d9d57cf9"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/runtimes.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "runtimes.18e3493a7edfe145",
+                "namespace": "kube-system",
+                "resourceVersion": "321",
+                "uid": "18486e44-2905-479c-af32-08ce90bf7fea"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "skiff-storage",
+                "namespace": "kube-system",
+                "resourceVersion": "323",
+                "uid": "1d5a5aa6-9785-4ca1-bea0-8aaa6e50506c"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applying manifest at \"/var/lib/rancher/k3s/server/manifests/skiff-storage.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "skiff-storage.18e3493a7f445387",
+                "namespace": "kube-system",
+                "resourceVersion": "324",
+                "uid": "cddc8465-5898-43b0-9362-227d2ed865cb"
+            },
+            "reason": "ApplyingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "skiff-storage",
+                "namespace": "kube-system",
+                "resourceVersion": "323",
+                "uid": "1d5a5aa6-9785-4ca1-bea0-8aaa6e50506c"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Applied manifest at \"/var/lib/rancher/k3s/server/manifests/skiff-storage.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "skiff-storage.18e3493a83e84529",
+                "namespace": "kube-system",
+                "resourceVersion": "332",
+                "uid": "0891e55b-1e6e-415a-8cdc-ebe99bd07420"
+            },
+            "reason": "AppliedManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:12Z",
+            "involvedObject": {
+                "apiVersion": "k3s.cattle.io/v1",
+                "kind": "Addon",
+                "name": "traefik",
+                "namespace": "kube-system"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:12Z",
+            "message": "Deleting manifest at \"/var/lib/rancher/k3s/server/manifests/traefik.yaml\"",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:12Z",
+                "name": "traefik.18e3493a8471efac",
+                "namespace": "kube-system",
+                "resourceVersion": "334",
+                "uid": "d4dcb601-7806-4c29-bdcc-623d68c7f2ff"
+            },
+            "reason": "DeletingManifest",
+            "reportingComponent": "deploy",
+            "reportingInstance": "mel0126",
+            "source": {
+                "component": "deploy",
+                "host": "mel0126"
+            },
+            "type": "Normal"
+        },
+        {
+            "action": "Binding",
+            "apiVersion": "v1",
+            "eventTime": "2026-10-30T10:53:25.044351Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "timestamp-per-node-ltmxs",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "471",
+                "uid": "1a5bbd43-e3cd-4624-bf5a-46901fc0be2b"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "Successfully assigned skiff-lifecycle-benchmark/timestamp-per-node-ltmxs to mel0126",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:25Z",
+                "name": "timestamp-per-node-ltmxs.18e3493d7bea0b0c",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "475",
+                "uid": "228bf198-9954-45c6-b3dd-134b66e98726"
+            },
+            "reason": "Scheduled",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-mel0126",
+            "source": {},
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:25Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "timestamp-per-node-ltmxs",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "473",
+                "uid": "1a5bbd43-e3cd-4624-bf5a-46901fc0be2b"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:25Z",
+            "message": "Create pod in provider successfully",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:25Z",
+                "name": "timestamp-per-node-ltmxs.18e3493d7c447605",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "479",
+                "uid": "8b919b98-573a-4e87-b78e-b13e2d73a664"
+            },
+            "reason": "ProviderCreateSuccess",
+            "reportingComponent": "skifflet-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "skifflet-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "action": "Binding",
+            "apiVersion": "v1",
+            "eventTime": "2026-10-30T10:53:25.049491Z",
+            "firstTimestamp": null,
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "timestamp-per-node-wf66c",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "474",
+                "uid": "7574b8a0-ef16-4cbd-9241-3310806e87a1"
+            },
+            "kind": "Event",
+            "lastTimestamp": null,
+            "message": "Successfully assigned skiff-lifecycle-benchmark/timestamp-per-node-wf66c to mel0132",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:25Z",
+                "name": "timestamp-per-node-wf66c.18e3493d7c387055",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "480",
+                "uid": "3612e9fa-fcf4-47d5-bb22-05a23561c5d7"
+            },
+            "reason": "Scheduled",
+            "reportingComponent": "default-scheduler",
+            "reportingInstance": "default-scheduler-mel0126",
+            "source": {},
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:25Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "timestamp-per-node-wf66c",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "477",
+                "uid": "7574b8a0-ef16-4cbd-9241-3310806e87a1"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:25Z",
+            "message": "Create pod in provider successfully",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:25Z",
+                "name": "timestamp-per-node-wf66c.18e3493d7e8ceff0",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "482",
+                "uid": "55b65f5b-0080-4b4d-8cb6-acb7f1da5c8d"
+            },
+            "reason": "ProviderCreateSuccess",
+            "reportingComponent": "skifflet-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "skifflet-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:25Z",
+            "involvedObject": {
+                "apiVersion": "apps/v1",
+                "kind": "DaemonSet",
+                "name": "timestamp-per-node",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "469",
+                "uid": "e3e0425d-e4d3-4c8b-8cdc-21ae7e4d2ff3"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:25Z",
+            "message": "Created pod: timestamp-per-node-ltmxs",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:25Z",
+                "name": "timestamp-per-node.18e3493d7bb6a1ad",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "472",
+                "uid": "9de53d36-0406-45be-99c0-579a13eb6aba"
+            },
+            "reason": "SuccessfulCreate",
+            "reportingComponent": "daemonset-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "daemonset-controller"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 1,
+            "eventTime": null,
+            "firstTimestamp": "2026-10-30T10:53:25Z",
+            "involvedObject": {
+                "apiVersion": "apps/v1",
+                "kind": "DaemonSet",
+                "name": "timestamp-per-node",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "469",
+                "uid": "e3e0425d-e4d3-4c8b-8cdc-21ae7e4d2ff3"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-10-30T10:53:25Z",
+            "message": "Created pod: timestamp-per-node-wf66c",
+            "metadata": {
+                "creationTimestamp": "2026-10-30T10:53:25Z",
+                "name": "timestamp-per-node.18e3493d7c10cd71",
+                "namespace": "skiff-lifecycle-benchmark",
+                "resourceVersion": "476",
+                "uid": "d02b728c-d8bf-4239-a5ea-b4f8c15d4449"
+            },
+            "reason": "SuccessfulCreate",
+            "reportingComponent": "daemonset-controller",
+            "reportingInstance": "",
+            "source": {
+                "component": "daemonset-controller"
+            },
+            "type": "Normal"
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

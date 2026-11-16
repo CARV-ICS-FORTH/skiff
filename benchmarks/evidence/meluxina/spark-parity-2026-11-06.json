@@ -1,0 +1,456 @@
+{
+  "schema": 1,
+  "site": "MeluXina",
+  "benchmark": "analytics-spark",
+  "date": "2026-11-06",
+  "slurm": {
+    "job_id": "5428654",
+    "state": "FAILED",
+    "exit_code": "1:0",
+    "elapsed_seconds": 543,
+    "state_explanation": "Both backends passed generation and queries. Only the original post-run hostname-to-placement checker failed. Original job status is preserved.",
+    "nodes": [
+      "mel0050",
+      "mel0105",
+      "mel0139",
+      "mel0151",
+      "mel0173",
+      "mel0303",
+      "mel0320",
+      "mel0348",
+      "mel0547",
+      "mel0554"
+    ]
+  },
+  "workload": {
+    "profile": "smoke",
+    "mode": "cpu",
+    "scale_factor": 1,
+    "nodes": 10,
+    "executor_cores": 4,
+    "executor_memory": "8g",
+    "executor_memory_overhead": "2g",
+    "driver_cores": 4,
+    "driver_memory": "4g",
+    "driver_memory_overhead": "1g",
+    "generation_partitions": 24,
+    "shuffle_partitions": 24,
+    "query_set": "original",
+    "query_iterations": 3,
+    "query_executions": 48
+  },
+  "identities": {
+    "spark_sif_sha256": "5f2383962d319d3ba24a8e8fcb6987d4c00aa89d8be1ca6dd12223133f716291",
+    "skiff_sif_sha256": "0860ebeab76357f1841c6c9feda1db3ff2ce74ddadc0c097b7efe2a9d3be5d0b",
+    "skiff_runtime": "47e1ee0 plus retained parallel startup/cleanup and entrypoint changes; not a fresh current-tree build",
+    "all_ten_native_preflight_source_gates": "PASS; benchmark.py, runtime.py and all 103 SQL files match the shared SIF",
+    "source_identity_manifest_sha256": "8a9e3e3fc5515fc31630671625b8725b035d705e0e5f1cab403e197a5fda295a"
+  },
+  "revalidation": {
+    "status": "PASS",
+    "checker_sha256": "b089f43c7da331436e391d18c5b376b6415fe930e39ac9ed305d8715d4a344a8",
+    "original_failure": "Post-run checker used full pod names as keys while Spark probes reported shortened hostname suffixes.",
+    "correction": "Exact name or unique suffix match against saved placement rows. Ambiguous/missing names still fail. Three regression checks passed.",
+    "scope": "selected CPU/memory/source/storage/workload parity checks",
+    "driver_and_all_executor_cpu_affinity": "0-255",
+    "driver_jvm_available_processors": 256,
+    "visible_cpu_quota": null,
+    "visible_memory_limit": null,
+    "address_space_rlimit": [
+      -1,
+      -1
+    ],
+    "numa_memory_nodes": "0-7",
+    "same_ten_physical_nodes": true,
+    "per_physical_node_scratch_capacity_matches": true,
+    "matching_workload_and_query_output_row_counts": true,
+    "limits_note": "No finite CPU/memory limit in captured visible cgroup ancestors; this does not establish visibility of every site enforcement mechanism.",
+    "query_values_note": "Query ordering and output row counts match; full result-value equality was not independently certified.",
+    "driver_scratch_capacity_bytes": {
+      "generation": 270142398464,
+      "query": 270142398464
+    }
+  },
+  "placement_and_storage": {
+    "controller_driver_and_minio_node": "mel0050",
+    "native_scratch_root": "/tmp",
+    "native_minio_root": "/tmp/spark-parity-minio-102006-5428654",
+    "skiff_runtime_scratch": "/tmp/spark-parity-102006-5428654",
+    "minio_backing": "Configured node-local tmpfs on first node for both; no independent in-MinIO resource snapshot was retained."
+  },
+  "timing": {
+    "execution_order": [
+      "native",
+      "skiff"
+    ],
+    "boundary_timestamps_utc": {
+      "native_started": "2026-11-06T12:19:57.314776382Z",
+      "native_finished": "2026-11-06T12:23:56.738723414Z",
+      "cluster_started": "2026-11-06T12:23:56.742535971Z",
+      "cluster_ready": "2026-11-06T12:24:14.219106716Z",
+      "infrastructure_ready": "2026-11-06T12:24:29.535055476Z",
+      "skiff_workload_started": "2026-11-06T12:24:38.774953472Z",
+      "skiff_workload_finished": "2026-11-06T12:28:43.818684770Z",
+      "cluster_stop_requested": "2026-11-06T12:28:44.247114266Z",
+      "cluster_supervisor_finished": "2026-11-06T12:28:53.263485508Z"
+    },
+    "native_wrapper_seconds": 239.423947,
+    "skiff_cluster_through_supervisor_cleanup_seconds": 296.52095,
+    "skiff_workload_wrapper_seconds": 245.043731,
+    "independent_backend_allocation_times": null,
+    "note": "One shared allocation; wrapper spans are not independent scheduler runtimes and are not added to workload time.",
+    "skiff_over_native_workload": 0.953292437520925
+  },
+  "cleanup": {
+    "cluster_supervisor_finished": true,
+    "startup_owner_absent": true,
+    "kubeconfig_alias_absent": true,
+    "allocation_absent_from_squeue": true,
+    "release_observation": "Confirmed after exit; no exact scheduler-release latency is claimed."
+  },
+  "remaining_differences": [
+    "native first, Skiff second; caches uncontrolled",
+    "native physical ib0 versus Skiff pod/service overlay",
+    "control-plane and standalone-daemon behavior",
+    "image unpacking and writable filesystem layers",
+    "task placement and shuffle locality",
+    "new probes, source revision and storage changes prevent CPU-only attribution against historical runs"
+  ],
+  "provenance": {
+    "raw_archive": "benchmarks/analytics-spark/results/parity-20261106/collection-5428654/collection-5428654-manual.tar.gz",
+    "raw_archive_sha256": "71e170ab44f5823fd84842362b47d3e6eb03f26b6d068b3795ee48a9ba7364a9",
+    "original_comparison_preserved": "results/pair-5428654/comparison.json remains FAIL in the original archive",
+    "original_accounting_sha256": "b30f9657ea260c50f52025fdb2c54632ec802f862ff67f9851e6e63e21439b99",
+    "failed_attempt_excluded": "5428470; native probe import failure before measured workload"
+  },
+  "native": {
+    "generation": {
+      "status": "PASS",
+      "run_id": "5428654.oDVKzJ",
+      "application_id": "app-20261106122016-0000",
+      "workload_seconds": 93.99093,
+      "completed_executor_tasks": 616,
+      "failed_executor_tasks": 0,
+      "completed_stages": 25,
+      "task_totals": {
+        "executor_cpu_seconds": 138.033796,
+        "executor_run_seconds": 231.142,
+        "jvm_gc_seconds": 11.337,
+        "result_bytes": 1126838,
+        "task_cpu_utilization_percent": 59.718
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.0,
+        "local_blocks_fetched": 0,
+        "local_bytes_read": 0,
+        "read_bytes": 0,
+        "read_records": 0,
+        "remote_blocks_fetched": 0,
+        "remote_bytes_read": 0,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 0,
+        "write_records": 0,
+        "write_seconds": 0.0
+      },
+      "io": {
+        "input_bytes": 0,
+        "input_records": 0,
+        "output_bytes": 372844717,
+        "output_records": 19555033
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      },
+      "summary_sha256": "b7b67c3f8df4217e29a0fa76ca53207862777cbaa56c9b13cee5cfcb32e90433"
+    },
+    "query": {
+      "status": "PASS",
+      "run_id": "5428654.oDVKzJ",
+      "application_id": "app-20261106122203-0001",
+      "workload_seconds": 106.981236,
+      "completed_executor_tasks": 3195,
+      "failed_executor_tasks": 0,
+      "completed_stages": 453,
+      "task_totals": {
+        "executor_cpu_seconds": 243.470904,
+        "executor_run_seconds": 391.535,
+        "jvm_gc_seconds": 7.611,
+        "result_bytes": 229577958,
+        "task_cpu_utilization_percent": 62.184
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.011,
+        "local_blocks_fetched": 317,
+        "local_bytes_read": 579957429,
+        "read_bytes": 723351791,
+        "read_records": 46404351,
+        "remote_blocks_fetched": 543,
+        "remote_bytes_read": 143394362,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 579642635,
+        "write_records": 38148687,
+        "write_seconds": 1.051596
+      },
+      "io": {
+        "input_bytes": 1255242516,
+        "input_records": 252065295,
+        "output_bytes": 176838,
+        "output_records": 64
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      },
+      "summary_sha256": "9c20f49d95cdb1685538597752865d59c70349d53442b970618ec6a917b5ceef",
+      "query_statistics": {
+        "q1": {
+          "maximum_seconds": 4.582825,
+          "median_seconds": 0.677969,
+          "minimum_seconds": 0.541416
+        },
+        "q10": {
+          "maximum_seconds": 3.544608,
+          "median_seconds": 1.796584,
+          "minimum_seconds": 1.795193
+        },
+        "q11": {
+          "maximum_seconds": 2.62195,
+          "median_seconds": 1.8676,
+          "minimum_seconds": 1.711832
+        },
+        "q12": {
+          "maximum_seconds": 0.342563,
+          "median_seconds": 0.103153,
+          "minimum_seconds": 0.099083
+        },
+        "q13": {
+          "maximum_seconds": 0.516405,
+          "median_seconds": 0.181369,
+          "minimum_seconds": 0.178526
+        },
+        "q14a": {
+          "maximum_seconds": 6.566484,
+          "median_seconds": 4.434199,
+          "minimum_seconds": 4.091783
+        },
+        "q14b": {
+          "maximum_seconds": 5.044704,
+          "median_seconds": 4.628239,
+          "minimum_seconds": 4.310333
+        },
+        "q15": {
+          "maximum_seconds": 1.239566,
+          "median_seconds": 1.150444,
+          "minimum_seconds": 1.100695
+        },
+        "q16": {
+          "maximum_seconds": 1.552553,
+          "median_seconds": 1.504362,
+          "minimum_seconds": 1.439409
+        },
+        "q17": {
+          "maximum_seconds": 2.987989,
+          "median_seconds": 2.413184,
+          "minimum_seconds": 2.339379
+        },
+        "q18": {
+          "maximum_seconds": 0.194432,
+          "median_seconds": 0.158505,
+          "minimum_seconds": 0.152272
+        },
+        "q19": {
+          "maximum_seconds": 0.903921,
+          "median_seconds": 0.811265,
+          "minimum_seconds": 0.605597
+        },
+        "q2": {
+          "maximum_seconds": 1.185387,
+          "median_seconds": 0.941762,
+          "minimum_seconds": 0.812236
+        },
+        "q20": {
+          "maximum_seconds": 0.137393,
+          "median_seconds": 0.102691,
+          "minimum_seconds": 0.083563
+        },
+        "q21": {
+          "maximum_seconds": 0.958583,
+          "median_seconds": 0.815535,
+          "minimum_seconds": 0.541001
+        },
+        "q22": {
+          "maximum_seconds": 1.703868,
+          "median_seconds": 1.601964,
+          "minimum_seconds": 1.585978
+        }
+      }
+    },
+    "combined_workload_seconds": 200.97216600000002
+  },
+  "skiff": {
+    "generation": {
+      "status": "PASS",
+      "run_id": "20261106t122438-07e9ea04z",
+      "application_id": "spark-c34a75ffedb44de4a9b3c19c1ddae50d",
+      "workload_seconds": 89.709902,
+      "completed_executor_tasks": 616,
+      "failed_executor_tasks": 0,
+      "completed_stages": 25,
+      "task_totals": {
+        "executor_cpu_seconds": 135.401504,
+        "executor_run_seconds": 201.511,
+        "jvm_gc_seconds": 6.628,
+        "result_bytes": 1126129,
+        "task_cpu_utilization_percent": 67.193
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.0,
+        "local_blocks_fetched": 0,
+        "local_bytes_read": 0,
+        "read_bytes": 0,
+        "read_records": 0,
+        "remote_blocks_fetched": 0,
+        "remote_bytes_read": 0,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 0,
+        "write_records": 0,
+        "write_seconds": 0.0
+      },
+      "io": {
+        "input_bytes": 0,
+        "input_records": 0,
+        "output_bytes": 372844717,
+        "output_records": 19555033
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      },
+      "summary_sha256": "7fff76b813a6d8729d1d1dd68d5ed4f5a743d65ba60435e505cc5777d87006d0"
+    },
+    "query": {
+      "status": "PASS",
+      "run_id": "20261106t122438-07e9ea04z",
+      "application_id": "spark-5b6298e690e94dfc944c35302ed6027e",
+      "workload_seconds": 101.875344,
+      "completed_executor_tasks": 3195,
+      "failed_executor_tasks": 0,
+      "completed_stages": 453,
+      "task_totals": {
+        "executor_cpu_seconds": 221.325027,
+        "executor_run_seconds": 364.468,
+        "jvm_gc_seconds": 3.86,
+        "result_bytes": 229458166,
+        "task_cpu_utilization_percent": 60.726
+      },
+      "shuffle": {
+        "fetch_wait_seconds": 0.014,
+        "local_blocks_fetched": 342,
+        "local_bytes_read": 621934527,
+        "read_bytes": 723351766,
+        "read_records": 46404351,
+        "remote_blocks_fetched": 516,
+        "remote_bytes_read": 101417239,
+        "remote_bytes_read_to_disk": 0,
+        "write_bytes": 579642610,
+        "write_records": 38148687,
+        "write_seconds": 1.019278
+      },
+      "io": {
+        "input_bytes": 1255242516,
+        "input_records": 252065295,
+        "output_bytes": 178366,
+        "output_records": 64
+      },
+      "spill": {
+        "disk_bytes": 0,
+        "memory_bytes": 0
+      },
+      "summary_sha256": "8323d268d1ee083dd40732f5f44640dd3647b9e045169cd414c95141e1df39bf",
+      "query_statistics": {
+        "q1": {
+          "maximum_seconds": 4.542771,
+          "median_seconds": 0.774163,
+          "minimum_seconds": 0.535145
+        },
+        "q10": {
+          "maximum_seconds": 3.405692,
+          "median_seconds": 1.850415,
+          "minimum_seconds": 1.775005
+        },
+        "q11": {
+          "maximum_seconds": 2.575017,
+          "median_seconds": 1.816666,
+          "minimum_seconds": 1.687168
+        },
+        "q12": {
+          "maximum_seconds": 0.28189,
+          "median_seconds": 0.117019,
+          "minimum_seconds": 0.092794
+        },
+        "q13": {
+          "maximum_seconds": 0.393999,
+          "median_seconds": 0.208878,
+          "minimum_seconds": 0.189227
+        },
+        "q14a": {
+          "maximum_seconds": 6.637114,
+          "median_seconds": 4.485619,
+          "minimum_seconds": 4.313728
+        },
+        "q14b": {
+          "maximum_seconds": 4.834055,
+          "median_seconds": 3.966068,
+          "minimum_seconds": 3.794696
+        },
+        "q15": {
+          "maximum_seconds": 1.18774,
+          "median_seconds": 1.131794,
+          "minimum_seconds": 0.813964
+        },
+        "q16": {
+          "maximum_seconds": 1.637258,
+          "median_seconds": 1.351347,
+          "minimum_seconds": 1.269007
+        },
+        "q17": {
+          "maximum_seconds": 2.467798,
+          "median_seconds": 2.281242,
+          "minimum_seconds": 1.816876
+        },
+        "q18": {
+          "maximum_seconds": 0.176163,
+          "median_seconds": 0.133561,
+          "minimum_seconds": 0.122252
+        },
+        "q19": {
+          "maximum_seconds": 0.903186,
+          "median_seconds": 0.887828,
+          "minimum_seconds": 0.7715
+        },
+        "q2": {
+          "maximum_seconds": 1.197394,
+          "median_seconds": 0.964685,
+          "minimum_seconds": 0.909678
+        },
+        "q20": {
+          "maximum_seconds": 0.125325,
+          "median_seconds": 0.125057,
+          "minimum_seconds": 0.097234
+        },
+        "q21": {
+          "maximum_seconds": 0.956816,
+          "median_seconds": 0.716126,
+          "minimum_seconds": 0.528913
+        },
+        "q22": {
+          "maximum_seconds": 1.763938,
+          "median_seconds": 1.482725,
+          "minimum_seconds": 1.166865
+        }
+      }
+    },
+    "combined_workload_seconds": 191.58524599999998
+  }
+}

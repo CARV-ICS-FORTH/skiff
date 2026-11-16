@@ -1,0 +1,381 @@
+{
+  "site": "MeluXina (login.lxp.lu)",
+  "benchmark": "ray-retail",
+  "platform": "native-slurm-apptainer",
+  "date": "2026-11-05",
+  "slurm_job_id": "5424547",
+  "status": "COMPLETED",
+  "slurm_exit_code": "0:0",
+  "start_time_utc": "2026-11-05T13:54:30Z",
+  "end_time_utc": "2026-11-05T14:33:02Z",
+  "job_elapsed_seconds": 2312,
+  "allocation_release_observed_utc": "2026-11-05T14:34:38Z",
+  "nodes": [
+    "mel2001",
+    "mel2103",
+    "mel2119",
+    "mel2169",
+    "mel2193"
+  ],
+  "allocated_logical_cpus": 640,
+  "allocated_gpus": 20,
+  "ray_cpus_per_node": 32,
+  "ray_gpus_per_node": 1,
+  "hardware": {
+    "gpu": "NVIDIA A100-SXM4-40GB",
+    "gpus_per_allocated_node": 4,
+    "host_logical_cpus_per_node": 128,
+    "nvidia_driver": "610.57.04"
+  },
+  "storage": {
+    "object_store_filesystem": [
+      "tmpfs"
+    ],
+    "object_store_bytes_per_node": 17179869184,
+    "ray_heap_bytes_per_node": 64424509440,
+    "shared_results": "Lustre scratch; bidirectional visibility verified on every Ray node"
+  },
+  "identity": {
+    "backend": "slurm",
+    "config": "d1c7a40cb8f14dffff0243794b18a74957556e8652729cde6d1e1fe1e1d4f534",
+    "environment": {
+      "architecture": "x86_64",
+      "packages": {
+        "grpcio": "1.84.0",
+        "gymnasium": "1.1.1",
+        "numpy": "2.2.6",
+        "pandas": "2.2.3",
+        "protobuf": "6.33.5",
+        "psutil": "7.0.0",
+        "pyarrow": "20.0.0",
+        "pydantic": "2.14.1",
+        "ray": "2.49.2",
+        "torch": "2.8.0+cu128"
+      },
+      "python": "3.11.18",
+      "system": "Linux",
+      "train_api": "0"
+    },
+    "source": "b8a0576143e7c144c538875c0d8990281c426066d2f30104f5a9f191e89e08c9"
+  },
+  "source_commit": "d247cde90f510a391d51aa79747b9aedd7323eba",
+  "source_description": "working tree with integrated GPU gate; exact source retained in collection archive",
+  "cuda_sif_sha256": "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1",
+  "config": {
+    "data": {
+      "blocks": 400,
+      "days": 1000,
+      "max_pending": 80,
+      "series": 10000,
+      "train_end": 700,
+      "validation_end": 850
+    },
+    "deadline_seconds": 3300,
+    "device": "cuda",
+    "expected_nodes": 5,
+    "rl": {
+      "batch_size": 16384,
+      "cpus_per_learner": 4,
+      "env_runners": 40,
+      "epochs": 4,
+      "evaluation_episodes": 1200,
+      "hidden": 128,
+      "horizon": 84,
+      "iterations": 120,
+      "layers": 2,
+      "minibatch_size": 512
+    },
+    "schema_version": 1,
+    "seed": 731,
+    "serve": {
+      "autoscale": false,
+      "batch_size": 32,
+      "concurrency": 64,
+      "cpus_per_replica": 2,
+      "port": 18080,
+      "replicas": 5,
+      "requests": 60000
+    },
+    "train": {
+      "batch_size": 1024,
+      "cpus_per_worker": 4,
+      "epochs": 16,
+      "hidden": 256,
+      "layers": 2,
+      "lr": 0.001,
+      "max_batches": 0,
+      "threads": 4,
+      "use_tuned": false,
+      "workers": 5
+    },
+    "tune": {
+      "adaptive": false,
+      "concurrency": 5,
+      "epochs": 6,
+      "trials": 6
+    }
+  },
+  "gate": {
+    "benchmark_seconds": 2194.4262470219983,
+    "benchmark_validation": {
+      "nodes": 5,
+      "phase_seconds": 2188.2146791699925,
+      "status": "PASS"
+    },
+    "smoke_seconds": 79.89086813598988,
+    "smoke_validation": {
+      "nodes": 5,
+      "phase_seconds": 69.3189802490233,
+      "status": "PASS"
+    },
+    "stage": "benchmark",
+    "started_at": 1793886901.680787,
+    "status": "complete",
+    "total_seconds": 2277.257139765017
+  },
+  "phase_seconds": {
+    "data": 1095.1226072479913,
+    "tune": 100.52938898699358,
+    "train": 85.97213972001919,
+    "batch": 7.789198977989145,
+    "policy": 391.7401049110049,
+    "evaluation": 16.38794987098663,
+    "serve": 488.9378205869871,
+    "recovery": 1.7354688680206891
+  },
+  "benchmark_invocation_seconds": 2190.897975911008,
+  "data_rows": {
+    "test": 1500000,
+    "train": 6720000,
+    "validation": 1500000
+  },
+  "tune_trials": [
+    {
+      "config": {
+        "hidden": 32,
+        "lr": 0.001
+      },
+      "epochs": 6,
+      "mae": 5.288362026723226,
+      "node_id": "2efc40d880502ed7bc8ae8cfd9f14fdf8ff9d7fb468df24ac81e84ab"
+    },
+    {
+      "config": {
+        "hidden": 32,
+        "lr": 0.003
+      },
+      "epochs": 6,
+      "mae": 5.272979287465414,
+      "node_id": "35ed612aa0fd481edb2b71616ac92c3192ee43a5b98b91d643d71720"
+    },
+    {
+      "config": {
+        "hidden": 64,
+        "lr": 0.001
+      },
+      "epochs": 6,
+      "mae": 5.211127577972412,
+      "node_id": "c8f18d97c92120633b1521b675aa5262917bd824d52c012bb153a08a"
+    },
+    {
+      "config": {
+        "hidden": 64,
+        "lr": 0.003
+      },
+      "epochs": 6,
+      "mae": 5.667141232808431,
+      "node_id": "f2c1fe5329bbe4b0464b789c8f57910b4c2cc66cf92b2fd22967ef18"
+    },
+    {
+      "config": {
+        "hidden": 128,
+        "lr": 0.001
+      },
+      "epochs": 6,
+      "mae": 5.206181763966878,
+      "node_id": "2dbdb0ce2150c0d665aba3555a91dd628ba920ac4d0810deb1449907"
+    },
+    {
+      "config": {
+        "hidden": 128,
+        "lr": 0.003
+      },
+      "epochs": 6,
+      "mae": 5.249549815622966,
+      "node_id": "2efc40d880502ed7bc8ae8cfd9f14fdf8ff9d7fb468df24ac81e84ab"
+    }
+  ],
+  "training_ranks": [
+    {
+      "backend": "nccl",
+      "device": "cuda:0",
+      "epochs": 16,
+      "node_id": "2efc40d880502ed7bc8ae8cfd9f14fdf8ff9d7fb468df24ac81e84ab",
+      "rank": 0,
+      "samples": 21495808,
+      "steps_per_epoch": 1312
+    },
+    {
+      "backend": "nccl",
+      "device": "cuda:0",
+      "epochs": 16,
+      "node_id": "f2c1fe5329bbe4b0464b789c8f57910b4c2cc66cf92b2fd22967ef18",
+      "rank": 1,
+      "samples": 21495808,
+      "steps_per_epoch": 1312
+    },
+    {
+      "backend": "nccl",
+      "device": "cuda:0",
+      "epochs": 16,
+      "node_id": "c8f18d97c92120633b1521b675aa5262917bd824d52c012bb153a08a",
+      "rank": 2,
+      "samples": 21495808,
+      "steps_per_epoch": 1312
+    },
+    {
+      "backend": "nccl",
+      "device": "cuda:0",
+      "epochs": 16,
+      "node_id": "2dbdb0ce2150c0d665aba3555a91dd628ba920ac4d0810deb1449907",
+      "rank": 3,
+      "samples": 21495808,
+      "steps_per_epoch": 1312
+    },
+    {
+      "backend": "nccl",
+      "device": "cuda:0",
+      "epochs": 16,
+      "node_id": "35ed612aa0fd481edb2b71616ac92c3192ee43a5b98b91d643d71720",
+      "rank": 4,
+      "samples": 21495808,
+      "steps_per_epoch": 1312
+    }
+  ],
+  "batch_inference": {
+    "mae": 4.9867856088747775,
+    "rows": 1500000,
+    "seasonal_mae": 9.696457314840332,
+    "wape": 0.13247558305094986
+  },
+  "policy_training": {
+    "iterations": 120,
+    "last_iteration": {
+      "episode_return_mean": -22.02641298962128,
+      "iteration": 120,
+      "sampled_steps": 1966080
+    },
+    "restore_verified": true
+  },
+  "evaluation": {
+    "forecast_base_stock": {
+      "cost_std": 1213.544165936281,
+      "episodes": 1200,
+      "fill_rate": 0.8349218041653492,
+      "mean_cost": 3404.337125
+    },
+    "ppo": {
+      "cost_std": 229.3173190922713,
+      "episodes": 1200,
+      "fill_rate": 0.9935009394576385,
+      "mean_cost": 741.4340000000001
+    },
+    "reorder_point": {
+      "cost_std": 1459.6438765873688,
+      "episodes": 1200,
+      "fill_rate": 0.8002785982540082,
+      "mean_cost": 3912.346
+    }
+  },
+  "serving": {
+    "requests": 60000,
+    "errors": 0,
+    "elapsed_seconds": 477.31649047898827,
+    "requests_per_second": 125.70275948310491,
+    "latency_ms": {
+      "p50": 344.9593984987587,
+      "p95": 831.7065961033221,
+      "p99": 893.3882876456483
+    },
+    "direct_inference_verified": true,
+    "forecast_replica_ids": [
+      "1cb7eb9880a8134ffcb5261604000000",
+      "204fc2daaa49c8e2b3451b5a04000000",
+      "d4e1a26fedf8aa9337db76a504000000",
+      "de1cea3779171e536695667304000000",
+      "df1750671bec5f8bf8e4299f04000000"
+    ],
+    "policy_replica_ids": [
+      "690c4d2b2b9b133fa532357c04000000",
+      "990c977c8d478b1d8361233e04000000",
+      "9fd7fd9169104a529ce7258204000000",
+      "a321d7b85f8600304ebd685b04000000",
+      "ee0aad9e3c400fa2a3dbe66704000000"
+    ]
+  },
+  "recovery": {
+    "duplicate_total": 18,
+    "intentional_actor_failures": 1,
+    "restored_total": 18
+  },
+  "checks": {
+    "local_tests": 41,
+    "linux_cuda_image_tests": 41,
+    "gpu_gate_smoke": "PASS",
+    "gpu_gate_benchmark": "PASS",
+    "offline_remote_smoke_and_benchmark_validation": "PASS",
+    "source_after_hash_check": "PASS",
+    "allocation_release_confirmed": true,
+    "offline_local_smoke_and_benchmark_validation": "PASS"
+  },
+  "manifests_sha256": {
+    "smoke": "fcbf0fc3f2c11da4e9b48a8142a7c3af50f0ff93f9dc795d0144292cd1910752",
+    "benchmark": "f2faa57f04e89d7547aefc99256dd7d36aff422d5a3d4819784c5ceb0ee87a55"
+  },
+  "raw_collection": "benchmarks/ray-retail/results/slurm/meluxina-5424547/collection.tar.gz",
+  "raw_collection_sha256": "b26579c9a07bc66868fea59a8208c57abd00548afddadbcbe60f61e3181f7d8f",
+  "remote_stage": "/project/scratch/p200528/ray-gated-20261105T134156Z",
+  "limitations": [
+    "One measured native Slurm run; no Skiff GPU measurement or matched backend comparison.",
+    "One GPU per node advertised to Ray; the exclusive allocation reserved four per node.",
+    "CPU data preparation is included in phase time; GPU hardware is not saturated by this workflow.",
+    "Smoke warms libraries, GPUs and caches; cold-start behavior was not isolated.",
+    "Ray Serve warned that configured batch size 32 exceeds default max_ongoing_requests 5; this is the measured serving configuration.",
+    "Scheduler elapsed and last observed allocation release are distinct; release was confirmed after COMPLETING cleared."
+  ],
+  "cpu_preparation": [
+    {
+      "JobIDRaw": "5424485",
+      "JobName": "ray-cuda-build",
+      "State": "FAILED",
+      "ExitCode": "255:0",
+      "Start": "2026-11-05T13:42:41",
+      "End": "2026-11-05T13:43:24",
+      "ElapsedRaw": "43",
+      "AllocNodes": "1",
+      "NodeList": "mel0290"
+    },
+    {
+      "JobIDRaw": "5424501",
+      "JobName": "ray-cuda-build",
+      "State": "FAILED",
+      "ExitCode": "2:0",
+      "Start": "2026-11-05T13:44:01",
+      "End": "2026-11-05T13:51:08",
+      "ElapsedRaw": "427",
+      "AllocNodes": "1",
+      "NodeList": "mel0109"
+    },
+    {
+      "JobIDRaw": "5424540",
+      "JobName": "ray-cuda-validate",
+      "State": "COMPLETED",
+      "ExitCode": "0:0",
+      "Start": "2026-11-05T13:53:29",
+      "End": "2026-11-05T13:53:53",
+      "ElapsedRaw": "24",
+      "AllocNodes": "1",
+      "NodeList": "mel0016"
+    }
+  ]
+}

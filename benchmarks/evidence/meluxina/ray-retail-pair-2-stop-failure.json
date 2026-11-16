@@ -1,0 +1,565 @@
+{
+  "application_status": "complete",
+  "backend_log_tail": [
+    "api_handler: got request: {\"execute\":\"list_hostfwd\"}",
+    "apifd event",
+    "api_handler: got request: {\"execute\":\"list_hostfwd\"}",
+    "apifd event",
+    "api_handler: got request: {\"execute\":\"list_hostfwd\"}",
+    "srun: forcing job termination",
+    "Terminated",
+    "srun: forcing job termination",
+    "srun: forcing job termination",
+    "srun: forcing job termination",
+    "srun: forcing job termination",
+    "srun: forcing job termination",
+    "srun: forcing job termination",
+    "srun: forcing job termination",
+    "srun: forcing job termination",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "srun: forcing job termination",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "srun: Job step aborted: Waiting up to 32 seconds for job step to finish.",
+    "2026/11/13 12:06:54 socat[15636] W waitpid(-1, {}, WNOHANG): no (more) child has exited",
+    "Shutdown cause:",
+    "  time:     2026-11-13T12:06:54+0000",
+    "  host:     mel0047",
+    "  process:  the supervisor of job 5454239",
+    "  observed: received SIGTERM: the job was told to end (cancelled, stopped, or at its time limit)",
+    "Shutting down Skiff cluster (Job ID: 5454239)...",
+    "srun: error: mel0513: task 0: Killed",
+    "srun: error: mel0047: task 0: Killed",
+    "srun: error: mel0436: task 0: Killed",
+    "srun: error: mel0144: task 0: Killed",
+    "srun: error: mel0239: task 0: Killed",
+    "srun: error: mel0417: task 0: Killed",
+    "srun: error: mel0543: task 0: Killed",
+    "srun: error: mel0192: task 0: Killed",
+    "srun: error: mel0397: task 0: Killed",
+    "srun: error: mel0522: task 0: Killed",
+    "Cluster cleanup complete.",
+    "The cause of the shutdown is recorded in /home/users/u102006/.skiff/job-results/5454239.cause",
+    "srun: error: mel0047: task 0: Exited with exit code 1",
+    "srun: error: mel0144: task 0: Exited with exit code 1",
+    "srun: error: mel0192: task 0: Exited with exit code 1",
+    "srun: error: mel0239: task 0: Exited with exit code 1",
+    "srun: error: mel0397: task 0: Exited with exit code 1",
+    "srun: error: mel0417: task 0: Exited with exit code 1",
+    "srun: error: mel0436: task 0: Exited with exit code 1",
+    "srun: error: mel0513: task 0: Exited with exit code 1",
+    "srun: error: mel0522: task 0: Exited with exit code 1",
+    "srun: error: mel0543: task 0: Exited with exit code 1"
+  ],
+  "cleanup_checks": [
+    {
+      "at": 1794571632.0247357,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0144",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble2"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 791449.608421694,
+      "payload_exit_code": null,
+      "pid": 25309,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    },
+    {
+      "at": 1794571634.7855966,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0192",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble3"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 774352.431385943,
+      "payload_exit_code": null,
+      "pid": 14868,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    },
+    {
+      "at": 1794571641.820134,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0543",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble10"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 736289.4696121,
+      "payload_exit_code": null,
+      "pid": 25491,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    },
+    {
+      "at": 1794571639.8616197,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0513",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble8"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 835706.56593493,
+      "payload_exit_code": null,
+      "pid": 1581,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    },
+    {
+      "at": 1794571639.4356782,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0436",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble7"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 815354.111506689,
+      "payload_exit_code": null,
+      "pid": 28361,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    },
+    {
+      "at": 1794571639.0077565,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0417",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble6"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 833920.66549268,
+      "payload_exit_code": null,
+      "pid": 31980,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    },
+    {
+      "at": 1794571636.3811138,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0239",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble4"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 104118.067242297,
+      "payload_exit_code": null,
+      "pid": 9438,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    },
+    {
+      "at": 1794571630.301564,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0047",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble1"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 843041.931507047,
+      "payload_exit_code": null,
+      "pid": 6214,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    },
+    {
+      "at": 1794571640.3350058,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0522",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble9"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 843044.034659492,
+      "payload_exit_code": null,
+      "pid": 28313,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    },
+    {
+      "at": 1794571637.2530048,
+      "event": "bubble_cleanup_verified",
+      "host": "mel0397",
+      "instance_absent": true,
+      "instance_query": {
+        "argv": [
+          "apptainer",
+          "instance",
+          "list",
+          "--json",
+          "bubble5"
+        ],
+        "exit_code": 0,
+        "stderr": "",
+        "stdout": "{\n\t\"instances\": []\n}\n"
+      },
+      "monotonic": 799435.959826824,
+      "payload_exit_code": null,
+      "pid": 23985,
+      "schema_version": 1,
+      "scope": "after official supervisor final sweep"
+    }
+  ],
+  "collected_at_utc": "2026-11-13T12:15:33.316943+00:00",
+  "driver_events": [
+    {
+      "at": 1794570319.8742144,
+      "backend": "skiff",
+      "event": "backend_launch_started",
+      "host": "mel0047",
+      "monotonic": 841731.504158114,
+      "pid": 13517,
+      "schema_version": 1
+    },
+    {
+      "at": 1794570381.2031696,
+      "backend": "skiff",
+      "event": "platform_ready",
+      "host": "mel0047",
+      "monotonic": 841792.833112489,
+      "pid": 13517,
+      "schema_version": 1
+    },
+    {
+      "at": 1794570382.5122347,
+      "backend": "skiff",
+      "event": "manifest_apply_started",
+      "host": "mel0047",
+      "monotonic": 841794.142177824,
+      "pid": 13517,
+      "schema_version": 1
+    },
+    {
+      "at": 1794570383.5101237,
+      "backend": "skiff",
+      "event": "manifest_apply_finished",
+      "host": "mel0047",
+      "monotonic": 841795.140067415,
+      "pid": 13517,
+      "schema_version": 1
+    },
+    {
+      "at": 1794571614.1460762,
+      "backend": "skiff",
+      "event": "all_workload_containers_stopped",
+      "host": "mel0047",
+      "monotonic": 843025.776019141,
+      "pid": 13517,
+      "schema_version": 1
+    },
+    {
+      "at": 1794571614.9513392,
+      "backend": "skiff",
+      "event": "backend_shutdown_requested",
+      "host": "mel0047",
+      "monotonic": 843026.58128362,
+      "pid": 13517,
+      "schema_version": 1
+    },
+    {
+      "at": 1794571614.952296,
+      "backend": "skiff",
+      "event": "skiff_graceful_stop_requested",
+      "host": "mel0047",
+      "job": "5454239",
+      "method": "scancel --batch --signal=TERM",
+      "monotonic": 843026.582238682,
+      "pid": 13517,
+      "schema_version": 1
+    },
+    {
+      "at": 1794571614.9703305,
+      "backend": "skiff",
+      "event": "skiff_supervisor_stop_signalled",
+      "host": "mel0047",
+      "monotonic": 843026.600273718,
+      "pid": 13517,
+      "schema_version": 1,
+      "signal": 15
+    },
+    {
+      "at": 1794571641.9841287,
+      "backend": "skiff",
+      "event": "skiff_supervisor_failed",
+      "exit_code": 1,
+      "host": "mel0047",
+      "monotonic": 843053.614072071,
+      "pid": 13517,
+      "schema_version": 1
+    },
+    {
+      "at": 1794571641.987053,
+      "backend": "skiff",
+      "event": "backend_stopped",
+      "exit_code": 1,
+      "host": "mel0047",
+      "monotonic": 843053.616995567,
+      "pid": 13517,
+      "schema_version": 1
+    },
+    {
+      "at": 1794571641.9369812,
+      "credentials_removed": true,
+      "event": "skiff_supervisor_cleanup_finished",
+      "host": "mel0047",
+      "monotonic": 843053.566924145,
+      "pid": 6375,
+      "runtime_exit_code": 143,
+      "schema_version": 1,
+      "scope": "official launcher end hook; internal startup/entrypoint timings unavailable"
+    }
+  ],
+  "failed_entry": {
+    "backend": "skiff",
+    "charged_node_hours": 3.688888888888889,
+    "failure": "Allocation supervisor failed; inspect operations/backend.log and the Slurm job log",
+    "id": "pair-2-skiff",
+    "job_id": "5454239",
+    "pair": 2,
+    "pilot": false,
+    "submitted_at": 1794570313.363177
+  },
+  "observer": {
+    "accounting_end": "2026-11-13T12:07:22",
+    "allocation_start": 1794570314.0,
+    "elapsed_seconds": 1328,
+    "exit_code": "1:0",
+    "job_id": "5454239",
+    "last_active_at": 1794571683.8240802,
+    "nodes": 10,
+    "poll_interval_seconds": 2,
+    "released_at": 1794571685.851357,
+    "state": "FAILED",
+    "submitted_at": 1794570313.363177
+  },
+  "phase_seconds": {
+    "batch": 42.333812983939424,
+    "data": 565.0358436569804,
+    "evaluation": 12.90389362105634,
+    "policy": 176.31453834299464,
+    "recovery": 3.1985620899358764,
+    "serve": 188.00533778592944,
+    "train": 184.72217370104045,
+    "tune": 35.523324148962274
+  },
+  "replacement_active": {
+    "job": "5454387",
+    "run": "pair-2-skiff"
+  },
+  "replacement_campaign": "/home/users/u102006/.skiff/experiments/campaign-20261113-r12-pairs",
+  "signal_probe": {
+    "accounting": [
+      "5454378",
+      "COMPLETED",
+      "0:0",
+      "9",
+      "10",
+      "2026-11-13T12:12:06",
+      "2026-11-13T12:12:15"
+    ],
+    "conclusion": "Batch group reached inherited srun client (137); isolated client remained alive until ordered step TERM and exited 0",
+    "events": [
+      {
+        "at": 1794571930.6564546,
+        "event": "batch_term",
+        "mode": "inherited",
+        "pgid": 10774,
+        "pid": 10774,
+        "role": "batch"
+      },
+      {
+        "at": 1794571930.656479,
+        "event": "supervisor_term",
+        "mode": "inherited",
+        "pgid": 10774,
+        "pid": 10775,
+        "role": "supervisor"
+      },
+      {
+        "at": 1794571930.657608,
+        "event": "supervisor_term",
+        "mode": "inherited",
+        "pgid": 10774,
+        "pid": 10775,
+        "role": "supervisor"
+      },
+      {
+        "at": 1794571932.675095,
+        "event": "client_before_step_signal",
+        "exit_code": 137,
+        "mode": "inherited",
+        "pgid": 10774,
+        "pid": 10775,
+        "role": "supervisor"
+      },
+      {
+        "at": 1794571932.6879306,
+        "client_exit": 137,
+        "event": "supervisor_done",
+        "mode": "inherited",
+        "pgid": 10774,
+        "pid": 10775,
+        "role": "supervisor"
+      },
+      {
+        "at": 1794571932.719955,
+        "event": "case_done",
+        "mode": "inherited",
+        "pgid": 10774,
+        "pid": 10774,
+        "role": "batch",
+        "supervisor_exit": 0
+      },
+      {
+        "at": 1794571933.141812,
+        "event": "batch_term",
+        "mode": "isolated",
+        "pgid": 10774,
+        "pid": 10774,
+        "role": "batch"
+      },
+      {
+        "at": 1794571933.1426015,
+        "event": "supervisor_term",
+        "mode": "isolated",
+        "pgid": 10879,
+        "pid": 10879,
+        "role": "supervisor"
+      },
+      {
+        "at": 1794571935.1598368,
+        "event": "client_before_step_signal",
+        "exit_code": null,
+        "mode": "isolated",
+        "pgid": 10879,
+        "pid": 10879,
+        "role": "supervisor"
+      },
+      {
+        "at": 1794571935.186935,
+        "event": "worker_term",
+        "mode": "isolated",
+        "pgid": 17813,
+        "pid": 17813,
+        "role": "worker"
+      },
+      {
+        "at": 1794571935.3019788,
+        "client_exit": 0,
+        "event": "supervisor_done",
+        "mode": "isolated",
+        "pgid": 10879,
+        "pid": 10879,
+        "role": "supervisor"
+      },
+      {
+        "at": 1794571935.3572147,
+        "event": "case_done",
+        "mode": "isolated",
+        "pgid": 10774,
+        "pid": 10774,
+        "role": "batch",
+        "supervisor_exit": 0
+      },
+      {
+        "at": 1794571935.357742,
+        "event": "probe_complete",
+        "pgid": 10774,
+        "pid": 10774,
+        "role": "batch"
+      }
+    ],
+    "job_id": "5454378",
+    "node_hours": 0.025,
+    "source_path": "/project/home/p200528/ray-ten-node-20261112/stop-signal-probe-20261113"
+  }
+}

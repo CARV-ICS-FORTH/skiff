@@ -1,0 +1,2 @@
+namespace/skiff-lifecycle-benchmark created
+daemonset.apps/timestamp-per-node created

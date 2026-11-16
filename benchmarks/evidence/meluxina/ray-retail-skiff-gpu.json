@@ -1,0 +1,423 @@
+{
+  "site": "MeluXina (login.lxp.lu)",
+  "benchmark": "ray-retail",
+  "platform": "skiff",
+  "date": "2026-11-10",
+  "slurm_job_id": "5440754",
+  "native_slurm_job_id": "5424547",
+  "gate": {
+    "benchmark_seconds": 2160.932341326028,
+    "benchmark_validation": {
+      "nodes": 5,
+      "phase_seconds": 2155.1642383127473,
+      "status": "PASS"
+    },
+    "smoke_seconds": 62.64387222507503,
+    "smoke_validation": {
+      "nodes": 5,
+      "phase_seconds": 56.583812814205885,
+      "status": "PASS"
+    },
+    "stage": "benchmark",
+    "started_at": 1794306210.5191205,
+    "status": "complete",
+    "total_seconds": 2226.4897867860273
+  },
+  "identity": {
+    "backend": "skiff",
+    "config": "d1c7a40cb8f14dffff0243794b18a74957556e8652729cde6d1e1fe1e1d4f534",
+    "environment": {
+      "architecture": "x86_64",
+      "packages": {
+        "grpcio": "1.84.0",
+        "gymnasium": "1.1.1",
+        "numpy": "2.2.6",
+        "pandas": "2.2.3",
+        "protobuf": "6.33.5",
+        "psutil": "7.0.0",
+        "pyarrow": "20.0.0",
+        "pydantic": "2.14.1",
+        "ray": "2.49.2",
+        "torch": "2.8.0+cu128"
+      },
+      "python": "3.11.18",
+      "system": "Linux",
+      "train_api": "0"
+    },
+    "source": "b8a0576143e7c144c538875c0d8990281c426066d2f30104f5a9f191e89e08c9"
+  },
+  "config": {
+    "data": {
+      "blocks": 400,
+      "days": 1000,
+      "max_pending": 80,
+      "series": 10000,
+      "train_end": 700,
+      "validation_end": 850
+    },
+    "deadline_seconds": 3300,
+    "device": "cuda",
+    "expected_nodes": 5,
+    "rl": {
+      "batch_size": 16384,
+      "cpus_per_learner": 4,
+      "env_runners": 40,
+      "epochs": 4,
+      "evaluation_episodes": 1200,
+      "hidden": 128,
+      "horizon": 84,
+      "iterations": 120,
+      "layers": 2,
+      "minibatch_size": 512
+    },
+    "schema_version": 1,
+    "seed": 731,
+    "serve": {
+      "autoscale": false,
+      "batch_size": 32,
+      "concurrency": 64,
+      "cpus_per_replica": 2,
+      "port": 18080,
+      "replicas": 5,
+      "requests": 60000
+    },
+    "train": {
+      "batch_size": 1024,
+      "cpus_per_worker": 4,
+      "epochs": 16,
+      "hidden": 256,
+      "layers": 2,
+      "lr": 0.001,
+      "max_batches": 0,
+      "threads": 4,
+      "use_tuned": false,
+      "workers": 5
+    },
+    "tune": {
+      "adaptive": false,
+      "concurrency": 5,
+      "epochs": 6,
+      "trials": 6
+    }
+  },
+  "validation": {
+    "native": {
+      "smoke": {
+        "status": "PASS",
+        "nodes": 5,
+        "phase_seconds": 69.3189802490233,
+        "artifact_count": 435,
+        "manifest_sha256": "fcbf0fc3f2c11da4e9b48a8142a7c3af50f0ff93f9dc795d0144292cd1910752"
+      },
+      "benchmark": {
+        "status": "PASS",
+        "nodes": 5,
+        "phase_seconds": 2188.2146791699925,
+        "artifact_count": 1395,
+        "manifest_sha256": "f2faa57f04e89d7547aefc99256dd7d36aff422d5a3d4819784c5ceb0ee87a55"
+      }
+    },
+    "skiff": {
+      "smoke": {
+        "status": "PASS",
+        "nodes": 5,
+        "phase_seconds": 56.583812814205885,
+        "artifact_count": 435,
+        "manifest_sha256": "9fe5e966a10c7f60c21b1fe706c92d3f731feeac2da3cdb2a3194f1117079502"
+      },
+      "benchmark": {
+        "status": "PASS",
+        "nodes": 5,
+        "phase_seconds": 2155.1642383127473,
+        "artifact_count": 1395,
+        "manifest_sha256": "321aa2c88776803b5fac075299261b8387e9ca4cec30660936180d5901cc7672"
+      }
+    }
+  },
+  "comparison_checks": {
+    "config": true,
+    "source": true,
+    "environment": true,
+    "ray_resources": true,
+    "cpu_affinity": true,
+    "raw_data_checksums": true,
+    "exact_object_store_signatures": false,
+    "container_identity": true
+  },
+  "built_in_comparison": {
+    "status": "refused",
+    "reason": "Object-store backing/capacity or container identities differ"
+  },
+  "observed_phase_comparison": {
+    "batch": {
+      "native_seconds": 7.789198977989145,
+      "skiff_seconds": 7.394517359090969,
+      "skiff_over_native": 0.9493296268315299
+    },
+    "data": {
+      "native_seconds": 1095.1226072479913,
+      "skiff_seconds": 1081.3048981298925,
+      "skiff_over_native": 0.9873825003459455
+    },
+    "evaluation": {
+      "native_seconds": 16.38794987098663,
+      "skiff_seconds": 16.178983911988325,
+      "skiff_over_native": 0.9872488041125717
+    },
+    "policy": {
+      "native_seconds": 391.7401049110049,
+      "skiff_seconds": 384.9775965299923,
+      "skiff_over_native": 0.9827372579518022
+    },
+    "recovery": {
+      "native_seconds": 1.7354688680206891,
+      "skiff_seconds": 1.3627050400245935,
+      "skiff_over_native": 0.7852085768491862
+    },
+    "serve": {
+      "native_seconds": 488.9378205869871,
+      "skiff_seconds": 483.8876715109218,
+      "skiff_over_native": 0.9896711834032343
+    },
+    "train": {
+      "native_seconds": 85.97213972001919,
+      "skiff_seconds": 81.00706216390245,
+      "skiff_over_native": 0.9422478308404765
+    },
+    "tune": {
+      "native_seconds": 100.52938898699358,
+      "skiff_seconds": 99.05080366693437,
+      "skiff_over_native": 0.9852920092824745
+    }
+  },
+  "native_benchmark_seconds": 2194.4262470219983,
+  "skiff_benchmark_seconds": 2160.932341326028,
+  "observed_skiff_over_native": 0.9847368277965942,
+  "cpu_affinity": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79
+  ],
+  "native_object_store_signatures": [
+    [
+      "tmpfs",
+      459246927872,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ],
+    [
+      "tmpfs",
+      459246940160,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ],
+    [
+      "tmpfs",
+      459246964736,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ],
+    [
+      "tmpfs",
+      459246964736,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ],
+    [
+      "tmpfs",
+      459246968832,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ]
+  ],
+  "skiff_object_store_signatures": [
+    [
+      "tmpfs",
+      459246923776,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ],
+    [
+      "tmpfs",
+      459246931968,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ],
+    [
+      "tmpfs",
+      459246944256,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ],
+    [
+      "tmpfs",
+      459246964736,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ],
+    [
+      "tmpfs",
+      459246977024,
+      "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1"
+    ]
+  ],
+  "ray_resources": [
+    [
+      32.0,
+      1.0,
+      64424509440.0,
+      17179869184.0
+    ],
+    [
+      32.0,
+      1.0,
+      64424509440.0,
+      17179869184.0
+    ],
+    [
+      32.0,
+      1.0,
+      64424509440.0,
+      17179869184.0
+    ],
+    [
+      32.0,
+      1.0,
+      64424509440.0,
+      17179869184.0
+    ],
+    [
+      32.0,
+      1.0,
+      64424509440.0,
+      17179869184.0
+    ]
+  ],
+  "physical_nodes": [
+    "mel2020",
+    "mel2092",
+    "mel2096",
+    "mel2152",
+    "mel2176"
+  ],
+  "placement": [
+    {
+      "pod": "retail-workers-vssvf",
+      "ray_ip": "10.244.1.4",
+      "node": "mel2092",
+      "basis": "Ray resource IP and startup node PodCIDR"
+    },
+    {
+      "pod": "retail-workers-d6p8z",
+      "ray_ip": "10.244.4.4",
+      "node": "mel2176",
+      "basis": "Ray resource IP and startup node PodCIDR"
+    },
+    {
+      "pod": "retail-workers-8rtx7",
+      "ray_ip": "10.244.3.4",
+      "node": "mel2152",
+      "basis": "Ray resource IP and startup node PodCIDR"
+    },
+    {
+      "pod": "retail-head",
+      "ray_ip": "10.244.2.7",
+      "node": "mel2096",
+      "basis": "Ray resource IP and startup node PodCIDR"
+    },
+    {
+      "pod": "retail-workers-v8bhm",
+      "ray_ip": "10.244.0.4",
+      "node": "mel2020",
+      "basis": "Ray resource IP and startup node PodCIDR"
+    }
+  ],
+  "batch_inference": {
+    "artifacts": [],
+    "mae": 4.919012024858534,
+    "rows": 1500000,
+    "seasonal_mae": 9.696457314840332,
+    "wape": 0.1306751557291845
+  },
+  "serving": {
+    "artifacts": [],
+    "autoscale": false,
+    "client_node_id": "4fa02a7e48b8069850e6a04b43192f6af03b94e94b55f9a1fef78de2",
+    "direct_inference_verified": true,
+    "elapsed_seconds": 474.25866140495054,
+    "errors": 0,
+    "forecast_replica_ids": [
+      "478ae3321b278a145b0a179104000000",
+      "7730c91adb1b75b22f83527604000000",
+      "87974e4e9077c69e038c9fc604000000",
+      "ec596b7a187dd880743775f004000000",
+      "f852192e269392bcad395d0704000000"
+    ],
+    "latency_ms": {
+      "p50": 341.5251925471239,
+      "p95": 829.6159904857632,
+      "p99": 889.6957416995429
+    },
+    "policy_replica_ids": [
+      "3966115422ed339c1d026fb404000000",
+      "5f0f1206ba53f99f2a56f81e04000000",
+      "7017e5e6ccce1ee1832114c304000000",
+      "f2ba465cf836df62c8dce6c004000000",
+      "f427344babd7908cc7f0a76804000000"
+    ],
+    "requests": 60000,
+    "requests_per_second": 126.51324031121572,
+    "status": "ServeStatus(proxies={'4fa02a7e48b8069850e6a04b43192f6af03b94e94b55f9a1fef78de2': <ProxyStatus.HEALTHY: 'HEALTHY'>}, applications={'retail': ApplicationStatusOverview(status=<ApplicationStatus.RUNNING: 'RUNNING'>, message='', last_deployed_time_s=1794307950.9618652, deployments={'ForecastDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 5}, message=''), 'PolicyDeployment': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 5}, message=''), 'RetailAPI': DeploymentStatusOverview(status=<DeploymentStatus.HEALTHY: 'HEALTHY'>, status_trigger=<DeploymentStatusTrigger.CONFIG_UPDATE_COMPLETED: 'CONFIG_UPDATE_COMPLETED'>, replica_states={'RUNNING': 1}, message='')})}, target_capacity=None)"
+  },
+  "recovery": {
+    "artifacts": [
+      "/report/benchmark/recovery/ledger.json",
+      "/report/benchmark/recovery/crashed"
+    ],
+    "duplicate_total": 18,
+    "intentional_actor_failures": 1,
+    "restored_total": 18
+  },
+  "skiff_runtime_sha256": "0860ebeab76357f1841c6c9feda1db3ff2ce74ddadc0c097b7efe2a9d3be5d0b",
+  "cuda_sif_sha256": "0ecc716fe145df89402e58a4f1695106cd8cebf5ad71bfdf007e6e9dae2ac4c1",
+  "remote_stage": "/project/scratch/p200528/ray-skiff-gpu-20261110",
+  "limitations": [
+    "One measured run per backend, on different physical nodes and dates.",
+    "Host tmpfs capacity varies slightly across nodes; built-in comparison refusal is retained.",
+    "CPU affinity explicitly matches native; Ray scheduling budgets do not enforce OS affinity by themselves.",
+    "One GPU per node used by Ray within four allocated GPUs per exclusive node.",
+    "Both measurements include smoke warming before full work.",
+    "Skiff startup and cleanup are outside application timers.",
+    "Initial volume-path rejection and stopped unpinned run are excluded from measured results.",
+    "Final pod logs/events were not collected because supervisor cleanup used relative paths after changing directory. Application logs, manifests, resources and startup node records are retained. Placement was reconstructed from Ray IPs and node PodCIDRs."
+  ],
+  "status": "COMPLETED",
+  "slurm_exit_code": "0:0",
+  "job_elapsed_seconds": 2297,
+  "start_time_utc": "2026-11-10T10:22:41Z",
+  "end_time_utc": "2026-11-10T11:00:58Z",
+  "allocation_release_confirmed": true,
+  "raw_collection": "benchmarks/ray-retail/results/skiff/meluxina-gpu-20261110/collection.tar.gz",
+  "raw_collection_sha256": "74cfc008ee85ce1381411524926ec63bb41a52a599cde00b051e68c1af512c20",
+  "allocation_release_observed_utc": "2026-11-10T11:07:04Z"
+}
