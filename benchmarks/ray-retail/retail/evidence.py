@@ -100,6 +100,8 @@ class Journal:
             return existing["result"]
         started = time.perf_counter()
         print(f"RETAIL_PHASE {name} started", flush=True)
+        self.manifest["active_phase"] = name
+        write_json(self.path, self.manifest)
         result = function()
         artifacts = artifact_hashes(result.get("artifacts", []), self.root)
         entry = {
@@ -108,6 +110,7 @@ class Journal:
             "artifacts": artifacts,
             "invocation": len(self.manifest.get("invocations", [None])) - 1,
         }
+        self.manifest.pop("active_phase", None)
         self.manifest["phases"][name] = entry
         write_json(self.path, self.manifest)
         print(

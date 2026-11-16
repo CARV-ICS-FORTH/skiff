@@ -54,6 +54,7 @@ def main():
     p.add_argument("--token", required=True)
     p.add_argument("--cpus", type=int, default=32)
     p.add_argument("--gpus", type=int, default=0)
+    p.add_argument("--gpu-gate", action="store_true", help="Validate a bounded all-node smoke before full work")
     p.add_argument("--object-store-bytes", type=int, default=17179869184)
     p.add_argument("--heap-bytes", type=int, default=64424509440)
     p.add_argument("--port", type=int, default=16379)
@@ -138,6 +139,8 @@ def main():
                 "--address",
                 address,
             ]
+            if args.gpu_gate:
+                app[2:4] = ["-m", "retail.gated"]
             if args.overlay:
                 app += ["--overlay", args.overlay]
             for override in args.overrides:

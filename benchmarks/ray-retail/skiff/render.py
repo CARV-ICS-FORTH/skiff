@@ -25,8 +25,7 @@ def render(
     nodes = config["expected_nodes"]
     if nodes < 2:
         raise ValueError("The head/worker template needs at least two nodes")
-    if config["device"] != "cpu":
-        raise ValueError("This renderer qualifies CPU settings only")
+    gpus = int(config["device"] == "cuda")
     if any(not Path(p).is_absolute() for p in (image, source_path, output_path)):
         raise ValueError("Image, source and output must be absolute paths inside Skiff")
     if len(image_sha256) != 64 or any(
@@ -51,6 +50,9 @@ def render(
             "requests": {"cpu": "32", "memory": "80Gi"},
             "limits": {"cpu": "32", "memory": "80Gi"},
         }
+        if gpus:
+            for budget in container["resources"].values():
+                budget["nvidia.com/gpu"] = "1"
         container["env"][1]["value"] = image_sha256
         command = [
             "python3",
@@ -73,7 +75,7 @@ def render(
             "--cpus",
             "32",
             "--gpus",
-            "0",
+            str(gpus),
             "--object-store-bytes",
             "17179869184",
             "--heap-bytes",
@@ -81,6 +83,8 @@ def render(
             "--object-store-dir",
             "/object-store",
         ]
+        if gpus:
+            command += ["--gpu-gate"]
         if overlay:
             command += ["--overlay", overlay]
         for override in overrides or ():
