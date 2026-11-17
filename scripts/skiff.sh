@@ -1320,6 +1320,11 @@ bubble_cleanup() {
     # text on stdout, which does not belong in the job's output.)
     apptainer instance stop "$NAME" >/dev/null 2>&1 || true
     rm -f "$SLIRP_SOCK" "$OVERLAY_HANDOFF" "$DIRECT_SOCKET" 2>/dev/null || true
+    # The images Skifflet unpacked for the node, which it removes itself once its pods have
+    # stopped: what it had no time for goes here, now that nothing runs in the bubble (they
+    # are as large as the images, and the node's scratch directory may be held in memory).
+    chmod -R u+rwX "$SKIFF_TMP_DIR/.unpacked" 2>/dev/null || true
+    rm -rf "$SKIFF_TMP_DIR/.unpacked" 2>/dev/null || true
     exit "${EXIT_CODE:-0}"
 }
 

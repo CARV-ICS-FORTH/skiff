@@ -29,8 +29,9 @@ import (
 // Skiff's two roots. The state root is the user's ~/.skiff (the shared home: credentials,
 // images, volumes); inside a bubble, which runs as root, it is /root/.skiff. The
 // scratch root, DefaultTmpDir unless the deployment names another (SKIFF_TMP_DIR),
-// is node-local and disposable: the pods directory, Apptainer's unpack and conversion
-// scratch and the sockets between the host and the bubble live in it.
+// is node-local and disposable: the pods directory, the images unpacked for the node
+// (see UnpackedImagesDir), Apptainer's conversion scratch and the sockets between the
+// host and the bubble live in it.
 //
 // Layout of the runtime files of a pod, all under one directory per pod
 // generation, <scratch root>/.pods/<namespace>/<name>_<pod UID>/ (the pod UID keeps a
@@ -45,11 +46,11 @@ import (
 //	volumes/<volume>     the pod's volumes
 //	logs/                container logs (see ContainerPath)
 //	tmp/                 the pod's Apptainer temporary directory (see TmpDir)
-//	scratch/<container>/<attempt>/{tmp,var-tmp,overlay,rootfs}
+//	scratch/<container>/<attempt>/{tmp,var-tmp,overlay,apptainer-tmp}
 //	                     what a container sees as /tmp and /var/tmp, one pair per
 //	                     attempt (see ContainerPath.AttemptTmp), its writable layer
-//	                     (overlay, see ContainerPath.AttemptOverlayDir) and where
-//	                     Apptainer unpacks its image (rootfs)
+//	                     (overlay, see ContainerPath.AttemptOverlayDir) and Apptainer's
+//	                     own temporary directory for the attempt (apptainer-tmp)
 //
 // Everything that launches, reads, execs into or cleans up a pod builds these
 // paths here, from the scratch root it was configured with (SkiffPath); no
@@ -122,6 +123,15 @@ func (p SkiffPath) TmpDir() string {
 
 func (p SkiffPath) PodsDir() string {
 	return filepath.Join(p.TmpDir(), ".pods")
+}
+
+// UnpackedImagesDir holds the images unpacked for this node, one directory per image file:
+// what the containers of the node have as their read-only root filesystem, each under a
+// writable layer of its own (see image.Image.Unpacked). An image is unpacked when the
+// first container of the node needs it, and the copies go when the node's Skifflet stops.
+// It is in the scratch root, so it is node-local and holds nothing that must be kept.
+func (p SkiffPath) UnpackedImagesDir() string {
+	return filepath.Join(p.TmpDir(), ".unpacked")
 }
 
 // CheckVolumePath says whether a volume (a hostPath, or the path of a volume that a
@@ -323,7 +333,8 @@ func (c ContainerPath) AttemptVarTmp(attempt int) string {
 
 // AttemptOverlayDir is the writable layer of attempt N of the container: what the container
 // writes to its root filesystem (anywhere outside its volumes) goes here, over the image
-// as unpacked for it. As in Kubernetes the layer is private to the container, new with every
+// as unpacked for the node (see SkiffPath.UnpackedImagesDir), which the container only
+// reads. As in Kubernetes the layer is private to the container, new with every
 // attempt (a restart finds none of what the attempt before wrote), on the node's disk and
 // not in memory, as large as the disk allows, and removed with the attempt's scratch
 // directory.
@@ -331,12 +342,12 @@ func (c ContainerPath) AttemptOverlayDir(attempt int) string {
 	return filepath.Join(c.AttemptScratchDir(attempt), "overlay")
 }
 
-// AttemptUnpackDir is attempt N's Apptainer temporary directory (APPTAINER_TMPDIR): where
-// Apptainer unpacks the image when the container starts (--unsquash), the read-only layer
-// the writable one lies over. Apptainer removes it when the container exits; one that
-// is killed leaves it, and it goes with the attempt's scratch directory.
-func (c ContainerPath) AttemptUnpackDir(attempt int) string {
-	return filepath.Join(c.AttemptScratchDir(attempt), "rootfs")
+// AttemptApptainerTmp is attempt N's Apptainer temporary directory (APPTAINER_TMPDIR): what
+// Apptainer itself needs to keep while it starts and runs the container is here, inside the
+// pod directory, and not in a directory the pods of the node share. It goes with the
+// attempt's scratch directory.
+func (c ContainerPath) AttemptApptainerTmp(attempt int) string {
+	return filepath.Join(c.AttemptScratchDir(attempt), "apptainer-tmp")
 }
 
 // AttemptTerminationLog is the file a container's termination message is written to in

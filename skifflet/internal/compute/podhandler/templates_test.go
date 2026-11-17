@@ -196,14 +196,16 @@ func TestPrepareAttemptScratch(t *testing.T) {
 	}
 }
 
-// A container's writable layer is an overlay directory of its attempt over the image
-// unpacked for it, on the node's disk: --overlay, not --writable-tmpfs, whose layer is 64 MiB
-// of memory (a package install or a build would fail with no space, where Kubernetes would
-// not), and not --writable on the unpacked copy, which leaves no way to create the mount
-// points of the pod's volumes.
+// A container's writable layer is an overlay directory of its attempt over the image as
+// unpacked for the node, on the node's disk: --overlay, not --writable-tmpfs, whose layer is
+// 64 MiB of memory (a package install or a build would fail with no space, where Kubernetes
+// would not), and not --writable on the unpacked copy, which leaves no way to create the mount
+// points of the pod's volumes and would let one container write to what the others start from.
+// The container starts from that copy, and the image is not unpacked for it again.
 func TestBuildApptainerArgs_WritableLayerIsOnDisk(t *testing.T) {
 	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
-	args := (&Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/images/app.sif"}).BuildApptainerArgs(1, podDir, 2)
+	command := []string{"/bin/sh", "-c", "true"}
+	args := (&Container{Name: "app", ExecutionMode: "exec", ImageFilePath: "/images/app.sif", ImageRootPath: "/scratch/.unpacked/app", Command: command}).BuildApptainerArgs(1, podDir, 2)
 	has := func(flag string) bool {
 		for _, arg := range args {
 			if arg == flag {
@@ -221,8 +223,11 @@ func TestBuildApptainerArgs_WritableLayerIsOnDisk(t *testing.T) {
 	if want := podDir.Container("app").AttemptOverlayDir(2); overlay != want {
 		t.Errorf("the writable layer is %q, want the attempt's overlay directory %q: %v", overlay, want, args)
 	}
-	if !has("--unsquash") {
-		t.Errorf("the image is not unpacked for the attempt: %v", args)
+	if has("--unsquash") {
+		t.Errorf("the image is unpacked again for the attempt: %v", args)
+	}
+	if image := len(args) - len(command) - 1; image < 0 || args[image] != "/scratch/.unpacked/app" || has("/images/app.sif") {
+		t.Errorf("the container does not start from the image as unpacked for the node: %v", args)
 	}
 	for _, flag := range []string{"--writable-tmpfs", "--writable"} {
 		if has(flag) {
@@ -231,9 +236,9 @@ func TestBuildApptainerArgs_WritableLayerIsOnDisk(t *testing.T) {
 	}
 }
 
-// Every attempt has a writable layer and an unpack directory of its own, empty when it
-// starts, and what the attempts before it wrote there is gone with them; another
-// container's is untouched.
+// Every attempt has a writable layer and a temporary directory for Apptainer of its own,
+// empty when it starts, and what the attempts before it wrote there is gone with them;
+// another container's is untouched.
 func TestPrepareAttemptScratch_WritableLayerIsPerAttempt(t *testing.T) {
 	podDir := endpoint.PodPath(filepath.Join(t.TempDir(), "pod"))
 	app, other := podDir.Container("app"), podDir.Container("other")
@@ -243,7 +248,7 @@ func TestPrepareAttemptScratch_WritableLayerIsPerAttempt(t *testing.T) {
 		}
 	}
 	for _, c := range []endpoint.ContainerPath{app, other} {
-		for _, dir := range []string{c.AttemptOverlayDir(1), c.AttemptUnpackDir(1)} {
+		for _, dir := range []string{c.AttemptOverlayDir(1), c.AttemptApptainerTmp(1)} {
 			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 				t.Fatalf("attempt 1 lacks %s: %v", dir, err)
 			}
@@ -270,7 +275,7 @@ func TestPrepareAttemptScratch_WritableLayerIsPerAttempt(t *testing.T) {
 	if app.AttemptOverlayDir(2) == other.AttemptOverlayDir(2) || app.AttemptOverlayDir(1) == app.AttemptOverlayDir(2) {
 		t.Error("attempts or containers share a writable layer")
 	}
-	for _, dir := range []string{app.AttemptOverlayDir(2), app.AttemptUnpackDir(2), app.AttemptTmp(2), app.AttemptVarTmp(2)} {
+	for _, dir := range []string{app.AttemptOverlayDir(2), app.AttemptApptainerTmp(2), app.AttemptTmp(2), app.AttemptVarTmp(2)} {
 		if !strings.HasPrefix(dir, app.AttemptScratchDir(2)+"/") {
 			t.Errorf("%s is not inside the attempt's scratch directory, which goes with the pod", dir)
 		}

@@ -65,6 +65,9 @@ type Container struct {
 	Privileged    bool
 	Capabilities  *corev1.Capabilities
 	ImageFilePath string
+	// ImageRootPath is the image unpacked for this node, which the container starts from (see
+	// image.Image.Unpacked): shared with every other container of the image, and only read.
+	ImageRootPath string
 	// WorkingDir is the directory the container starts in (see workingDirOf); "" means /.
 	WorkingDir string
 	// TerminationMessagePath is where the container writes its termination message, when
@@ -112,13 +115,15 @@ const NoMounts = "home,bind-paths,tmp,cwd"
 // BuildApptainerArgs constructs the CLI arguments for executing attempt N of a
 // container via Apptainer/plaidtainer.
 //
-// The container's root filesystem is the image unpacked for this attempt (--unsquash, into
-// the attempt's own directory, see ContainerPath.AttemptUnpackDir) with a writable layer
+// The container's root filesystem is the image as unpacked for the node (ImageRootPath:
+// one copy, which every container of the image has and none writes to) with a writable layer
 // over it that is an overlay directory of the attempt (--overlay, see
 // ContainerPath.AttemptOverlayDir): private to the container, on the node's disk (not the
 // 64 MiB of memory --writable-tmpfs would give it), new with every attempt and gone with
-// it, as in Kubernetes. (Writing to the unpacked copy itself, --writable, would also be on
-// disk but leaves Apptainer unable to create the mount points of the pod's volumes.)
+// it, as in Kubernetes. (Unpacking the image for each attempt, --unsquash, keeps as many
+// copies of it on the node as it has running containers. Writing to the unpacked copy
+// itself, --writable, would also be on disk but leaves Apptainer unable to create the mount
+// points of the pod's volumes, and the copy could not be shared.)
 //
 // The container's /dev is a minimal one (--contain), with the device files of its GPUs, if it
 // asked for any (--device, see gpu.CDISpec), and nothing else of the node's: a container
@@ -149,7 +154,6 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 		"--cleanenv",
 		"--no-eval",
 		"--no-mount", NoMounts,
-		"--unsquash",
 		"--overlay", podDir.Container(c.Name).AttemptOverlayDir(attempt),
 	)
 	// (A container of a user namespace of its own has none: see runsInUserNamespace.)
@@ -213,7 +217,7 @@ func (c *Container) BuildApptainerArgs(pausePID int, podDir endpoint.PodPath, at
 		}
 	}
 
-	args = append(args, c.ImageFilePath)
+	args = append(args, c.ImageRootPath)
 	args = append(args, c.Command...)
 	args = append(args, c.Args...)
 
