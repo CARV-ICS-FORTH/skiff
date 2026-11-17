@@ -92,6 +92,8 @@ bash skiff.sh stop
 
 ## Acknowledgements
 
+Skiff is currently being partially supported by the European Commission and the Greek General Secretariat for Research and Innovation. It receives funding from the EuroHPC Joint Undertaking through project DARE ("Digital Autonomy for RISC-V in Europe", GA-101202459), as a continuation of HPK, with the focus to support the RISC-V architecture.
+
 Skiff builds upon the legacy of previous projects that have explored the integration of Kubernetes in HPC from different viewpoints: [KNoC](https://github.com/carv-ics-forth/knoc), [HPK](https://github.com/CARV-ICS-FORTH/HPK), and [hpktainer](https://github.com/carv-ics-forth/hpktainer). Check them out if you are interested in the history that led to the current design.
 
 The developers also acknowledge the use of generative AI tools (Gemini by Google, Sol and Astra by OpenAI, and most recently Claude Sonnet and Opus by Anthropic) for assistance during the development of this software.
