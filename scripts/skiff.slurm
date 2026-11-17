@@ -124,19 +124,30 @@ skiff_launch_run() {
     fi
 }
 
-# The step of a node's bubble: the node's CPUs and GPUs (what the pods can use).
+# The step of a node's bubble: the node's CPUs and GPUs (what the pods can use). Its srun is a
+# session of its own (setsid), out of the process group of this script: Slurm signals this
+# script alone (scancel --batch, --signal=B:), but ParaStation's psslurm sends a TERM or a KILL
+# for it to its whole process group, and a SIGTERM to srun makes it cancel the step at once (see
+# skiff_launch_stop).
 skiff_launch_bubble() {
     # shellcheck disable=SC2046 # (step_cpus and step_gpus are one option or nothing)
-    exec srun --nodes=1 -w "$1" --exclusive $(step_cpus "$1") $(step_gpus "$1") bash "$SKIFF_SCRIPT" bubble "$2"
+    exec setsid srun --nodes=1 -w "$1" --exclusive $(step_cpus "$1") $(step_gpus "$1") bash "$SKIFF_SCRIPT" bubble "$2"
 }
 
-# Tell the bubbles to stop, as a signal to the tasks of their steps and not to srun: a SIGTERM
-# to srun makes it cancel the step, which Slurm does with SIGKILL, and where processes are
-# tracked by cgroup (the usual) that kills everything of the step, the bubbles' daemons too,
-# before the pods have been stopped. A signal to the step's tasks (scancel --signal) leaves the
-# step running while its bubble script drains the pods and stops its instance.
+# Tell the bubbles to stop: `stop` in their lease (see skiff_launch_checked), which each bubble
+# reads every 2 s and acts on as on a TERM: it stops its pods, then its daemons. Where the lease
+# cannot be written, the tasks of the bubbles' steps are signalled instead (scancel --signal),
+# which leaves a step running while its bubble script drains the pods, where Slurm signals a
+# step's tasks alone. Never srun: a SIGTERM to srun makes it cancel the step, which Slurm does
+# with SIGKILL, and where processes are tracked by cgroup (the usual) that kills everything of
+# the step, the bubbles' daemons too, before the pods have been stopped.
 skiff_launch_stop() {
     local step signalled=1
+    kill "${SKIFF_LEASE_RENEWER:-}" 2>/dev/null || true
+    wait "${SKIFF_LEASE_RENEWER:-}" 2>/dev/null || true
+    if [ -n "${SKIFF_LEASE:-}" ] && printf 'stop %s\n' "$(date +%s)" 2>/dev/null > "$SKIFF_LEASE"; then
+        return 0
+    fi
     if [ -n "${SLURM_JOB_ID:-}" ] && command -v squeue >/dev/null 2>&1 && command -v scancel >/dev/null 2>&1; then
         for step in $(squeue -s -h -j "$SLURM_JOB_ID" -o %i 2>/dev/null | grep -vE '\.(batch|extern|interactive)$' || true); do
             scancel --signal=TERM "$step" 2>/dev/null && signalled=0
@@ -145,10 +156,27 @@ skiff_launch_stop() {
     return "$signalled"
 }
 
-# (Slurm knows the job is running.)
-skiff_launch_checked() { :; }
+# The bubbles are told to stop through a lease, as those of `skiff.sh start` are (JOB.lease,
+# where skiff.sh describes its launcher), and not by a signal to their steps' tasks: Slurm
+# signals a step's tasks alone, but psslurm signals the process group of each, and a bubble's
+# holds the slirp4netns and the relays that its pods need until they have stopped. The lease is
+# renewed while this script lives, so that the bubbles of a job whose script is gone stop too.
+skiff_launch_checked() {
+    SKIFF_LEASE="$SKIFF_LAUNCHER_DIR/$SKIFF_JOB_ID.lease"
+    export SKIFF_LEASE SKIFF_LEASE_EXPIRY
+    mkdir -p "$SKIFF_LAUNCHER_DIR"
+    if ! date +%s > "$SKIFF_LEASE"; then
+        echo "ERROR: cannot write the bubbles' lease $SKIFF_LEASE; nothing was started." >&2
+        exit 1
+    fi
+    _skiff_lease_renew "$$" &
+    SKIFF_LEASE_RENEWER=$!
+}
 
-# Slurm ends the job, and with it everything the job started.
-skiff_launch_end() { :; }
+# Slurm ends the job, and with it everything the job started; the lease goes too.
+skiff_launch_end() {
+    kill "${SKIFF_LEASE_RENEWER:-}" 2>/dev/null || true
+    [ -z "${SKIFF_LEASE:-}" ] || rm -f "$SKIFF_LEASE" 2>/dev/null || true
+}
 
 skiff_cluster
