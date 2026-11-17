@@ -71,9 +71,38 @@ fi
 # shellcheck source=skiff.sh
 source "$SKIFF_SCRIPT"
 
-# The job and its nodes.
+# The job and its nodes. A heterogeneous job (sbatch OPTIONS : OPTIONS skiff.slurm) is how a
+# cluster has nodes of more than one partition, GPU nodes and nodes without, say: Slurm lists the
+# nodes of each component apart (SLURM_JOB_NODELIST_HET_GROUP_<n>), and a step runs in the first
+# component unless it names its own (--het-group), so the component of each node is kept for its
+# steps (step_group). The first node of the first component, where this script runs, is the
+# controller's.
 SKIFF_JOB_ID=${SLURM_JOB_ID:-}
-read -r -a SKIFF_NODES <<< "$(scontrol show hostnames "${SLURM_JOB_NODELIST:-}" | tr '\n' ' ')"
+SKIFF_NODES=()
+SKIFF_NODE_GROUPS=()
+if [[ "${SLURM_HET_SIZE:-}" =~ ^[1-9][0-9]*$ ]]; then
+    for ((group = 0; group < SLURM_HET_SIZE; group++)); do
+        list="SLURM_JOB_NODELIST_HET_GROUP_$group"
+        for node in $(scontrol show hostnames "${!list:-}"); do
+            SKIFF_NODES+=("$node")
+            SKIFF_NODE_GROUPS+=("$group")
+        done
+    done
+else
+    read -r -a SKIFF_NODES <<< "$(scontrol show hostnames "${SLURM_JOB_NODELIST:-}" | tr '\n' ' ')"
+fi
+
+# step_group NODE: the srun option that runs a step in the component of the job NODE is in
+# (nothing in a job of one component).
+step_group() {
+    local i
+    for i in "${!SKIFF_NODES[@]}"; do
+        if [ "${SKIFF_NODES[$i]}" = "$1" ] && [ -n "${SKIFF_NODE_GROUPS[$i]:-}" ]; then
+            echo "--het-group=${SKIFF_NODE_GROUPS[$i]}"
+            return 0
+        fi
+    done
+}
 
 # step_gpus NODE: the srun option that gives a step the GPUs the job has on NODE (nothing when it
 # has none). The job has them by what was asked for (--gpus-per-node, --gres) or because it is
@@ -112,22 +141,23 @@ step_cpus() {
     if [[ "$cpus" =~ ^[0-9]+$ ]]; then echo "--cpus-per-task=$cpus"; fi
 }
 
-# A step on a node, with the GPUs the job has there (the check on the node is about them).
+# A step on a node, in its component, with the GPUs the job has there (the check on the node is
+# about them).
 skiff_launch_run() {
     local node="$1" seconds="$2"
     shift 2
-    # shellcheck disable=SC2046 # (step_gpus is one option or nothing)
+    # shellcheck disable=SC2046 # (step_group and step_gpus are one option or nothing)
     if [ "$seconds" -gt 0 ]; then
-        timeout --signal=KILL "${seconds}s" srun --nodes=1 -w "$node" $(step_gpus "$node") "$@"
+        timeout --signal=KILL "${seconds}s" srun --nodes=1 -w "$node" $(step_group "$node") $(step_gpus "$node") "$@"
     else
-        srun --nodes=1 -w "$node" $(step_gpus "$node") "$@"
+        srun --nodes=1 -w "$node" $(step_group "$node") $(step_gpus "$node") "$@"
     fi
 }
 
-# The step of a node's bubble: the node's CPUs and GPUs (what the pods can use).
+# The step of a node's bubble, in its component: the node's CPUs and GPUs (what the pods can use).
 skiff_launch_bubble() {
-    # shellcheck disable=SC2046 # (step_cpus and step_gpus are one option or nothing)
-    exec srun --nodes=1 -w "$1" --exclusive $(step_cpus "$1") $(step_gpus "$1") bash "$SKIFF_SCRIPT" bubble "$2"
+    # shellcheck disable=SC2046 # (step_group, step_cpus and step_gpus are one option or nothing)
+    exec srun --nodes=1 -w "$1" $(step_group "$1") --exclusive $(step_cpus "$1") $(step_gpus "$1") bash "$SKIFF_SCRIPT" bubble "$2"
 }
 
 # Tell the bubbles to stop, as a signal to the tasks of their steps and not to srun: a SIGTERM
