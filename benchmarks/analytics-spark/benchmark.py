@@ -120,6 +120,70 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--profile", default="custom")
 
 
+def execution_environment() -> dict[str, Any]:
+    """Observe effective resources; never infer enforcement from Spark settings."""
+    import hashlib
+    import resource
+
+    def read(path):
+        try:
+            return Path(path).read_text().strip()
+        except OSError:
+            return None
+
+    status = read("/proc/self/status") or ""
+    cgroups = read("/proc/self/cgroup") or ""
+    mounts = read("/proc/self/mountinfo") or ""
+    limits = {}
+    # Resolve cgroup paths relative to each mount's root, including ancestors.
+    for line in mounts.splitlines():
+        left, sep, right = line.partition(" - ")
+        if not sep:
+            continue
+        fields, fs = left.split(), right.split()
+        if fs[0] not in ("cgroup", "cgroup2"):
+            continue
+        root, mount = fields[3], fields[4]
+        controllers = set(fs[2].split(","))
+        for entry in cgroups.splitlines():
+            _, names, group = entry.split(":", 2)
+            if fs[0] == "cgroup" and not controllers.intersection(names.split(",")):
+                continue
+            if fs[0] == "cgroup2" and names:
+                continue
+            if root != "/" and group != root and not group.startswith(root + "/"):
+                continue
+            relative = group[len(root):].lstrip("/") if root != "/" else group.lstrip("/")
+            current, boundary = Path(mount) / relative, Path(mount)
+            while True:
+                for name in ("cpu.max", "cpu.stat", "cpuset.cpus.effective", "cpuset.mems.effective",
+                             "memory.max", "memory.high", "cpu.cfs_quota_us", "cpu.cfs_period_us",
+                             "cpuset.cpus", "cpuset.mems", "memory.limit_in_bytes"):
+                    value = read(current / name)
+                    if value is not None:
+                        limits[str(current / name)] = value
+                if current == boundary:
+                    break
+                current = current.parent
+    filesystems = {}
+    for path in ("/spark-scratch", "/dev/shm", "/tmp", "/data"):
+        try:
+            info = os.statvfs(path)
+            filesystems[path] = {"capacity_bytes": info.f_blocks * info.f_frsize,
+                                 "available_bytes": info.f_bavail * info.f_frsize}
+        except OSError:
+            pass
+    identities = {}
+    for path in [Path(__file__), Path(__file__).with_name("runtime.py")]:
+        identities[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {"cpu_affinity": sorted(os.sched_getaffinity(0)),
+            "process_status": [line for line in status.splitlines()
+                               if line.startswith(("Cpus_allowed_list:", "Mems_allowed_list:"))],
+            "address_space_rlimit": list(resource.getrlimit(resource.RLIMIT_AS)),
+            "cgroups": cgroups, "cgroup_limits": limits,
+            "mountinfo": mounts, "filesystems": filesystems, "source_sha256": identities}
+
+
 def partition_probe(rows: Any) -> list[tuple[int, str, int, bool, str]]:
     context = BarrierTaskContext.get()
     count = sum(1 for _ in rows)
@@ -130,6 +194,7 @@ def partition_probe(rows: Any) -> list[tuple[int, str, int, bool, str]]:
             count,
             bool(os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")),
             os.environ.get("POD_NAMESPACE", ""),
+            execution_environment(),
         )
     ]
 
@@ -164,6 +229,7 @@ def probe_executors(
                 "records": row[2],
                 "credentials_injected": row[3],
                 "namespace": row[4],
+                "execution_environment": row[5],
             }
             for row in rows
         ],
@@ -466,6 +532,11 @@ def base_summary(
         "spark_version": spark.version,
         "python_version": platform.python_version(),
         "driver_host": socket.gethostname(),
+        "driver_execution_environment": execution_environment(),
+        "driver_jvm_available_processors": spark.sparkContext._jvm.java.lang.Runtime.getRuntime().availableProcessors(),
+        "spark_configuration_all": {key: ("[redacted]" if any(word in key.lower()
+                                    for word in ("password", "secret", "token", "access.key")) else value)
+                                    for key, value in spark.sparkContext.getConf().getAll()},
         "driver_pod": os.environ.get("POD_NAME", ""),
         "namespace": os.environ.get("POD_NAMESPACE", ""),
         "dataset_uri": args.dataset_uri,

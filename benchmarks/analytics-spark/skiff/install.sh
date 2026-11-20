@@ -48,9 +48,14 @@ kubectl apply -f "${temporary_dir}/rbac.yaml"
 kubectl apply -f "${temporary_dir}/minio.yaml"
 
 if [[ "$INSTALL_OPERATOR" == "true" ]]; then
-    helm repo add --force-update spark-operator https://kubeflow.github.io/spark-operator
-    helm repo update spark-operator
-    helm upgrade --install "$OPERATOR_RELEASE" spark-operator/spark-operator \
+    chart=${OPERATOR_CHART_PATH:-spark-operator/spark-operator}
+    if [[ -z "$OPERATOR_CHART_PATH" ]]; then
+        helm repo add --force-update spark-operator https://kubeflow.github.io/spark-operator
+        helm repo update spark-operator
+    else
+        [[ -r "$chart" ]] || { echo "Operator chart is unreadable: $chart" >&2; exit 1; }
+    fi
+    helm upgrade --install "$OPERATOR_RELEASE" "$chart" \
         --version "$OPERATOR_CHART_VERSION" \
         --namespace "$NAMESPACE" \
         --set-string "spark.jobNamespaces[0]=${NAMESPACE}" \

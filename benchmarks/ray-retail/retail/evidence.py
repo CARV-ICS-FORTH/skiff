@@ -16,8 +16,11 @@ from .config import file_digest, write_json
 class ResourceSampler:
     def __init__(self):
         self.started = time.time()
+        psutil.cpu_percent()
+        self.samples = 0
 
     def sample(self):
+        self.samples += 1
         # PSS where Linux exposes it avoids counting shared object-store pages repeatedly.
         rss, pss, cpu = 0, 0, 0.0
         for process in psutil.process_iter(["name", "cmdline"]):
@@ -41,12 +44,15 @@ class ResourceSampler:
             "at": time.time(),
             "node_id": ray.get_runtime_context().get_node_id(),
             "host_cpu_percent": psutil.cpu_percent(),
+            "cpu_sample_warmed": self.samples > 1,
+            "network_counters": {name: value._asdict() for name, value in psutil.net_io_counters(pernic=True).items()},
+            "ray_available_resources": ray.available_resources(),
             "host_memory_used_bytes": memory.used,
             "host_memory_available_bytes": memory.available,
             "ray_process_rss_sum_bytes": rss,
             "ray_process_pss_sum_bytes": pss or None,
             "ray_process_cpu_seconds": cpu,
-            "scope": "visible Ray processes; includes runtime and concurrent jobs, if any",
+            "scope": "namespace-visible Ray process snapshots, not cumulative job usage; host collector is authoritative",
         }
 
 
@@ -100,14 +106,19 @@ class Journal:
             return existing["result"]
         started = time.perf_counter()
         print(f"RETAIL_PHASE {name} started", flush=True)
+        self.manifest["active_phase"] = name
+        write_json(self.path, self.manifest)
         result = function()
         artifacts = artifact_hashes(result.get("artifacts", []), self.root)
         entry = {
+            "started_at": time.time() - (time.perf_counter() - started),
+            "finished_at": time.time(),
             "seconds": time.perf_counter() - started,
             "result": result,
             "artifacts": artifacts,
             "invocation": len(self.manifest.get("invocations", [None])) - 1,
         }
+        self.manifest.pop("active_phase", None)
         self.manifest["phases"][name] = entry
         write_json(self.path, self.manifest)
         print(

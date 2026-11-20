@@ -61,6 +61,15 @@ STRING_KEYS = {
 
 def render(source: Path, destination: Path) -> None:
     content = source.read_text(encoding="utf-8")
+    node = os.environ.get("CONTROL_NODE", "")
+    if node and not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9.-]*", node):
+        raise ValueError("CONTROL_NODE must be a hostname label")
+    content = content.replace("    __PLACEMENT_SPARK_CONF__", (
+        '    "spark.kubernetes.driver.node.selector.kubernetes.io/hostname": ' + json.dumps(node)
+        if node else ""))
+    content = content.replace("      __MINIO_PLACEMENT__", (
+        '      nodeSelector: {"kubernetes.io/hostname": ' + json.dumps(node) + '}'
+        if node else ""))
     if "__GPU_SPARK_CONF__" in content:
         settings = gpu_settings(os.environ)
         block = "\n".join(f"    {json.dumps(key)}: {json.dumps(value)}"

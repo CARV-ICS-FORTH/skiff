@@ -153,3 +153,9 @@ Local checks cover profiles, resource settings, manifest rendering, calibration,
 result identity, phase sequencing, failures and cleanup. Linux also tests role
 scripts against fake Apptainer. They do not qualify a physical GPU or multi-node
 installation. This is TPC-DS-derived, not an audited TPC benchmark result.
+
+## Backend equivalence
+
+See [the comparison audit](COMPARISON.md) before interpreting native/Skiff
+timing ratios. Equal Spark settings do not establish equal OS resource limits,
+storage, placement or timing boundaries.

@@ -64,7 +64,7 @@ python3 "$SCRIPT_DIR/configuration.py" "$SOURCE_DIR" "${NODES[@]}" > "$RUN_DIR/r
 # shellcheck source=/dev/null
 source "$RUN_DIR/runtime.env"
 # Exact Slurm steps need enough CPUs for concurrent first-node roles.
-python3 - "$EXECUTOR_CORES" "$DRIVER_CORES" "$MINIO_CORES" "${#NODES[@]}" \
+WHOLE_NODE_CPUS=$(python3 - "$EXECUTOR_CORES" "$DRIVER_CORES" "$MINIO_CORES" "${#NODES[@]}" \
     "$EXECUTOR_STEP_MEMORY_MB" "$DRIVER_STEP_MEMORY_MB" "$MINIO_STEP_MEMORY_MB" <<'PY'
 import os
 import re
@@ -76,7 +76,10 @@ for group in os.environ.get("SLURM_JOB_CPUS_PER_NODE", "").split(","):
     if not match:
         raise SystemExit("Cannot read allocation CPU counts")
     cpus.extend([int(match[1])] * int(match[2] or 1))
-if len(cpus) != count or cpus[0] < worker + driver + minio + 1 or any(cpu < worker for cpu in cpus):
+whole = os.environ["NATIVE_RESOURCE_MODE"] == "whole-node"
+if whole and (len(cpus) != count or len(set(cpus)) != 1):
+    raise SystemExit("whole-node mode requires homogeneous allocated CPU counts")
+if not whole and (len(cpus) != count or cpus[0] < worker + driver + minio + 1 or any(cpu < worker for cpu in cpus)):
     raise SystemExit(f"Insufficient allocation CPUs: {cpus}; first node needs {worker+driver+minio+1}")
 per_node = int(os.environ.get("SLURM_MEM_PER_NODE", "0"))
 per_cpu = int(os.environ.get("SLURM_MEM_PER_CPU", "0"))
@@ -84,7 +87,10 @@ limits = [per_node or per_cpu * cpu for cpu in cpus]
 required = [worker_mem + driver_mem + minio_mem + 2048] + [worker_mem] * (count - 1)
 if any(limit and limit < need for limit, need in zip(limits, required)):
     raise SystemExit(f"Insufficient allocation memory (MiB): {limits}; need {required}")
+print(cpus[0])
 PY
+)
+printf 'WHOLE_NODE_CPUS=%q\n' "$WHOLE_NODE_CPUS" >> "$RUN_DIR/runtime.env"
 mkdir -p -- "$MINIO_DATA_ROOT"
 MINIO_DATA_DIR=$(mktemp -d "$MINIO_DATA_ROOT/$RUN_ID.XXXXXX")
 MINIO_DATA_DIR=$(cd -- "$MINIO_DATA_DIR" && pwd)
@@ -146,9 +152,20 @@ GPU_PREFLIGHT=()
 if [[ "$GPU_JOB" == 1 ]]; then GPU_PREFLIGHT=(--gpus-per-task=0); fi
 if [[ "$BENCHMARK_MODE" == gpu ]]; then GPU_PREFLIGHT=(--gpus-per-task=1 --gpu-bind=single:1); fi
 STEP=(srun --exact --nodes=1 --ntasks=1 --cpu-bind="$CPU_BIND" --kill-on-bad-exit=1)
+PREFLIGHT_RESOURCES=(--cpus-per-task=1 --mem=256M)
+role_resources() {
+    ROLE_RESOURCES=(--cpus-per-task="$1" --mem="${2}M")
+    if [[ "$NATIVE_RESOURCE_MODE" == whole-node ]]; then
+        ROLE_RESOURCES=(--cpus-per-task="$WHOLE_NODE_CPUS" --mem=0)
+    fi
+}
+if [[ "$NATIVE_RESOURCE_MODE" == whole-node ]]; then
+    STEP+=(--overlap --mem-bind=none)
+    PREFLIGHT_RESOURCES=(--cpus-per-task="$WHOLE_NODE_CPUS" --mem=0 --mem-bind=none)
+fi
 run_bounded "$STARTUP_TIMEOUT_SECONDS" "$RUN_DIR/preflight.log" \
     srun --exact --nodes="$EXPECTED_EXECUTORS" --ntasks="$EXPECTED_EXECUTORS" \
-    --ntasks-per-node=1 --cpus-per-task=1 --mem=256M --cpu-bind="$CPU_BIND" \
+    --ntasks-per-node=1 "${PREFLIGHT_RESOURCES[@]}" --cpu-bind="$CPU_BIND" \
     --kill-on-bad-exit=1 ${GPU_PREFLIGHT[@]+"${GPU_PREFLIGHT[@]}"} bash "$SCRIPT_DIR/preflight.sh" "$RUN_DIR"
 MASTER_ADDRESS=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["address"])' "$RUN_DIR/nodes/${NODES[0]}.json")
 MASTER_URL="spark://$MASTER_ADDRESS:$MASTER_PORT"
@@ -166,7 +183,8 @@ launch_service() {
         gpu_step=(--gpus-per-task=0)
         if [[ "$BENCHMARK_MODE" == gpu && "$role" == worker ]]; then gpu_step=(--gpus-per-task=1 --gpu-bind=single:1); fi
     fi
-    "${STEP[@]}" ${gpu_step[@]+"${gpu_step[@]}"} --nodelist="$node" --cpus-per-task="$cores" --mem="${memory}M" \
+    role_resources "$cores" "$memory"
+    "${STEP[@]}" ${gpu_step[@]+"${gpu_step[@]}"} --nodelist="$node" "${ROLE_RESOURCES[@]}" \
         bash "$SCRIPT_DIR/role.sh" "$role" "$RUN_DIR" > "$RUN_DIR/$role-$node.log" 2>&1 &
     SERVICE_PIDS+=("$!")
 }
@@ -188,8 +206,9 @@ wait_ready
 GPU_DRIVER=()
 if [[ "$GPU_JOB" == 1 ]]; then GPU_DRIVER=(--gpus-per-task=0); fi
 # Initialize the same MinIO bucket with mc from the same SIF; never install a service.
+role_resources 1 256
 run_bounded "$STARTUP_TIMEOUT_SECONDS" "$RUN_DIR/minio-init.log" \
-    "${STEP[@]}" ${GPU_DRIVER[@]+"${GPU_DRIVER[@]}"} --nodelist="${NODES[0]}" --cpus-per-task=1 --mem=256M \
+    "${STEP[@]}" ${GPU_DRIVER[@]+"${GPU_DRIVER[@]}"} --nodelist="${NODES[0]}" "${ROLE_RESOURCES[@]}" \
     apptainer exec --cleanenv --no-home --env-file "$RUN_DIR/credentials.env" \
     --env "S3_ENDPOINT=$S3_ENDPOINT" --env "MINIO_BUCKET=$MINIO_BUCKET" \
     "$SPARK_SIF" bash -c 'set -euo pipefail; export MC_CONFIG_DIR=$(mktemp -d); trap '\''rm -rf "$MC_CONFIG_DIR"'\'' EXIT; mc alias set local "$S3_ENDPOINT" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null; mc mb --ignore-existing "local/$MINIO_BUCKET"'
@@ -203,9 +222,9 @@ for phase in generate query; do
         summary=query-summary.json
     fi
     started=$SECONDS
+    role_resources "$DRIVER_CORES" "$DRIVER_STEP_MEMORY_MB"
     run_bounded "$deadline" "$RUN_DIR/$phase.log" \
-        "${STEP[@]}" ${GPU_DRIVER[@]+"${GPU_DRIVER[@]}"} --nodelist="${NODES[0]}" --cpus-per-task="$DRIVER_CORES" \
-        --mem="${DRIVER_STEP_MEMORY_MB}M" bash "$SCRIPT_DIR/role.sh" "$phase" "$RUN_DIR"
+        "${STEP[@]}" ${GPU_DRIVER[@]+"${GPU_DRIVER[@]}"} --nodelist="${NODES[0]}" "${ROLE_RESOURCES[@]}" bash "$SCRIPT_DIR/role.sh" "$phase" "$RUN_DIR"
     printf '%s\t%s\n' "$phase" "$((SECONDS - started))" >> "$RUN_DIR/phase-elapsed-seconds.tsv"
     python3 "$SOURCE_DIR/extract_result.py" "$RUN_DIR/$phase.log" "$RUN_DIR/$summary" "$phase"
     python3 "$SCRIPT_DIR/results.py" validate "$RUN_DIR" "$phase"

@@ -1,0 +1,22 @@
+Bootstrap: docker
+From: python:3.11-slim-bookworm
+
+%files
+    requirements.txt /opt/retail/requirements.txt
+    requirements.lock /opt/retail/requirements.lock
+
+%post
+    # Root-mapped builds on HPC have no subordinate UIDs for the _apt user.
+    apt-get -o APT::Sandbox::User=root update
+    apt-get -o APT::Sandbox::User=root install -y --no-install-recommends libgomp1 libstdc++6
+    rm -rf /var/lib/apt/lists/*
+    python -m pip install --no-cache-dir torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+    python -m pip install --no-cache-dir -r /opt/retail/requirements.txt -c /opt/retail/requirements.lock
+    python -m pip check
+
+%environment
+    export RAY_USAGE_STATS_ENABLED=0
+    export RAY_TRAIN_V2_ENABLED=0
+
+%test
+    python -c 'import sys,ray,torch; assert sys.version_info[:2] == (3,11); assert ray.__version__ == "2.49.2"; assert torch.version.cuda == "12.8"; assert torch.distributed.is_nccl_available()'

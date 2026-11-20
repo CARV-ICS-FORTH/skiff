@@ -40,13 +40,18 @@ spec:
     "spark.default.parallelism": __SHUFFLE_PARTITIONS__
     "spark.sql.shuffle.partitions": __SHUFFLE_PARTITIONS__
     "spark.task.cpus": "1"
+    "spark.executorEnv.PYTHONPATH": "/opt/spark/work-dir"
+    __PLACEMENT_SPARK_CONF__
     "spark.dynamicAllocation.enabled": "false"
+    "spark.scheduler.minRegisteredResourcesRatio": "1.0"
     "spark.sql.adaptive.enabled": "true"
     "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
     "spark.ui.enabled": "true"
     "spark.ui.retainedJobs": __UI_RETAINED_JOBS__
     "spark.ui.retainedStages": __UI_RETAINED_STAGES__
-    "spark.local.dir": "/dev/shm"
+    "spark.local.dir": "/spark-scratch"
+    "spark.kubernetes.driver.volumes.emptyDir.spark-local-dir-scratch.mount.path": "/spark-scratch"
+    "spark.kubernetes.executor.volumes.emptyDir.spark-local-dir-scratch.mount.path": "/spark-scratch"
     "spark.kubernetes.executor.podTemplateFile": "/opt/spark/operator-pod-templates/executor-pod-template.yaml"
     "spark.kubernetes.driver.secretKeyRef.AWS_ACCESS_KEY_ID": __ACCESS_KEY_REF__
     "spark.kubernetes.driver.secretKeyRef.AWS_SECRET_ACCESS_KEY": __SECRET_KEY_REF__
@@ -55,8 +60,8 @@ spec:
     "spark.kubernetes.driverEnv.POD_NAME": __DRIVER_POD_NAME__
     "spark.kubernetes.driverEnv.POD_NAMESPACE": __NAMESPACE__
     "spark.executorEnv.POD_NAMESPACE": __NAMESPACE__
-    "spark.kubernetes.driverEnv.SPARK_LOCAL_DIRS": "/dev/shm"
-    "spark.executorEnv.SPARK_LOCAL_DIRS": "/dev/shm"
+    "spark.kubernetes.driverEnv.SPARK_LOCAL_DIRS": "/spark-scratch"
+    "spark.executorEnv.SPARK_LOCAL_DIRS": "/spark-scratch"
     "spark.hadoop.fs.s3a.endpoint": __S3_ENDPOINT__
     "spark.hadoop.fs.s3a.endpoint.region": "us-east-1"
     "spark.hadoop.fs.s3a.connection.ssl.enabled": "false"

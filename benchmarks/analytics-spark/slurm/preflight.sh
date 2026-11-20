@@ -17,6 +17,7 @@ if [[ "$BENCHMARK_MODE" == gpu ]]; then
     GPU_ARGS=(--nv --env "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES")
 fi
 apptainer exec ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} --cleanenv --no-home --bind "$RUN_DIR:/report" \
+    --bind "$SOURCE_DIR:/comparison-source:ro" \
     "$SPARK_SIF" python3 - "$NODE" "$ADDRESS" "$SPARK_VERSION" "$BENCHMARK_MODE" "$RAPIDS_VERSION" <<'PY'
 import json
 import os
@@ -59,3 +60,7 @@ if len(sys.argv) > 4 and sys.argv[4] == "gpu":
                 nvidia_smi=subprocess.check_output(["nvidia-smi"], text=True))
 Path(f"/report/nodes/{node}.json").write_text(json.dumps(data, indent=2) + "\n")
 PY
+
+apptainer exec --cleanenv --no-home --bind "$SOURCE_DIR:/comparison-source:ro" \
+    "$SPARK_SIF" python3 /comparison-source/source_identity.py /comparison-source \
+    > "$RUN_DIR/nodes/$NODE-source-identity.json"

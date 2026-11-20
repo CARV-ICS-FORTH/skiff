@@ -51,4 +51,5 @@ class RoleTests(unittest.TestCase):
                         self.assertTrue(any("spark.worker.resource.gpu.amount=1" in arg for arg in args))
                     if role in ("query", "generate"):
                         self.assertIn("--scale-factor", args)
+                        self.assertIn("spark.executorEnv.PYTHONPATH=/opt/spark/work-dir", args)
                         self.assertEqual("spark.plugins=com.nvidia.spark.SQLPlugin" in args, role == "query")

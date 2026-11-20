@@ -35,10 +35,11 @@ def standalone_rest_json(spark, endpoint):
 
 
 def partition_probe(rows):
+    from benchmark import execution_environment
     context = BarrierTaskContext.get()
     return [(context.partitionId(), socket.gethostname(), sum(1 for _ in rows),
              bool(os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")),
-             os.environ.get("SLURM_JOB_ID", ""))]
+             os.environ.get("SLURM_JOB_ID", ""), execution_environment())]
 
 
 def verify_probe(rows, expected_nodes, slots, job_id):
@@ -51,7 +52,8 @@ def verify_probe(rows, expected_nodes, slots, job_id):
     if not all(row[3] and row[4] == job_id for row in rows):
         raise RuntimeError("Credentials or Slurm job identity missing on an executor")
     return ([{"partition": row[0], "host": row[1], "records": row[2],
-              "credentials_injected": row[3], "slurm_job_id": row[4]} for row in rows], hosts)
+              "credentials_injected": row[3], "slurm_job_id": row[4],
+              **({"execution_environment": row[5]} if len(row) > 5 else {})} for row in rows], hosts)
 
 
 def main():

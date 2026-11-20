@@ -18,6 +18,7 @@ spec:
         app.kubernetes.io/name: spark-knot-object-store
         spark-knot/role: object-store
     spec:
+      __MINIO_PLACEMENT__
       securityContext:
         runAsUser: 185
         runAsGroup: 185

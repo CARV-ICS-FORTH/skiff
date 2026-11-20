@@ -74,9 +74,11 @@ def validate_batch(frame):
 
 
 class BatchForecast:
-    def __init__(self, model_path, device):
+    def __init__(self, model_path, device, threads=1):
+        import torch
         from .model import load_forecaster
 
+        torch.set_num_threads(threads)
         self.model = load_forecaster(model_path, device)
 
     def __call__(self, frame):
@@ -93,14 +95,15 @@ class BatchForecast:
 
 
 def batch_evaluate(config, output):
+    budget = config.get('batch', {})
     ds = ray.data.read_parquet(str(Path(output) / "data/test"))
     predicted = ds.map_batches(
         BatchForecast,
-        fn_constructor_args=(str(Path(output) / "train/model.pt"), config["device"]),
+        fn_constructor_args=(str(Path(output) / "train/model.pt"), config["device"], budget.get('threads', 1)),
         batch_format="pandas",
         batch_size=1024,
-        concurrency=config["expected_nodes"],
-        num_cpus=1,
+        concurrency=budget.get('workers', config["expected_nodes"]),
+        num_cpus=budget.get('cpus_per_worker', 1),
         num_gpus=1 if config["device"] == "cuda" else 0,
     )
     sums = predicted.sum()
