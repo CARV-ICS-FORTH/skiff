@@ -1,4 +1,4 @@
-package eu.knotplatform.sparkknot;
+package io.skiff.analytics;
 
 /** Discover CUDA-visible logical ordinals without a compile-time cuDF dependency. */
 public final class GpuDiscovery {

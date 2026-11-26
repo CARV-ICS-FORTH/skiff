@@ -15,7 +15,10 @@ if [[ "$BENCHMARK_MODE" == gpu ]]; then
     partition=gpu
     gpu_args=(--gpus-per-node=1)
 fi
-exec sbatch --account="${SLURM_ACCOUNT:-your-account}" --qos="${SLURM_QOS:-short}" \
+scheduler_args=()
+[[ -z ${SLURM_ACCOUNT:-} ]] || scheduler_args+=(--account="$SLURM_ACCOUNT")
+[[ -z ${SLURM_QOS:-} ]] || scheduler_args+=(--qos="$SLURM_QOS")
+exec sbatch "${scheduler_args[@]}" \
     --partition="${SLURM_PARTITION:-$partition}" --nodes="$EXECUTOR_INSTANCES" \
     --time="${SLURM_TIME:-03:30:00}" --export=ALL ${gpu_args[@]+"${gpu_args[@]}"} \
     "$@" "$script_dir/analytics-spark.slurm"

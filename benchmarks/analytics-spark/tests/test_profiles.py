@@ -36,7 +36,7 @@ class ProfileTests(unittest.TestCase):
             self.assertEqual(values["SCALE_FACTOR"], "25")
             self.assertEqual(values["QUERY_ITERATIONS"], "12")
             self.assertEqual(int(1 / float(values["GPU_TASK_AMOUNT"])), cores)
-            self.assertTrue(values["SPARK_SIF"].endswith("r2-gpu.sif"))
+            self.assertTrue(values["SPARK_SIF"].endswith("r3-gpu.sif"))
         values = defaults(SOURCE / "skiff/config.env", EXECUTOR_CORES="8", DRIVER_CORES="6")
         self.assertEqual(values["EXECUTOR_CORE_LIMIT"], "8000m")
         self.assertEqual(values["DRIVER_CORE_LIMIT"], "6000m")
@@ -54,7 +54,7 @@ class ProfileTests(unittest.TestCase):
         for mode in ("cpu", "gpu"):
             values = defaults(SOURCE / "skiff/config.env", BENCHMARK_MODE=mode)
             values.update(APP_NAME="check", RUN_ID="check", DRIVER_POD_NAME="check-driver",
-                          DATASET_URI="s3a://spark-knot/data", RESULT_URI="s3a://spark-knot/results",
+                          DATASET_URI="s3a://spark-analytics/data", RESULT_URI="s3a://spark-analytics/results",
                           QUERY_SELECTION="q1,q3", S3_ENDPOINT="http://minio:9000",
                           ACCESS_KEY_REF="secret:user", SECRET_KEY_REF="secret:password")
             with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, values, clear=True):
@@ -99,10 +99,14 @@ class ProfileTests(unittest.TestCase):
             for mode in ("cpu", "gpu"):
                 env = {"PATH": f"{temporary}:{os.environ['PATH']}", "HOME": temporary,
                        "BENCHMARK_MODE": mode}
+                if mode == "gpu":
+                    env.update(SLURM_ACCOUNT="research", SLURM_QOS="normal")
                 result = subprocess.check_output(["bash", str(SLURM / "submit.sh"), "--parsable"],
                                                  env=env, cwd=temporary, text=True)
                 self.assertIn("--nodes=10", result)
-                self.assertIn("--account=your-account", result)
+                self.assertEqual("--account=research" in result, mode == "gpu")
+                self.assertEqual("--qos=normal" in result, mode == "gpu")
+                self.assertNotIn("--account=your-account", result)
                 self.assertIn(f"--partition={mode}", result)
                 self.assertIn("--parsable", result)
                 self.assertEqual("--gpus-per-node=1" in result, mode == "gpu")

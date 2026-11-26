@@ -5,7 +5,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 source "${script_dir}/lib.sh"
-load_spark_knot_config
+load_spark_analytics_config
 
 for command_name in kubectl python3 sha256sum; do
     require_command "$command_name"
@@ -93,7 +93,7 @@ for path in \
     /opt/spark/work-dir/benchmark.py \
     /opt/spark/work-dir/runtime.py \
     /opt/spark/work-dir/gpu-discovery.sh \
-    /opt/spark/work-dir/spark-knot-tpcds.jar \
+    /opt/spark/work-dir/spark-analytics-tpcds.jar \
     /opt/spark/work-dir/tpcds-queries/q1.sql \
     /opt/spark/jars/hadoop-aws-3.4.1.jar \
     /opt/spark/jars/bundle-2.24.6.jar \
@@ -109,5 +109,7 @@ if [[ "$BENCHMARK_MODE" == gpu ]]; then
     "$apptainer_bin" exec "$SPARK_IMAGE_HOST_PATH" test -x /opt/spark/work-dir/gpu-discovery.sh
     echo "GPU capacity and image checked; executor CUDA access is checked by the application."
 fi
+"$apptainer_bin" exec --cleanenv --no-home --bind "$SPARK_BENCHMARK_ROOT:/comparison-source:ro" \
+    "$SPARK_IMAGE_HOST_PATH" python3 /comparison-source/source_identity.py /comparison-source
 sha256sum "$SPARK_IMAGE_HOST_PATH"
 echo "Cluster and image preflight passed. No benchmark was submitted."

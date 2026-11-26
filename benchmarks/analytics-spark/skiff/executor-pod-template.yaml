@@ -2,14 +2,14 @@ apiVersion: v1
 kind: Pod
 metadata:
   labels:
-    spark-knot/role: executor
+    spark-analytics/role: executor
 spec:
   affinity:
     podAntiAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
         - labelSelector:
             matchLabels:
-              spark-knot/role: executor
+              spark-analytics/role: executor
           topologyKey: kubernetes.io/hostname
   containers:
     - name: spark-kubernetes-executor

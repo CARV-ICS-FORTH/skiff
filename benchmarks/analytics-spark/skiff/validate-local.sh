@@ -5,7 +5,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 source "${script_dir}/lib.sh"
-load_spark_knot_config
+load_spark_analytics_config
 
 for command_name in bash python3; do
     require_command "$command_name"

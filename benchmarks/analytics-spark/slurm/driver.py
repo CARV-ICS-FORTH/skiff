@@ -14,7 +14,7 @@ from urllib.request import ProxyHandler, build_opener
 from pyspark import BarrierTaskContext
 from pyspark.sql import SparkSession
 
-sys.path.insert(0, "/spark-knot")
+sys.path.insert(0, "/spark-analytics")
 import benchmark as workload  # noqa: E402
 
 
@@ -35,10 +35,11 @@ def standalone_rest_json(spark, endpoint):
 
 
 def partition_probe(rows):
+    from benchmark import execution_environment
     context = BarrierTaskContext.get()
     return [(context.partitionId(), socket.gethostname(), sum(1 for _ in rows),
              bool(os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")),
-             os.environ.get("SLURM_JOB_ID", ""))]
+             os.environ.get("SLURM_JOB_ID", ""), execution_environment())]
 
 
 def verify_probe(rows, expected_nodes, slots, job_id):
@@ -51,7 +52,8 @@ def verify_probe(rows, expected_nodes, slots, job_id):
     if not all(row[3] and row[4] == job_id for row in rows):
         raise RuntimeError("Credentials or Slurm job identity missing on an executor")
     return ([{"partition": row[0], "host": row[1], "records": row[2],
-              "credentials_injected": row[3], "slurm_job_id": row[4]} for row in rows], hosts)
+              "credentials_injected": row[3], "slurm_job_id": row[4],
+              **({"execution_environment": row[5]} if len(row) > 5 else {})} for row in rows], hosts)
 
 
 def main():
@@ -64,10 +66,10 @@ def main():
         raise RuntimeError("Allocation and executor count disagree")
     if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get("AWS_SECRET_ACCESS_KEY"):
         raise RuntimeError("S3 credentials missing from Slurm driver")
-    spark = (SparkSession.builder.appName(f"spark-knot-{args.workload}-{args.run_id}")
+    spark = (SparkSession.builder.appName(f"spark-analytics-{args.workload}-{args.run_id}")
              .config("spark.sql.session.timeZone", "UTC").getOrCreate())
     spark.sparkContext.setLogLevel("WARN")
-    # Match analytics-spark-knot: session startup excluded; probe, workload, metrics included.
+    # Match analytics-spark: session startup excluded; probe, workload, metrics included.
     started = time.perf_counter()
     try:
         if spark.sparkContext.master != os.environ["SPARK_MASTER_URL"]:
@@ -79,7 +81,7 @@ def main():
                 .mapPartitions(partition_probe).collect())
         probe, hosts = verify_probe(rows, expected_nodes, slots, job_id)
         if args.workload == "generate":
-            spark.sparkContext._jvm.eu.knotplatform.sparkknot.SparkKnotTPCDS.generate(
+            spark.sparkContext._jvm.io.skiff.analytics.SparkAnalyticsTPCDS.generate(
                 spark._jsparkSession, workload.DSDGEN_DIRECTORY, args.dataset_uri,
                 args.scale_factor, args.partitions)
             workload.verify_table_paths(spark, args.dataset_uri)

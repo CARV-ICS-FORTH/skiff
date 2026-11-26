@@ -123,14 +123,14 @@ class ProfileTests(unittest.TestCase):
             self.assertNotIn("ModuleNotFoundError", result.stderr)
 
     def test_defaults_match_shared_profile(self):
-        ours, knot = defaults(ROOT / "config.env"), defaults(SOURCE / "skiff/config.env")
+        ours, skiff = defaults(ROOT / "config.env"), defaults(SOURCE / "skiff/config.env")
         for name in ("SPARK_VERSION", "SCALE_FACTOR", "GENERATION_PARTITIONS", "SHUFFLE_PARTITIONS",
                      "QUERY_SET", "QUERY_ITERATIONS", "DRIVER_CORES", "DRIVER_MEMORY",
                      "DRIVER_MEMORY_OVERHEAD", "EXECUTOR_CORES", "EXECUTOR_MEMORY", "EXECUTOR_MEMORY_OVERHEAD"):
-            self.assertEqual(ours[name], knot[name], name)
-        self.assertEqual(ours["MINIO_MEMORY"].lower(), knot["MINIO_MEMORY_LIMIT"].lower().replace("i", ""))
-        self.assertEqual(ours["MINIO_CORES"], knot["MINIO_CPU_LIMIT"])
-        self.assertEqual(ours["SPARK_SIF"], knot["SPARK_IMAGE_HOST_PATH"])
+            self.assertEqual(ours[name], skiff[name], name)
+        self.assertEqual(ours["MINIO_MEMORY"].lower(), skiff["MINIO_MEMORY_LIMIT"].lower().replace("i", ""))
+        self.assertEqual(ours["MINIO_CORES"], skiff["MINIO_CPU_LIMIT"])
+        self.assertEqual(ours["SPARK_SIF"], skiff["SPARK_IMAGE_HOST_PATH"])
         with patch.dict(os.environ, ours, clear=True):
             configured = CONFIG.configure(SOURCE, ["node1", "node2", "node3"])
         self.assertEqual(configured["QUERY_SELECTION"], constant("ORIGINAL_QUERIES"))
@@ -153,7 +153,7 @@ class ProfileTests(unittest.TestCase):
         for key in ("spark.sql.adaptive.coalescePartitions.enabled", "spark.sql.broadcastTimeout",
                     "spark.sql.crossJoin.enabled", "spark.sql.parquet.mergeSchema", "spark.sql.parquet.filterPushdown"):
             self.assertIn(f"{key}={settings[key]}", role)
-        self.assertIn("local:///opt/spark/work-dir/spark-knot-tpcds.jar", role)
+        self.assertIn("local:///opt/spark/work-dir/spark-analytics-tpcds.jar", role)
         self.assertEqual(len(list((SOURCE / "queries").glob("q*.sql"))), 103)
 
     def test_reject_invalid_settings(self):

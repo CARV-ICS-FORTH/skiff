@@ -30,7 +30,7 @@ validate_dns_name() {
     fi
 }
 
-load_spark_knot_config() {
+load_spark_analytics_config() {
     local config_file=${CONFIG_FILE:-"${SPARK_SKIFF_DIR}/config.env"}
     if [[ ! -f "$config_file" ]]; then
         echo "Configuration file not found: $config_file" >&2
