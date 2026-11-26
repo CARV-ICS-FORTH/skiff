@@ -32,8 +32,8 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(gpu["device"], "cuda")
         self.assertEqual(smoke["expected_nodes"], 1)
 
-    def test_meluxina_profile_fits_twenty_nodes_and_has_no_deadline(self):
-        c = load(ROOT / "configs/meluxina-20-node-cpu.json")
+    def test_default_cpu_profile_fits_twenty_nodes_and_has_no_deadline(self):
+        c = load(ROOT / "configs/20-node-cpu.json")
         self.assertEqual(c["expected_nodes"], 20)
         self.assertEqual(c["train"]["workers"], 20)
         self.assertIsNone(c["deadline_seconds"])
@@ -232,7 +232,7 @@ class HarnessTests(unittest.TestCase):
         prior = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGINT)}
         try:
             with tempfile.TemporaryDirectory() as directory:
-                c = load(ROOT / "configs/meluxina-20-node-cpu.json")
+                c = load(ROOT / "configs/20-node-cpu.json")
                 path = Path(directory) / "config.json"
                 marker = Path(directory) / "finished"
                 write_json(path, c)

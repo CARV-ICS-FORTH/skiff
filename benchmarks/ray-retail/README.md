@@ -1,241 +1,99 @@
-# Ray retail benchmark
+# Ray retail
 
-Compare the same Ray application on **native Slurm** and **Skiff** using a
-synthetic retail workload. It generates its own data and trains its models
-from scratch; no external dataset or model download is needed.
+Run an end-to-end Ray workload covering data generation, training, inference,
+policy learning, serving, and actor recovery. Use the same profile and
+application image on Skiff and native Slurm. Run from this directory.
 
-The default CPU profile uses **20 nodes** and is sized for roughly **one hour
-per run**. This is an estimate, not a measured HPC runtime. It runs a fixed
-amount of work with no application timeout or timed padding.
+## Local smoke test
 
-For the **five-node GPU benchmark with an integrated all-node smoke gate**, follow the
-[GPU runbook](GPU-RUNBOOK.md). The CPU defaults below remain unchanged.
-
-## What it does
-
-The application forecasts customer demand and chooses replenishment orders
-with a three-day delivery delay. It runs eight phases:
-
-1. Generate demand data and prepare Parquet datasets with Ray Core and Data.
-2. Search forecasting hyperparameters with Ray Tune.
-3. Train the final forecasting model with distributed PyTorch through Ray Train.
-4. Measure batch forecasting accuracy on held-out data.
-5. Train a replenishment policy with RLlib PPO.
-6. Compare PPO, a fixed stock rule and a forecast-based stock rule on the same demand paths.
-7. Send HTTP requests to forecasting and policy models deployed with Ray Serve.
-8. Crash and restart one application actor to check durable, idempotent recovery.
-
-## Metrics and output
-
-| Area | Output |
-| --- | --- |
-| Execution | Time for each phase and total phase time |
-| Forecasting | Mean absolute error (MAE), weighted absolute percentage error (WAPE) and a seven-day seasonal baseline |
-| Tuning and training | Trial scores, validation MAE, checkpoints, rank/node participation and optimizer steps |
-| Inventory | Mean cost, cost standard deviation and fill rate for each policy |
-| PPO | Learning curve, sampled steps and episode returns |
-| Serving | Requests/second, p50/p95/p99 latency, request errors and observed replica IDs |
-| Resources and recovery | Sampled CPU/memory usage, actor restart and duplicate-work checks |
-
-Each output directory contains `manifest.json` with the resolved parameters,
-results, timings and source/dependency identities; `resources.json` with resource
-samples; and the generated data and model checkpoints. A successful run prints
-`RETAIL_RESULT ... status=complete`. Phase times include phase setup and cleanup;
-cluster startup and Slurm queue time should be recorded separately.
-
-## How to run
-
-Use **Python 3.11** and run Python commands from `benchmarks/ray-retail`.
-Choose a fresh output directory for each measurement. Use identical parameters,
-dependencies and resources for the two HPC backends.
-
-### Local machine
-
-Create an environment:
+Use Python 3.11 in a fresh environment.
 
 ```sh
-cd benchmarks/ray-retail
 python3.11 -m venv .venv
 . .venv/bin/activate
-```
-
-On Linux, install CPU PyTorch first:
-
-```sh
 python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
-```
-
-Then install the pinned dependencies and run the small local profile:
-
-```sh
 python -m pip install -r requirements.txt -c requirements.lock
 python run.py run --config configs/smoke.json --output /tmp/retail-smoke
 ```
 
-Keep `requirements.lock` as pip constraints (`-c`): its protobuf 6.33.5 pin
-is needed by Ray 2.49.2 Serve; protobuf 7 is incompatible.
+Check for `"status": "complete"` and all eight phases in the output's
+`manifest.json`. Use a fresh output directory for each run.
 
-For a larger local run, use `configs/local-cpu.json` with `--local-cpus 8`.
-Local runs need no Slurm, Skiff or container. The recovery phase deliberately
-causes a Ray worker-exit warning. Run `bash validate-local.sh` for checks, or
-`bash validate-local.sh --smoke` to also exercise all phases and resume.
+## Run on native Slurm
 
-### Change the workload
-
-Use repeatable `--set KEY=JSON` options. These work with local runs, native
-Slurm submission and Skiff rendering. Common controls and their **HPC defaults**:
-
-| Setting | Default | Changes |
-| --- | ---: | --- |
-| `data.series` | 10,000 | Dataset size |
-| `train.epochs` | 16 | Final forecasting training passes |
-| `train.hidden` / `train.layers` | 256 / 2 | Forecast width / hidden-layer count |
-| `tune.epochs` | 6 | Training passes per tuning trial |
-| `rl.iterations` | 120 | PPO sampling and learning cycles |
-| `rl.hidden` / `rl.layers` | 128 / 2 | PPO width / hidden-layer count |
-| `rl.epochs` | 4 | Optimization passes per PPO batch |
-| `serve.requests` / `serve.concurrency` | 60,000 / 64 | HTTP load |
-
-Preview the defaults or save a custom profile:
-
-```sh
-python run.py check-config
-python run.py check-config \
-  --set train.epochs=32 --set train.layers=3 \
-  --set rl.iterations=240 > configs/custom.json
-```
-
-Use `--config configs/custom.json` to run a saved profile. To customize a local
-profile, start with it explicitly, for example:
-
-```sh
-python run.py run --config configs/local-cpu.json --local-cpus 8 \
-  --set train.epochs=16 --set train.layers=3 --output /tmp/retail-custom
-```
-
-Precedence is base profile, then `--overlay file.json`, then `--set`; the last
-assignment to a key wins. Values use JSON types, such as numbers, `true`, `false`
-and `null`. Layer counts exclude output layers; `train.layers` also applies to
-Tune, while Tune keeps its existing width/learning-rate candidate grid.
-`deadline_seconds=null` disables the watchdog for profiles that have one.
-Changing epochs or iterations extends that phase, not necessarily the whole
-run proportionally. Node-count changes also require matching allocation size,
-`expected_nodes`, training workers and serving replicas.
-
-### On the HPC machine: preparation
-
-Put this benchmark directory on storage shared by the compute nodes. Provide
-Apptainer and a CPU Python 3.11 SIF containing the dependencies installed above;
-the GPU runbook includes a CUDA SIF recipe. Use the same SIF for both backends.
-
-The default profile has 9.72 million rows and one training rank per node.
-Both adapters advertise **32 Ray CPUs, 16 GiB object store and 60 GiB worker
-heap per node**; Skiff requests 80 GiB per pod. These are scheduling budgets,
-not full use of every CPU on a large node. Use exclusive nodes, shared result
-storage and equivalent node-local tmpfs backing/capacity for the object stores.
-
-### Native Slurm
-
-On the HPC login machine, set the shared paths and submit:
+Stage this directory and a CPU SIF with the same Python dependencies on shared
+storage. The CPU launcher requests 20 nodes by default. Set your site account,
+partition, QoS, and compute interface.
 
 ```sh
 export RETAIL_ROOT=/shared/benchmarks/ray-retail
-export RETAIL_OUTPUT=/shared/ray-results/native-run
 export RETAIL_SIF=/shared/images/ray-retail-cpu.sif
-sbatch "$RETAIL_ROOT/slurm/meluxina-20-node.slurm"
+export RETAIL_OUTPUT=/shared/ray-results/native-cpu
+export RETAIL_INTERFACE=your-compute-interface
+sbatch --account=your-account --partition=your-partition --qos=your-qos \
+  "$RETAIL_ROOT/slurm/20-node-cpu.slurm"
 ```
 
-This is the prepared 20-node launcher. Its defaults are MeluXina's CPU partition,
-account `p200528`, short QoS, 256 logical CPUs per node and interface `ib0`.
-For another site, override the scheduler options with `sbatch` or edit the
-`#SBATCH` lines, and set `RETAIL_INTERFACE` to the compute network interface.
-Its six-hour scheduler ceiling provides headroom; completion releases the job.
+## Run on Skiff
 
-For custom work, append the shared options:
-
-```sh
-sbatch "$RETAIL_ROOT/slurm/meluxina-20-node.slurm" \
-  --set train.epochs=32 --set train.layers=3 --set rl.iterations=240
-```
-
-For a saved profile, append `--config configs/custom.json` instead.
-The launcher starts Ray on each node, runs the application on the head and
-cleans up its Ray processes and private `/dev/shm` directories afterwards.
-
-### Skiff
-
-First install Skiff using the [repository setup guide](../../README.md#get-started).
-On the HPC machine, submit its cluster launcher from the Skiff scripts directory,
-adding your site's partition/account/QoS options:
+Start a Skiff cluster with the profile’s node count and set `KUBECONFIG`.
+The renderer places one Ray pod per node. Stage the benchmark, SIF, and fresh output
+directory under the shared `~/.skiff` tree. The paths passed to the renderer
+are visible inside the bubbles.
 
 ```sh
-sbatch --nodes=20 --time=06:00:00 skiff.slurm
-export KUBECONFIG="$HOME/.skiff/kubeconfig"
-export PATH="$HOME/.skiff/tools/$(uname -m)/bin:$PATH"
-kubectl get nodes
-```
-
-Wait for all 20 nodes to be Ready. With the default Skiff shared-state location,
-put the benchmark source at `~/.skiff/benchmarks/ray-retail`, the same SIF at
-`~/.skiff/images/ray-retail-cpu.sif`, and create a fresh result directory at
-`~/.skiff/ray-results/skiff-run`. Adjust these host locations if your Skiff
-installation uses a different shared-state directory.
-
-On your local machine, use the Python environment above to render the pods.
-Replace the image checksum with the SIF's actual SHA-256:
-
-```sh
-python skiff/render.py \
+cpu_sif="$HOME/.skiff/images/ray-retail-cpu.sif"
+mkdir -p "$HOME/.skiff/ray-results/skiff-cpu"
+python skiff/render.py --config configs/20-node-cpu.json \
   --image /root/.skiff/images/ray-retail-cpu.sif \
-  --image-sha256 ACTUAL_64_CHARACTER_SIF_SHA256 \
+  --image-sha256 "$(sha256sum "$cpu_sif" | cut -d ' ' -f 1)" \
   --source-path /root/.skiff/benchmarks/ray-retail \
-  --output-path /root/.skiff/ray-results/skiff-run \
-  --token skiff-run > /tmp/retail-pods.json
-```
-
-Append the same `--set` options as the native run, or use
-`--config configs/custom.json`. Copy any custom profile/overlay files with the
-benchmark source. Copy the rendered JSON to the HPC machine, then apply it
-using that cluster's kubeconfig:
-
-```sh
-kubectl apply -f /tmp/retail-pods.json
-kubectl get pods -l app=ray-retail -o wide
+  --output-path /root/.skiff/ray-results/skiff-cpu --token skiff-cpu \
+  > /tmp/ray-retail-pods.json
+kubectl apply -f /tmp/ray-retail-pods.json
 kubectl logs -f retail-head
 ```
 
-The manifest creates one head and 19 workers on distinct nodes. The head log
-reports application completion. The Skiff cluster keeps running after the
-benchmark finishes; release its allocation when finished:
+Check the head and worker pods for successful completion and the Skiff
+`manifest.json` for all eight phases. Stop the Skiff allocation when finished
+using the [cluster shutdown procedure](../../GUIDE.md#stopping-the-cluster).
+Compare completed runs with `python run.py compare NATIVE_MANIFEST SKIFF_MANIFEST`.
+
+## GPU and paired CPU examples
+
+Build the CUDA SIF with
+`apptainer build --fakeroot ray-retail-cuda.sif image/retail-cuda.def` on a
+build host with network access. For the five-node GPU example, use
+`slurm/5-node-gpu.slurm` on native Slurm or render
+`configs/5-node-gpu.json` on a GPU-enabled Skiff cluster. Set the
+CUDA SIF and a fresh output path on each backend. Both launchers run an
+all-node GPU smoke before the full workload. Check `gate.json` for completion
+and validate both stages from this checkout, using the output path for that run.
 
 ```sh
-scancel --batch --signal=TERM JOB_ID
+gpu_output=/shared/ray-results/gpu-run
+for stage in smoke benchmark; do
+  python validate-gpu-result.py "$gpu_output/$stage/manifest.json" \
+    --config "$gpu_output/$stage-config.json"
+done
 ```
 
-### Compare results or resume
-
-With both complete output directories accessible on one machine:
+For paired CPU measurements, use `experiment/campaign.py`. Stage the source,
+CPU SIF, and campaign directory under a private shared `~/.skiff` state
+directory. Stage the matching Skiff scripts, runtime SIF, host tools, and
+system images. The five-node example uses a clean `chazapis/main` checkout
+and verifies the matching build before submission.
 
 ```sh
-python run.py compare /shared/skiff-run/manifest.json \
-  /shared/native-run/manifest.json --output /shared/comparison.json
+python3 experiment/campaign.py dry-run --overlay-vs-slurm
+python3 experiment/campaign.py prepare "$HOME/.skiff/experiments/ray-pairs" \
+  --overlay-vs-slurm --image "$HOME/.skiff/images/ray-retail-cpu.sif" \
+  --runtime-image "$HOME/.skiff/images/skiff.sif" \
+  --skiff-root /shared/skiff-upstream --host-python /usr/bin/python3 \
+  --interface your-compute-interface --partition your-partition --account your-account
+python3 experiment/campaign.py run "$HOME/.skiff/experiments/ray-pairs"
 ```
 
-Comparison checks workload/source/dependencies, data and artifact hashes,
-resource budgets, image identity and object-store backing, and reports phase
-ratios plus quality and serving metrics. Adaptive tuning/autoscaling runs are
-excluded. Keep hardware, placement and storage matched and repeat independent
-runs before drawing performance conclusions.
-
-To resume, repeat the original run command with `--resume` and the same output
-directory and parameters. Completed phases are verified and reused.
-
-Local checks on macOS ARM64 with Python 3.11 passed **33 focused tests**, syntax
-and static checks, and real runs of all eight phases with custom model depths,
-checkpoint restoration, actor recovery and resume. Two-rank Gloo training was
-also exercised on one machine. Earlier local measurements are retained in
-[local-validation.json](local-validation.json).
-
-Linux/HPC execution, cross-host networking, GPU behavior, object-store mounts
-and 20-node placement still need verification. The full deployment and its
-near-hour runtime have not yet been measured on HPC.
+Set `--qos` if your site requires it. The runner submits one job at a time and waits for release and validation.
+Check each `validation.json` and the final `summary.json`. Local checks are
+available via `./validate-local.sh`. See the [CPU results](../results.md#ray-retail-cpu) and [GPU results](../results.md#ray-retail-gpu).

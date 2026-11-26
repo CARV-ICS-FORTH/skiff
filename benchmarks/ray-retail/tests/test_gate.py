@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class GateTests(unittest.TestCase):
     def exercise(self, statuses, validation_error=None):
         with tempfile.TemporaryDirectory() as directory:
-            config = load(ROOT / "configs/meluxina-5-node-gpu.json")
+            config = load(ROOT / "configs/5-node-gpu.json")
             children = [SimpleNamespace(wait=lambda code=code: code) for code in statuses]
             with patch("retail.gated.subprocess.Popen", side_effect=children) as launch, patch(
                 "retail.gated.validate", side_effect=validation_error,
@@ -56,5 +56,5 @@ class GateTests(unittest.TestCase):
             path = Path(directory) / "gate.json"
             path.write_text("preserve")
             with self.assertRaisesRegex(ValueError, "fresh"):
-                run(load(ROOT / "configs/meluxina-5-node-gpu.json"), directory, "slurm", "head")
+                run(load(ROOT / "configs/5-node-gpu.json"), directory, "slurm", "head")
             self.assertEqual(path.read_text(), "preserve")

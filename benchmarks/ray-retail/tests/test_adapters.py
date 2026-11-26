@@ -15,7 +15,7 @@ class AdapterTests(unittest.TestCase):
         from skiff.render import render
 
         result = render(
-            str(ROOT / "configs/meluxina-20-node-cpu.json"),
+            str(ROOT / "configs/20-node-cpu.json"),
             "/images/retail.sif",
             "a" * 64,
             "/shared/source",
@@ -103,7 +103,7 @@ class AdapterTests(unittest.TestCase):
             workers["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"],
         )
 
-    def test_rendered_meluxina_pods_start_twenty_matching_ray_nodes(self):
+    def test_rendered_cpu_pods_start_twenty_matching_ray_nodes(self):
         rendered = subprocess.check_output(
             [
                 sys.executable,
@@ -152,7 +152,7 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(command[command.index("--cpus") + 1], "32")
             self.assertEqual(
                 command[command.index("--config") + 1],
-                "configs/meluxina-20-node-cpu.json",
+                "configs/20-node-cpu.json",
             )
             self.assertEqual(command[command.index("--token") + 1], "fixture-'$()")
             self.assertEqual(
@@ -163,7 +163,7 @@ class AdapterTests(unittest.TestCase):
         from skiff.render import render
         from retail.config import load
 
-        for profile, count in [('two-node-gpu-smoke.json', 2), ('meluxina-5-node-gpu.json', 5)]:
+        for profile, count in [('two-node-gpu-smoke.json', 2), ('5-node-gpu.json', 5)]:
             config = load(ROOT / 'configs' / profile)
             self.assertEqual(config['train']['workers'], count)
             self.assertEqual(config['serve']['replicas'], count)

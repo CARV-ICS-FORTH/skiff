@@ -9,6 +9,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from retail.config import add_config_arguments, load  # noqa: E402
+from retail.deployment import resources  # noqa: E402
 
 
 def render(
@@ -22,6 +23,7 @@ def render(
     overrides=(),
 ):
     config = load(config_path, overlay, overrides)
+    budget = resources(config)
     nodes = config["expected_nodes"]
     if nodes < 2:
         raise ValueError("The head/worker template needs at least two nodes")
@@ -43,16 +45,17 @@ def render(
         if worker:
             document["spec"]["parallelism"] = nodes - 1
             document["spec"]["completions"] = nodes - 1
-        spec = document["spec"]["template"]["spec"] if worker else document["spec"]
+        pod = document["spec"]["template"] if worker else document
+        spec = pod["spec"]
         container = spec["containers"][0]
         container["image"] = image
         container["resources"] = {
-            "requests": {"cpu": "32", "memory": "80Gi"},
-            "limits": {"cpu": "32", "memory": "80Gi"},
+            "requests": {"cpu": str(budget["ray_cpus"]), "memory": str(budget["pod_memory_bytes"])},
+            "limits": {"cpu": str(budget["ray_cpus"]), "memory": str(budget["pod_memory_bytes"])},
         }
         if gpus:
-            for budget in container["resources"].values():
-                budget["nvidia.com/gpu"] = "1"
+            for allocation in container["resources"].values():
+                allocation["nvidia.com/gpu"] = "1"
         container["env"][1]["value"] = image_sha256
         command = [
             "python3",
@@ -73,18 +76,20 @@ def render(
             "--token",
             token,
             "--cpus",
-            "32",
+            str(budget["ray_cpus"]),
             "--gpus",
             str(gpus),
             "--object-store-bytes",
-            "17179869184",
+            str(budget["object_store_bytes"]),
             "--heap-bytes",
-            "64424509440",
+            str(budget["heap_bytes"]),
             "--object-store-dir",
             "/object-store",
         ]
         if gpus:
             command += ["--gpu-gate"]
+        if budget["physical_cores"]:
+            command += ["--physical-cores", str(budget["physical_cores"])]
         if overlay:
             command += ["--overlay", overlay]
         for override in overrides or ():
@@ -105,17 +110,28 @@ def render(
                 volume["hostPath"]["path"] = source_path
             elif volume["name"] == "report":
                 volume["hostPath"]["path"] = output_path
+            elif budget["physical_cores"]:
+                # Skiff mounts Memory emptyDir as tmpfs; /dev/shm hostPath is
+                # deliberately outside its permitted shared-state/scratch roots.
+                volume.pop("hostPath", None)
+                volume["emptyDir"] = {"medium": "Memory",
+                    "sizeLimit": str(budget["object_store_bytes"] + 2**30)}
             else:
                 # Explicit host tmpfs mapping; emptyDir's filesystem is not assumed.
                 volume.pop("emptyDir", None)
                 volume["hostPath"] = {"path": "/dev/shm"}
+        if budget["physical_cores"]:
+            # cluster_node journals beside /report, outside the application bind.
+            spec["volumes"].append({"name": "operations", "hostPath": {
+                "path": str(Path(output_path).parent / "operations")}})
+            container["volumeMounts"].append({"name": "operations", "mountPath": "/operations"})
     return {"apiVersion": "v1", "kind": "List", "items": documents}
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     add_config_arguments(
-        p, dest="config_path", default="configs/meluxina-20-node-cpu.json"
+        p, dest="config_path", default="configs/20-node-cpu.json"
     )
     p.add_argument("--image", required=True)
     p.add_argument("--image-sha256", required=True)

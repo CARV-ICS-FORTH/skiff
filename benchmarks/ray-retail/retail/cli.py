@@ -11,7 +11,7 @@ import sys
 from .config import add_config_arguments, load, write_json
 
 
-def compare(left, right):
+def compare(left, right, storage_policy="strict"):
     from .pipeline import PHASES
 
     a, b = [json.loads(Path(p).read_text()) for p in (left, right)]
@@ -35,10 +35,23 @@ def compare(left, right):
             )
 
     def storage_signature(value):
+        if storage_policy not in ('strict', 'experiment-budget'):
+            raise ValueError('Unknown storage comparison policy')
+        if storage_policy == 'experiment-budget':
+            from .deployment import resources as deployment_resources
+
+            budget = deployment_resources(a['config'])
+            if not budget['physical_cores']:
+                raise ValueError('Budget storage comparison requires experiment profile')
+            for n in value['nodes']:
+                store = n['object_store_location']
+                if store['filesystem'] != 'tmpfs' or store['total_bytes'] < budget['object_store_bytes']:
+                    raise ValueError('Object-store backing/capacity below shared budget')
         return sorted(
             (
                 n["object_store_location"].get("filesystem"),
-                n["object_store_location"].get("total_bytes"),
+                n["object_store_location"].get("total_bytes") if storage_policy == 'strict'
+                else budget['object_store_bytes'],
                 n["container_identity"],
             )
             for n in value["nodes"]
@@ -58,6 +71,14 @@ def compare(left, right):
 
     if resources(a) != resources(b):
         raise ValueError("Ray CPU, GPU, heap, or object-store resource budgets differ")
+    if storage_policy == 'experiment-budget':
+        from .telemetry import effective_signature
+
+        def effective(value):
+            return sorted(effective_signature(n['effective_resources']) for n in value['nodes'])
+
+        if effective(a) != effective(b):
+            raise ValueError('Effective CPU/memory bounds, hardware, kernel or NUMA differ')
     for value, manifest in ((a, left), (b, right)):
         for phase in value["phases"].values():
             for path, checksum in phase["artifacts"].items():

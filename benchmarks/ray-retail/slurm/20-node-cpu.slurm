@@ -3,8 +3,6 @@
 # Stage a CPU Python 3.11 SIF with the pinned requirements before submission.
 #SBATCH --job-name=ray-retail-native
 #SBATCH --partition=cpu
-#SBATCH --account=p200528
-#SBATCH --qos=short
 #SBATCH --nodes=20
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=256
@@ -17,7 +15,7 @@ export RETAIL_ROOT=${RETAIL_ROOT:?Set the shared benchmark source directory}
 export RETAIL_OUTPUT=${RETAIL_OUTPUT:?Set a new shared result directory}
 export RETAIL_SIF=${RETAIL_SIF:?Set the CPU Python 3.11 Ray SIF used by both backends}
 export RETAIL_PYTHON=${RETAIL_PYTHON:-python3}
-export RETAIL_CONFIG=${RETAIL_CONFIG:-configs/meluxina-20-node-cpu.json}
+export RETAIL_CONFIG=${RETAIL_CONFIG:-configs/20-node-cpu.json}
 export RETAIL_RAY_CPUS=32
 export RETAIL_GPUS=0
 export RETAIL_OBJECT_STORE_BYTES=17179869184
@@ -32,4 +30,4 @@ RETAIL_HEAD_IP=$(srun --nodes=1 --ntasks=1 --nodelist="$HEAD_NODE" \
 [[ -n "$RETAIL_HEAD_IP" ]] || { echo "Cannot determine head IPv4 address" >&2; exit 1; }
 export RETAIL_HEAD_IP
 mkdir -p -- "$RETAIL_OUTPUT"
-srun --kill-on-bad-exit=1 --cpu-bind=none bash "$RETAIL_ROOT/slurm/meluxina-node.sh" "$@"
+srun --kill-on-bad-exit=1 --cpu-bind=none bash "$RETAIL_ROOT/slurm/tmpfs-node.sh" "$@"
