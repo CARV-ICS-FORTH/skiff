@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "seed": 731,
+  "expected_nodes": 5,
+  "device": "cuda",
+  "data": {
+    "series": 10000,
+    "days": 1000,
+    "train_end": 700,
+    "validation_end": 850,
+    "blocks": 400,
+    "max_pending": 80
+  },
+  "train": {
+    "workers": 5,
+    "cpus_per_worker": 4,
+    "threads": 4,
+    "batch_size": 1024,
+    "epochs": 16,
+    "hidden": 256,
+    "layers": 2,
+    "lr": 0.001,
+    "max_batches": 0,
+    "use_tuned": false
+  },
+  "tune": {
+    "trials": 6,
+    "concurrency": 5,
+    "epochs": 6,
+    "adaptive": false
+  },
+  "rl": {
+    "env_runners": 40,
+    "cpus_per_learner": 4,
+    "iterations": 120,
+    "batch_size": 16384,
+    "minibatch_size": 512,
+    "epochs": 4,
+    "hidden": 128,
+    "layers": 2,
+    "horizon": 84,
+    "evaluation_episodes": 1200
+  },
+  "serve": {
+    "replicas": 5,
+    "cpus_per_replica": 2,
+    "requests": 60000,
+    "concurrency": 64,
+    "batch_size": 32,
+    "autoscale": false,
+    "port": 18080
+  },
+  "deadline_seconds": 3300
+}

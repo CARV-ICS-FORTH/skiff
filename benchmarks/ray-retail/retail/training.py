@@ -213,6 +213,8 @@ def distributed_train_loop(c):
             Path(c["output"]) / f"rank-{rank}.json",
             {
                 "rank": rank,
+                "device": str(device),
+                "backend": dist.get_backend() if world > 1 else None,
                 "node_id": node,
                 "epochs": epoch + 1,
                 "steps_per_epoch": steps,

@@ -188,6 +188,11 @@ def run(args):
             {"started_at": time.time(), "nodes": details, "ray_resources": resources}
         )
         write_json(Path(output) / "manifest.json", journal.manifest)
+        if config["device"] == "cuda" and not local:
+            from .preflight import gpu_preflight
+
+            journal.manifest["gpu_preflight"] = gpu_preflight(nodes, output)
+            write_json(Path(output) / "manifest.json", journal.manifest)
         for n in nodes:
             samplers.append(
                 ResourceSampler.options(

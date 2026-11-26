@@ -8,6 +8,9 @@ The default CPU profile uses **20 nodes** and is sized for roughly **one hour
 per run**. This is an estimate, not a measured HPC runtime. It runs a fixed
 amount of work with no application timeout or timed padding.
 
+For the **five-node GPU benchmark with an integrated all-node smoke gate**, follow the
+[GPU runbook](GPU-RUNBOOK.md). The CPU defaults below remain unchanged.
+
 ## What it does
 
 The application forecasts customer demand and chooses replenishment orders
@@ -123,7 +126,7 @@ run proportionally. Node-count changes also require matching allocation size,
 
 Put this benchmark directory on storage shared by the compute nodes. Provide
 Apptainer and a CPU Python 3.11 SIF containing the dependencies installed above;
-no Ray image builder is included here. Use the same SIF for both backends.
+the GPU runbook includes a CUDA SIF recipe. Use the same SIF for both backends.
 
 The default profile has 9.72 million rows and one training rank per node.
 Both adapters advertise **32 Ray CPUs, 16 GiB object store and 60 GiB worker
