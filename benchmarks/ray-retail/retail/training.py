@@ -1,6 +1,7 @@
 """Fixed-work Tune search and final Ray Train distributed forecasting."""
 
 from pathlib import Path
+import os
 import shutil
 import tempfile
 import time
@@ -174,6 +175,9 @@ def distributed_train_loop(c):
     if c["max_batches"]:
         steps = min(steps, c["max_batches"])
     total_samples = 0
+    from .telemetry import probe
+
+    effective_resources = probe() if c.get('probe_resources', False) else None
     for epoch in range(first_epoch, c["epochs"]):
         model.train()
         iterator = iter(
@@ -213,7 +217,11 @@ def distributed_train_loop(c):
             Path(c["output"]) / f"rank-{rank}.json",
             {
                 "rank": rank,
+                "device": str(device),
+                "backend": dist.get_backend() if world > 1 else None,
+                "gloo_socket_ifname": os.environ.get('GLOO_SOCKET_IFNAME'),
                 "node_id": node,
+                "effective_resources": effective_resources,
                 "epochs": epoch + 1,
                 "steps_per_epoch": steps,
                 "samples": total_samples,
@@ -259,6 +267,7 @@ def train_model(config, output, tuned, data_info):
         "seed": config["seed"],
         "rows": data_info["rows"]["train"],
         "output": str(root),
+        "probe_resources": bool(config.get('deployment', {}).get('physical_cores')),
     }
     trainer = TorchTrainer(
         distributed_train_loop,
@@ -299,6 +308,16 @@ def train_model(config, output, tuned, data_info):
         raise RuntimeError(
             f"Training participation mismatch: {len(ranks)} ranks on {len(nodes)} nodes"
         )
+    if config.get('deployment', {}).get('physical_cores'):
+        from collections import Counter
+        from .deployment import resources
+        from .telemetry import require_resources
+
+        counts = Counter(r['node_id'] for r in ranks)
+        if set(counts.values()) != {c['workers'] // config['expected_nodes']}:
+            raise RuntimeError('Training ranks are not balanced across ten nodes')
+        for rank in ranks:
+            require_resources(rank['effective_resources'], resources(config))
     return {
         "validation_mae": float(result.metrics["mae"]),
         "config": c,

@@ -77,6 +77,10 @@ The [Skiff Guide](https://github.com/CARV-ICS-FORTH/skiff/blob/main/GUIDE.md) ha
 
 The components have their own documents: [Skifflet](https://github.com/CARV-ICS-FORTH/skiff/blob/main/skifflet/README.md), [Plaid](https://github.com/CARV-ICS-FORTH/skiff/blob/main/plaid/README.md) and the [tests](https://github.com/CARV-ICS-FORTH/skiff/blob/main/test/README.md).
 
+To check a running cluster with a real workload, try the
+[two-node Dask example](benchmarks/dask-matrix/README.md). See the
+[benchmark results](benchmarks/results.md) for measured examples.
+
 ## Without Slurm
 
 Skiff also runs where there is no Slurm, on machines you log in to: it then starts the cluster itself, on one machine or on several that share your home and reach one another with ssh keys. It is just as rootless: everything runs as you, an ordinary user, with nothing installed and no root privileges, as in a Slurm job. After steps 1 and 2, check each machine, then start the cluster in the background instead of submitting a job, and stop it when you are done:

@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Extract and validate a analytics-spark result record from a driver log."""
+"""Extract and validate an analytics-spark result record from a driver log."""
 
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
 from runtime import validate_acceleration
 
 
-MARKER = "SPARK_KNOT_RESULT_JSON="
+MARKER = "SPARK_ANALYTICS_RESULT_JSON="
 
 
 def main() -> int:
@@ -19,8 +20,10 @@ def main() -> int:
         return 2
     log_path, output_path, expected_workload = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
     try:
-        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        candidates = [line.split(MARKER, 1)[1] for line in lines if MARKER in line]
+        log = log_path.read_text(encoding="utf-8", errors="replace")
+        # Historical driver logs used a different benchmark label in the marker.
+        marker = re.compile(r"\bSPARK_[A-Z]+_RESULT_JSON=(.*)")
+        candidates = marker.findall(log)
         if not candidates:
             raise ValueError(f"{MARKER} was not found")
         result = json.loads(candidates[-1])

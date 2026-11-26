@@ -8,7 +8,7 @@ source "${script_dir}/lib.sh"
 load_spark_config
 require_command docker
 
-image_name=${LOCAL_IMAGE_NAME:-"analytics-spark-knot:${SPARK_VERSION}-amd64-${IMAGE_REVISION}${IMAGE_MODE_SUFFIX}"}
+image_name=${LOCAL_IMAGE_NAME:-"analytics-spark:${SPARK_VERSION}-amd64-${IMAGE_REVISION}${IMAGE_MODE_SUFFIX}"}
 temporary_dir=$(mktemp -d)
 trap 'rm -rf "$temporary_dir"' EXIT
 
@@ -16,7 +16,7 @@ cat >"${temporary_dir}/smoke.py" <<'PY'
 from pyspark.sql import SparkSession
 
 spark = (
-    SparkSession.builder.appName("spark-knot-image-smoke")
+    SparkSession.builder.appName("spark-analytics-image-smoke")
     .config("spark.sql.session.timeZone", "UTC")
     .config("spark.hadoop.fs.s3a.endpoint", "http://127.0.0.1:9000")
     .config("spark.hadoop.fs.s3a.endpoint.region", "us-east-1")
@@ -37,13 +37,13 @@ spark = (
 try:
     spark.sparkContext.setLogLevel("WARN")
     loader = spark.sparkContext._jvm.java.lang.Thread.currentThread().getContextClassLoader()
-    loader.loadClass("eu.knotplatform.sparkknot.SparkKnotTPCDS")
-    destination = "s3a://spark-knot/image-smoke/parquet"
+    loader.loadClass("io.skiff.analytics.SparkAnalyticsTPCDS")
+    destination = "s3a://spark-analytics/image-smoke/parquet"
     spark.range(100).repartition(2).write.mode("overwrite").parquet(destination)
     actual = spark.read.parquet(destination).count()
     if actual != 100:
         raise RuntimeError(f"S3A round trip returned {actual} rows; expected 100")
-    path = spark.sparkContext._jvm.org.apache.hadoop.fs.Path("s3a://spark-knot/image-smoke")
+    path = spark.sparkContext._jvm.org.apache.hadoop.fs.Path("s3a://spark-analytics/image-smoke")
     path.getFileSystem(spark.sparkContext._jsc.hadoopConfiguration()).delete(path, True)
     print("IMAGE_SMOKE_PASS rows=100 bridge=loaded s3a=read-write")
 finally:
@@ -55,8 +55,8 @@ docker run --rm \
     --volume "${temporary_dir}/smoke.py:/tmp/smoke.py:ro" \
     "$image_name" -lc '
         set -euo pipefail
-        export MINIO_ROOT_USER=spark-knot-smoke
-        export MINIO_ROOT_PASSWORD=spark-knot-smoke-password
+        export MINIO_ROOT_USER=spark-analytics-smoke
+        export MINIO_ROOT_PASSWORD=spark-analytics-smoke-password
         export AWS_ACCESS_KEY_ID=$MINIO_ROOT_USER
         export AWS_SECRET_ACCESS_KEY=$MINIO_ROOT_PASSWORD
         export MC_CONFIG_DIR=/tmp/mc
@@ -69,9 +69,9 @@ docker run --rm \
             kill -0 "$server_pid"
             sleep 1
         done
-        /usr/local/bin/mc mb --ignore-existing local/spark-knot >/dev/null
+        /usr/local/bin/mc mb --ignore-existing local/spark-analytics >/dev/null
         /opt/spark/bin/spark-submit \
             --master local[2] \
-            --jars local:///opt/spark/work-dir/spark-knot-tpcds.jar \
+            --jars local:///opt/spark/work-dir/spark-analytics-tpcds.jar \
             /tmp/smoke.py
     '

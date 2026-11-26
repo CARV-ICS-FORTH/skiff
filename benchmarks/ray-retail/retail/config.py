@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 
 DEFAULT_CONFIG = str(
-    Path(__file__).resolve().parents[1] / "configs/meluxina-20-node-cpu.json"
+    Path(__file__).resolve().parents[1] / "configs/20-node-cpu.json"
 )
 
 
@@ -18,14 +18,14 @@ def add_config_arguments(
             "path",
             nargs="?",
             default=default,
-            help="Base profile (default: 20-node MeluXina)",
+            help="Base profile (default: 20-node CPU)",
         )
     else:
         parser.add_argument(
             "--config",
             dest=dest,
             default=default,
-            help="Base profile (default: 20-node MeluXina)",
+            help="Base profile (default: 20-node CPU)",
         )
     parser.add_argument("--overlay", help="JSON file merged over the base profile")
     parser.add_argument(
@@ -81,6 +81,19 @@ def load(path=DEFAULT_CONFIG, overlay=None, overrides=()):
 
 
 def validate(c):
+    from .deployment import validate_config
+
+    validate_config(c)
+    if 'threads' in c['serve'] and (type(c['serve']['threads']) is not int
+            or not 1 <= c['serve']['threads'] <= c['serve']['cpus_per_replica']):
+        raise ValueError('Serving threads must fit the CPU reservation')
+    if 'batch' in c:
+        batch = c['batch']
+        if any(type(batch.get(k)) is not int or batch[k] < 1
+               for k in ('workers', 'cpus_per_worker', 'threads')):
+            raise ValueError('Batch resources must be positive integers')
+        if batch['threads'] > batch['cpus_per_worker']:
+            raise ValueError('Batch threads exceed CPU reservation')
     if (
         type(c["schema_version"]) is not int
         or c["schema_version"] != 1

@@ -14,6 +14,10 @@ def main():
     spark = SparkSession.builder.appName("analytics-spark-local-validation").getOrCreate()
     spark.sparkContext.setLogLevel("WARN")
     try:
+        snapshots = spark.sparkContext.parallelize(range(2), 2).map(
+            lambda _: benchmark.execution_environment()).collect()
+        assert len(snapshots) == 2 and all(item["cpu_affinity"] for item in snapshots)
+        assert all(item["mountinfo"] and item["source_sha256"] for item in snapshots)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             benchmark.TPCDS_TABLES = ("store_sales",)

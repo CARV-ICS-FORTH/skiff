@@ -13,11 +13,11 @@ from .demand import demand_series, feature
 
 @serve.deployment
 class ForecastDeployment:
-    def __init__(self, model_path, device, batch_size):
+    def __init__(self, model_path, device, batch_size, threads=1):
         import torch
         from .model import load_forecaster
 
-        torch.set_num_threads(1)
+        torch.set_num_threads(threads)
         self.model = load_forecaster(model_path, device)
         self.batch.set_max_batch_size(batch_size)
 
@@ -40,11 +40,11 @@ class ForecastDeployment:
 
 @serve.deployment
 class PolicyDeployment:
-    def __init__(self, module_path, batch_size):
+    def __init__(self, module_path, batch_size, threads=1):
         import torch
         from .policy import load_policy
 
-        torch.set_num_threads(1)
+        torch.set_num_threads(threads)
         self.module = load_policy(module_path)
         self.batch.set_max_batch_size(batch_size)
 
@@ -166,12 +166,12 @@ def serving_test(config, output):
             "num_cpus": c["cpus_per_replica"],
             "num_gpus": int(config["device"] == "cuda"),
         },
-    ).bind(str(Path(output) / "train/model.pt"), config["device"], c["batch_size"])
+    ).bind(str(Path(output) / "train/model.pt"), config["device"], c["batch_size"], c.get('threads', 1))
     policy = PolicyDeployment.options(
         **replicas,
         max_replicas_per_node=1,
         ray_actor_options={"num_cpus": c["cpus_per_replica"]},
-    ).bind(str(Path(output) / "policy/module"), c["batch_size"])
+    ).bind(str(Path(output) / "policy/module"), c["batch_size"], c.get('threads', 1))
     serve.start(
         proxy_location="HeadOnly", http_options={"host": "0.0.0.0", "port": c["port"]}
     )

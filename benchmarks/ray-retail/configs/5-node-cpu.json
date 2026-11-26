@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "seed": 731,
+  "expected_nodes": 5,
+  "device": "cpu",
+  "data": {
+    "series": 20000,
+    "days": 1000,
+    "train_end": 700,
+    "validation_end": 850,
+    "blocks": 1280,
+    "max_pending": 640
+  },
+  "train": {
+    "workers": 20,
+    "cpus_per_worker": 31,
+    "threads": 31,
+    "batch_size": 2048,
+    "epochs": 4,
+    "hidden": 512,
+    "layers": 3,
+    "lr": 0.001,
+    "max_batches": 128,
+    "use_tuned": false
+  },
+  "tune": {
+    "trials": 20,
+    "concurrency": 20,
+    "epochs": 2,
+    "adaptive": false
+  },
+  "rl": {
+    "env_runners": 550,
+    "cpus_per_learner": 16,
+    "iterations": 8,
+    "batch_size": 65536,
+    "minibatch_size": 512,
+    "epochs": 4,
+    "hidden": 128,
+    "layers": 2,
+    "horizon": 84,
+    "evaluation_episodes": 1200
+  },
+  "serve": {
+    "replicas": 5,
+    "cpus_per_replica": 8,
+    "requests": 10000,
+    "concurrency": 256,
+    "batch_size": 32,
+    "autoscale": false,
+    "port": 18080,
+    "threads": 8
+  },
+  "deadline_seconds": 2100,
+  "deployment": {
+    "ray_cpus": 128,
+    "physical_cores": 128,
+    "object_store_bytes": 68719476736,
+    "heap_bytes": 412316860416,
+    "pod_memory_bytes": 506806140928,
+    "minimum_memory_bytes": 515396075520
+  },
+  "batch": {
+    "workers": 75,
+    "cpus_per_worker": 8,
+    "threads": 8
+  }
+}

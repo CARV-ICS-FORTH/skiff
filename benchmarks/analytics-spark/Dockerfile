@@ -48,7 +48,7 @@ RUN set -eux; \
 
 COPY --from=minio-builder /usr/local/bin/minio /usr/local/bin/minio
 COPY --from=tpcds-kit-builder /opt/tpcds-kit /opt/tpcds-kit
-COPY --from=tpcds-builder /build/target/spark-knot-tpcds.jar /opt/spark/work-dir/spark-knot-tpcds.jar
+COPY --from=tpcds-builder /build/target/spark-analytics-tpcds.jar /opt/spark/work-dir/spark-analytics-tpcds.jar
 COPY --from=tpcds-builder /build/runtime-jars/*.jar /opt/spark/jars/
 COPY --chown=185:185 benchmark.py runtime.py gpu-discovery.sh /opt/spark/work-dir/
 COPY --chown=185:185 skiff/executor-pod-template.yaml /opt/spark/work-dir/executor-pod-template.yaml
@@ -57,7 +57,7 @@ COPY --chown=185:185 queries /opt/spark/work-dir/tpcds-queries
 RUN chmod 0755 /usr/local/bin/minio /opt/spark/work-dir/gpu-discovery.sh \
     && chmod 0444 /opt/spark/work-dir/benchmark.py \
        /opt/spark/work-dir/executor-pod-template.yaml \
-       /opt/spark/work-dir/spark-knot-tpcds.jar \
+       /opt/spark/work-dir/spark-analytics-tpcds.jar \
        /opt/spark/work-dir/tpcds-queries/*.sql \
     && chmod 0755 /opt/tpcds-kit/tools/dsdgen
 

@@ -15,7 +15,7 @@ class AdapterTests(unittest.TestCase):
         from skiff.render import render
 
         result = render(
-            str(ROOT / "configs/meluxina-20-node-cpu.json"),
+            str(ROOT / "configs/20-node-cpu.json"),
             "/images/retail.sif",
             "a" * 64,
             "/shared/source",
@@ -103,7 +103,7 @@ class AdapterTests(unittest.TestCase):
             workers["spec"]["template"]["spec"]["affinity"]["podAntiAffinity"],
         )
 
-    def test_rendered_meluxina_pods_start_twenty_matching_ray_nodes(self):
+    def test_rendered_cpu_pods_start_twenty_matching_ray_nodes(self):
         rendered = subprocess.check_output(
             [
                 sys.executable,
@@ -152,9 +152,30 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(command[command.index("--cpus") + 1], "32")
             self.assertEqual(
                 command[command.index("--config") + 1],
-                "configs/meluxina-20-node-cpu.json",
+                "configs/20-node-cpu.json",
             )
             self.assertEqual(command[command.index("--token") + 1], "fixture-'$()")
             self.assertEqual(
                 command[-4:], ["--set", "train.layers=3", "--set", "rl.layers=1"]
             )
+
+    def test_gpu_profiles_render_matching_allocations_and_cuda_commands(self):
+        from skiff.render import render
+        from retail.config import load
+
+        for profile, count in [('two-node-gpu-smoke.json', 2), ('5-node-gpu.json', 5)]:
+            config = load(ROOT / 'configs' / profile)
+            self.assertEqual(config['train']['workers'], count)
+            self.assertEqual(config['serve']['replicas'], count)
+            result = render(str(ROOT / 'configs' / profile), '/images/gpu.sif',
+                            'a' * 64, '/source', '/output', 'gpu-test')
+            worker = next(d for d in result['items'] if d['kind'] == 'Job')
+            self.assertEqual(worker['spec']['parallelism'], count - 1)
+            head = next(d for d in result['items'] if d['kind'] == 'Pod')
+            for spec in (head['spec'], worker['spec']['template']['spec']):
+                container = spec['containers'][0]
+                self.assertEqual(container['resources']['limits']['nvidia.com/gpu'], '1')
+                with patch.dict(os.environ, {'POD_IP': '10.0.0.2'}), patch('os.chdir'), patch('socket.gethostbyname', return_value='10.0.0.1'), patch('os.execvp') as execute:
+                    exec(container['args'][0], {})
+                command = execute.call_args.args[1]
+                self.assertEqual(command[command.index('--gpus') + 1], '1')

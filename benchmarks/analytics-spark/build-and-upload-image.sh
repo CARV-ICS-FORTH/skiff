@@ -12,12 +12,12 @@ require_command ssh
 require_command scp
 
 "${script_dir}/build-image.sh"
-image_name=${LOCAL_IMAGE_NAME:-"analytics-spark-knot:${SPARK_VERSION}-amd64-${IMAGE_REVISION}${IMAGE_MODE_SUFFIX}"}
+image_name=${LOCAL_IMAGE_NAME:-"analytics-spark:${SPARK_VERSION}-amd64-${IMAGE_REVISION}${IMAGE_MODE_SUFFIX}"}
 remote_host=${REMOTE_HOST:-your-ssh-alias}
 remote_user=${REMOTE_USER:-your-remote-user}
 remote_target="${remote_user}@${remote_host}"
-remote_archive="/home/${remote_user}/.skiff/images/analytics-spark-knot-${SPARK_VERSION}-amd64-${IMAGE_REVISION}${IMAGE_MODE_SUFFIX}.tar"
-local_archive=$(mktemp /tmp/spark-knot-image.XXXXXX.tar)
+remote_archive="/home/${remote_user}/.skiff/images/analytics-spark-${SPARK_VERSION}-amd64-${IMAGE_REVISION}${IMAGE_MODE_SUFFIX}.tar"
+local_archive=$(mktemp /tmp/spark-analytics-image.XXXXXX.tar)
 trap 'rm -f "$local_archive"' EXIT
 
 echo "Exporting $image_name..."
@@ -43,7 +43,7 @@ mkdir -p "$(dirname "$sif")"
 "$apptainer_bin" build --force "$sif" "docker-archive://$archive"
 "$apptainer_bin" exec "$sif" test -x /opt/tpcds-kit/tools/dsdgen
 "$apptainer_bin" exec "$sif" test -r /opt/spark/work-dir/benchmark.py
-"$apptainer_bin" exec "$sif" test -r /opt/spark/work-dir/spark-knot-tpcds.jar
+"$apptainer_bin" exec "$sif" test -r /opt/spark/work-dir/spark-analytics-tpcds.jar
 sha256sum "$sif"
 rm -f "$archive"
 REMOTE

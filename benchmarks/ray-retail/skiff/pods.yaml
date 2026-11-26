@@ -1,4 +1,4 @@
-# Deployment template, NOT a qualified Knot runbook. Replace image and shared paths.
+# Deployment template. Replace image and shared paths.
 # All three Ray pods use the same application and retail.cluster_node adapter.
 apiVersion: v1
 kind: Service

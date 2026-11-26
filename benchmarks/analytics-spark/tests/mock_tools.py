@@ -81,5 +81,5 @@ def main(tool, args):
     config = json.loads((root / "configuration.json").read_text())
     result = fixture(config, root, role)
     if scenario == "invalid_result": result["run_id"] = "wrong-run"
-    print("SPARK_KNOT_RESULT_JSON=" + json.dumps(result), flush=True)
+    print("SPARK_ANALYTICS_RESULT_JSON=" + json.dumps(result), flush=True)
     return 0

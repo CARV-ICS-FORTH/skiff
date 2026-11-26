@@ -4,20 +4,21 @@ metadata:
   name: __MINIO_NAME__
   namespace: __NAMESPACE__
   labels:
-    app.kubernetes.io/name: spark-knot-object-store
+    app.kubernetes.io/name: spark-analytics-object-store
 spec:
   replicas: 1
   strategy:
     type: Recreate
   selector:
     matchLabels:
-      app.kubernetes.io/name: spark-knot-object-store
+      app.kubernetes.io/name: spark-analytics-object-store
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: spark-knot-object-store
-        spark-knot/role: object-store
+        app.kubernetes.io/name: spark-analytics-object-store
+        spark-analytics/role: object-store
     spec:
+      __MINIO_PLACEMENT__
       securityContext:
         runAsUser: 185
         runAsGroup: 185
@@ -93,7 +94,7 @@ metadata:
   namespace: __NAMESPACE__
 spec:
   selector:
-    app.kubernetes.io/name: spark-knot-object-store
+    app.kubernetes.io/name: spark-analytics-object-store
   ports:
     - name: s3
       port: 9000

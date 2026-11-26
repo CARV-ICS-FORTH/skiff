@@ -80,6 +80,18 @@ class LauncherTests(unittest.TestCase):
         self.assertTrue(all("--cpus-per-task=4" in args and "--mem=10240M" in args for args in workers))
         self.assertFalse(any("--overlap" in args for args in steps))
 
+    def test_whole_node_mode_shares_allocation_without_changing_spark_slots(self):
+        self.env.update(NATIVE_RESOURCE_MODE="whole-node", CPU_BIND="none",
+                        SLURM_JOB_CPUS_PER_NODE="256(x2)")
+        root = self.run_scenario("success", 0)
+        config = json.loads((root / "configuration.json").read_text())
+        self.assertEqual(config["EXECUTOR_CORES"], "4")
+        steps = [e["args"] for e in self.events() if e.get("command") == "srun"]
+        self.assertTrue(all("--cpus-per-task=256" in args and "--mem=0" in args
+                            and "--cpu-bind=none" in args for args in steps))
+        roles = [args for args in steps if any(arg.endswith("/role.sh") for arg in args)]
+        self.assertTrue(all("--overlap" in args and "--mem-bind=none" in args for args in roles))
+
     def test_reject_insufficient_cpus_before_launch(self):
         self.env["SLURM_JOB_CPUS_PER_NODE"] = "8(x2)"
         result = subprocess.run(["bash", str(ROOT / "run.sh")], env={**self.env, "MOCK_SCENARIO": "success"},

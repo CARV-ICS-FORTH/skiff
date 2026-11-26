@@ -5,7 +5,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 source "${script_dir}/lib.sh"
-load_spark_knot_config
+load_spark_analytics_config
 
 for command_name in kubectl python3 sha256sum awk; do
     require_command "$command_name"
@@ -115,7 +115,7 @@ sample_runtime() {
                 >>"${result_dir}/executor-placement.tsv"
         done < <(
             kubectl get pods -n "$NAMESPACE" \
-                -l "spark-knot/run-id=${run_id},spark-knot/role=${role}" \
+                -l "spark-analytics/run-id=${run_id},spark-analytics/role=${role}" \
                 -o custom-columns='NAME:.metadata.name,NODE:.spec.nodeName,STATUS:.status.phase' \
                 --no-headers 2>/dev/null || true
         )
@@ -179,7 +179,7 @@ wait_for_application() {
     fi
     python3 "${SPARK_BENCHMARK_ROOT}/extract_result.py" \
         "${result_dir}/${phase}-driver.log" "${result_dir}/${phase}-summary.json" "$expected_workload"
-    sed -n '/SPARK_KNOT_METRICS_BEGIN/,/SPARK_KNOT_METRICS_END/p' \
+    sed -n '/SPARK_ANALYTICS_METRICS_BEGIN/,/SPARK_ANALYTICS_METRICS_END/p' \
         "${result_dir}/${phase}-driver.log" >"${result_dir}/${phase}-metrics.txt"
     local unique_nodes
     unique_nodes=$(awk -F '\t' -v phase="$phase" \

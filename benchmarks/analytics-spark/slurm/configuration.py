@@ -24,7 +24,7 @@ def configure(source_dir, nodes):
     names = ("SPARK_SIF SPARK_VERSION SCALE_FACTOR GENERATION_PARTITIONS SHUFFLE_PARTITIONS "
              "QUERY_SET QUERY_ITERATIONS DRIVER_CORES DRIVER_MEMORY DRIVER_MEMORY_OVERHEAD "
              "EXECUTOR_CORES EXECUTOR_MEMORY EXECUTOR_MEMORY_OVERHEAD MINIO_CORES MINIO_MEMORY "
-             "MINIO_BUCKET MINIO_DATA_ROOT SPARK_INTERFACE CPU_BIND STARTUP_TIMEOUT_SECONDS "
+             "MINIO_BUCKET MINIO_DATA_ROOT SPARK_SCRATCH_ROOT SPARK_INTERFACE CPU_BIND NATIVE_RESOURCE_MODE STARTUP_TIMEOUT_SECONDS "
              "GENERATION_TIMEOUT_SECONDS QUERY_TIMEOUT_SECONDS MASTER_PORT MASTER_UI_PORT "
              "WORKER_PORT WORKER_UI_PORT MINIO_PORT MINIO_CONSOLE_PORT "
              "WORKLOAD_PROFILE BENCHMARK_MODE EXECUTOR_INSTANCES RAPIDS_VERSION "
@@ -37,6 +37,11 @@ def configure(source_dir, nodes):
                  "GENERATION_TIMEOUT_SECONDS", "QUERY_TIMEOUT_SECONDS"):
         if not re.fullmatch(r"[1-9][0-9]*", values[name]):
             raise ValueError(f"{name} must be a positive integer")
+    if values["NATIVE_RESOURCE_MODE"] not in ("bounded", "whole-node"):
+        raise ValueError("NATIVE_RESOURCE_MODE must be bounded or whole-node")
+    if values["NATIVE_RESOURCE_MODE"] == "whole-node":
+        if values["CPU_BIND"] != "none" or values["BENCHMARK_MODE"] != "cpu":
+            raise ValueError("whole-node comparison requires CPU_BIND=none and BENCHMARK_MODE=cpu")
     if values["CPU_BIND"] not in ("cores", "threads", "none"):
         raise ValueError("CPU_BIND must be cores, threads or none")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", values["SPARK_INTERFACE"]):

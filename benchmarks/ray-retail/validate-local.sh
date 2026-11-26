@@ -15,9 +15,11 @@ for path in root.rglob("*.py"):
 for path in (root / "configs").glob("*.json"):
     json.loads(path.read_text())
 PY
-bash -n validate-local.sh slurm/retail.slurm slurm/node.sh slurm/meluxina-20-node.slurm slurm/meluxina-node.sh
+SCRIPTS=(validate-local.sh slurm/retail.slurm slurm/node.sh slurm/20-node-cpu.slurm slurm/tmpfs-node.sh slurm/5-node-gpu.slurm
+    experiment/ten-node.slurm experiment/native-node.sh experiment/skiff-cluster.sh)
+for script in "${SCRIPTS[@]}"; do bash -n "$script"; done
 if command -v shellcheck >/dev/null; then
-    shellcheck --severity=warning validate-local.sh slurm/retail.slurm slurm/node.sh slurm/meluxina-20-node.slurm slurm/meluxina-node.sh
+    shellcheck --severity=warning "${SCRIPTS[@]}"
 else
     echo "ShellCheck unavailable; shell syntax checks still ran." >&2
 fi

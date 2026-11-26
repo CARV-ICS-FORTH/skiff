@@ -5,7 +5,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 source "${script_dir}/lib.sh"
-load_spark_knot_config
+load_spark_analytics_config
 
 require_command kubectl
 require_command python3
@@ -23,7 +23,7 @@ kubectl cluster-info >/dev/null
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 
 if ! kubectl get secret "$MINIO_SECRET" -n "$NAMESPACE" >/dev/null 2>&1; then
-    root_user="spark-knot-$(python3 -c 'import secrets; print(secrets.token_hex(6))')"
+    root_user="spark-analytics-$(python3 -c 'import secrets; print(secrets.token_hex(6))')"
     root_password=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
     kubectl create secret generic "$MINIO_SECRET" \
         --namespace "$NAMESPACE" \
@@ -32,7 +32,7 @@ if ! kubectl get secret "$MINIO_SECRET" -n "$NAMESPACE" >/dev/null 2>&1; then
     unset root_user root_password
 fi
 
-kubectl create configmap spark-knot-pod-templates \
+kubectl create configmap spark-analytics-pod-templates \
     --namespace "$NAMESPACE" \
     --from-file=executor-pod-template.yaml="${script_dir}/executor-pod-template.yaml" \
     --dry-run=client -o yaml | kubectl apply -f -
@@ -48,9 +48,14 @@ kubectl apply -f "${temporary_dir}/rbac.yaml"
 kubectl apply -f "${temporary_dir}/minio.yaml"
 
 if [[ "$INSTALL_OPERATOR" == "true" ]]; then
-    helm repo add --force-update spark-operator https://kubeflow.github.io/spark-operator
-    helm repo update spark-operator
-    helm upgrade --install "$OPERATOR_RELEASE" spark-operator/spark-operator \
+    chart=${OPERATOR_CHART_PATH:-spark-operator/spark-operator}
+    if [[ -z "$OPERATOR_CHART_PATH" ]]; then
+        helm repo add --force-update spark-operator https://kubeflow.github.io/spark-operator
+        helm repo update spark-operator
+    else
+        [[ -r "$chart" ]] || { echo "Operator chart is unreadable: $chart" >&2; exit 1; }
+    fi
+    helm upgrade --install "$OPERATOR_RELEASE" "$chart" \
         --version "$OPERATOR_CHART_VERSION" \
         --namespace "$NAMESPACE" \
         --set-string "spark.jobNamespaces[0]=${NAMESPACE}" \
@@ -75,7 +80,7 @@ if [[ "$INSTALL_OPERATOR" == "true" ]]; then
     fi
     kubectl patch deployment "$operator_deployment" -n "$NAMESPACE" \
         --type=strategic \
-        --patch '{"spec":{"template":{"spec":{"volumes":[{"name":"spark-knot-pod-templates","configMap":{"name":"spark-knot-pod-templates"}}],"containers":[{"name":"spark-operator-controller","volumeMounts":[{"name":"spark-knot-pod-templates","mountPath":"/opt/spark/operator-pod-templates","readOnly":true}]}]}}}}'
+        --patch '{"spec":{"template":{"spec":{"volumes":[{"name":"spark-analytics-pod-templates","configMap":{"name":"spark-analytics-pod-templates"}}],"containers":[{"name":"spark-operator-controller","volumeMounts":[{"name":"spark-analytics-pod-templates","mountPath":"/opt/spark/operator-pod-templates","readOnly":true}]}]}}}}'
     if [[ "$DISABLE_OPERATOR_PROBES" == "true" ]]; then
         kubectl patch deployment "$operator_deployment" -n "$NAMESPACE" \
             --type=strategic \

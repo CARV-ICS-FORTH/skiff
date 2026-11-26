@@ -10,7 +10,7 @@ load_spark_config
 require_command docker
 docker buildx version >/dev/null
 
-image_name=${LOCAL_IMAGE_NAME:-"analytics-spark-knot:${SPARK_VERSION}-amd64-${IMAGE_REVISION}${IMAGE_MODE_SUFFIX}"}
+image_name=${LOCAL_IMAGE_NAME:-"analytics-spark:${SPARK_VERSION}-amd64-${IMAGE_REVISION}${IMAGE_MODE_SUFFIX}"}
 echo "Building $image_name for linux/amd64..."
 docker buildx build \
     --platform linux/amd64 \
@@ -29,13 +29,13 @@ fi
 docker run --rm --entrypoint /bin/bash "$image_name" -lc '
     set -e
     test -x /opt/tpcds-kit/tools/dsdgen
-    test -r /opt/spark/work-dir/spark-knot-tpcds.jar
+    test -r /opt/spark/work-dir/spark-analytics-tpcds.jar
     test "$(find /opt/spark/work-dir/tpcds-queries -name "q*.sql" | wc -l)" -eq 103
     test -r /opt/spark/jars/hadoop-aws-3.4.1.jar
     test -r /opt/spark/jars/bundle-2.24.6.jar
-    jar tf /opt/spark/work-dir/spark-knot-tpcds.jar | grep -q "eu/knotplatform/sparkknot/SparkKnotTPCDS.class"
-    jar tf /opt/spark/work-dir/spark-knot-tpcds.jar | grep -q "org/apache/spark/sql/TPCDSTables.class"
-    jar tf /opt/spark/work-dir/spark-knot-tpcds.jar | grep "eu/knotplatform/sparkknot/GpuDiscovery.class" >/dev/null
+    jar tf /opt/spark/work-dir/spark-analytics-tpcds.jar | grep -q "io/skiff/analytics/SparkAnalyticsTPCDS.class"
+    jar tf /opt/spark/work-dir/spark-analytics-tpcds.jar | grep -q "org/apache/spark/sql/TPCDSTables.class"
+    jar tf /opt/spark/work-dir/spark-analytics-tpcds.jar | grep "io/skiff/analytics/GpuDiscovery.class" >/dev/null
     cd /opt/tpcds-kit/tools
     test -n "$(./dsdgen -table income_band -filter Y -scale 1 | head -n 1)"
     /usr/local/bin/minio --version
